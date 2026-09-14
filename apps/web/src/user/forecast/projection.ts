@@ -38,15 +38,20 @@
  * the base return when it names none). Because a fixed-rate system is linear in
  * its flows, "base AND this plan" is exactly base + plan with no cross-term.
  *
- * ── Denomination (#1741) ─────────────────────────────────────────────────────
+ * ── Denomination (#1741, #1759) ──────────────────────────────────────────────
  * The engine is **currency-agnostic**: it converts nothing and knows no rate, so
  * every amount it emits is denominated in whatever its inputs were. That makes
  * the caller responsible for handing it ONE denomination — the user's base
- * currency (§5.4), which is what the starting net worth, the standing orders and
- * the rendered symbol all use. The fields therefore no longer carry an `…Eur`
- * suffix: the projected dividend income used to arrive pinned to EUR and was
- * added straight to a base-denominated balance, so a USD user's curve summed two
- * currencies and rendered the total with one symbol.
+ * currency (§5.4), which is what the starting net worth and the rendered symbol
+ * both use. The fields therefore no longer carry an `…Eur` suffix: the projected
+ * dividend income used to arrive pinned to EUR and was added straight to a
+ * base-denominated balance, so a USD user's curve summed two currencies and
+ * rendered the total with one symbol.
+ *
+ * Standing orders are NOT base-denominated at the source — a cash order's
+ * `amount` is a EUR magnitude by contract — so the gate that keeps the run
+ * single-denomination lives in {@link normalizeStandingOrders}, which refuses
+ * any order whose currency is not the base rather than letting the engine mix.
  */
 
 import type { StandingOrder } from '@bettertrack/contracts';
@@ -261,19 +266,55 @@ export function projectNetWorth(input: ForecastInput): ForecastResult {
   return { base, overlays };
 }
 
+/** What {@link normalizeStandingOrders} could and could not put on the curve. */
+export interface NormalizedStandingOrders {
+  /**
+   * The orders that continue forward, every one of them denominated in the
+   * base currency that was passed in — safe to hand straight to the engine.
+   */
+  orders: ForecastStandingOrder[];
+  /**
+   * Currencies found on effective-active cash orders that are NOT the
+   * projection's base, deduped and sorted. Non-empty ⇒ `orders` is empty and
+   * the factor cannot be resolved: this engine converts nothing, and the caller
+   * must say so rather than quietly project a smaller set (see the module note
+   * on denomination).
+   */
+  foreignCurrencies: string[];
+}
+
 /**
  * Normalize the caller's standing orders into the projection's factor-1 input:
  * drops **paused** and archive-suspended orders (only effective-active orders
  * continue forward) and drops **buy-asset** orders (net-worth-neutral
  * reallocations, see the module note), mapping each cash order to its signed
- * signed flow.
+ * flow.
+ *
+ * `baseCurrency` is the denomination of the run the flows will join — the same
+ * base the starting net worth is in. A cash order carries a EUR magnitude by
+ * contract (`packages/contracts/src/standingOrders.ts`: the server derives
+ * `currency` and books the cash leg into the EUR ledger), so for a non-EUR base
+ * the two disagree and adding the amount 1:1 would be the #1741 defect again —
+ * 3.000 € booked as 3.000 CHF, every month, compounded for up to 30 years.
+ * Rather than mix denominations, such an order is refused: it is reported in
+ * {@link NormalizedStandingOrders.foreignCurrencies} and the factor as a whole
+ * resolves to nothing (all-or-nothing, like the dividend total in #1616) so the
+ * caller can name the reason instead of drawing a silently smaller curve.
  */
-export function normalizeStandingOrders(orders: readonly StandingOrder[]): ForecastStandingOrder[] {
+export function normalizeStandingOrders(
+  orders: readonly StandingOrder[],
+  baseCurrency: string,
+): NormalizedStandingOrders {
   const normalized: ForecastStandingOrder[] = [];
+  const foreign = new Set<string>();
   for (const order of orders) {
     if (order.status !== 'active') continue;
     if (order.suspendedByArchive === true) continue;
     if (order.kind === 'buy-asset') continue;
+    if (order.currency !== baseCurrency) {
+      foreign.add(order.currency);
+      continue;
+    }
     const sign = order.kind === 'cash-add' ? 1 : -1;
     normalized.push({
       amount: sign * order.amount,
@@ -283,5 +324,6 @@ export function normalizeStandingOrders(orders: readonly StandingOrder[]): Forec
       endDate: order.endDate,
     });
   }
-  return normalized;
+  const foreignCurrencies = [...foreign].sort();
+  return { orders: foreignCurrencies.length > 0 ? [] : normalized, foreignCurrencies };
 }

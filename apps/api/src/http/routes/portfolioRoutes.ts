@@ -76,7 +76,7 @@ import {
   portfolioVaultAccountSecurityRouteAcceptsBearer,
   recordBearerScopeDenied,
 } from '../middleware/bearerAuth';
-import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
+import { conditionalGet } from '../middleware/conditional';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -379,9 +379,12 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
   });
 
   // GET /portfolios/:portfolioId — holdings + totals (§6.8). Conditional read
-  // (V5-P1b, #555): body-derived ETag + snapshot-state Last-Modified; liveToday
-  // so a fresh intraday quote is only reflected via the ETag, never masked by
-  // an If-Modified-Since 304.
+  // (V5-P1b, #555): body-derived ETag only, per §6.8.6 ("no Last-Modified
+  // validator is emitted"). liveToday, so the date rail could never gate a 304
+  // here anyway — emitting the snapshot-state watermark meant an ownership-
+  // checked round-trip per request for a header no caller can act on
+  // (`Cache-Control: private, no-cache` forbids heuristic freshness), so it is
+  // gone (#1762). A fresh intraday quote moves the body, hence the ETag.
   router.get(
     '/:portfolioId',
     validateParams(portfolioIdParamSchema),
@@ -391,8 +394,6 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
       const portfolio = await ctx.portfolio.getPortfolio(req.authUser!.id, portfolioId, {
         baseCurrency: req.authUser!.baseCurrency,
       });
-      const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
-      if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
       res.json(portfolio);
     },
   );
@@ -429,9 +430,11 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
     '/:portfolioId/history',
     validateParams(portfolioIdParamSchema),
     validateQuery(portfolioHistoryQuerySchema),
-    // Conditional read (V5-P1b, #555): body-derived ETag + snapshot-state
-    // Last-Modified (issue #553 drives series freshness). liveToday because the
-    // trailing point is a fresh quote — ETag-only revalidation, never masked.
+    // Conditional read (V5-P1b, #555): body-derived ETag only, per §6.8.6.
+    // liveToday because the trailing point is a fresh quote — ETag-only
+    // revalidation, never masked — which also makes the date rail unreachable
+    // here, so the snapshot-state round-trip that used to feed it is gone
+    // (#1762).
     conditionalGet({ liveToday: true }),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
@@ -441,8 +444,6 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
         baseCurrency: req.authUser!.baseCurrency,
         interval,
       });
-      const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
-      if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
       res.json(history);
     },
   );

@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse, Problem, ProblemListResponse } from '@bettertrack/contracts';
 
@@ -59,17 +59,83 @@ function pageRow(index: number): Problem {
   };
 }
 
-function renderPage() {
+function renderPage(entry = '/admin/problems') {
   return render(
     <AuthProvider>
       {/* W4 folded Operations: the page renders the workspace tab strip, which
           needs a router. */}
-      <MemoryRouter initialEntries={['/admin/problems']}>
+      <MemoryRouter initialEntries={[entry]}>
         <ProblemsPage />
       </MemoryRouter>
     </AuthProvider>,
   );
 }
+
+/** A page's worth of rows, matching the page's own PAGE_SIZE. */
+const PAGE_SIZE = 25;
+
+/** The cadence `useLiveRefresh` runs a cockpit page at by default. */
+const LIVE_CADENCE_MS = 30_000;
+
+function capture(index: number, overrides: Partial<Problem> = {}): Problem {
+  return {
+    ...problem,
+    id: `capture-${index}`,
+    fingerprint: `fingerprint-${index}`,
+    title: `Problem ${index}`,
+    ...overrides,
+  };
+}
+
+/**
+ * Serve windows out of a MUTATING set, the way the server does: `offset` is a
+ * position in `lastSeenAt desc` order, so a capture arriving at the head shifts
+ * every later row down by one. This is the whole of #1848's D1 — a fixed
+ * fixture per offset cannot reproduce it.
+ */
+function serveFrom(set: () => Problem[]) {
+  vi.mocked(api.listProblems).mockImplementation(async (params = {}) => {
+    const rows = set();
+    const offset = params.offset ?? 0;
+    const limit = params.limit ?? PAGE_SIZE;
+    const window = rows.slice(offset, offset + limit);
+    return {
+      problems: window,
+      openCount: rows.filter((row) => row.status === 'open').length,
+      total: rows.length,
+      hasMore: offset + window.length < rows.length,
+      droppedCaptures: 0,
+      droppedCapturesTotal: 0,
+    };
+  });
+}
+
+/** The rendered rows, in order, by title. */
+function renderedTitles(): string[] {
+  return screen
+    .getAllByRole('listitem')
+    .map((row) => row.querySelector('.text-\\[13px\\]')?.textContent ?? '');
+}
+
+/** Load page 1 + page 2 with the live cadence running. */
+async function loadTwoPages(user: ReturnType<typeof userEvent.setup>, entry?: string) {
+  renderPage(entry);
+  await screen.findByText('Problem 0');
+  await user.click(screen.getByRole('button', { name: 'Load more' }));
+  await screen.findByText(`Problem ${PAGE_SIZE}`);
+}
+
+/** Advance to the next live tick and let its reads settle. */
+async function liveTick() {
+  await act(async () => {
+    vi.advanceTimersByTime(LIVE_CADENCE_MS);
+  });
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
@@ -120,11 +186,95 @@ test('loads the next page and keeps the rows already shown', async () => {
 
   await user.click(screen.getByRole('button', { name: 'Load more' }));
 
-  // Both pages are on screen, and the second page's row can be acted on.
+  // Both pages are on screen, and the second page's row can be acted on. The
+  // second window is asked for at a PAGE_SIZE boundary (#1848) — not at
+  // `rows.length`, which was a position in a set that had already moved.
   await waitFor(() => expect(screen.getByText('PagedError2')).toBeInTheDocument());
   expect(screen.getByText('PagedError1')).toBeInTheDocument();
-  expect(vi.mocked(api.listProblems).mock.calls.at(-1)?.[0]).toMatchObject({ offset: 1 });
+  expect(vi.mocked(api.listProblems).mock.calls.at(-1)?.[0]).toMatchObject({ offset: 25 });
   expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+});
+
+/**
+ * D1 (#1848). The page used to splice each response into a growing array by
+ * numeric offset, over a set that mutates under it. These three cases are the
+ * three ways that lied: a duplicate, a dropped row, and a frozen first page.
+ */
+test('a capture arriving during the live tick renders no row twice', async () => {
+  // `shouldAdvanceTime` keeps testing-library's own waiting working while the
+  // cadence stays under the test's control.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  let set = Array.from({ length: 2 * PAGE_SIZE }, (_, index) => capture(index));
+  serveFrom(() => set);
+  const duplicateKeyWarning = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+  await loadTwoPages(user);
+  expect(screen.getAllByRole('listitem')).toHaveLength(2 * PAGE_SIZE);
+
+  // One new capture at the head: the whole set shifts down by one, so the
+  // second window now starts one row earlier than when it was read.
+  set = [capture(999, { title: 'Fresh capture' }), ...set];
+  await liveTick();
+
+  await waitFor(() => expect(screen.getByText('Fresh capture')).toBeInTheDocument());
+  const titles = renderedTitles();
+  expect(new Set(titles).size).toBe(titles.length);
+  // The boundary row is the one the splice used to render twice.
+  expect(screen.getAllByText(`Problem ${PAGE_SIZE - 1}`)).toHaveLength(1);
+  expect(duplicateKeyWarning.mock.calls.map((call) => String(call[0])).join('\n')).not.toMatch(
+    /Encountered two children with the same key/,
+  );
+});
+
+test('a row leaving the set does not take an unrelated open row with it', async () => {
+  // `shouldAdvanceTime` keeps testing-library's own waiting working while the
+  // cadence stays under the test's control.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  let set = Array.from({ length: 2 * PAGE_SIZE }, (_, index) => capture(index));
+  serveFrom(() => set);
+
+  await loadTwoPages(user);
+  const boundaryRow = `Problem ${PAGE_SIZE}`;
+  expect(screen.getByText(boundaryRow)).toBeInTheDocument();
+
+  // A colleague resolves the head row: under the default `open` filter it
+  // leaves the set, and every later row moves up one.
+  set = set.slice(1);
+  await liveTick();
+
+  await waitFor(() => expect(screen.queryByText('Problem 0')).not.toBeInTheDocument());
+  // The row that sat on the page boundary is still listed exactly once — the
+  // splice used to drop it, with no way left to reach or resolve it.
+  expect(screen.getAllByText(boundaryRow)).toHaveLength(1);
+  const titles = renderedTitles();
+  expect(titles).toHaveLength(2 * PAGE_SIZE - 1);
+  expect(new Set(titles).size).toBe(titles.length);
+});
+
+test('a row resolved elsewhere stops offering Resolve on the first page after a tick', async () => {
+  // `shouldAdvanceTime` keeps testing-library's own waiting working while the
+  // cadence stays under the test's control.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const set = Array.from({ length: 2 * PAGE_SIZE }, (_, index) => capture(index));
+  serveFrom(() => set);
+
+  // `status=all`, so a resolved row stays in the set and can be read back.
+  await loadTwoPages(user, '/admin/problems?status=all');
+  const firstRow = () => within(screen.getAllByRole('listitem')[0]!);
+  expect(firstRow().getByRole('button', { name: 'Resolve' })).toBeInTheDocument();
+
+  set[0] = capture(0, { status: 'resolved', resolvedAt: '2026-07-17T03:00:00.000Z' });
+  await liveTick();
+
+  // Page 1 is re-read on every tick now; it used to be frozen the moment
+  // "Load more" was clicked, and kept offering "Resolve" forever.
+  await waitFor(() =>
+    expect(firstRow().queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument(),
+  );
+  expect(firstRow().getByRole('button', { name: 'Reopen' })).toBeInTheDocument();
 });
 
 test('shows the failed request’s route, status and id, and the stack collapsed', async () => {

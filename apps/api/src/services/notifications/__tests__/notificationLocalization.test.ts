@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   ALERT_KINDS,
+  CHANNEL_SETUP_MESSAGE_KEYS,
   FEEDBACK_STATUSES,
   NOTIFICATION_MESSAGE_KEYS,
+  NOTIFICATION_MESSAGE_MONEY_PARAMS,
   notificationMessageSchema,
   type AlertKind,
   type FeedbackStatus,
@@ -26,7 +28,13 @@ import {
   type DispatchableEvent,
   type NotificationDispatcher,
 } from '../notificationDispatcher';
-import { NOTIFICATION_COPY, renderNotificationMessage } from '../notificationI18n';
+import {
+  CHANNEL_SETUP_COPY,
+  channelSetupText,
+  NOTIFICATION_COPY,
+  notificationMessage,
+  renderNotificationMessage,
+} from '../notificationI18n';
 
 const OCCURRED_AT = '2026-07-20T10:00:00.000Z';
 
@@ -547,6 +555,26 @@ describe('dispatcher notification localization (#1138)', () => {
     }
   });
 
+  it('ships distinct EN and DE copy for every chat-channel setup message', () => {
+    // #1723: the Telegram link confirmation, the Discord save probe and the
+    // Discord test send were hardcoded English inside the services. They are
+    // keyed copy now — same EN+DE discipline as the dispatcher table above,
+    // and deliberately NOT part of NOTIFICATION_MESSAGE_KEYS: they carry no
+    // event, are never persisted as an inbox row and never reach the SPA, so
+    // the web catalogs (and the byte-identity test below) do not cover them.
+    expect(Object.keys(CHANNEL_SETUP_COPY.en)).toEqual([...CHANNEL_SETUP_MESSAGE_KEYS]);
+    expect(Object.keys(CHANNEL_SETUP_COPY.de)).toEqual([...CHANNEL_SETUP_MESSAGE_KEYS]);
+    for (const key of CHANNEL_SETUP_MESSAGE_KEYS) {
+      expect(CHANNEL_SETUP_COPY.de[key], key).not.toEqual(CHANNEL_SETUP_COPY.en[key]);
+      expect(CHANNEL_SETUP_COPY.en[key], key).not.toHaveLength(0);
+      // The renderer resolves the stored locale, with EN for anything unknown.
+      expect(channelSetupText(key, 'de')).toBe(CHANNEL_SETUP_COPY.de[key]);
+      expect(channelSetupText(key, 'en')).toBe(CHANNEL_SETUP_COPY.en[key]);
+      expect(channelSetupText(key, null)).toBe(CHANNEL_SETUP_COPY.en[key]);
+      expect(channelSetupText(key, 'fr')).toBe(CHANNEL_SETUP_COPY.en[key]);
+    }
+  });
+
   it('keeps the server catalog byte-identical to the web inbox catalog', () => {
     // The same pairs are maintained twice: here for the persisted fallback,
     // push, digest and email bodies, and in the SPA catalogs for live inbox
@@ -566,6 +594,110 @@ describe('dispatcher notification localization (#1138)', () => {
         expect(catalog.notificationContent?.[key], `${locale}.json: ${key}`).toEqual(
           NOTIFICATION_COPY[locale][key],
         );
+      }
+    }
+  });
+});
+
+describe('money markers and the channel boundary (§6.16)', () => {
+  const moneyKeys = Object.keys(NOTIFICATION_MESSAGE_MONEY_PARAMS) as NotificationMessageKey[];
+
+  it('declares every template that interpolates a currency as money', () => {
+    // The completeness direction. Discreet mode hides every absolute amount on
+    // every in-app surface, and the inbox is the one surface whose money
+    // arrives already inside a server-composed sentence — so the SPA can only
+    // mask what this table names. A new money-bearing string that forgets its
+    // entry fails HERE, in the same change that adds it, instead of quietly
+    // printing an amount on the bell that renders on every route (#1757).
+    const undeclared: string[] = [];
+    for (const locale of ['en', 'de'] as const) {
+      for (const key of NOTIFICATION_MESSAGE_KEYS) {
+        const pair = NOTIFICATION_COPY[locale][key];
+        if (!`${pair.title} ${pair.body}`.includes('{{currency}}')) continue;
+        if (!(key in NOTIFICATION_MESSAGE_MONEY_PARAMS)) undeclared.push(`${locale}: ${key}`);
+      }
+    }
+    expect(undeclared, `undeclared money templates: ${undeclared.join(', ')}`).toEqual([]);
+    // The percentage thresholds are deliberately NOT money: §6.16 keeps
+    // relative values live, so `{{threshold}}%` must stay readable.
+    expect(NOTIFICATION_MESSAGE_MONEY_PARAMS.alertTriggeredPercentDayUp).toBeUndefined();
+    expect(NOTIFICATION_MESSAGE_MONEY_PARAMS.followAlertFiredPercentUpReference).toBeUndefined();
+  });
+
+  it('points every declared marker at tokens both catalogs actually render', () => {
+    expect(moneyKeys.length).toBeGreaterThan(0);
+    for (const key of moneyKeys) {
+      for (const locale of ['en', 'de'] as const) {
+        const pair = NOTIFICATION_COPY[locale][key];
+        const text = `${pair.title} ${pair.body}`;
+        for (const [amountParam, currencyParam] of Object.entries(
+          NOTIFICATION_MESSAGE_MONEY_PARAMS[key] ?? {},
+        )) {
+          expect(text, `${locale} ${key}`).toContain(`{{${amountParam}}}`);
+          expect(text, `${locale} ${key}`).toContain(`{{${currencyParam}}}`);
+        }
+      }
+    }
+  });
+
+  it('attaches markers from the table, and only for params the descriptor carries', () => {
+    expect(
+      notificationMessage('alertTriggeredPriceAbove', {
+        symbol: 'AAPL',
+        threshold: 150,
+        currency: 'USD',
+      }),
+    ).toEqual({
+      key: 'alertTriggeredPriceAbove',
+      params: { symbol: 'AAPL', threshold: 150, currency: 'USD' },
+      money: { threshold: 'currency' },
+    });
+    // A percentage threshold is not money and gets no marker.
+    expect(
+      notificationMessage('alertTriggeredPercentDayUp', { symbol: 'AAPL', threshold: 5 }),
+    ).toEqual({ key: 'alertTriggeredPercentDayUp', params: { symbol: 'AAPL', threshold: 5 } });
+    // The amount-less dividend variant has no amount to point at.
+    expect(notificationMessage('dividendEvent', { symbol: 'MSFT', date: '2026-03-04' })).toEqual({
+      key: 'dividendEvent',
+      params: { symbol: 'MSFT', date: '2026-03-04' },
+    });
+    expect(
+      notificationMessage('budgetExceeded', {
+        category: 'Groceries',
+        target: 200,
+        spent: 240.5,
+        currency: 'EUR',
+      }).money,
+    ).toEqual({ spent: 'currency', target: 'currency' });
+  });
+
+  it('delivers e-mail, push and chat copy UNMASKED — the boundary discreet mode stops at', () => {
+    // Pinned deliberately: discreet mode is a render rule for the app's own
+    // surfaces, the ones a bystander can see. E-mail, push, Telegram and
+    // Discord are the user's own channels, they predate the toggle, and the
+    // recipient cannot toggle a "•••" back into a number. A later change that
+    // decided to "be consistent" and mask a delivered body would break the
+    // message; it breaks this test first.
+    for (const key of moneyKeys) {
+      const params: Record<string, string | number> = {
+        symbol: 'AAPL',
+        actor: 'anna',
+        date: '2026-03-04',
+        category: 'Groceries',
+        currency: 'USD',
+      };
+      for (const amountParam of Object.keys(NOTIFICATION_MESSAGE_MONEY_PARAMS[key] ?? {})) {
+        params[amountParam] = 1234.56;
+      }
+      const message = notificationMessage(key, params);
+      expect(message.money, key).toBeDefined();
+      for (const locale of ['en', 'de'] as const) {
+        const rendered = renderNotificationMessage(message, locale);
+        expect(rendered.body, `${locale} ${key} must deliver the amount`).toContain('1234.56');
+        expect(rendered.body, `${locale} ${key} must not mask a delivered channel`).not.toContain(
+          '\u2022',
+        );
+        expect(`${rendered.title} ${rendered.body}`, key).not.toMatch(/\{\{/);
       }
     }
   });

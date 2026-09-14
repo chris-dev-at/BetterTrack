@@ -10,6 +10,7 @@ import {
 import type { Time } from 'lightweight-charts';
 
 import type {
+  DividendProjectionBasis,
   Holding,
   PortfolioHistoryRange,
   PortfolioTotals,
@@ -23,7 +24,7 @@ import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
 } from '../../lib/marketIntelApi';
-import { useT } from '../../i18n';
+import { type TranslateFn, useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { useDeployCapability } from '../../lib/featureFlags';
@@ -31,13 +32,16 @@ import { assetTypeLabels } from './assetTypeLabels';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
+import { upcomingDividendDate } from '../../lib/dividendDates';
 import {
+  displayZoneDay,
   EM_DASH,
   formatDate,
   formatMoney,
   formatPercent,
   formatQuantity,
   formatSignedPercent,
+  formatUnitPrice,
 } from '../../lib/format';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
@@ -1395,6 +1399,24 @@ function RecategorizeBanner() {
  * (anti-bloat). Compact: one income line with a monthly/yearly toggle and a
  * calendar truncated to three rows with an expand toggle.
  */
+/**
+ * The one line naming what a projected dividend total is made of. Null when the
+ * projection carries no basis (nothing contributed), because then there is
+ * nothing to caveat.
+ */
+function dividendBasisNote(basis: DividendProjectionBasis | null, t: TranslateFn): string | null {
+  switch (basis) {
+    case 'trailing-12m':
+      return t('portfolio.dividends.basis.trailing12m');
+    case 'forward-annualized':
+      return t('portfolio.dividends.basis.forwardAnnualized');
+    case 'mixed':
+      return t('portfolio.dividends.basis.mixed');
+    default:
+      return null;
+  }
+}
+
 function DividendIntelSection() {
   const t = useT();
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
@@ -1436,7 +1458,11 @@ function DividendIntelSection() {
   if (!hasProjection && entries.length === 0) return null;
 
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
+  // One "today" for the whole list so every row is labelled against the same
+  // day boundary the API used when it built and ordered the calendar.
+  const calendarToday = displayZoneDay();
   const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
+  const basisNote = hasProjection ? dividendBasisNote(proj.basis, t) : null;
 
   return (
     <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
@@ -1458,19 +1484,27 @@ function DividendIntelSection() {
       </div>
 
       {hasProjection ? (
-        <p className="flex items-baseline gap-2">
-          <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
-            {/* The projection declares its own denomination (the caller's base,
-                §5.4) — rendering a hard 'EUR' beside a base-denominated net
-                worth labelled a currency the arithmetic never used. */}
-            {formatMoney(total, proj?.currency)}
-          </span>
-          <span className="bt-meta">
-            {view === 'monthly'
-              ? t('portfolio.dividends.perMonth')
-              : t('portfolio.dividends.perYear')}
-          </span>
-        </p>
+        <>
+          <p className="flex items-baseline gap-2">
+            <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
+              {/* The projection declares its own denomination (the caller's base,
+                  §5.4) — rendering a hard 'EUR' beside a base-denominated net
+                  worth labelled a currency the arithmetic never used. */}
+              {formatMoney(total, proj?.currency)}
+            </span>
+            <span className="bt-meta">
+              {view === 'monthly'
+                ? t('portfolio.dividends.perMonth')
+                : t('portfolio.dividends.perYear')}
+            </span>
+          </p>
+          {/* …and what that number is MADE of. A `trailing-12m` estimate is the
+              last twelve months' realized payouts, so a special dividend is in
+              it and the figure reads well above true forward income for a year;
+              a book can also legitimately mix the two bases. The contract has
+              carried the basis since #1741 and no surface rendered it (#1790). */}
+          {basisNote ? <p className="bt-meta">{basisNote}</p> : null}
+        </>
       ) : projectionTruncated ? (
         <p className="bt-meta">{t('portfolio.dividends.projectionTruncated')}</p>
       ) : projectionUnresolved ? (
@@ -1485,11 +1519,14 @@ function DividendIntelSection() {
           ) : null}
           <ul className="bt-band flex flex-col">
             {visibleEntries.map((entry) => {
-              // An entry may carry only a pay date (an event already gone ex, or
-              // a provider that gave no ex-date). Label the date we actually
-              // have, like the Home widget — rendering "ex —" for it is a lie.
-              const isEx = entry.exDate !== null;
-              const date = entry.exDate ?? entry.payDate;
+              // The date this event is still upcoming on — the earliest of its
+              // ex/pay dates that has not passed, which is also the date the API
+              // ordered the list on. An event already gone ex but not yet paid
+              // shows its PAY date: printing the ex-date behind us under
+              // "upcoming" was #1758, and "ex —" for a pay-only row was #1681.
+              const upcoming = upcomingDividendDate(entry, calendarToday);
+              const isEx = upcoming?.isEx ?? false;
+              const date = upcoming?.iso ?? null;
               return (
                 <li
                   key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
@@ -1504,9 +1541,14 @@ function DividendIntelSection() {
                     {entry.symbol}
                   </Link>
                   <span className="bt-meta flex items-center gap-2">
+                    {/* A per-SHARE distribution, not a total: the unit-price
+                        rule (§7.1 rule 4) is what keeps a sub-cent monthly-ETF
+                        payout from printing as 0,00 — the Home widget already
+                        renders this exact field that way, and the two surfaces
+                        must not disagree about the same number. */}
                     {entry.amount != null ? (
                       <span className="bt-soft bt-num">
-                        {formatMoney(entry.amount, entry.currency ?? undefined)}
+                        {formatUnitPrice(entry.amount, entry.currency ?? undefined)}
                       </span>
                     ) : null}
                     {date !== null ? (

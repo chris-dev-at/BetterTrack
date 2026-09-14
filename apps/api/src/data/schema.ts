@@ -279,6 +279,15 @@ export const users = pgTable(
     // Email is stored lowercased; username uniqueness is case-insensitive.
     uniqueIndex('users_email_unique').on(t.email),
     uniqueIndex('users_username_lower_unique').on(sql`lower(${t.username})`),
+    // "Is anybody involved here in a non-normal account mode?" — the probe every
+    // comment-thread read asks before it decides whether the read needs the
+    // per-participant privacy locks at all (#1829). PARTIAL, so the index holds
+    // one entry per paranoid account and is empty on the overwhelming majority
+    // of deployments: the probe then costs an empty index scan instead of a
+    // sequential pass over `users`, no matter how large the table gets.
+    index('users_privacy_mode_restricted_idx')
+      .on(t.id)
+      .where(sql`${t.privacyMode} <> 'normal'`),
   ],
 );
 
@@ -939,25 +948,38 @@ export const assets = pgTable(
     meta: jsonb('meta'),
     // Local search catalog (§5.5, §6.2): full-text document over symbol + name,
     // maintained by Postgres itself so it can never drift from the row.
+    //
+    // The document is ACCENT-FOLDED, and carries the German transliteration
+    // beside the fold whenever the two differ (#1876, migration 0114):
+    // "Deutsche Börse AG" indexes both `borse` and `boerse`, so the ASCII and
+    // the umlaut spelling of a shipped DE/AT row both find it. A row without
+    // umlauts folds to itself, so its tsvector is byte-identical to the one it
+    // carried before 0114. See `bettertrack_search_document` in that migration
+    // and its JS mirror in `services/search/catalogEnrichment.ts`.
     searchText: tsvector('search_text').generatedAlwaysAs(
-      (): SQL => sql`to_tsvector('simple', ${assets.symbol} || ' ' || ${assets.name})`,
+      (): SQL =>
+        sql`to_tsvector('simple', "bettertrack_search_document"(${assets.symbol} || ' ' || ${assets.name}))`,
     ),
   },
   (t) => [
     uniqueIndex('assets_provider_owner_unique').on(t.providerId, t.providerRef, t.ownerId),
-    // §5.5 search index: GIN over the generated tsvector for word matches.
+    // §5.5 search indexes: there are deliberately NONE for the catalog read's
+    // match arms — neither the composite trigram GIN (#1709 dropped it in 0110)
+    // nor the tsvector GIN over `search_text` (#1876 dropped it in 0114).
     //
-    // There is deliberately NO trigram index (#1709 retired the composite
-    // `assets_symbol_name_trgm_gin` in 0110). `gin_trgm_ops` answers only the
-    // `%`, `<%` and `<->` operators, and the catalog's fuzzy tier is a plain
-    // `similarity(...) >= 0.3` call — index-unusable by construction, as are
-    // the `upper(symbol) LIKE …` / `%…%` ILIKE tiers beside it. The read
-    // scanned and filtered every visible row with the index present, exactly as
-    // it does without it, while the index still cost a GIN write on every
-    // catalog upsert. The misspelling behaviour §6.2
-    // promises comes from the pg_trgm EXTENSION (`similarity`), which stays;
-    // see `assetRepository.searchCatalog` for the plan and the growth bound.
-    index('assets_search_text_gin').using('gin', t.searchText),
+    // `gin_trgm_ops` answers only the `%`, `<%` and `<->` operators, and the
+    // catalog's fuzzy tier is a plain `similarity(...) >= 0.3` call —
+    // index-unusable by construction, as are the folded `symbol LIKE …` /
+    // `%…%` tiers beside it. `search_text` looked more promising and was not:
+    // its ONLY appearance in the codebase is inside the `CASE` in the target
+    // list of `searchCatalog`'s fenced subquery, never in a filter, and the
+    // `offset 0` fence is there precisely so the planner cannot pull it up into
+    // one. So the read scanned and filtered every visible row with either index
+    // present, exactly as it does without them, while each still cost a GIN
+    // write on every catalog upsert. The misspelling behaviour §6.2 promises
+    // comes from the pg_trgm EXTENSION (`similarity`), which stays; see
+    // `assetRepository.searchCatalog` for the plan and the growth bound.
+    //
     // §5.5 intends one global row per (provider, ref) for market assets, but a
     // plain UNIQUE over (provider_id, provider_ref, owner_id) does NOT enforce
     // it: Postgres treats NULLs as distinct, so NULL owner_id rows never collide.
@@ -972,36 +994,48 @@ export const assets = pgTable(
 );
 
 /**
- * Deletion watermark for the local asset catalog (§6.2, #1709) — ONE row,
- * holding the instant through which catalog deletions have been accounted for.
+ * Write watermark for the local asset catalog (§6.2, #1709, #1762) — ONE row,
+ * holding the instant through which catalog writes have been accounted for.
  *
  * `assetRepository.catalogWatermark` derives the search read's `Last-Modified`
- * from the newest visible asset's UUIDv7 creation time. That value can move
- * BACKWARDS: delete the newest visible row and the watermark drops to the one
- * before it, so a follow-up `If-Modified-Since: <old watermark>` is satisfied
- * and the caller is told `304 Not Modified` while still rendering the row that
- * was deleted. The watermark is `greatest(newest visible, this stamp)` instead,
- * and the stamp does not merely refuse to decrease — every deleting statement
- * moves it one HTTP-date second past the newest row anyone can still see. Not
- * decreasing would not be enough: a stamp already ahead (because some newer
- * asset — any account's, it is instance-wide) would swallow the next deletion
- * silently, and so would deleting anything below the visible maximum.
+ * from the newest visible asset's UUIDv7 creation time. On its own that value
+ * misses every mutation that is not "a newer row appeared":
  *
- * The stamp is written by the `assets_catalog_deletion_mark` AFTER DELETE
- * trigger (migration 0110), not by a repository, so no delete path — the
- * owner-scoped custom-asset delete, the paranoid detach function, an account
- * cascade — can bypass it. It holds no user id and no asset id: only a
- * timestamp derived from row ids, so it identifies nothing and survives a
- * paranoid enable without leaving a residue (see `services/export/manifest.ts`).
- * The trigger is statement-level, so its cost is one shared row updated per
- * deleting STATEMENT (a cascade of N rows stamps once), plus over-invalidation
- * across users — a 200 instead of a 304, always the safe direction (§6.13).
+ *  - it moves BACKWARDS on a delete of the newest visible row, so a follow-up
+ *    `If-Modified-Since: <old watermark>` is satisfied by the smaller value and
+ *    the caller is told `304 Not Modified` while still rendering the deleted row
+ *    (#1709);
+ *  - it does not move AT ALL on an update — `assets` has no per-row timestamp
+ *    and a rename keeps the id — so search keeps serving the old name under a
+ *    304 (#1762);
+ *  - it does not clear the HTTP-date second boundary on an insert, so a row
+ *    created later in the same second as the current watermark is invisible to
+ *    a second-granular validator (#1762).
+ *
+ * The watermark is `greatest(newest visible, this stamp)` instead, and the stamp
+ * does not merely refuse to decrease — every content-changing statement moves it
+ * one whole HTTP-date second past the newest row anyone can still see. Not
+ * decreasing would not be enough: a stamp already ahead (because some newer
+ * asset — any account's, it is instance-wide) would swallow the next write
+ * silently, and so would touching anything below the visible maximum.
+ *
+ * The stamp is written by the `assets_catalog_{insert,update,delete}_mark`
+ * statement-level triggers (migration 0112, extending 0110), not by a
+ * repository, so no write path — the custom-asset PATCH, the re-categorize
+ * sweep, the owner-scoped delete, the paranoid detach function, the provider
+ * fallback's upserts, an account cascade — can bypass it. It holds no user id
+ * and no asset id: only a timestamp derived from row ids, so it identifies
+ * nothing and survives a paranoid enable without leaving a residue (see
+ * `services/export/manifest.ts`). Statement-level, so its cost is one shared row
+ * updated per content-changing STATEMENT (a cascade or a bulk seed of N rows
+ * stamps once), plus over-invalidation across users — a 200 instead of a 304,
+ * always the safe direction (§6.13).
  */
-export const assetCatalogDeletions = pgTable('asset_catalog_deletions', {
-  /** Singleton guard: the trigger only ever writes `true`. */
+export const assetCatalogWatermark = pgTable('asset_catalog_watermark', {
+  /** Singleton guard: the triggers only ever write `true`. */
   singleton: boolean('singleton').primaryKey().default(true),
-  /** Deletions are accounted for through this instant; only ever moves forward. */
-  deletedThrough: timestamp('deleted_through', { withTimezone: true }).notNull(),
+  /** Catalog writes are accounted for through this instant; only moves forward. */
+  mutatedThrough: timestamp('mutated_through', { withTimezone: true }).notNull(),
 });
 
 export const priceHistory = pgTable(
@@ -2611,7 +2645,12 @@ export const itemFollows = pgTable(
  * **Soft delete.** A removed comment keeps its row with `deleted_at` set and
  * `deleted_by` recording who removed it (its author, or the item owner who
  * moderates every comment). Reads filter deleted rows out; the row is retained
- * so a moderation action is auditable, and its reactions cascade away with it.
+ * so a moderation action is auditable and so a paged cursor still anchors on it.
+ * The CONTENT does not survive: the service clears `body` and deletes the
+ * comment's `item_reactions` rows in the same transaction as the tombstone
+ * stamp (#1780). The `comment_id` FK below does cascade, but only on a ROW
+ * delete — which the API performs solely in subject/account teardown — so the
+ * explicit purge, not the cascade, is what removes them here.
  */
 export const itemComments = pgTable(
   'item_comments',
@@ -2632,8 +2671,19 @@ export const itemComments = pgTable(
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (t) => [
-    // Thread read: every live comment on one item, oldest-first at read time.
+    // Subject teardown / moderation: every comment on one item, tombstoned ones
+    // included — the partial index below deliberately cannot serve those.
     index('item_comments_subject_idx').on(t.kind, t.subjectId),
+    // The paged thread read (#1725): one item's LIVE comments in exactly
+    // `(created_at desc, id desc)` — the order `listForItem` asks for. The
+    // subject index above can filter but not order, so Postgres had to fetch
+    // every live comment of the thread and sort it for each 51-row page, on a
+    // surface the SPA polls every 30 s. Partial on the tombstone so the live
+    // count is an index-only scan over the same entries rather than a heap
+    // visit per row.
+    index('item_comments_thread_idx')
+      .on(t.kind, t.subjectId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.deletedAt} is null`),
     index('item_comments_author_idx').on(t.authorId),
 
     index('item_comments_deleted_by_idx').on(t.deletedBy),
@@ -3056,7 +3106,7 @@ export type UsageActivationRow = typeof usageActivations.$inferSelect;
 export type NewUsageActivationRow = typeof usageActivations.$inferInsert;
 export type AssetIdentityRow = typeof assetIdentities.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
-export type AssetCatalogDeletionRow = typeof assetCatalogDeletions.$inferSelect;
+export type AssetCatalogWatermarkRow = typeof assetCatalogWatermark.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;

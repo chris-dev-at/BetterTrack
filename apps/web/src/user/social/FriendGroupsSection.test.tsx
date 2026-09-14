@@ -3,6 +3,14 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import {
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
+  FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
+} from '@bettertrack/contracts';
+
+import { ApiError } from '../../lib/apiClient';
+
 vi.mock('../../lib/socialApi', () => ({
   listGroups: vi.fn(),
   createGroup: vi.fn(),
@@ -169,5 +177,115 @@ describe('FriendGroupsSection (V5-P8)', () => {
 
     expect(screen.getByText(/nothing is shared with this group right now/i)).toBeInTheDocument();
     expect(screen.queryByText(/point at this group/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The ceilings the server enforces (#1780), surfaced before the click. An
+ * ordinary user never sees either line; at the boundary the reason is named
+ * instead of arriving as an opaque "could not update the group".
+ */
+describe('FriendGroupsSection — the friend-group ceilings', () => {
+  function circles(count: number, memberCount = 0) {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`,
+      name: `Circle ${i}`,
+      memberCount,
+      members: [],
+      shareCount: 0,
+    }));
+  }
+
+  test('closes the inline creator at the per-user ceiling and says why', async () => {
+    vi.mocked(listGroups).mockResolvedValue({ groups: circles(FRIEND_GROUPS_MAX) });
+    const user = userEvent.setup();
+    renderSection();
+
+    expect(
+      await screen.findByText(
+        `You've reached the maximum of ${FRIEND_GROUPS_MAX} groups. Delete one to create another.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/new group name/i)).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^create$/i })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(createGroup).not.toHaveBeenCalled();
+  });
+
+  test('leaves the creator open one circle below the ceiling', async () => {
+    vi.mocked(listGroups).mockResolvedValue({ groups: circles(FRIEND_GROUPS_MAX - 1) });
+    renderSection();
+
+    await waitFor(() => expect(listGroups).toHaveBeenCalled());
+    expect(await screen.findByLabelText(/new group name/i)).not.toBeDisabled();
+    expect(screen.queryByText(/reached the maximum/i)).not.toBeInTheDocument();
+  });
+
+  test('replaces the add-a-friend roster with the reason on a full circle', async () => {
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [
+        {
+          id: GROUP,
+          name: 'Family',
+          memberCount: FRIEND_GROUP_MEMBERS_MAX,
+          members: [],
+          shareCount: 0,
+        },
+      ],
+    });
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [{ user: { id: BOB, username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    expect(
+      screen.getByText(
+        `This group is full — a group can hold at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^add$/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The circle can fill up between the list read and the click (another tab,
+   * another device). The refusal that comes back is the one refusal the owner
+   * can act on — remove a member they can see — so it must name itself instead
+   * of arriving as the generic "could not update the group" (#1830).
+   */
+  async function clickAddWith(error: unknown) {
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [], shareCount: 0 }],
+    });
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [{ user: { id: BOB, username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    vi.mocked(addGroupMember).mockRejectedValue(error);
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(await screen.findByRole('button', { name: /^add$/i }));
+  }
+
+  test('names the roster ceiling when the add is refused for it', async () => {
+    await clickAddWith(
+      new ApiError(400, FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE, 'A group can have at most 200.'),
+    );
+
+    expect(
+      await screen.findByText(
+        `This group is full — a group can hold at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not update the group/i)).not.toBeInTheDocument();
+  });
+
+  test('keeps the generic message for any other failed add', async () => {
+    await clickAddWith(new ApiError(500, 'INTERNAL', 'boom'));
+
+    expect(await screen.findByText(/could not update the group/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this group is full/i)).not.toBeInTheDocument();
   });
 });

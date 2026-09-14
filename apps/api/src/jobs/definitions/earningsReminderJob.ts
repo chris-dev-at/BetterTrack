@@ -3,6 +3,10 @@ import type { NotificationRepository } from '../../data/repositories/notificatio
 import type { MarketDataService } from '../../providers';
 import { runEarningsReminderScan, type EarningsNotifyGate } from '../../services/marketIntel';
 import type { NotificationCenter } from '../../services/notifications/notificationCenter';
+import {
+  routingHasLiveChannel,
+  type OfferedChannels,
+} from '../../services/notifications/killSwitch';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -48,22 +52,21 @@ export interface EarningsReminderJobDeps {
 
 /**
  * Build a per-user opt-in gate from the notification repository: enabled iff the
- * `earnings.reminder` type routes to at least one channel (mirrors
- * `dividendNotifyGate`).
+ * `earnings.reminder` type routes to at least one channel this deployment can
+ * actually deliver on (mirrors `dividendNotifyGate`).
+ *
+ * `offered` is the V5-P0 kill-switch view (#1795): a user whose ONLY routing for
+ * the type is a deactivated Telegram/Discord does not "want this type" in any
+ * sense the scan can honour — counting them cost a full provider read per asset
+ * for a notification with nowhere to go.
  */
 export function earningsNotifyGate(
   repo: Pick<NotificationRepository, 'routingFor'>,
+  offered: OfferedChannels,
 ): EarningsNotifyGate {
   return async (userId: string) => {
     const routing = await repo.routingFor(userId, 'earnings.reminder');
-    return (
-      routing.inapp ||
-      routing.email ||
-      routing.push ||
-      routing.webpush ||
-      routing.telegram ||
-      routing.discord
-    );
+    return routingHasLiveChannel(routing, offered);
   };
 }
 
@@ -94,10 +97,16 @@ export function createEarningsReminderJob(
         logger: ctx.logger,
         now: () => (deps.now ? deps.now() : now),
       });
-      ctx.logger.info(
-        { scanned: result.scanned, reminded: result.reminded },
-        'notifications.earningsRemind complete',
-      );
+      // A run that skipped anything is NOT complete: it logs as degraded, at
+      // warn, naming the skipped total and its decomposition. A silent
+      // "complete" over a 3-day sustained failure is how a lost reminder window
+      // goes unnoticed.
+      const { degraded, ...counts } = result;
+      if (degraded) {
+        ctx.logger.warn(counts, 'notifications.earningsRemind completed with skips');
+      } else {
+        ctx.logger.info(counts, 'notifications.earningsRemind complete');
+      }
     },
   };
 }

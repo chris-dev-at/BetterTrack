@@ -344,7 +344,7 @@ export type ImportMappableField = z.infer<typeof importMappableFieldSchema>;
 /**
  * Where a column's label came from. ABSENT = the deterministic pipeline (the
  * alias dictionary and/or value-shape evidence), which is every label unless
- * the optional heavy-tier fallback both was configured AND ran.
+ * the optional model fallback both was configured AND ran.
  *
  * `'ai'` marks a PROPOSAL, and the API guarantees three things about one that
  * this field exists to let the client honour: it is pinned to the review

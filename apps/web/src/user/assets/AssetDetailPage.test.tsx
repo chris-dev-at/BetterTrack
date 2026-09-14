@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { useMemo, useState } from 'react';
 
 // ─── API mocks ────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,15 @@ vi.mock('../../lib/marketIntelApi', () => ({
   getAssetEarnings: vi.fn(),
   getAssetSplits: vi.fn(),
   getAssetNews: vi.fn(),
+}));
+
+// The deploy-time market-intel capability (§13.5 V5-P5). It decides whether the
+// page ASKS for intel at all, so the gate-off case drives it explicitly (#1874).
+const deployCapabilities = vi.hoisted(() => ({ marketIntel: true }));
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapability: (key: string) =>
+    key === 'marketIntel' ? deployCapabilities.marketIntel : true,
 }));
 
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
@@ -62,6 +72,8 @@ vi.mock('lightweight-charts', () => ({
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ApiError } from '../../lib/apiClient';
+import { I18nProvider } from '../../i18n';
+import { formatDate } from '../../lib/format';
 import {
   getAssetDividends,
   getAssetEarnings,
@@ -69,6 +81,7 @@ import {
   getAssetSplits,
 } from '../../lib/marketIntelApi';
 import { listWatchlists, useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
+import { RealtimeContext, type RealtimeContextValue } from '../../lib/realtime';
 import { setViewportWidth } from '../../test/viewport';
 import { AssetDetailPage } from './AssetDetailPage';
 
@@ -166,6 +179,7 @@ function makeAddToWatchlistMutation(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  deployCapabilities.marketIntel = true;
   vi.mocked(getAssetDetail).mockResolvedValue(baseDetail);
   vi.mocked(getAssetQuote).mockResolvedValue({
     quote: baseDetail.quote,
@@ -192,17 +206,27 @@ beforeEach(() => {
 });
 
 describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
+  /** An ISO instant `days` from now — "upcoming" is relative to the real clock. */
+  const earningsIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
   test('shows the earnings block with the next date + estimated badge', async () => {
     vi.mocked(getAssetEarnings).mockResolvedValue({
       available: true,
       next: {
-        date: '2026-08-10T00:00:00.000Z',
+        date: earningsIso(30),
+        periodEnd: null,
         epsEstimate: 1.42,
         epsActual: null,
         estimated: true,
       },
       recent: [
-        { date: '2026-04-30T00:00:00.000Z', epsEstimate: 1.5, epsActual: 1.53, estimated: false },
+        {
+          date: null,
+          periodEnd: earningsIso(-120),
+          epsEstimate: 1.5,
+          epsActual: 1.53,
+          estimated: false,
+        },
       ],
     });
     renderPage();
@@ -210,6 +234,45 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
     expect(screen.getByText('Next report')).toBeInTheDocument();
     // Estimated (amber) badge distinguishes an unconfirmed date.
     expect(screen.getByText('Estimated')).toBeInTheDocument();
+  });
+
+  test('never labels a report that already happened "Next report" (#1790)', async () => {
+    // The provider keeps returning the last date it knew about (and the read
+    // path serves that payload stale for days), so on 15 Aug a company that
+    // reported on 31 Jul still arrives as `earningsDate: [2025-07-31]`. The
+    // Workboard calendar drops it; this page used to print it under "Next
+    // report". With no past reports either, the whole block has nothing to say.
+    vi.mocked(getAssetEarnings).mockResolvedValue({
+      available: true,
+      next: {
+        date: earningsIso(-15),
+        periodEnd: null,
+        epsEstimate: 1.42,
+        epsActual: null,
+        estimated: true,
+      },
+      recent: [],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText('Earnings')).not.toBeInTheDocument();
+    expect(screen.queryByText('Next report')).not.toBeInTheDocument();
+  });
+
+  test('dates a reported quarter as the fiscal period it is, not as a report date', async () => {
+    // Yahoo's history carries the fiscal PERIOD END (28 Jun for a June quarter),
+    // while the announcement lands over a month later. The row says which.
+    const periodEnd = '2026-06-28T00:00:00.000Z';
+    vi.mocked(getAssetEarnings).mockResolvedValue({
+      available: true,
+      next: null,
+      recent: [{ date: null, periodEnd, epsEstimate: 1.5, epsActual: 1.53, estimated: false }],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Earnings')).toBeInTheDocument());
+    expect(screen.getByText(`Period ended ${formatDate(periodEnd)}`)).toBeInTheDocument();
+    // …and never bare, which would read as the day results were announced.
+    expect(screen.queryByText(formatDate(periodEnd))).not.toBeInTheDocument();
   });
 
   test('hides the earnings block when the capability is unavailable', async () => {
@@ -301,17 +364,23 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
 });
 
 describe('AssetDetailPage — dividends block (V5-P5)', () => {
+  /**
+   * Dates relative to the real clock: whether an ex/pay date is still ahead is
+   * now part of what the block renders (#1758), so a fixture pinned to a fixed
+   * day would flip its own meaning once that day passed.
+   */
+  const dividendIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
   const availableDividends = {
     available: true,
     currency: 'USD',
     history: [
-      { exDate: '2026-02-07T00:00:00.000Z', payDate: null, amount: 0.24, currency: 'USD' },
-      { exDate: '2026-05-09T00:00:00.000Z', payDate: null, amount: 0.25, currency: 'USD' },
+      { exDate: dividendIso(-180), payDate: null, amount: 0.24, currency: 'USD' },
+      { exDate: dividendIso(-90), payDate: null, amount: 0.25, currency: 'USD' },
     ],
     upcoming: [
       {
-        exDate: '2026-08-08T00:00:00.000Z',
-        payDate: '2026-08-15T00:00:00.000Z',
+        exDate: dividendIso(2),
+        payDate: dividendIso(9),
         amount: null,
         currency: 'USD',
       },
@@ -331,6 +400,109 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
     expect(screen.getByText('Next ex-date')).toBeInTheDocument();
     expect(screen.getByText('Next pay date')).toBeInTheDocument();
     expect(screen.getByLabelText('Dividend payout history')).toBeInTheDocument();
+    // The stat is a FRACTION multiplied out here, which is exactly why the
+    // provider mapper may only publish a figure whose unit it determined
+    // (#1790): 0.44 % of a payer must never surface as 44 %.
+    expect(screen.getByText('0,44 %')).toBeInTheDocument();
+    expect(screen.queryByText('44,00 %')).not.toBeInTheDocument();
+  });
+
+  test('captions a forward-annualized amount as such, never as TTM (#1790)', async () => {
+    // The mapper publishes whichever basis the provider had, and the contract is
+    // explicit that the field name is historical: a consumer must read
+    // `trailingAmountBasis`. This page rendered it under "TTM per share"
+    // regardless, asserting twelve months of payouts that were never read.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      trailingAmount: 0.98,
+      trailingAmountBasis: 'forward-annualized' as const,
+    });
+    renderPage();
+    expect(await screen.findByText('Annualised per share')).toBeInTheDocument();
+    expect(screen.queryByText('TTM per share')).not.toBeInTheDocument();
+  });
+
+  test('plots the payout history on a time axis, so a skipped quarter is a gap (#1790)', async () => {
+    // Two payouts a quarter apart, then a two-quarter gap: a company that
+    // skipped a payment. Plotted in array order all three sit equally spaced and
+    // the skip is invisible; on a time axis the last gap is twice the first.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      history: [
+        { exDate: dividendIso(-360), payDate: null, amount: 0.24, currency: 'USD' },
+        { exDate: dividendIso(-270), payDate: null, amount: 0.25, currency: 'USD' },
+        { exDate: dividendIso(-90), payDate: null, amount: 0.26, currency: 'USD' },
+      ],
+    });
+    renderPage();
+    const chart = await screen.findByLabelText('Dividend payout history');
+    const points = chart.querySelector('polyline')?.getAttribute('points') ?? '';
+    const xs = points.split(' ').map((pair) => Number(pair.split(',')[0]));
+    expect(xs).toHaveLength(3);
+    // 90 days, then 180: the second gap is (about) twice the first, never equal.
+    expect(xs[2]! - xs[1]!).toBeCloseTo(2 * (xs[1]! - xs[0]!), 1);
+  });
+
+  test('lets the history caption row wrap, so a 360px phone does not scroll sideways (#1799)', async () => {
+    // Nothing in this row can shrink: the sparkline is a fixed 140px and the two
+    // captions bottom out at their longest word, so on a German 360px phone the
+    // three of them together were 16px wider than the viewport and the whole
+    // page scrolled horizontally. The mobile gate that catches that takes ~17
+    // minutes and is not a required check, so the wrap is pinned here too.
+    vi.mocked(getAssetDividends).mockResolvedValue(availableDividends);
+    renderPage();
+    const chart = await screen.findByLabelText('Dividend payout history');
+    expect(chart.closest('.bt-panel--pad')).toHaveClass('flex-wrap');
+  });
+
+  test('drops a "next ex-date" that has already passed, keeping the pay date (#1758)', async () => {
+    // The normal upstream shape: gone ex, not yet paid. The event is still
+    // upcoming — but only its PAY date is, and a stat labelled "Next ex-date"
+    // must never carry a day already behind the user.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      upcoming: [
+        { exDate: dividendIso(-7), payDate: dividendIso(7), amount: null, currency: 'USD' },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(await screen.findByText('Next pay date')).toBeInTheDocument();
+    expect(screen.queryByText('Next ex-date')).not.toBeInTheDocument();
+    expect(screen.queryByText(formatDate(dividendIso(-7)))).not.toBeInTheDocument();
+  });
+
+  test('picks the earliest still-upcoming event, not whichever came first', async () => {
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      upcoming: [
+        { exDate: dividendIso(30), payDate: dividendIso(37), amount: null, currency: 'USD' },
+        { exDate: dividendIso(3), payDate: dividendIso(10), amount: null, currency: 'USD' },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(await screen.findByText(formatDate(dividendIso(3)))).toBeInTheDocument();
+    expect(screen.queryByText(formatDate(dividendIso(30)))).not.toBeInTheDocument();
+  });
+
+  test('hides the TTM per share when the payload carries no currency', async () => {
+    // `currency` is genuinely nullable (an unmappable upstream code), and
+    // `formatUnitPrice` would then fall back to the user's BASE currency —
+    // relabelling a $0.98 dividend as €0,98.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      currency: null,
+      history: [],
+      forwardYield: null,
+      upcoming: [],
+    });
+    renderPage();
+    await waitFor(() => expect(getAssetDividends).toHaveBeenCalled());
+    expect(screen.queryByText('TTM per share')).not.toBeInTheDocument();
+    // Nothing else was renderable either, so the block stays away entirely
+    // rather than showing a heading over an empty row.
+    expect(screen.queryByText('Dividends')).not.toBeInTheDocument();
   });
 
   test('is absent when the capability is unavailable (invisible when unconfigured)', async () => {
@@ -565,6 +737,80 @@ describe('AssetDetailPage — Live Mode (§6.3, V3-P7b)', () => {
     );
     expect(screen.queryByText(/live.*(unavailable|error|failed)/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText('Live price chart for BAYN.DE')).toBeInTheDocument();
+  });
+
+  test('a liveMode kill switch labels the chart delayed instead of leaving a healthy live state', async () => {
+    // The gateway sheds this socket's live watches (`feature.disabled`) and keeps
+    // the connection UP (§13.5 V5-P2 arc (c)): nothing else on the page can tell
+    // "no frames are coming" from "the stream is quiet".
+    const user = userEvent.setup();
+    let setShed: ((shed: boolean) => void) | undefined;
+
+    function Harness() {
+      const [shed, setter] = useState(false);
+      setShed = setter;
+      const realtime = useMemo<RealtimeContextValue>(
+        () => ({
+          connected: true,
+          featureDisabled: { realtime: false, liveMode: shed },
+          on: () => () => {},
+          joinRoom: () => () => {},
+          watchLive: async () => ({
+            frames: [
+              {
+                assetId: ASSET_ID,
+                price: 28.9,
+                currency: 'EUR',
+                dayChangePct: null,
+                at: '2024-06-01T12:00:00.000Z',
+              },
+            ],
+            coverageFrom: '2024-06-01T12:00:00.000Z',
+          }),
+          unwatchLive: () => {},
+          presenceEnter: () => {},
+          presenceLeave: () => {},
+        }),
+        [shed],
+      );
+      return (
+        <RealtimeContext.Provider value={realtime}>
+          <MemoryRouter initialEntries={[`/assets/${ASSET_ID}`]}>
+            <Routes>
+              <Route path="/assets/:id" element={<AssetDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </RealtimeContext.Provider>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+
+    // Healthy stream: no delayed/fallback wording at all.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Live price chart for BAYN.DE')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Live unavailable — showing delayed data')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Live updates every 60 s while the stream reconnects.'),
+    ).not.toBeInTheDocument();
+
+    act(() => setShed!(true));
+
+    // The chart is now on the 60 s poll and SAYS so — it never keeps presenting
+    // the last streamed frame as a current live price.
+    await waitFor(() =>
+      expect(screen.getByText('Live unavailable — showing delayed data')).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText('Live updates every 60 s while the stream reconnects.'),
+    ).not.toBeInTheDocument();
   });
 
   test('a window switch stays in live mode with the picked window selected', async () => {
@@ -855,5 +1101,59 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
       watchlistId: 'wl-phone',
     });
     expect(container.querySelector('.bt-asset-detail')).toBeInTheDocument();
+  });
+});
+
+describe('AssetDetailPage — market intel gated on the deployment (#1874)', () => {
+  test('issues none of the four intel requests when the capability is off', async () => {
+    deployCapabilities.marketIntel = false;
+
+    renderPage();
+    await screen.findByText('Bayer AG');
+    // The page itself did load — the detail read is not gated.
+    await waitFor(() => expect(getAssetDetail).toHaveBeenCalled());
+
+    // …and no request was spent on an arc that could only answer available:false.
+    expect(getAssetDividends).not.toHaveBeenCalled();
+    expect(getAssetEarnings).not.toHaveBeenCalled();
+    expect(getAssetSplits).not.toHaveBeenCalled();
+    expect(getAssetNews).not.toHaveBeenCalled();
+  });
+
+  test('still asks for all four when the deployment has the capability', async () => {
+    renderPage();
+    await screen.findByText('Bayer AG');
+
+    await waitFor(() => expect(getAssetDividends).toHaveBeenCalled());
+    expect(getAssetEarnings).toHaveBeenCalled();
+    expect(getAssetSplits).toHaveBeenCalled();
+    expect(getAssetNews).toHaveBeenCalled();
+  });
+});
+
+describe('AssetDetailPage — the asset-type badge is copy, not an enum (#1874)', () => {
+  test('renders the translated label rather than the raw slug', async () => {
+    renderPage();
+
+    expect(await screen.findByText('Stock')).toBeInTheDocument();
+    expect(screen.queryByText('stock')).not.toBeInTheDocument();
+  });
+
+  test('renders it in German under a DE provider', async () => {
+    // `I18nProvider` seeds the format locale to de-AT, which is also the
+    // module default in tests — so this leaves no locale residue behind it.
+    render(
+      <I18nProvider initialLocale="de">
+        <QueryClientProvider client={makeQueryClient()}>
+          <MemoryRouter initialEntries={[`/assets/${ASSET_ID}`]}>
+            <Routes>
+              <Route path="/assets/:id" element={<AssetDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByText('Aktie')).toBeInTheDocument();
   });
 });

@@ -62,18 +62,22 @@ export const EARNINGS_TTL_SECONDS = 6 * 60 * 60;
 export const SPLITS_TTL_SECONDS = 12 * 60 * 60;
 
 /**
- * News is the volatile family, but its freshness window must not be SHORTER
+ * News is the volatile family, but its freshness window must be STRICTLY LONGER
  * than the client stale windows that drive it, or every client refetch lands on
  * an already-expired entry and the news digest re-fans-out over the whole book
  * on essentially every load — the §5.3 politeness keystone paying for a TTL
- * mismatch. The drivers today, both hitting `/assets/portfolio/news-digest`:
+ * mismatch. Equal windows are the same failure, not the boundary case: both
+ * clocks start at the SAME instant (the client's fetch is what populates the
+ * Redis entry), so a stale window equal to the TTL expires exactly when the
+ * cache entry does and every refetch is a guaranteed miss (#1758). The drivers
+ * today, both hitting `/assets/portfolio/news-digest`:
  *
- *   - `apps/web/src/user/home/widgets/NewsWidget.tsx`  `staleTime: 3_600_000` (1 h)
+ *   - `apps/web/src/user/home/widgets/NewsWidget.tsx`  `NEWS_STALE_MS = 45 min`
  *   - `apps/web/src/user/assets/NewsDigestPage.tsx`    `NEWS_DIGEST_STALE_MS = 15 min`
  *
- * One hour covers the longest of them, so a client refetch is a cache hit. The
+ * One hour is longer than either, so a client refetch is a cache hit. The
  * relationship is pinned by `services/marketIntel/__tests__/newsTtl.test.ts`,
- * which reads those two files — it fails if either window grows past this TTL.
+ * which reads those two files — it fails if either window reaches this TTL.
  */
 export const NEWS_TTL_SECONDS = 60 * 60;
 

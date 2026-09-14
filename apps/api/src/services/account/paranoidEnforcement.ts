@@ -478,6 +478,9 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'trends',
     'evaluate',
     'evaluateRequired',
+    // The cash-write seam (#1754) is `evaluate` under the name every money
+    // write calls it by, so it is gated on the same (userId, portfolioId) pair.
+    'onCashWrite',
   ]),
   serviceBinding('portfolioServer', 'cashBudgets', 'portfolioIdFieldSecond', ['createBudget']),
   serviceBinding('portfolioServer', 'cashBudgets', 'cashBudgetIdSecond', [
@@ -542,13 +545,22 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
 export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
   serviceExemption(
     'conglomerate',
-    ['create', 'remove'],
+    ['create', 'remove', 'basketsHoldingAsset'],
     'kept',
-    'A fresh basket has no constituents and delete surfaces no asset row, so neither can carry the owner custom-asset provenance.',
+    'A fresh basket has no constituents, delete surfaces no asset row, and the pre-delete lookup answers with basket ids alone — no asset row, name or valuation — so none can carry the owner custom-asset provenance.',
   ),
   serviceExemption(
     'conglomerate',
-    ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
+    [
+      'list',
+      'get',
+      'update',
+      'replacePositions',
+      'activate',
+      'resolved',
+      'allocate',
+      'revalidateAfterAssetRemoval',
+    ],
     'internallyFiltered',
     'Private baskets stay usable, but a CONSTITUENT may be the account own custom asset; every branch that would surface, embed or price one is scoped to global market assets under the caller transition lock.',
     ['accountMode', 'ownedAssetProvenance'],
@@ -625,7 +637,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     'social',
     ['updateProfileSettings'],
     'internallyFiltered',
-    'A public opt-in holds the caller own account transition lock through the final write, so an update started before enable cannot republish after it commits.',
+    'A public opt-in holds the caller own account transition lock through the final write, so an update started before enable cannot republish after it commits; a request that omits the opt-in never writes profile_public at all, so it needs no lock.',
     ['accountMode'],
   ),
   serviceExemption(

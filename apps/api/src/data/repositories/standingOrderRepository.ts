@@ -266,12 +266,19 @@ export function createStandingOrderRepository(db: Database) {
      * advance its watermark while an old worker is awaiting a quote; merely
      * rechecking the portfolio would let that worker claim a period behind the
      * restored watermark after the portfolio becomes active again.
+     *
+     * The locked row is handed to `action`, not discarded (#1836): the scan's
+     * `listActive` snapshot is minutes old by the time a late order reaches this
+     * lock, so the money and the schedule must be read from the row this
+     * `FOR UPDATE` just pinned — an owner's amount or end-date edit in that
+     * window is in force. It costs no extra round trip: the recheck statement
+     * simply selects the whole row it was already reading.
      */
     async withActivePortfolioLock<T>(
       portfolioId: string,
       standingOrderId: string,
       periodKey: string,
-      action: (transaction: Database) => Promise<T>,
+      action: (transaction: Database, current: StandingOrderRecord) => Promise<T>,
     ): Promise<T | null> {
       return db.transaction(async (tx) => {
         await lockPortfolioMutationInTransaction(tx, portfolioId);
@@ -293,7 +300,7 @@ export function createStandingOrderRepository(db: Database) {
         // it waits on a concurrent updater, so a later acknowledged period can
         // never be claimed by this stale worker.
         const current = await tx
-          .select({ id: standingOrders.id })
+          .select()
           .from(standingOrders)
           .where(
             and(
@@ -307,7 +314,7 @@ export function createStandingOrderRepository(db: Database) {
           .for('update');
         if (current.length === 0) return null;
 
-        return action(tx as unknown as Database);
+        return action(tx as unknown as Database, toRecord(current[0]!));
       });
     },
 

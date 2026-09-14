@@ -2,15 +2,14 @@ import { useState } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { PROFILE_BIO_MAX, PROFILE_ICON_IDS, type ProfileIconId } from '@bettertrack/contracts';
+import { PROFILE_BIO_MAX, type ProfileIconId } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { getProfileSettings, updateProfileSettings } from '../../../lib/socialApi';
-import { Button, Icon, SkeletonBlock, Switch, Textarea } from '../../../ui/origin';
-import { Avatar } from '../../components/Avatar';
-import { ProfileIconSvg } from '../../components/profileIcons';
+import { Button, SkeletonBlock, Switch, Textarea } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
 import { PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
+import { ProfileIconPicker } from './ProfileIconPicker';
 
 const PROFILE_KEY = ['social', 'profile'] as const;
 
@@ -43,7 +42,6 @@ export function ProfilePanel() {
   // a valid id = the picked new avatar. Kept separate from the current value so
   // "save" only sends what actually changed.
   const [draftIcon, setDraftIcon] = useState<ProfileIconId | null | undefined>(undefined);
-  const [iconOpen, setIconOpen] = useState(false);
   const [ack, setAck] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -121,92 +119,12 @@ export function ProfilePanel() {
 
       <PanelGroup label={t('profile.icon.title')}>
         <Row stack>
-          <button
-            aria-controls="profile-icon-grid"
-            aria-expanded={iconOpen}
-            className="flex items-center gap-3 text-left"
-            onClick={() => setIconOpen((v) => !v)}
-            style={{
-              background: 'none',
-              border: 0,
-              color: 'inherit',
-              cursor: 'pointer',
-              font: 'inherit',
-              padding: 0,
-            }}
-            type="button"
-          >
-            <Avatar iconId={currentIcon} name={data.username} size="sm" />
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="bt-cc-row__label">{t('profile.icon.title')}</span>
-              <span className="bt-cc-row__hint">
-                {currentIcon
-                  ? t('profile.icon.picked', { name: t(`profile.icon.name.${currentIcon}`) })
-                  : t('profile.icon.defaultHint')}
-              </span>
-            </span>
-            <Icon
-              name="chevron-right"
-              size={15}
-              style={{
-                color: 'var(--bt-faint)',
-                flex: 'none',
-                transform: iconOpen ? 'rotate(90deg)' : undefined,
-                transition: 'transform var(--bt-t-fast)',
-              }}
-            />
-          </button>
-          {iconOpen ? (
-            <div aria-label={t('profile.icon.title')} id="profile-icon-grid" role="radiogroup">
-              <div className="grid grid-cols-8 gap-1.5 sm:grid-cols-10">
-                {PROFILE_ICON_IDS.map((id) => {
-                  const active = currentIcon === id;
-                  return (
-                    // Selection is the one thing gold is for here: the picked
-                    // tile takes the accent rule + its soft wash, the rest stay
-                    // on the quiet neutral border.
-                    <button
-                      aria-checked={active}
-                      aria-label={t(`profile.icon.name.${id}`)}
-                      className="flex aspect-square items-center justify-center"
-                      data-icon-id={id}
-                      key={id}
-                      onClick={() => setDraftIcon(id)}
-                      role="radio"
-                      style={{
-                        background: active ? 'var(--bt-gold-soft)' : 'none',
-                        border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'}`,
-                        borderRadius: 5,
-                        cursor: 'pointer',
-                        padding: 0,
-                        transition: 'border-color var(--bt-t-fast), background var(--bt-t-fast)',
-                      }}
-                      type="button"
-                    >
-                      <ProfileIconSvg className="h-full w-full" id={id} />
-                    </button>
-                  );
-                })}
-              </div>
-              {currentIcon !== null ? (
-                <button
-                  className="bt-link"
-                  onClick={() => setDraftIcon(null)}
-                  style={{
-                    background: 'none',
-                    border: 0,
-                    cursor: 'pointer',
-                    fontSize: 12,
-                    marginTop: 8,
-                    padding: 0,
-                  }}
-                  type="button"
-                >
-                  {t('profile.icon.clear')}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          <ProfileIconPicker
+            gridId="profile-icon-grid"
+            onChange={setDraftIcon}
+            username={data.username}
+            value={currentIcon}
+          />
         </Row>
       </PanelGroup>
 

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { invites, type InviteRow } from '../schema';
@@ -48,8 +48,24 @@ export function createInviteRepository(db: Database) {
       await db.update(invites).set({ revokedAt: when }).where(eq(invites.id, id));
     },
 
-    async listAll(): Promise<InviteRow[]> {
-      return db.select().from(invites).orderBy(desc(invites.createdAt));
+    /**
+     * One bounded page of invites, newest first (V5-P2, #1814 — this used to
+     * return every invite ever issued, and nothing prunes the table). The `id`
+     * tiebreak keeps the window stable across pages when two invites share a
+     * creation timestamp.
+     */
+    async listPage(params: {
+      limit: number;
+      offset: number;
+    }): Promise<{ rows: InviteRow[]; total: number }> {
+      const rows = await db
+        .select()
+        .from(invites)
+        .orderBy(desc(invites.createdAt), desc(invites.id))
+        .limit(params.limit)
+        .offset(params.offset);
+      const [totalRow] = await db.select({ value: count() }).from(invites);
+      return { rows, total: totalRow?.value ?? 0 };
     },
 
     async pendingCount(): Promise<number> {

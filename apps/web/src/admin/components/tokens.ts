@@ -75,6 +75,32 @@ export const FOCUS =
 export const FOCUS_WITHIN =
   'focus:outline-none focus:border-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-sky-400';
 
+// ── Touch ───────────────────────────────────────────────────────────────────
+
+/**
+ * The 44 px phone tap-target floor (§13.5 V5-P13b, issue #1756).
+ *
+ * The console's desktop density is deliberate and stays: 30/34/36/38 px
+ * controls are what makes an operator surface dense enough to read. The floor
+ * therefore applies below the console's OWN desktop handoff only — declared
+ * once in `styles/origin.css`, in an `@media (max-width: 767.98px)` block of
+ * its own, keyed on this marker class alone. 768px because that is where the
+ * sidebar takes over from the burger and the drawer (`AdminLayout.tsx`), and
+ * everything below it navigates by touch-sized drawer rows; the user app's
+ * 480px phone block is a different question and this rule does not share it.
+ *
+ * This is the one exception to "class-string constants, never a CSS layer" at
+ * the top of this file, and it is exactly the case that rule was protecting
+ * against inverted: nothing outside the console emits `admin-tap-target`, so
+ * the rule cannot leak into Origin, and the console still imports none of the
+ * `.bt-*` design language. A `max-md:min-h-11` utility pair would work too,
+ * but it would depend on Tailwind's utility sort order to beat the density
+ * utility on the same element, and it would leave the phone gate no stable
+ * selector — the class IS what `e2e/mobile-overflow.spec.ts` measures, so a
+ * control that opts in is a control the gate watches.
+ */
+export const TAP_TARGET = 'admin-tap-target';
+
 // ── Type ────────────────────────────────────────────────────────────────────
 
 /**

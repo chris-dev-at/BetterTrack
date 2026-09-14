@@ -1,46 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as Sentry from '@sentry/node';
+import { describe, expect, it, vi } from 'vitest';
 
 import { loadConfig, type AppConfig } from '../../config/env';
 import { handleWorkerFailure } from '../../jobs/worker';
 import { createLogger, type Logger } from '../../logger';
 
-import { initObservability, type Observability } from './sentry';
+import { initObservability, SENTRY_REFUSED_MESSAGE } from './sentry';
 
-// A well-formed but inert DSN — the stub transport captures envelopes in memory,
-// so nothing is ever sent over the network.
+/**
+ * External Sentry is RETIRED (§16 2026-07-17; §13.5 V5-P2 arc (d) — the admin
+ * Problems page is the replacement). A DSN restored from an old `.env` must not
+ * quietly resume shipping BetterTrack errors to a third party: boot refuses it,
+ * loudly, and no SDK client is constructed on any code path.
+ */
+
+// A well-formed DSN. If anything here still honoured it, an SDK client would
+// exist after the call below — which is exactly what is asserted against.
 const TEST_DSN = 'https://abc123def4567890abcdef1234567890@o1234567.ingest.sentry.io/7654321';
-
-interface CapturedEvent {
-  release?: string;
-  [key: string]: unknown;
-}
-
-/** A Sentry transport factory that records the event payloads it is handed. */
-function makeStubTransport(sink: CapturedEvent[]) {
-  return () => ({
-    // Envelope shape: [headers, items[]]; each item is [itemHeader, payload].
-    send(envelope: unknown) {
-      const items = (envelope as [unknown, [{ type?: string }, CapturedEvent][]])[1];
-      for (const [itemHeader, payload] of items) {
-        if (itemHeader?.type === 'event') sink.push(payload);
-      }
-      return Promise.resolve({ statusCode: 200 });
-    },
-    flush() {
-      return Promise.resolve(true);
-    },
-  });
-}
-
-function configWithSentry(): AppConfig {
-  return loadConfig({
-    NODE_ENV: 'test',
-    DATABASE_URL: 'postgres://sentry-test',
-    REDIS_URL: 'redis://sentry-test',
-    SESSION_SECRET: 'sentry-test-session-secret-0123456789',
-    BT_SENTRY_DSN: TEST_DSN,
-  });
-}
 
 const baseEnv = {
   NODE_ENV: 'test',
@@ -49,61 +25,74 @@ const baseEnv = {
   SESSION_SECRET: 'sentry-test-session-secret-0123456789',
 };
 
-describe('initObservability', () => {
-  let logger: Logger;
-  let obs: Observability | null = null;
+function configWithSentry(): AppConfig {
+  return loadConfig({ ...baseEnv, BT_SENTRY_DSN: TEST_DSN });
+}
 
-  beforeEach(() => {
-    logger = createLogger(loadConfig({ ...baseEnv }));
-  });
+function testLogger(): Logger {
+  return createLogger(loadConfig({ ...baseEnv }));
+}
 
-  afterEach(async () => {
-    await obs?.close();
-    obs = null;
-  });
-
+describe('initObservability (retired external tracker)', () => {
   it('is a disabled no-op when no DSN is configured', () => {
-    const config = loadConfig({ ...baseEnv });
-    obs = initObservability(config, logger);
+    const obs = initObservability(loadConfig({ ...baseEnv }), testLogger());
     expect(obs.enabled).toBe(false);
+    expect(obs.refusedDsn).toBe(false);
     // Never throws even without an SDK behind it.
-    expect(() => obs!.captureException(new Error('x'))).not.toThrow();
+    expect(() => obs.captureException(new Error('x'))).not.toThrow();
   });
 
-  it('captures an Express-error-handler exception with the release tag and zero PII', async () => {
-    const sink: CapturedEvent[] = [];
-    const config = configWithSentry();
-    obs = initObservability(config, logger, {
-      serverName: 'api',
-      transport: makeStubTransport(sink),
-    });
-    expect(obs.enabled).toBe(true);
+  it('refuses a configured DSN instead of initialising the SDK', () => {
+    const logger = testLogger();
+    const error = vi.spyOn(logger, 'error');
 
-    // The error a request handler would throw, carrying PII in its message.
-    obs.captureException(new Error('boom for user@example.com with token btk_leaksecret'));
-    await obs.flush();
+    const obs = initObservability(configWithSentry(), logger, { serverName: 'api' });
 
-    expect(sink.length).toBeGreaterThan(0);
-    const event = sink[0]!;
-    // Release tag is the deployed API version.
-    expect(event.release).toBe('bettertrack-api@0.1.0');
-    // Zero PII survived into the event payload.
-    const serialized = JSON.stringify(event);
-    expect(serialized).not.toContain('user@example.com');
-    expect(serialized).not.toContain('btk_leaksecret');
-    expect(serialized).toContain('[redacted-email]');
-    expect(serialized).toContain('[redacted-token]');
+    expect(obs.enabled).toBe(false);
+    // The refusal is reported, so the caller captures it as a problem row.
+    expect(obs.refusedDsn).toBe(true);
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({ serverName: 'api' }),
+      SENTRY_REFUSED_MESSAGE,
+    );
+    // The operator is told where the errors actually go.
+    expect(SENTRY_REFUSED_MESSAGE).toContain('admin Problems page');
   });
 
-  it('captures a permanently-failed BullMQ job with the release tag and zero PII', async () => {
-    const sink: CapturedEvent[] = [];
+  it('constructs no network client even with the DSN set, in either process', () => {
     const config = configWithSentry();
-    obs = initObservability(config, logger, {
-      serverName: 'worker',
-      transport: makeStubTransport(sink),
-    });
+    initObservability(config, testLogger(), { serverName: 'api' });
+    initObservability(config, testLogger(), { serverName: 'worker' });
 
+    // The SDK was never initialised, so it holds no client — and therefore no
+    // transport pointed at an ingest endpoint.
+    expect(Sentry.getClient()).toBeUndefined();
+  });
+
+  it('never carries the DSN onto the config, so no code path can reach it', () => {
+    const config = configWithSentry();
+    expect(config.sentry.dsnConfigured).toBe(true);
+    expect(JSON.stringify(config.sentry)).not.toContain('ingest.sentry.io');
+  });
+
+  it('is an inert handle that still flushes and closes', async () => {
+    const obs = initObservability(configWithSentry(), testLogger());
+    await expect(obs.flush()).resolves.toBe(true);
+    await expect(obs.close()).resolves.toBe(true);
+    expect(() => obs.captureException(new Error('ignored'))).not.toThrow();
+  });
+});
+
+/**
+ * The failure classification the retired SDK used to consume is unchanged — it
+ * now feeds the DB capture instead (`onPermanentFailure` → `captureJobFailure`).
+ */
+describe('BullMQ failure reporting seam', () => {
+  it('reports a permanently-failed job once, after dead-lettering it', async () => {
+    const logger = testLogger();
     const recorded: unknown[] = [];
+    const reported: unknown[] = [];
+
     handleWorkerFailure({
       queue: 'system.heartbeat',
       // A job that has exhausted its attempts ⇒ permanent failure.
@@ -127,22 +116,17 @@ describe('initObservability', () => {
         redis: {} as never,
       } as never,
       logger,
-      onPermanentFailure: (err, meta) => obs!.captureException(err, meta),
+      onPermanentFailure: (err) => reported.push(err),
     });
-    await obs.flush();
+    // The dead-letter write is awaited inside the handler's own promise chain.
+    await new Promise((resolve) => setImmediate(resolve));
 
-    // The failure was still dead-lettered AND reported to Sentry.
     expect(recorded).toHaveLength(1);
-    expect(sink.length).toBeGreaterThan(0);
-    expect(sink[0]!.release).toBe('bettertrack-api@0.1.0');
-    expect(JSON.stringify(sink[0])).not.toContain('admin@bettertrack.at');
+    expect(reported).toHaveLength(1);
   });
 
-  it('does not report a still-retryable job attempt failure', async () => {
-    const sink: CapturedEvent[] = [];
-    obs = initObservability(configWithSentry(), logger, {
-      transport: makeStubTransport(sink),
-    });
+  it('does not report a still-retryable job attempt failure', () => {
+    const logger = testLogger();
     let reported = false;
     handleWorkerFailure({
       queue: 'system.heartbeat',
@@ -160,8 +144,6 @@ describe('initObservability', () => {
         reported = true;
       },
     });
-    await obs.flush();
     expect(reported).toBe(false);
-    expect(sink).toHaveLength(0);
   });
 });

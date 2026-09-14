@@ -28,10 +28,27 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 /** `app_settings` key prefix for a flag row (e.g. `feature_flag_chat`). */
 export const FEATURE_FLAG_PREFIX = 'feature_flag_';
 
-/** Redis snapshot of the effective flag map — invalidated (DEL) on every write. */
+/** Redis snapshot of the effective flag map — invalidated on every write. */
 export const FEATURE_FLAG_CACHE_KEY = 'feature-flags:effective';
 
-/** Snapshot TTL: a backstop so a lost DEL self-heals; writes invalidate directly. */
+/**
+ * Monotonic snapshot generation, bumped by every flip (#1847). It is what makes
+ * the kill switch race-free: the cached snapshot carries the generation it was
+ * computed under, and a reader serves it ONLY while that generation is still
+ * current. A cache-aside read that started before a flip therefore cannot
+ * resurrect the killed value — its late write is stamped with the superseded
+ * generation and every reader treats it as a miss.
+ *
+ * Deliberately without a TTL: it must outlive the snapshots that reference it.
+ * It is a single small counter, and a lost one degrades to "every snapshot is
+ * stale", never to "a stale snapshot is served".
+ */
+export const FEATURE_FLAG_GENERATION_KEY = 'feature-flags:generation';
+
+/** Generation of a snapshot written before any flip was ever recorded. */
+const NO_GENERATION = '0';
+
+/** Snapshot TTL: a backstop so a lost snapshot self-heals; writes invalidate directly. */
 export const FEATURE_FLAG_CACHE_TTL_SECONDS = 60;
 
 /**
@@ -88,27 +105,55 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
   }
 
   /**
-   * The per-request read (chip-cheap): a single Redis GET when warm, else one
-   * store read cached under {@link FEATURE_FLAG_CACHE_KEY}. A malformed/legacy
-   * snapshot is ignored and recomputed rather than trusted.
+   * Read a cached snapshot, ACCEPTING it only when it was computed under the
+   * generation that is still current. A malformed, legacy (bare-map) or
+   * superseded snapshot reads as a miss and is recomputed rather than trusted.
+   */
+  function readSnapshot(cached: string | null, generation: string): FeatureFlagsPublic | null {
+    if (!cached) return null;
+    const envelope: unknown = JSON.parse(cached);
+    if (typeof envelope !== 'object' || envelope === null) return null;
+    const { generation: stamped, flags } = envelope as { generation?: unknown; flags?: unknown };
+    if (typeof stamped !== 'string' || stamped !== generation) return null;
+    const parsed = featureFlagsPublicSchema.safeParse(flags);
+    return parsed.success ? parsed.data : null;
+  }
+
+  /**
+   * The per-request read (chip-cheap): a single Redis MGET when warm, else one
+   * store read cached under {@link FEATURE_FLAG_CACHE_KEY}.
+   *
+   * The generation is read BEFORE the store, and the snapshot is stamped with
+   * that pre-read value (#1847). A flip landing anywhere between the two makes
+   * this write self-invalidating, which is the whole point: the alternative —
+   * stamping the generation as it is at write time — is exactly how a read that
+   * began before the flip could republish the killed value for a full TTL.
    */
   async function getEffectiveFlags(): Promise<FeatureFlagsPublic> {
+    let generation = NO_GENERATION;
+    let generationKnown = false;
     try {
-      const cached = await redis.get(FEATURE_FLAG_CACHE_KEY);
-      if (cached) {
-        const parsed = featureFlagsPublicSchema.safeParse(JSON.parse(cached));
-        if (parsed.success) return parsed.data;
-      }
+      const [cached, stored] = await redis.mget(
+        FEATURE_FLAG_CACHE_KEY,
+        FEATURE_FLAG_GENERATION_KEY,
+      );
+      generation = stored ?? NO_GENERATION;
+      generationKnown = true;
+      const snapshot = readSnapshot(cached ?? null, generation);
+      if (snapshot) return snapshot;
     } catch (err) {
       // A cache miss must never take the app down — fall through to the store.
       logger.warn({ err }, 'feature-flag cache read failed');
     }
 
     const flags = await loadFromStore();
+    // With no generation in hand there is nothing to stamp, so caching would
+    // mean caching unconditionally — the very thing a flip cannot outrun.
+    if (!generationKnown) return flags;
     try {
       await redis.set(
         FEATURE_FLAG_CACHE_KEY,
-        JSON.stringify(flags),
+        JSON.stringify({ generation, flags }),
         'EX',
         FEATURE_FLAG_CACHE_TTL_SECONDS,
       );
@@ -140,35 +185,33 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
   }
 
   /**
-   * Drop the shared snapshot so the next read recomputes from the store, via TWO
-   * independent commands: DEL first (cheap and race-free), and only if that
-   * throws, overwrite the snapshot with the values we just persisted — equally
-   * propagating, a different command, so a Redis that is degraded rather than
-   * down still gets one honest chance. Returns false only when BOTH fail.
+   * Invalidate the shared snapshot so the next read recomputes from the store.
    *
-   * The overwrite is correct-by-construction: it re-reads the store AFTER the
-   * upsert, so the snapshot it writes is the post-flip map, never a stale one.
+   * The BUMP is the invalidation (#1847): once the generation has moved, every
+   * snapshot computed under the old one — including one an in-flight read has
+   * not written yet — reads as a miss, so no racing reader can put the killed
+   * value back. The DEL that follows is housekeeping (it saves the next reader a
+   * store round trip); its failure is a warning, not an unpropagated flip.
+   *
+   * This deliberately replaces the old "DEL, else rewrite the snapshot" pair:
+   * BOTH of those could be undone a millisecond later by a read that started
+   * before the flip, so reporting either as propagation was a promise the code
+   * could not keep. Returns false only when the bump itself fails — the one
+   * outcome after which the flip really may not have taken effect.
    */
   async function invalidateSnapshot(): Promise<boolean> {
     try {
-      await redis.del(FEATURE_FLAG_CACHE_KEY);
-      return true;
+      await redis.incr(FEATURE_FLAG_GENERATION_KEY);
     } catch (err) {
-      logger.warn({ err }, 'feature-flag cache invalidation failed — rewriting the snapshot');
-    }
-    try {
-      const fresh = await loadFromStore();
-      await redis.set(
-        FEATURE_FLAG_CACHE_KEY,
-        JSON.stringify(fresh),
-        'EX',
-        FEATURE_FLAG_CACHE_TTL_SECONDS,
-      );
-      return true;
-    } catch (err) {
-      logger.error({ err }, 'feature-flag snapshot rewrite failed — flip may not have propagated');
+      logger.error({ err }, 'feature-flag generation bump failed — flip may not have propagated');
       return false;
     }
+    try {
+      await redis.del(FEATURE_FLAG_CACHE_KEY);
+    } catch (err) {
+      logger.warn({ err }, 'feature-flag snapshot delete failed — the bump already invalidated it');
+    }
+    return true;
   }
 
   /**
@@ -190,7 +233,7 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
    *     cold read converge on, so it must land even when Redis is unusable;
    *  2. audit always, carrying `propagated` — a flip that could not be confirmed
    *     is exactly the one worth finding in the log later;
-   *  3. then, and only if invalidation failed both ways, throw 503. The write is
+   *  3. then, and only if the generation bump failed, throw 503. The write is
    *     kept (retrying is idempotent) and the message says so; what the error
    *     reports is the unconfirmed propagation, not a lost write. Swallowing it
    *     into a 200 — or widening the try so the failure disappears into the

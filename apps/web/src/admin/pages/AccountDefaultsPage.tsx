@@ -14,13 +14,9 @@ import {
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
-
-function errorMessage(err: unknown, t: TranslateFn): string {
-  void err;
-  return t('common.genericError');
-}
 
 function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, string> {
   return {
@@ -88,8 +84,6 @@ export function AccountDefaultsPage() {
   // at all. Off ⇒ the matrix editor hides those columns entirely.
   const [channelsConfigurable, setChannelsConfigurable] =
     useState<NotificationChannelsConfigurable>({ telegram: true, discord: true });
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   // Seed the editable form from the stored defaults once they load.
@@ -117,17 +111,13 @@ export function AccountDefaultsPage() {
     setMatrix((prev) => (prev ? { ...prev, [type]: { ...prev[type], [channel]: value } } : prev));
   }
 
-  async function onSave() {
-    if (!matrix) return;
-    setSaveError(null);
-    setSaved(false);
-    setSaving(true);
-    try {
+  const save = useAdminMutation(
+    async (current: NotificationMatrix) => {
       const next: AccountDefaultsResponse = await api.updateAccountDefaults({
         chatEnabled,
         defaultPortfolioVisibility: visibility,
         developerStatus,
-        notificationMatrix: matrix,
+        notificationMatrix: current,
       });
       setChatEnabled(next.chatEnabled);
       setVisibility(next.defaultPortfolioVisibility);
@@ -135,11 +125,19 @@ export function AccountDefaultsPage() {
       setMatrix(next.notificationMatrix);
       setChannelsConfigurable(next.channelsConfigurable);
       setSaved(true);
-    } catch (err) {
-      setSaveError(errorMessage(err, t));
-    } finally {
-      setSaving(false);
-    }
+    },
+    {
+      errorKey: 'common.genericError',
+      // `PATCH /admin/account-defaults` is a singleton with no row id, so a 404
+      // is the closed admin session, not a missing record (V5-P13c).
+      notFound: 'session',
+    },
+  );
+
+  async function onSave() {
+    if (!matrix) return;
+    setSaved(false);
+    await save.run(matrix);
   }
 
   return (
@@ -293,12 +291,12 @@ export function AccountDefaultsPage() {
             </div>
           </section>
 
-          {saveError ? <Alert tone="error">{saveError}</Alert> : null}
+          {save.error ? <Alert tone="error">{save.error}</Alert> : null}
           {saved ? <Alert tone="success">{t('admin.accountDefaults.saved')}</Alert> : null}
 
           <div>
-            <Button onClick={() => void onSave()} disabled={saving}>
-              {saving ? t('common.saving') : t('admin.accountDefaults.save')}
+            <Button onClick={() => void onSave()} disabled={save.pending}>
+              {save.pending ? t('common.saving') : t('admin.accountDefaults.save')}
             </Button>
           </div>
         </>

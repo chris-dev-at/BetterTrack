@@ -104,7 +104,7 @@ describe('assetRepository.searchCatalog ranking', () => {
     const { userId } = await seedFixture(h);
     const repo = createAssetRepository(h.db);
 
-    const matches = await repo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT);
+    const { matches } = await repo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT);
     expect(matches.map((m) => m.symbol)).toEqual(expected);
   });
 
@@ -115,13 +115,13 @@ describe('assetRepository.searchCatalog ranking', () => {
 
     // Name tier first (MOT.DE, then the caller's custom asset), then the
     // BAYR/BAYR.F symbols that only survive via trigram similarity (~0.36/0.31).
-    const mine = await repo.searchCatalog(userId, 'bayrische', SEARCH_RESULT_LIMIT);
+    const { matches: mine } = await repo.searchCatalog(userId, 'bayrische', SEARCH_RESULT_LIMIT);
     expect(mine.map((m) => m.symbol)).toEqual(['MOT.DE', 'HOUSE', 'BAYR', 'BAYR.F']);
     expect(mine.find((m) => m.symbol === 'HOUSE')?.ownerId).toBe(userId);
     expect(mine.find((m) => m.symbol === 'MOT.DE')?.ownerId).toBeNull();
 
     // The other user sees their own custom asset instead — never someone else's.
-    const theirs = await repo.searchCatalog(otherId, 'bayrische', SEARCH_RESULT_LIMIT);
+    const { matches: theirs } = await repo.searchCatalog(otherId, 'bayrische', SEARCH_RESULT_LIMIT);
     expect(theirs.map((m) => m.symbol)).toEqual(['MOT.DE', 'SECRET', 'BAYR', 'BAYR.F']);
   });
 
@@ -162,7 +162,7 @@ describe('assetRepository.searchCatalog ranking', () => {
     ]);
     const repo = createAssetRepository(h.db);
 
-    const matches = await repo.searchCatalog(user.id, 'V', SEARCH_RESULT_LIMIT);
+    const { matches } = await repo.searchCatalog(user.id, 'V', SEARCH_RESULT_LIMIT);
     expect(matches.map((m) => m.symbol)).toEqual(['V', 'VOD.L']);
   });
 
@@ -186,7 +186,7 @@ describe('assetRepository.searchCatalog ranking', () => {
 
     // What §6.2 actually promises still holds: the pg_trgm EXTENSION's
     // `similarity()` resolves the owner's "bayr" where a provider would 404.
-    const matches = await repo.searchCatalog(user.id, 'bayr', SEARCH_RESULT_LIMIT);
+    const { matches } = await repo.searchCatalog(user.id, 'bayr', SEARCH_RESULT_LIMIT);
     expect(matches.map((m) => m.providerRef)).toEqual(['BAYN.DE']);
   });
 
@@ -195,7 +195,7 @@ describe('assetRepository.searchCatalog ranking', () => {
     const { userId } = await seedFixture(h);
     const repo = createAssetRepository(h.db);
 
-    const matches = await repo.searchCatalog(userId, 'bayr', 2);
+    const { matches } = await repo.searchCatalog(userId, 'bayr', 2);
     expect(matches.map((m) => m.symbol)).toEqual(['BAYR', 'BAYR.F']);
   });
 });

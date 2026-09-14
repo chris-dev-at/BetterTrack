@@ -81,6 +81,13 @@ async function rewriteSessionCreatedAt(
   return rewritten;
 }
 
+/** The single live session key a user holds; fails the test when there is not exactly one. */
+async function soleSessionKey(redis: TestHarness['ctx']['redis'], userId: string): Promise<string> {
+  const keys = await sessionKeysFor(redis, userId);
+  expect(keys).toHaveLength(1);
+  return keys[0] as string;
+}
+
 /** The live session keys a user currently holds. */
 async function sessionKeysFor(
   redis: TestHarness['ctx']['redis'],
@@ -297,5 +304,140 @@ describe('admin actions carry no step-up 2FA re-challenge (#430 rejected)', () =
       .send({ confirmUsername: 'victim_user' });
     expect(deleted.status).toBe(200);
     expect(deleted.body.twoFactorRequired).toBeUndefined();
+  });
+});
+
+/**
+ * The admin clock has to reach the session's STORAGE, its cookie and the one
+ * number the app reports as "when this lapses" — not just the resolve-time
+ * refusal (#1833). Before this, an admin session was minted, cookied and listed
+ * on the 30-day user window: the `sess:` record of a ≤24 h session survived 30
+ * days of a closed browser, `GET /auth/sessions` showed a policy-dead admin
+ * session as an active device, and `GET /auth/session` overstated the lifetime
+ * by ~60×. The user-session paths are shared code, so each claim is pinned with
+ * its unchanged user counterpart beside it.
+ */
+describe('an admin session is stored, cookied and reported on the admin clock (#1833)', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+  const DEFAULT_LIFETIME_SECONDS = DEFAULT_ADMIN_SESSION_LIFETIME_HOURS * 60 * 60;
+  /** The §6.1 user window the admin session must no longer borrow. */
+  const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+
+  /** `Max-Age` (seconds) of the session cookie on a login response. */
+  function sessionCookieMaxAge(res: request.Response): number {
+    const raw = (res.headers['set-cookie'] as unknown as string[]) ?? [];
+    const cookie = raw.find((value) => value.startsWith('bt_sid='));
+    expect(cookie).toBeDefined();
+    const maxAge = /Max-Age=(\d+)/i.exec(cookie!)?.[1];
+    expect(maxAge).toBeDefined();
+    return Number(maxAge);
+  }
+
+  it('bounds the Redis TTL and the cookie Max-Age by the admin lifetime, not the 30-day window', async () => {
+    const admin = await harness.seedAdmin();
+    // A raw password login (the seeded admin has no 2FA yet) so the mint's own
+    // Set-Cookie is observable — `loginAdmin` hands back only the agent.
+    const res = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: admin.email, password: admin.password });
+    expect(res.status).toBe(200);
+
+    const ttl = await harness.ctx.redis.ttl(await soleSessionKey(harness.ctx.redis, admin.id));
+    expect(ttl).toBeGreaterThan(DEFAULT_LIFETIME_SECONDS - 60);
+    expect(ttl).toBeLessThanOrEqual(DEFAULT_LIFETIME_SECONDS);
+
+    // Whole seconds, derived at cookie-write time — a hair under the window at
+    // most, and nowhere near the 30 days it used to claim.
+    const maxAge = sessionCookieMaxAge(res);
+    expect(maxAge).toBeGreaterThan(DEFAULT_LIFETIME_SECONDS - 60);
+    expect(maxAge).toBeLessThanOrEqual(DEFAULT_LIFETIME_SECONDS);
+  });
+
+  it('leaves a USER session on the 30-day window — TTL and cookie Max-Age unchanged', async () => {
+    const user = await harness.seedUser();
+    const res = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(res.status).toBe(200);
+
+    const ttl = await harness.ctx.redis.ttl(await soleSessionKey(harness.ctx.redis, user.id));
+    expect(ttl).toBe(THIRTY_DAYS_SECONDS);
+    expect(sessionCookieMaxAge(res)).toBe(THIRTY_DAYS_SECONDS);
+  });
+
+  it('re-stamps the stored cap when the lifetime changes at runtime, so the TTL follows the policy', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const patch = await adminAgent
+      .patch('/api/v1/admin/security/session-policy')
+      .set(...XRW)
+      .send({ sessionLifetimeHours: 6 });
+    expect(patch.status).toBe(200);
+
+    // The next admin request re-reads the policy; the record it resolves is
+    // re-stamped, so the key's own TTL comes down to the new window too.
+    expect((await adminAgent.get('/api/v1/admin/stats')).status).toBe(200);
+    const ttl = await harness.ctx.redis.ttl(await soleSessionKey(harness.ctx.redis, admin.id));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(6 * 60 * 60);
+  });
+
+  it('does not list a policy-dead admin session as an active device', async () => {
+    const admin = await harness.seedAdmin();
+    // Two plain password consoles for the same admin (a freshly seeded admin has
+    // no 2FA yet, so this is the shortest live admin session there is).
+    const stale = await loginUser(harness.app, admin.email, admin.password);
+    // Age the first console past the 12 h window — its key is still lying around
+    // (the backdate preserves the TTL), which is exactly what used to list it —
+    // then open the second, which is NOT backdated and stays current.
+    expect(await backdateSessionCreatedAt(harness.ctx.redis, admin.id, 13)).toBe(1);
+    const live = await loginUser(harness.app, admin.email, admin.password);
+
+    const listed = await live.get('/api/v1/auth/sessions');
+    expect(listed.status).toBe(200);
+    const sessions = listed.body.sessions as Array<{ current: boolean }>;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.current).toBe(true);
+    // Reaped, not merely hidden — and the dead console is refused on its next use.
+    expect(await sessionKeysFor(harness.ctx.redis, admin.id)).toHaveLength(1);
+    expect((await stale.get('/api/v1/auth/me')).status).toBe(401);
+    expect((await live.get('/api/v1/auth/me')).status).toBe(200);
+  });
+
+  it('lists both of a USER’s equally-aged sessions — the clause is admin-only', async () => {
+    const user = await harness.seedUser();
+    const first = await loginUser(harness.app, user.email, user.password);
+    await loginUser(harness.app, user.email, user.password);
+    expect(await backdateSessionCreatedAt(harness.ctx.redis, user.id, 13)).toBe(2);
+
+    const listed = await first.get('/api/v1/auth/sessions');
+    expect(listed.status).toBe(200);
+    expect(listed.body.sessions).toHaveLength(2);
+  });
+
+  it('reports an expiresAt within the admin lifetime, while a user session keeps its 30 days', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser();
+    const userAgent = await loginUser(harness.app, user.email, user.password);
+
+    // The same number the realtime gateway takes as a socket's absolute deadline
+    // (`context.ts` hands it `getSessionInfo().expiresAt`), so an admin socket is
+    // scheduled on the admin clock too.
+    const adminSession = await adminAgent.get('/api/v1/auth/session');
+    expect(adminSession.status).toBe(200);
+    const adminSpanMs =
+      Date.parse(adminSession.body.expiresAt) - Date.parse(adminSession.body.signedInAt);
+    expect(adminSpanMs).toBeLessThanOrEqual(24 * HOUR_MS);
+    expect(adminSpanMs).toBe(DEFAULT_ADMIN_SESSION_LIFETIME_HOURS * HOUR_MS);
+
+    const userSession = await userAgent.get('/api/v1/auth/session');
+    expect(userSession.status).toBe(200);
+    expect(Date.parse(userSession.body.expiresAt) - Date.parse(userSession.body.renewedAt)).toBe(
+      30 * 24 * HOUR_MS,
+    );
   });
 });

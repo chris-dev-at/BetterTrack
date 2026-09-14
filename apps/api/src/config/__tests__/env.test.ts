@@ -2,6 +2,12 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
+  DEFAULT_ADMIN_SESSION_LIFETIME_HOURS,
+} from '@bettertrack/contracts';
+
 import { decryptSecret, encryptSecret } from '../../services/crypto/secretBox';
 import { loadConfig, UNSAFE_GRAFANA_PASSWORDS } from '../env';
 
@@ -275,6 +281,34 @@ describe('market-intelligence gate (§13.5 V5-P5)', () => {
   });
 });
 
+/**
+ * #1856: the deployment-network carve-out is documented for operators, so the
+ * variable has to be part of the boot contract — a typo in it must not leave the
+ * process running on a derivation the operator believes they overrode.
+ */
+describe('outbound deployment-network carve-out (§13.5 V5-P10)', () => {
+  it('accepts unset, blank, a CIDR list and the lone literal "none"', () => {
+    expect(() => config({})).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '' })).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '   ' })).not.toThrow();
+    expect(() =>
+      config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '172.18.0.0/16, fd00:beef::/64' }),
+    ).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: 'none' })).not.toThrow();
+  });
+
+  it.each([
+    ['a bare address', '172.18.0.0'],
+    ['a typo in one entry', '172.18.0.0/16, oops'],
+    ['an out-of-range prefix', '172.18.0.0/64'],
+    ['"none" mixed with a carve-out', '172.18.0.0/16, none'],
+  ])('refuses %s at boot instead of silently deriving', (_label, value) => {
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: value })).toThrow(
+      /BT_OUTBOUND_DEPLOYMENT_SUBNETS/,
+    );
+  });
+});
+
 describe('operational data retention (§13.5 V5-P14, PL-01)', () => {
   it('uses conservative defaults when the owner leaves the variables unset or blank', () => {
     const defaults = {
@@ -541,5 +575,67 @@ describe('empty variables', () => {
 
   it('still rejects an empty REQUIRED variable', () => {
     expect(() => config({ SESSION_SECRET: '' })).toThrow(/SESSION_SECRET/);
+  });
+});
+
+/**
+ * V5-P0 kill-switch vs. bot token (#1795). Two independent facts that used to be
+ * ANDed into one flag: "does this build offer the channel" and "can it deliver".
+ * The conflation made the documented `available: false` branch unreachable, and
+ * made Telegram and Discord behave differently for the same operator mistake.
+ */
+describe('Telegram/Discord kill-switch is independent of the bot token', () => {
+  it('defaults OFF for both channels, on both flags', () => {
+    const cfg = config({ BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
+    expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+
+  it('switch ON without a token: the channel is OFFERED but cannot deliver', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'true' });
+    // `offered` is what the setup routes refuse on, so they stay reachable and
+    // answer `available: false` rather than a bare 404.
+    expect(cfg.telegram).toMatchObject({ offered: true, enabled: false });
+    // Discord needs no server credential, so the same env offers AND enables it.
+    expect(cfg.discord).toMatchObject({ offered: true, enabled: true });
+  });
+
+  it('switch ON with a token: both flags live for both channels', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'true', BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: true, enabled: true, botToken: 'token' });
+    expect(cfg.discord).toMatchObject({ offered: true, enabled: true });
+  });
+
+  it('an explicit OFF deactivates the channel even with a token present', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'false', BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
+    expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+});
+
+/**
+ * The 6/24/12 admin-session window is defined ONCE, in contracts — where it also
+ * gates the runtime write, the response payload and the console's own range
+ * check (#1833). The env fallback used to hardcode the same three numbers, so
+ * widening the window in contracts would have left this schema rejecting a legal
+ * value at boot.
+ */
+describe('the admin session lifetime env bounds come from contracts (§13.5 V5-P13c)', () => {
+  it('defaults to the contract default when unset', () => {
+    expect(config({}).admin.sessionLifetimeHours).toBe(DEFAULT_ADMIN_SESSION_LIFETIME_HOURS);
+  });
+
+  it('accepts exactly the contract window and refuses either side of it', () => {
+    for (const hours of [ADMIN_SESSION_LIFETIME_MIN_HOURS, ADMIN_SESSION_LIFETIME_MAX_HOURS]) {
+      expect(
+        config({ ADMIN_SESSION_LIFETIME_HOURS: String(hours) }).admin.sessionLifetimeHours,
+      ).toBe(hours);
+    }
+    for (const hours of [
+      ADMIN_SESSION_LIFETIME_MIN_HOURS - 1,
+      ADMIN_SESSION_LIFETIME_MAX_HOURS + 1,
+    ]) {
+      expect(() => config({ ADMIN_SESSION_LIFETIME_HOURS: String(hours) })).toThrow();
+    }
   });
 });

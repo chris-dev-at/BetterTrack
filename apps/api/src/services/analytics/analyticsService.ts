@@ -7,6 +7,7 @@ import type {
   AnalyticsSeriesPoint,
   AnalyticsSeriesQuery,
   AnalyticsSeriesResponse,
+  AnalyticsTwr,
   PortfolioAsset,
 } from '@bettertrack/contracts';
 
@@ -14,6 +15,7 @@ import type { AssetRepository } from '../../data/repositories/assetRepository';
 import {
   computeContributions,
   computeSeriesStats,
+  computeTwrStats,
   deflateSeries,
   indexAveragePctPerYear,
   toPerformanceSeries,
@@ -67,6 +69,12 @@ const INFLATION_PRESETS: AnalyticsInflationPreset[] = Object.freeze(
  * anchored to the span the visible set actually held value (leading/trailing
  * zero-value days are trimmed), so hiding the earliest-held asset can't zero the
  * stats via the `first.value <= 0` guard.
+ *
+ * Because those stats are flow-inclusive, the response ALSO carries a `twr`
+ * block (#1759): the whole portfolio's time-weighted return over the same
+ * window, reused from the §6.9 overview curve. Consumers that need a rate of
+ * return — the Forecast's "average return" factor and its calculator prefill —
+ * read that; the deep-dive page keeps reading the value curve's own stats.
  */
 export interface AnalyticsServiceDeps {
   portfolio: PortfolioService;
@@ -176,6 +184,44 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
   ): AnalyticsSeries {
     const value = deflator ? deflateSeries(nominal, deflator) : nominal.map((p) => ({ ...p }));
     return { kind, label, points: applyMode(value, mode), stats: computeSeriesStats(value) };
+  }
+
+  /**
+   * The portfolio's TIME-WEIGHTED return over the resolved window (#1759).
+   *
+   * The stats above annualise the VALUE curve, which every contribution lifts:
+   * a saver who buys monthly reads their own deposits back as "return". The
+   * honest statistic already exists one layer down — {@link
+   * PortfolioService.getHistory} derives the §6.9 TWR curve from the same
+   * snapshot series — so this reuses it rather than inventing a second measure
+   * of return. MAX is requested because it is the only range served
+   * un-rebased (since inception); the domain rebases onto the window's own
+   * first point, so the figure describes exactly the `from`..`to` the response
+   * echoes.
+   *
+   * It is the WHOLE portfolio's return (net worth: holdings + cash), not the
+   * visibility-masked `primary` curve's — the contract says so, because a TWR
+   * needs the flows that belong to the curve it measures and the per-asset
+   * value pipeline carries none. Deflated with the same deflator as `primary`,
+   * so a real-terms request never mixes a real curve with a nominal rate.
+   * `null` when the window holds no performance points at all.
+   *
+   * Cost: one more read of the same snapshot rows this handler already loads
+   * twice (the per-asset series and the holdings snapshot). The alternative —
+   * deriving a second TWR here from a value pipeline that carries no flows —
+   * would be a second definition of "return" in the money layer, which is the
+   * thing this issue exists to remove.
+   */
+  async function resolveTwr(
+    userId: string,
+    portfolioId: string,
+    from: string,
+    to: string,
+    deflator: Deflator | null,
+  ): Promise<AnalyticsTwr | null> {
+    const history = await portfolio.getHistory(userId, portfolioId, 'MAX');
+    const windowed = history.performance.filter((p) => p.date >= from && p.date <= to);
+    return computeTwrStats(windowed, deflator);
   }
 
   /**
@@ -419,6 +465,7 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       });
 
       const compare = await resolveCompare(userId, query, from, to, deflator);
+      const twr = await resolveTwr(userId, portfolioId, from, to, deflator);
 
       return {
         portfolioId,
@@ -435,6 +482,7 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
         inflationPresets: INFLATION_PRESETS,
         primary,
         compare,
+        twr,
         contributions,
       };
     },

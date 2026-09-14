@@ -102,7 +102,15 @@ test('renders an accessible loading state before the empty state', async () => {
   expect(await screen.findByText('No audit entries yet.')).toBeInTheDocument();
 });
 
-test('retries an initial API failure and clears the stale error', async () => {
+/**
+ * #1848: this assertion used to read `toHaveTextContent('Audit log is
+ * unavailable.')` — the server's OWN envelope, rendered verbatim, which is the
+ * defect the issue names and exactly what `useResource` forbids ("API envelopes
+ * are authored by the server and are not locale-aware"). It now asserts the
+ * catalogue copy AND that the envelope text reaches no part of the screen, and
+ * the German case below asserts the same thing in the other locale.
+ */
+test('renders catalog copy for a failed read, never the server envelope', async () => {
   const user = userEvent.setup();
   vi.mocked(api.listAudit)
     .mockRejectedValueOnce(new ApiError(500, 'INTERNAL', 'Audit log is unavailable.'))
@@ -110,7 +118,8 @@ test('retries an initial API failure and clears the stale error', async () => {
 
   renderPage();
 
-  expect(await screen.findByRole('alert')).toHaveTextContent('Audit log is unavailable.');
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the audit log.');
+  expect(screen.queryByText(/Audit log is unavailable\./)).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Try again' }));
 
   expect(await screen.findByText('audit.first')).toBeInTheDocument();
@@ -118,14 +127,41 @@ test('retries an initial API failure and clears the stale error', async () => {
   expect(api.listAudit).toHaveBeenCalledTimes(2);
 });
 
-test('localizes the retry action', async () => {
+test('localizes the failure and the retry action, and leaks no English envelope into DE', async () => {
   vi.mocked(api.listAudit).mockRejectedValueOnce(
-    new ApiError(500, 'INTERNAL', 'Audit-Protokoll ist nicht verfügbar.'),
+    new ApiError(500, 'INTERNAL', 'Audit log is unavailable.'),
   );
 
   renderPage('de');
 
-  expect(await screen.findByRole('button', { name: 'Erneut versuchen' })).toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Das Audit-Protokoll konnte nicht geladen werden.',
+  );
+  expect(screen.queryByText(/Audit log is unavailable\./)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Erneut versuchen' })).toBeInTheDocument();
+});
+
+test('renders every label, empty state and control from the catalogue in German', async () => {
+  vi.mocked(api.listAudit).mockResolvedValueOnce({ entries: [firstEntry], nextCursor });
+
+  renderPage('de');
+
+  expect(await screen.findByRole('heading', { name: 'Audit-Protokoll' })).toBeInTheDocument();
+  for (const column of ['Zeitpunkt', 'Aktion', 'Akteur', 'Ziel', 'IP', 'Details']) {
+    expect(screen.getByRole('columnheader', { name: column })).toBeInTheDocument();
+  }
+  expect(screen.getByRole('button', { name: 'Mehr laden' })).toBeInTheDocument();
+});
+
+test('names the system actor from the catalogue rather than a hardcoded literal', async () => {
+  vi.mocked(api.listAudit).mockResolvedValueOnce({
+    entries: [{ ...firstEntry, actorId: null }],
+    nextCursor: null,
+  });
+
+  renderPage('de');
+
+  expect(await screen.findByText('System')).toBeInTheDocument();
 });
 
 test('appends the next page, disables the control while pending, and hides it at the end', async () => {
@@ -156,7 +192,7 @@ test('keeps loaded rows and retries the same cursor after a pagination failure',
   const user = userEvent.setup();
   vi.mocked(api.listAudit)
     .mockResolvedValueOnce({ entries: [firstEntry], nextCursor })
-    .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'Could not load more audit entries.'))
+    .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'envelope text the page must not show'))
     .mockResolvedValueOnce({ entries: [secondEntry], nextCursor: null });
 
   renderPage();
@@ -164,7 +200,9 @@ test('keeps loaded rows and retries the same cursor after a pagination failure',
   await screen.findByText('audit.first');
   await user.click(screen.getByRole('button', { name: 'Load more' }));
 
+  // Catalogue copy again (#1848), not the 503 envelope the server sent.
   expect(await screen.findByRole('alert')).toHaveTextContent('Could not load more audit entries.');
+  expect(screen.queryByText(/UNAVAILABLE|envelope text/)).not.toBeInTheDocument();
   expect(screen.getByText('audit.first')).toBeInTheDocument();
   expect(api.listAudit).toHaveBeenLastCalledWith({ cursor: nextCursor }, undefined);
 

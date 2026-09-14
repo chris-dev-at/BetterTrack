@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { MAX_FLATTENED_POSITIONS } from './conglomerate';
+
 /**
  * Backtest preview contracts (PROJECTPLAN.md §6.5, §6.6, §7.2).
  *
@@ -90,10 +92,26 @@ export const backtestPreviewPositionSchema = z
   .strict();
 export type BacktestPreviewPosition = z.infer<typeof backtestPreviewPositionSchema>;
 
-/** `POST /backtest/preview` body — an inline draft basket to backtest (§6.5). */
+/**
+ * `POST /backtest/preview` body — an inline draft basket to backtest (§6.5).
+ *
+ * Each asset may appear at most ONCE, exactly as `conglomerateIds` must be
+ * unique in a comparison: the engine keys a basket by asset id (entry events,
+ * contributions, and every rebalance target), so a repeated id is not a heavier
+ * weight — it is two cursors on one key, which the rebalance primitive refuses
+ * outright to keep the invested total conserved. Merge the weights instead.
+ *
+ * The size bound is {@link MAX_FLATTENED_POSITIONS}, NOT the §6.5 per-basket
+ * write cap of 50. What the Builder drafts is capped at 50, but what the
+ * blueprint detail page and a blueprint-backed idea post is the RESOLVED
+ * flatten of a nested basket — and the server activates baskets that resolve to
+ * up to 250 assets. Bounding this at 50 made a blueprint the server itself
+ * declares `active` fail its own backtest with a 400 (#1877); the two bounds are
+ * pinned together in `backtest.test.ts` so they cannot drift apart again.
+ */
 export const backtestPreviewRequestSchema = z
   .object({
-    positions: z.array(backtestPreviewPositionSchema).min(1).max(50),
+    positions: z.array(backtestPreviewPositionSchema).min(1).max(MAX_FLATTENED_POSITIONS),
     range: backtestPreviewRangeSchema,
     /** Exactly one benchmark at a time (V4-P7), or none. */
     benchmark: backtestBenchmarkInputSchema.nullish(),
@@ -102,7 +120,17 @@ export const backtestPreviewRequestSchema = z
     /** Rebalance schedule (V4-P7); omitting it keeps today's buy-and-hold. */
     rebalance: rebalanceFrequencySchema.default('none'),
   })
-  .strict();
+  .strict()
+  .superRefine((val, ctx) => {
+    const seen = new Set(val.positions.map((p) => p.assetId));
+    if (seen.size !== val.positions.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'positions must reference each asset at most once.',
+        path: ['positions'],
+      });
+    }
+  });
 export type BacktestPreviewRequest = z.infer<typeof backtestPreviewRequestSchema>;
 
 // --- Response --------------------------------------------------------------
@@ -177,6 +205,14 @@ export const backtestBenchmarkResultSchema = z
     label: z.string(),
     series: z.array(backtestSeriesPointSchema),
     stats: backtestStatsSchema,
+    /**
+     * The share of this benchmark that resolved to NO asset, in percent — a
+     * nested conglomerate benchmark whose child basket is empty (V5-P6). The
+     * remaining weights are normalized over what did resolve, so a non-zero
+     * value means the curve is the *rest* of the basket, not all of it. Always
+     * `0` for an asset or preset benchmark.
+     */
+    unresolvedPct: z.number(),
   })
   .strict();
 export type BacktestBenchmarkResult = z.infer<typeof backtestBenchmarkResultSchema>;
@@ -248,11 +284,23 @@ export type BacktestResponse = z.infer<typeof backtestResponseSchema>;
  * shared basket's real top-level constituents, so the sandbox can only re-weight
  * what the share already exposes — never inject a foreign id (the §6.9 privacy
  * boundary).
+ *
+ * The weight lives in the SAME `0 < w ≤ 100` band as an owner's stored weight
+ * ({@link weightPctSchema}). The upper bound is a privacy bound, not a
+ * cosmetic one (#1755): weights are relative, so an unbounded one (`1_000_000`
+ * against a sibling's `0.001`) drove a nested constituent's normalized share to
+ * ~100 % and made the aggregate-only response the opaque child's OWN base-100
+ * curve. The server additionally caps how far a nested row may be pushed within
+ * this band; see `SANDBOX_MAX_NESTED_SHARE_PCT` in the backtest service.
  */
 export const sharedSandboxPositionSchema = z
   .object({
     id: z.string().uuid(),
-    weight: z.number().finite().gt(0, 'Weight must be greater than 0.'),
+    weight: z
+      .number()
+      .finite()
+      .gt(0, 'Weight must be greater than 0.')
+      .lte(100, 'Weight must be at most 100.'),
   })
   .strict();
 export type SharedSandboxPosition = z.infer<typeof sharedSandboxPositionSchema>;
@@ -289,12 +337,26 @@ export type SharedSandboxPreviewRequest = z.infer<typeof sharedSandboxPreviewReq
  * The curve, aggregate statistics and identity-free rebalance dates remain
  * useful for the sandbox without widening the share.
  */
-export const sharedSandboxAggregateResponseSchema = backtestResponseSchema.omit({
-  contributions: true,
-  notice: true,
-  benchmark: true,
-  entryEvents: true,
-});
+export const sharedSandboxAggregateResponseSchema = backtestResponseSchema
+  .omit({
+    contributions: true,
+    notice: true,
+    benchmark: true,
+    entryEvents: true,
+  })
+  .extend({
+    /**
+     * The share of this sandbox basket that resolved to NO asset, in percent —
+     * a nested constituent whose child basket is empty (#1832). The remaining
+     * weights are normalized over what did resolve, so a non-zero value means
+     * the curve and every statistic beside it describe the *rest* of the
+     * basket, not all of it; `0` for a fully-resolved one. Reported for the
+     * same reason `resolved`, `allocate`, a comparison series and the benchmark
+     * overlay report it, and identity-free like the rest of this variant: it
+     * says how much went missing, never in which child.
+     */
+    unresolvedPct: z.number(),
+  });
 export type SharedSandboxAggregateResponse = z.infer<typeof sharedSandboxAggregateResponseSchema>;
 
 /**
@@ -407,15 +469,27 @@ export const comparisonSeriesSchema = z
     series: z.array(backtestSeriesPointSchema),
     stats: backtestStatsSchema,
     deltas: comparisonMetricsSchema,
+    /**
+     * The share of this basket that resolved to NO asset, in percent (V5-P6):
+     * a nested constituent that is empty, directly or through its own empty
+     * children. The curve and stats are computed over the *resolved* remainder
+     * normalized to 100, so a non-zero value means the series is only that part
+     * of the basket — the same slice the Invest Calculator withholds from a
+     * budget. `0` for every fully-resolving basket.
+     */
+    unresolvedPct: z.number(),
   })
   .strict();
 export type ComparisonSeries = z.infer<typeof comparisonSeriesSchema>;
 
 /**
  * `POST /backtest/compare` response — every requested conglomerate as an
- * apples-to-apples series over one shared window, in request order. `startDate`
- * /`endDate` are that shared window (the first id's effective window); every
- * `series.deltas` is measured against `baselineId`.
+ * apples-to-apples series over one shared window, in request order. The window
+ * is the first id's effective window, narrowed to the span EVERY returned series
+ * actually reaches (a series may open a day late or stop a day early on a
+ * calendar its exchange does not share; one short by more than that is refused),
+ * so `startDate`/`endDate` never claim coverage a curve in the response lacks.
+ * Every `series.deltas` is measured against `baselineId`.
  */
 export const backtestComparisonResponseSchema = z
   .object({

@@ -2,6 +2,7 @@ import type {
   AssetRef,
   DividendCalendarEntry,
   DividendCalendarResponse,
+  DividendProjectionBasis,
   ProjectedDividendHolding,
   ProjectedDividendIncomeResponse,
 } from '@bettertrack/contracts';
@@ -13,6 +14,7 @@ import type {
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { CurrencyService } from '../currency/currencyService';
+import { marketIntelDisplayDay } from './displayDay';
 import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
 
 /**
@@ -32,6 +34,14 @@ import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudge
  * literal: this read used to pin EUR, which the V5-P6b Forecast then added to a
  * base-denominated net worth. The monthly view is an even `yearly / 12` spread,
  * the clean series shape the Forecast consumes.
+ *
+ * That per-holding basis is also summarised onto the response (`basis`), because
+ * a `trailing-12m` estimate includes any special dividend of the last twelve
+ * months: 1,000 shares of a name that paid a $15 special beside its $4.64
+ * regular payout project ~$19,640/yr, over four times the forward figure, and
+ * for a year the surfaces called that "projected dividend income" with no
+ * caveat. The number is not silently re-picked (that would lose the only figure
+ * some providers give); it is published with what it is (#1790).
  */
 export interface PortfolioMarketIntelService {
   /**
@@ -101,8 +111,23 @@ function unavailableProjection(currency: string): ProjectedDividendIncomeRespons
     currency,
     monthlyTotalBase: 0,
     yearlyTotalBase: 0,
+    basis: null,
     holdings: [],
   };
+}
+
+/**
+ * What the total is made of (#1790). The projection does NOT refuse a book whose
+ * holdings carry different bases — providers populate whichever annual per-share
+ * field they have, so refusing would blank the whole figure for most real books
+ * — it names the mix instead, and the surfaces render that beside the number.
+ * Null when nothing contributed: an empty total describes no basis at all.
+ */
+function projectionBasis(holdings: ProjectedDividendHolding[]): DividendProjectionBasis | null {
+  const bases = new Set(holdings.map((h) => h.annualPerShareBasis));
+  if (bases.size === 0) return null;
+  if (bases.size > 1) return 'mixed';
+  return [...bases][0]!;
 }
 
 /** Round a monetary amount to cents — the API never leaks float noise. */
@@ -168,11 +193,14 @@ export function createPortfolioMarketIntelService(
         if (!byAsset.has(row.assetId)) byAsset.set(row.assetId, { row, source: 'watchlist' });
       }
 
-      // "Upcoming" is any event with at least one date >= the start of today
-      // (UTC) — an ex-date landing today still belongs on the calendar, and so
-      // does an event that has already gone ex but whose payout is still to
-      // come: that pay date is exactly what the Home widget renders for it.
-      const todayStart = new Date(now()).toISOString().slice(0, 10);
+      // "Upcoming" is any event with at least one date >= the start of today in
+      // the DISPLAY zone (see displayDay.ts) — an ex-date landing today still
+      // belongs on the calendar, and so does an event that has already gone ex
+      // but whose payout is still to come: that pay date is exactly what the
+      // Home widget renders for it. The day has to be the one the entry is
+      // rendered in, or between 00:00 and 02:00 Vienna the calendar serves a
+      // payout that went ex yesterday under an "Upcoming" heading.
+      const todayStart = marketIntelDisplayDay(now());
 
       // One provider call per asset lands on the queue every other consumer
       // shares (§5.3), so the book is capped per request and the response says
@@ -338,6 +366,7 @@ export function createPortfolioMarketIntelService(
         currency: fx.baseCurrency,
         monthlyTotalBase,
         yearlyTotalBase,
+        basis: projectionBasis(holdings),
         holdings,
       };
     },

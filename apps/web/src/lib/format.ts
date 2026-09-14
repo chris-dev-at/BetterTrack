@@ -363,6 +363,24 @@ export function formatPercent(value: number | null | undefined): string {
 export const formatWeight = formatPercent;
 
 /**
+ * A signed money delta — `formatSignedMoney(12.5, 'USD')` → `"+12,50 $"`,
+ * `-12.5` → `"−12,50 $"` (U+2212 minus, matching the app's delta typography).
+ * Returns {@link EM_DASH} for absent/non-finite values.
+ *
+ * The sign lives INSIDE the helper on purpose. Prepending it at the call site
+ * — `${x > 0 ? '+' : '−'}${formatMoney(Math.abs(x))}` — renders `+•••` / `−•••`
+ * under discreet mode, which leaks the direction of an amount the mode is
+ * hiding. Same rule `MoneyText` follows for its `signed` prop (§6.16); the
+ * discreet-mode gate fails a sign literal next to a money helper anywhere else.
+ */
+export function formatSignedMoney(value: number | null | undefined, currency?: string): string {
+  if (!isFiniteNumber(value)) return EM_DASH;
+  if (discreetMode) return DISCREET_MASK;
+  const magnitude = formatMoney(Math.abs(value), currency);
+  return `${withoutNegativeZero(value) < 0 ? '−' : '+'}${magnitude}`;
+}
+
+/**
  * A signed percentage delta (0–100 magnitude), 2 dp, explicit `+` for gains:
  * `formatSignedPercent(2.5)` → `"+2,50 %"`, `-1.5` → `"-1,50 %"`, `0` → `"0,00 %"`.
  * Returns {@link EM_DASH} for absent/non-finite values.
@@ -399,6 +417,39 @@ export function formatDateTimeSeconds(iso: string | null | undefined): string {
   if (!iso) return EM_DASH;
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? EM_DASH : formatters().dateTimeSeconds.format(date);
+}
+
+/** `YYYY-MM-DD` in the display zone — `en-CA` renders exactly that, in any locale. */
+const DISPLAY_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/**
+ * The calendar day an instant falls on IN THE DISPLAY ZONE, as `YYYY-MM-DD`
+ * (#1792).
+ *
+ * `new Date().toISOString().slice(0, 10)` is the UTC day, which is a DIFFERENT
+ * day between 00:00 and 02:00 Vienna — so a form pre-filled from it offered
+ * yesterday's date while every list on the screen already showed today's, and a
+ * movement recorded then was counted in a month the ledger did not display it
+ * in. Any `<input type="date">` whose value the ledger will render back has to
+ * come from here.
+ */
+export function displayZoneDay(at: Date = new Date()): string {
+  return DISPLAY_DAY.format(at);
+}
+
+/**
+ * The calendar month an instant falls in, in the display zone, as `YYYY-MM` —
+ * the key the cash surfaces ask the server for. It is the server's own period
+ * key (`cashBudgetService.periodKeyFor`), so the month a page opens on is the
+ * month the ledger dates its newest row into.
+ */
+export function displayZoneMonth(at: Date = new Date()): string {
+  return displayZoneDay(at).slice(0, 7);
 }
 
 /** ISO timestamp → localised date (Vienna), or {@link EM_DASH} when absent/invalid. */

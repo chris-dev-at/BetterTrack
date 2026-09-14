@@ -109,9 +109,22 @@ export function createAiFeaturesService(deps: AiFeaturesServiceDeps): AiFeatures
     // Resolve every intent through the LOCAL catalog ONLY (`searchService`). An
     // unresolvable intent stays in the draft with `asset: null` so the builder
     // flags it — never silently dropped.
+    //
+    // `allowEnrichment: false` is what makes "catalog ONLY" true (#1794); the
+    // default is enrichment-on, which is right for a human typing one query and
+    // wrong for a bulk resolver. One draft may carry up to
+    // `NL_BUILDER_MAX_INTENTS` (50) distinct queries, so the default would let a
+    // single POST admit dozens of background provider fan-outs and spend the
+    // user's whole interactive `/search` enrichment budget — silently disabling
+    // their own ⌘K type-ahead for the rest of the window. This is the same
+    // explicit refusal the other bulk consumer makes (`imports/importService.ts`
+    // — "catalog-only … so it can neither spend a query"). The route's cost
+    // ceiling is the AI daily cap, which `ai.complete` above already charged
+    // once per draft, so the loop's catalog reads are bounded per user per day
+    // without a second rail.
     const lines: AiConglomerateDraftLine[] = [];
     for (const intent of intents) {
-      const res = await search.search(userId, intent.query);
+      const res = await search.search(userId, intent.query, { allowEnrichment: false });
       const hit = res.results[0] ?? null;
       lines.push({
         query: intent.query,

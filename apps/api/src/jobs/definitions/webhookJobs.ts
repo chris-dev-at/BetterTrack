@@ -9,8 +9,11 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  *
  * - `webhooks.deliver` — one HMAC-signed POST per (event, subscription),
  *   enqueued by the bridge. BullMQ provides the retry/backoff: a still-retryable
- *   failure throws so the queue re-runs it with exponential backoff; the
- *   dispatcher owns the terminal outcome (log row + auto-disable streak). Runs at
+ *   failure throws so the queue re-runs it with jittered exponential backoff;
+ *   the dispatcher owns the terminal outcome (log row + auto-disable streak) and
+ *   also owns whether a failure is retryable at all — a permanent receiver
+ *   refusal (`410 Gone` and friends) comes back as a terminal outcome, so this
+ *   handler returns normally and the ladder ends after ONE attempt. Runs at
  *   {@link WEBHOOK_DELIVER_ATTEMPTS} attempts, across
  *   {@link WEBHOOK_DELIVER_CONCURRENCY} worker slots under
  *   {@link WEBHOOK_DELIVER_LIMITER}, so one dead receiver cannot monopolize the

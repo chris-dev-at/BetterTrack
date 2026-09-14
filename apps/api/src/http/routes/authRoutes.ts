@@ -1,4 +1,4 @@
-import { Router, type Request, type RequestHandler } from 'express';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
 
 import {
   acceptInviteRequestSchema,
@@ -106,6 +106,27 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     return { ...payload, paranoidFreshStartPending: notice.pending };
   };
 
+  /**
+   * Write the session cookie bounded by the session's OWN absolute deadline
+   * (§13.5 V5-P13c). Every mint/refresh path funnels through here, so no route
+   * has to know whether the principal is an admin — the session record answers
+   * that. A user session has no absolute cap, so nothing is derived and its
+   * cookie is byte-identical to before; an admin session's ≤24 h cap becomes the
+   * `Max-Age`, instead of leaving a 30-day cookie in the browser for a session
+   * the server refuses the same day.
+   *
+   * Only persistent cookies carry a `Max-Age` at all, so the extra record read
+   * is skipped for a browser-session cookie.
+   */
+  const applySessionCookie = async (
+    res: Response,
+    sessionId: string,
+    persistent: boolean,
+  ): Promise<void> => {
+    const deadline = persistent ? await ctx.auth.getSessionAbsoluteDeadline(sessionId) : null;
+    setSessionCookie(res, ctx.config, sessionId, persistent, deadline);
+  };
+
   router.post('/login', limiters.login, validateBody(loginRequestSchema), async (req, res) => {
     const body = req.valid?.body as LoginRequest;
     const result = await ctx.auth.login({
@@ -123,7 +144,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       res.json({ twoFactorRequired: true, ...result.challenge });
       return;
     }
-    setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+    await applySessionCookie(res, result.sessionId, result.persistent);
     res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
   });
 
@@ -144,7 +165,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         recoveryCode: body.recoveryCode,
         ip: req.ip,
       });
-      setSessionCookie(res, ctx.config, sessionId, persistent);
+      await applySessionCookie(res, sessionId, persistent);
       // Stamped here too: a 2FA account completes login through THIS handler, so
       // without it the §17 fresh-start notice would wait for the first `/auth/me`
       // instead of appearing at login as §17 step 3 describes.
@@ -209,7 +230,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.post('/session/persist', requireAuth, async (req, res) => {
     if (!req.sessionId) throw unauthorized();
     await ctx.auth.persistCurrentSession(req.authUser!.id, req.sessionId);
-    setSessionCookie(res, ctx.config, req.sessionId, true);
+    await applySessionCookie(res, req.sessionId, true);
     res.json({ ok: true });
   });
 
@@ -333,7 +354,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       // The window was renewed; refresh the cookie, keeping this session's
       // flavour (persistent Max-Age vs browser-session) — PIN verify never
       // changes persistence (V4-P2b).
-      setSessionCookie(res, ctx.config, req.sessionId!, req.sessionPersistent ?? true);
+      await applySessionCookie(res, req.sessionId!, req.sessionPersistent ?? true);
       res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
@@ -404,7 +425,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       }
       // Always an ephemeral session (a Custom-Tab browser must not silently keep a
       // persistent one); refresh the long-lived device cookie so the memory stays.
-      setSessionCookie(res, ctx.config, result.sessionId, false);
+      await applySessionCookie(res, result.sessionId, false);
       if (deviceId) setRememberedDeviceCookie(res, ctx.config, deviceId);
       res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
     },
@@ -651,7 +672,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     async (req, res) => {
       const body = req.valid?.body as PasskeyLoginVerifyRequest;
       const { user, sessionId, persistent } = await ctx.passkeys.finishLogin(body, req.ip);
-      setSessionCookie(res, ctx.config, sessionId, persistent);
+      await applySessionCookie(res, sessionId, persistent);
       res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
@@ -697,7 +718,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         res.status(202).json({ pending: true });
         return;
       }
-      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      await applySessionCookie(res, result.sessionId, result.persistent);
       res.status(201).json(toMeResponseFromRow(result.user));
     },
   );
@@ -730,7 +751,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         res.json({ twoFactorRequired: true, ...result.challenge });
         return;
       }
-      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      await applySessionCookie(res, result.sessionId, result.persistent);
       res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
     },
   );
@@ -738,7 +759,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.post('/accept-invite', validateBody(acceptInviteRequestSchema), async (req, res) => {
     const body = req.valid?.body as AcceptInviteRequest;
     const { user, sessionId, persistent } = await ctx.auth.acceptInvite(body, req.ip);
-    setSessionCookie(res, ctx.config, sessionId, persistent);
+    await applySessionCookie(res, sessionId, persistent);
     res.status(201).json(toMeResponseFromRow(user));
   });
 
@@ -790,7 +811,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     const result = await ctx.google.handleCallback({ state, cookieState, code, ip: req.ip });
     switch (result.status) {
       case 'authenticated':
-        setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+        await applySessionCookie(res, result.sessionId, result.persistent);
         res.redirect(`${web}/?google=signed_in`);
         return;
       case 'linked':
@@ -934,7 +955,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         res.status(202).json({ pending: true });
         return;
       }
-      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      await applySessionCookie(res, result.sessionId, result.persistent);
       res.status(201).json(toMeResponseFromRow(result.user));
     },
   );

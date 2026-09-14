@@ -118,10 +118,38 @@ export interface CommentService {
 const THREAD_NOT_FOUND = () => notFound('Not found.', 'NOT_FOUND');
 const COMMENT_NOT_FOUND = () => notFound('Comment not found.', 'COMMENT_NOT_FOUND');
 
+/**
+ * The ceiling on how many third-party participants ONE thread read may name in
+ * its privacy-lock set (#1829).
+ *
+ * A thread's distinct participants are a subset of the item's audience plus its
+ * owner, and the widest audience the picker can express is a single friend group
+ * — `FRIEND_GROUP_MEMBERS_MAX` = 200. 250 therefore clears any audience that can
+ * actually exist, with headroom for participants left over from an audience that
+ * has since been narrowed. Past it we do NOT lift the filter: the read falls back
+ * to the required principals' own contributions, so an unbounded thread degrades
+ * to showing less, never to disclosing a participant nobody could lock.
+ *
+ * This ceiling is only ever reached in the branch where a participant genuinely
+ * needs the paranoid treatment; the ordinary read enumerates nobody at all.
+ */
+const THREAD_ACTOR_LIMIT = 250;
+
 /** How a viewer relates to a shared item they may access. */
 interface ThreadAccess {
   ownerId: string;
   isOwner: boolean;
+}
+
+/**
+ * The participants one locked read/write has to reason about, expressed as the
+ * two questions the service asks about them — never as a list it always loads.
+ * `hasRestricted` is the cheap, thread-length-independent probe; `all` is the
+ * bounded enumeration that only a positive probe pays for.
+ */
+interface ActorScope {
+  hasRestricted(): Promise<boolean>;
+  all(limit: number): Promise<string[]>;
 }
 
 function toReactionSummaries(aggs: ReactionAggregate[]): ReactionSummary[] {
@@ -203,44 +231,179 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
       : revalidateAndRun();
   }
 
-  async function withLockedAccessAndOptionalActors<T>(
+  /**
+   * Access resolution + the privacy locks a thread read or reaction write needs,
+   * and — the point of #1829 — the DECISION about how much of that machinery to
+   * pay for.
+   *
+   * Before #1829 the paranoid branch was unconditional in production (the guard
+   * is always wired), so every read enumerated the thread's distinct authors and
+   * reaction actors with no LIMIT, opened a transaction taking `FOR KEY SHARE` on
+   * one `users` row per participant, and then handed a non-empty id list to every
+   * aggregate — which is exactly the filter that stops the partial thread index
+   * serving them. All of that exists to hide ONE thing: a participant whose
+   * account is not in the `normal` privacy mode. So we ask that question first,
+   * with a bounded probe that touches an index holding one entry per paranoid
+   * account (usually zero rows):
+   *
+   *  - No such participant — the shape of every ordinary thread: lock only the
+   *    required principals (viewer + item owner, and the comment's author where
+   *    one is named), re-resolve access under that lock, and run the read with NO
+   *    actor filter at all. Identical to what the guard-less path always did.
+   *  - Otherwise: exactly the behaviour that shipped before, with the enumeration
+   *    now bounded by {@link THREAD_ACTOR_LIMIT} and a truncated answer failing
+   *    closed to the required principals' own rows.
+   *
+   * The probe is a live read of the same column the lock would read. It is not
+   * held under a lock, so an account that turns paranoid between the probe and
+   * the page is filtered from the NEXT read rather than this one — a window one
+   * request wide, which is the price of not locking every participant of every
+   * poll. A required principal turning paranoid is still refused, as before.
+   */
+  async function withLockedActors<T>(
     viewerId: string,
     kind: ShareKind,
     subjectId: string,
-    optionalActorIds: readonly string[],
-    action: (access: ThreadAccess, allowedActorIds: readonly string[]) => Promise<T>,
+    scope: ActorScope,
+    action: (access: ThreadAccess, allowedActorIds?: readonly string[]) => Promise<T>,
     additionalRequiredActorIds: readonly string[] = [],
     notFound: () => Error = THREAD_NOT_FOUND,
   ): Promise<T> {
     const candidate = await resolveAccess(viewerId, kind, subjectId);
     if (!candidate) throw notFound();
-    if (!deps.paranoid) {
-      return action(candidate, []);
+    const requiredActorIds = [
+      ...new Set([viewerId, candidate.ownerId, ...additionalRequiredActorIds]),
+    ];
+    // Re-resolved INSIDE the lock, every time: nothing about the audience is
+    // carried over from the candidate resolution above except the owner identity
+    // the lock was taken for.
+    const revalidated = async (): Promise<ThreadAccess> => {
+      const access = await resolveAccess(viewerId, kind, subjectId);
+      if (!access || access.ownerId !== candidate.ownerId) throw notFound();
+      return access;
+    };
+    const guard = deps.paranoid;
+    if (!guard) return action(await revalidated());
+
+    if (!(await scope.hasRestricted())) {
+      return guard.runAllowedMany(requiredActorIds, 'sharing', async () =>
+        action(await revalidated()),
+      );
     }
-    return deps.paranoid.runAllowedWithOptional(
-      [viewerId, candidate.ownerId, ...additionalRequiredActorIds],
+
+    // Somebody here does need the treatment. Discover the participants — ids
+    // only, no bodies, usernames, icons, emojis or aggregates — so the admitted
+    // ones can be locked alongside the required principals. Every candidate is
+    // OPTIONAL: a paranoid third party disappears from the thread instead of
+    // making unrelated rows fail or revealing their mode.
+    const participants = await scope.all(THREAD_ACTOR_LIMIT + 1);
+    if (participants.length > THREAD_ACTOR_LIMIT) {
+      // Truncated: we cannot name everyone, so we show the least — never more.
+      return guard.runAllowedMany(requiredActorIds, 'sharing', async () =>
+        action(await revalidated(), requiredActorIds),
+      );
+    }
+    const optionalActorIds = participants.filter((id) => !requiredActorIds.includes(id));
+    return guard.runAllowedWithOptional(
+      requiredActorIds,
       optionalActorIds,
       'sharing',
       async (allowedOptionalActorIds) => {
-        const access = await resolveAccess(viewerId, kind, subjectId);
-        if (!access || access.ownerId !== candidate.ownerId) throw notFound();
+        const access = await revalidated();
+        // Required principals may themselves have authored/reacted; include them
+        // alongside the admitted optional set. SQL filters make a newly
+        // appearing, undiscovered actor invisible until the next locked read.
         return action(access, [
-          ...new Set([
-            viewerId,
-            candidate.ownerId,
-            ...additionalRequiredActorIds,
-            ...allowedOptionalActorIds,
-          ]),
+          ...requiredActorIds,
+          ...optionalActorIds.filter((id) => allowedOptionalActorIds.has(id)),
         ]);
       },
     );
   }
 
+  /** Everyone whose comment OR reaction can appear in one item's thread. */
+  function threadScope(kind: ShareKind, subjectId: string): ActorScope {
+    return {
+      hasRestricted: async () => {
+        const [inComments, inReactions] = await Promise.all([
+          comments.hasRestrictedParticipant(kind, subjectId),
+          reactions.hasRestrictedThreadActor(kind, subjectId),
+        ]);
+        return inComments || inReactions;
+      },
+      all: async (limit) => {
+        const [commentAuthorIds, reactionActorIds] = await Promise.all([
+          comments.listParticipantsForItem(kind, subjectId, limit),
+          reactions.listActorIdsForThread(kind, subjectId, limit),
+        ]);
+        return [...new Set([...commentAuthorIds, ...reactionActorIds])];
+      },
+    };
+  }
+
+  /** Everyone whose reaction contributes to ONE item-level aggregate. */
+  function itemReactionScope(kind: ShareKind, subjectId: string): ActorScope {
+    return {
+      hasRestricted: () => reactions.hasRestrictedItemActor(kind, subjectId),
+      all: (limit) => reactions.listActorIdsForItem(kind, subjectId, limit),
+    };
+  }
+
+  /** Everyone whose reaction contributes to ONE comment's aggregate. */
+  function commentReactionScope(commentId: string): ActorScope {
+    return {
+      hasRestricted: () => reactions.hasRestrictedCommentActor(commentId),
+      all: (limit) => reactions.listActorIdsForComment(commentId, limit),
+    };
+  }
+
   /**
-   * The read side of a thread — access resolution, the portfolio boundary, and
-   * (in paranoid mode) the participant discovery + lock dance — done ONCE for
-   * both the page read and the collapsed summary. `allowedActorIds` is undefined
-   * when no privacy filter applies.
+   * Take back the viewer's OWN reaction, if they currently hold one — the
+   * cleanup right that mirrors "the author deletes their own comment regardless
+   * of current visibility" (see `deleteComment`). Without it, an owner narrowing
+   * the audience strands the reaction forever: the toggle 404s and no other
+   * removal path exists (#1780).
+   *
+   * The delete is scoped to (viewer, target, emoji), so it can only ever reach a
+   * row the viewer authored, and its own result — not a preceding read — decides
+   * whether this call was a withdrawal. The viewer is the only principal locked:
+   * exactly like the own-comment delete, an owner's account mode must neither
+   * block nor disclose itself through someone else's cleanup.
+   *
+   * Since #1829 this runs only AFTER the audience has refused the caller, and
+   * `holds` — a single-row question about the caller's OWN reaction — decides
+   * whether the scoped delete is attempted at all. That is what keeps a stranger
+   * from driving a write against any subject id they can name. Both stay inside
+   * the viewer's own lock, and the delete's own result still decides the
+   * outcome: if the row goes between the two, this was not a withdrawal.
+   */
+  async function withdrawOwnReaction(
+    viewerId: string,
+    holds: () => Promise<boolean>,
+    remove: () => Promise<boolean>,
+  ): Promise<boolean> {
+    const withdraw = async () => ((await holds()) ? remove() : false);
+    return deps.paranoid
+      ? deps.paranoid.runAllowedMany([viewerId], 'sharing', withdraw)
+      : withdraw();
+  }
+
+  /**
+   * The answer to a withdrawal by someone the item no longer admits: the
+   * viewer's OWN remaining reactions, through the same `actorIds` filter
+   * paranoid mode applies. Reporting the target's full aggregate would disclose
+   * activity on an item they can no longer read — the cleanup gives back a
+   * removal right, not a read.
+   */
+  function ownReactionsOnly(aggregates: ReactionAggregate[]): ReactionListResponse {
+    return { reactions: toReactionSummaries(aggregates) };
+  }
+
+  /**
+   * The read side of a thread — access resolution, the portfolio boundary and
+   * the participant/lock decision — done ONCE for both the page read and the
+   * collapsed summary. `allowedActorIds` is undefined when no privacy filter
+   * applies, which is the ordinary case (§6.9, #1829).
    */
   async function withThreadActors<T>(
     viewerId: string,
@@ -248,39 +411,9 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     subjectId: string,
     action: (access: ThreadAccess, allowedActorIds?: readonly string[]) => Promise<T>,
   ): Promise<T> {
-    return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
-      if (!deps.paranoid) {
-        return withLockedAccess(viewerId, kind, subjectId, (access) => action(access));
-      }
-
-      const candidate = await resolveAccess(viewerId, kind, subjectId);
-      if (!candidate) throw THREAD_NOT_FOUND();
-      // Discover ids without selecting bodies, usernames, profile icons, emojis,
-      // or aggregates. Every candidate is optional: a paranoid third-party actor
-      // disappears from the thread instead of making unrelated rows fail or
-      // revealing their mode. Viewer + item owner remain required.
-      const [commentAuthorIds, reactionActorIds] = await Promise.all([
-        comments.listParticipantsForItem(kind, subjectId),
-        reactions.listActorIdsForThread(kind, subjectId),
-      ]);
-      const optionalActorIds = [...new Set([...commentAuthorIds, ...reactionActorIds])];
-      return deps.paranoid.runAllowedWithOptional(
-        [viewerId, candidate.ownerId],
-        optionalActorIds,
-        'sharing',
-        async (allowedOptionalActorIds) => {
-          const access = await resolveAccess(viewerId, kind, subjectId);
-          if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
-          // Required principals may themselves have authored/reacted; include
-          // them alongside the admitted optional set. SQL filters make a newly
-          // appearing, undiscovered actor invisible until the next locked read.
-          const allowedActorIds = [
-            ...new Set([viewerId, candidate.ownerId, ...allowedOptionalActorIds]),
-          ];
-          return action(access, allowedActorIds);
-        },
-      );
-    });
+    return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, () =>
+      withLockedActors(viewerId, kind, subjectId, threadScope(kind, subjectId), action),
+    );
   }
 
   /**
@@ -354,6 +487,15 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     // Newest-first out of SQL; oldest-first for the reader.
     const rows = (hasOlder ? page.slice(0, COMMENT_PAGE_SIZE) : page).reverse();
     const oldest = rows[0];
+    // The newest page can PROVE the whole thread's count whenever it did not
+    // fill: no cursor means the page starts at the newest comment, and no older
+    // page means it ends at the oldest, so the page IS the live thread under the
+    // very filter `countForItem` would apply (#1725). Counting it costs nothing,
+    // and that is the shape of every ordinary thread — so the poll that refetches
+    // page 0 every 30 s stops issuing a `count(*)` alongside it. A page that
+    // filled, or any older page, still asks the repository: the count stays exact
+    // for every caller, and the partial thread index makes it an index-only scan.
+    const provenCount = cursor === undefined && !hasOlder ? rows.length : undefined;
     const [reactionMap, itemReactions, commentCount] = await Promise.all([
       reactions.summaryForComments(
         viewerId,
@@ -361,7 +503,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
         allowedActorIds,
       ),
       reactions.summaryForItem(viewerId, kind, subjectId, allowedActorIds),
-      comments.countForItem(kind, subjectId, allowedActorIds),
+      provenCount ?? comments.countForItem(kind, subjectId, allowedActorIds),
     ]);
     const commentList: ItemComment[] = rows.map((row) => ({
       id: row.id,
@@ -459,7 +601,14 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
             const isAuthor = comment.authorId === viewerId;
             const isOwner = ownerId !== undefined && ownerId === viewerId;
             if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
-            const removed = await comments.softDelete(commentId, viewerId);
+            // The tombstone stays (thread continuity + an auditable
+            // `deleted_by`), but the text and the comment's reactions go with
+            // it, in ONE transaction (#1780): a moderated body retained forever
+            // is not moderation, and reactions on a tombstone are unreachable
+            // through every read AND unremovable through the toggle.
+            const removed = await comments.softDelete(commentId, viewerId, (tx) =>
+              reactions.deleteForComment(commentId, tx),
+            );
             if (!removed) throw COMMENT_NOT_FOUND();
           };
           if (!deps.paranoid) return remove();
@@ -479,19 +628,27 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
 
     async toggleItemReaction(viewerId, kind, subjectId, emoji) {
       return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
-        if (!deps.paranoid) {
-          return withLockedAccess(viewerId, kind, subjectId, async () => {
-            await reactions.toggleItem(viewerId, kind, subjectId, emoji);
-            const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
-            return { reactions: toReactionSummaries(summary) };
-          });
+        // Authorization FIRST (#1829). The caller names the subject id, so
+        // nothing may act on it — no write, no DISTINCT scan over its actors —
+        // before the audience has been asked. A caller the item does not admit
+        // keeps exactly ONE right here: taking back their own reaction (#1780),
+        // decided from their own row and nothing else.
+        if (!(await resolveAccess(viewerId, kind, subjectId))) {
+          const withdrawn = await withdrawOwnReaction(
+            viewerId,
+            () => reactions.hasOwnItemReaction(viewerId, kind, subjectId, emoji),
+            () => reactions.removeItem(viewerId, kind, subjectId, emoji),
+          );
+          if (!withdrawn) throw THREAD_NOT_FOUND();
+          return ownReactionsOnly(
+            await reactions.summaryForItem(viewerId, kind, subjectId, [viewerId]),
+          );
         }
-        const reactionActorIds = await reactions.listActorIdsForItem(kind, subjectId);
-        return withLockedAccessAndOptionalActors(
+        return withLockedActors(
           viewerId,
           kind,
           subjectId,
-          reactionActorIds,
+          itemReactionScope(kind, subjectId),
           async (_access, allowedActorIds) => {
             await reactions.toggleItem(viewerId, kind, subjectId, emoji);
             const summary = await reactions.summaryForItem(
@@ -515,26 +672,28 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
         candidate.subjectId,
         COMMENT_NOT_FOUND,
         async () => {
-          if (!deps.paranoid) {
-            // Reacting needs the SAME access as reading the thread the comment lives in.
-            return withLockedAccess(
+          // Authorization FIRST, exactly as for the item toggle (#1829): the
+          // withdrawal right is all that survives losing access, and it reaches
+          // only the caller's own row.
+          if (!(await resolveAccess(viewerId, candidate.kind, candidate.subjectId))) {
+            const withdrawn = await withdrawOwnReaction(
               viewerId,
-              candidate.kind,
-              candidate.subjectId,
-              async () => {
-                await reactions.toggleComment(viewerId, commentId, emoji);
-                const summary = await reactions.summaryForComment(viewerId, commentId);
-                return { reactions: toReactionSummaries(summary) };
-              },
-              COMMENT_NOT_FOUND,
+              () => reactions.hasOwnCommentReaction(viewerId, commentId, emoji),
+              () => reactions.removeComment(viewerId, commentId, emoji),
+            );
+            if (!withdrawn) throw COMMENT_NOT_FOUND();
+            return ownReactionsOnly(
+              await reactions.summaryForComment(viewerId, commentId, [viewerId]),
             );
           }
-          const reactionActorIds = await reactions.listActorIdsForComment(commentId);
-          return withLockedAccessAndOptionalActors(
+          // Reacting needs the SAME access as reading the thread the comment
+          // lives in, and the comment itself is re-read under the lock: it may
+          // have been moderated away, or its subject moved, since the entry read.
+          return withLockedActors(
             viewerId,
             candidate.kind,
             candidate.subjectId,
-            reactionActorIds,
+            commentReactionScope(commentId),
             async (_access, allowedActorIds) => {
               const comment = await comments.getById(commentId);
               if (

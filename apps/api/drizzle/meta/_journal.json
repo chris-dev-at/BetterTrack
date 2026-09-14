@@ -778,6 +778,34 @@
       "when": 1788460000000,
       "tag": "0110_search_catalog_bounds",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1788480000000,
+      "tag": "0111_item_comments_thread_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1788560000000,
+      "tag": "0112_asset_catalog_write_watermark",
+      "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1788640000000,
+      "tag": "0113_users_privacy_mode_restricted_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1788720000000,
+      "tag": "0114_search_catalog_accent_fold",
+      "breakpoints": true
     }
   ]
 }

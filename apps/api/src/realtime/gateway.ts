@@ -12,6 +12,9 @@ import {
   REALTIME_BEARER_SCOPE_REQUIREMENTS,
   REALTIME_CLIENT_EVENTS,
   REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET,
+  REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_USER,
   REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
@@ -627,6 +630,74 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
+  /**
+   * The rooms this socket entered by CLIENT request (`room.join`), as the exact
+   * adapter room names. Server-side memberships — the principal's own
+   * `user:{id}`/scoped rooms and the `asset:{id}` room a live watch joins — are
+   * deliberately absent: they are already bounded by the connection and watch
+   * budgets, so counting them would charge one budget twice.
+   */
+  const clientRoomsOf = (socket: Socket): Set<string> =>
+    (socket.data.clientRooms as Set<string> | undefined) ??
+    (socket.data.clientRooms = new Set<string>());
+
+  /**
+   * Distinct client-joined rooms per user on THIS node, refcounted by the
+   * sockets holding each one, so N connections share one user budget instead of
+   * multiplying it (§13.5 V5-P1). Node-local exactly like the room memberships
+   * it bounds — the tree ships no Socket.IO adapter.
+   */
+  const userRooms = new Map<string, Map<string, number>>();
+
+  /**
+   * Take this socket's slot for a client-requested room. Idempotent for a room
+   * the socket already holds; a fresh slot is charged to both the socket and the
+   * user budget. A `fresh` reservation MUST be released again when the join it
+   * was taken for does not happen.
+   */
+  function reserveClientRoom(
+    socket: Socket,
+    userId: string,
+    name: string,
+  ): { ok: true; fresh: boolean } | { ok: false; error: RealtimeAckError } {
+    const rooms = clientRoomsOf(socket);
+    if (rooms.has(name)) return { ok: true, fresh: false };
+    if (rooms.size >= REALTIME_MAX_ROOMS_PER_SOCKET) {
+      return { ok: false, error: 'SOCKET_ROOM_LIMIT' };
+    }
+    const held = userRooms.get(userId) ?? new Map<string, number>();
+    const holders = held.get(name) ?? 0;
+    if (holders === 0 && held.size >= REALTIME_MAX_ROOMS_PER_USER) {
+      return { ok: false, error: 'USER_ROOM_LIMIT' };
+    }
+    held.set(name, holders + 1);
+    userRooms.set(userId, held);
+    rooms.add(name);
+    return { ok: true, fresh: true };
+  }
+
+  /** Give back one socket's slot in a room; the user refcount follows it. */
+  function releaseClientRoom(socket: Socket, userId: string, name: string): void {
+    if (!clientRoomsOf(socket).delete(name)) return;
+    const held = userRooms.get(userId);
+    const holders = held?.get(name);
+    if (!held || holders === undefined) return;
+    if (holders > 1) held.set(name, holders - 1);
+    else held.delete(name);
+    if (held.size === 0) userRooms.delete(userId);
+  }
+
+  /** Leave a client-joined room and release its budget in one step. */
+  async function leaveClientRoom(socket: Socket, userId: string, name: string): Promise<void> {
+    releaseClientRoom(socket, userId, name);
+    await socket.leave(name);
+  }
+
+  /** Disconnect cleanup: every room budget this socket held is given back. */
+  function releaseClientRooms(socket: Socket, userId: string): void {
+    for (const name of [...clientRoomsOf(socket)]) releaseClientRoom(socket, userId, name);
+  }
+
   async function handleRoomJoin(
     socket: Socket,
     principal: RealtimePrincipal,
@@ -648,30 +719,78 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'FORBIDDEN' });
       return;
     }
-    if (room.kind === 'portfolio') {
-      if (!hasCapability(principal, 'portfolioRoom')) {
-        respond({ ok: false, error: 'FORBIDDEN' });
-        return;
-      }
-      // Owner-or-shared, recomputed at join time — revoking a share stops new
-      // joins immediately (§6.9). Errors fail closed. The viewer's account lock
-      // is held across the check, the join AND the ack (same shape as
-      // `forwardLiveFrame`): otherwise a transition committing in that gap
-      // would leave the socket admitted on an authorization taken before it.
-      const admitted = await withAccountPrivacyLock(principal.userId, async () => {
-        const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
-        if (!allowed) return false;
-        await socket.join(roomName(room));
-        return true;
-      });
-      respond(admitted ? { ok: true } : { ok: false, error: 'FORBIDDEN' });
+    if (room.kind === 'portfolio' && !hasCapability(principal, 'portfolioRoom')) {
+      respond({ ok: false, error: 'FORBIDDEN' });
       return;
     }
-    await socket.join(roomName(room));
-    respond({ ok: true });
+    // A capability refusal never touches the budget; from here a refusal must
+    // give back whatever it reserved.
+    // Bound the membership BEFORE any join: an authenticated client may emit
+    // `room.join` at its full command rate, and the adapter holds every
+    // membership until disconnect (§13.5 V5-P1). The reservation is released
+    // again on every path that does not end in a join.
+    const name = roomName(room);
+    const reserved = reserveClientRoom(socket, principal.userId, name);
+    if (!reserved.ok) {
+      respond({ ok: false, error: reserved.error });
+      return;
+    }
+    // The command reached here through an awaited admission round trip, so the
+    // socket may already have disconnected — and its `disconnect` handler
+    // releases the room budget synchronously. Socket.IO flips `disconnected`
+    // BEFORE emitting that event, so reserving and checking with no await
+    // between them makes the two orders exhaustive: either the check sees a live
+    // socket and the cleanup that follows will find this entry, or we hand the
+    // slot back here. Without it a reservation taken after the cleanup would sit
+    // in the gateway-lifetime user map with no socket left to release it.
+    if (socket.disconnected) {
+      if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+      respond({ ok: false, error: 'GONE' });
+      return;
+    }
+    // The join itself stays idempotent and unconditional even for a room the
+    // budget already counts: another path (a live unwatch) may have evicted the
+    // socket meanwhile, and an ack must never report a membership it lacks.
+    try {
+      if (room.kind === 'portfolio') {
+        // Owner-or-shared, recomputed at join time — revoking a share stops new
+        // joins immediately (§6.9). Errors fail closed. The viewer's account lock
+        // is held across the check, the join AND the ack (same shape as
+        // `forwardLiveFrame`): otherwise a transition committing in that gap
+        // would leave the socket admitted on an authorization taken before it.
+        const admitted = await withAccountPrivacyLock(principal.userId, async () => {
+          const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
+          if (!allowed) return 'FORBIDDEN' as const;
+          // The same disconnect race, now on the far side of the authorization
+          // round trip: the adapter has already forgotten a disconnected socket,
+          // so joining it here would strand its id in the adapter's room map.
+          if (socket.disconnected) return 'GONE' as const;
+          await socket.join(name);
+          return 'ok' as const;
+        });
+        if (admitted !== 'ok') {
+          // A no-op when the disconnect cleanup already gave the slot back.
+          if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+          respond({ ok: false, error: admitted });
+          return;
+        }
+        respond({ ok: true });
+        return;
+      }
+      await socket.join(name);
+      respond({ ok: true });
+    } catch (err) {
+      if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+      throw err;
+    }
   }
 
-  async function handleRoomLeave(socket: Socket, payload: unknown, ack: unknown): Promise<void> {
+  async function handleRoomLeave(
+    socket: Socket,
+    principal: RealtimePrincipal,
+    payload: unknown,
+    ack: unknown,
+  ): Promise<void> {
     const respond = (result: RealtimeRoomAck): void => {
       if (typeof ack === 'function') (ack as (result: RealtimeRoomAck) => void)(result);
     };
@@ -680,7 +799,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'BAD_REQUEST' });
       return;
     }
-    await socket.leave(roomName(parsed.data.room));
+    await leaveClientRoom(socket, principal.userId, roomName(parsed.data.room));
     respond({ ok: true });
   }
 
@@ -810,7 +929,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
     }
     if (leaveRoom && !socket.disconnected) {
-      await socket.leave(assetRoom(assetId));
+      // Through `leaveClientRoom`, so a socket that had ALSO `room.join`ed this
+      // asset gives back the slot it is losing the membership for instead of
+      // paying for a room it no longer sits in. A no-op for the usual case where
+      // the room is a watch-only membership the budget never counted.
+      await leaveClientRoom(socket, entry.userId, assetRoom(assetId));
     }
   }
 
@@ -1336,9 +1459,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     }
     const { surface, id } = parsed.data;
     if (mode === 'enter') {
+      // The claim set is per socket and released only on leave/disconnect, so
+      // it needs its own bound exactly like the room set (§13.5 V5-P1).
+      const held = presenceOf(socket);
+      const key = `${surface}:${id}`;
+      if (!held.has(key) && held.size >= REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET) {
+        respond({ ok: false, error: 'SOCKET_PRESENCE_LIMIT' });
+        return;
+      }
       // Idempotent — a re-enter IS the heartbeat that keeps the TTL alive.
       await deps.presence.enter(principal.userId, surface, id);
-      presenceOf(socket).add(`${surface}:${id}`);
+      held.add(key);
     } else {
       await deps.presence.leave(principal.userId, surface, id);
       presenceOf(socket).delete(`${surface}:${id}`);
@@ -1350,11 +1481,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    *  the TTL is the backstop when even this cleanup is unreachable). */
   async function clearPresence(socket: Socket, userId: string): Promise<void> {
     const held = presenceOf(socket);
-    for (const key of held) {
+    if (held.size === 0) return;
+    const subjects = [...held].map((key) => {
       const [surface, id] = key.split(/:(.+)/, 2) as [PresenceSurface, string];
-      await deps.presence.leave(userId, surface, id).catch(() => undefined);
-    }
+      return { surface, id };
+    });
+    // Clear the local set first: disconnect cleanup runs once, and a failed
+    // batch must not leave claims a later path would try to drop again. The
+    // store batches the drop, so the cost is bounded round trips, not one
+    // awaited round trip per claim (§13.5 V5-P1).
     held.clear();
+    await deps.presence.leaveMany(userId, subjects).catch(() => undefined);
   }
 
   function acknowledgeLiveUnwatch(payload: unknown, ack: unknown): void {
@@ -1463,7 +1600,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           await withAccountPrivacyLock(userId, async () => {
             const allowed = await deps.canViewPortfolio(userId, portfolioId).catch(() => false);
             if (!allowed) {
-              await socket.leave(room);
+              // An evicted viewer gets its room budget back with the membership.
+              await leaveClientRoom(socket, userId, room);
               return;
             }
             if (!socket.disconnected) {
@@ -2019,6 +2157,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         socket.once('disconnect', () => {
           clearPrincipalExpiry(socket);
           stopAdmissionHeartbeat(socket);
+          // Synchronous, so the user's room budget is free the instant the
+          // socket is gone — no cleanup task can hold it open.
+          releaseClientRooms(socket, userId);
           const cleanup = Promise.allSettled([
             clearPresence(socket, userId),
             releaseConnectionLease(socket),
@@ -2057,7 +2198,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         socket.on(REALTIME_CLIENT_EVENTS.roomLeave, (payload: unknown, ack: unknown) => {
           void (async () => {
             if (!(await admitClientCommand(socket, principal, ack))) return;
-            await handleRoomLeave(socket, payload, ack);
+            await handleRoomLeave(socket, principal, payload, ack);
           })().catch((err) => {
             logger.warn({ err, userId }, 'realtime room leave failed');
             respondError(ack, 'UNAVAILABLE');

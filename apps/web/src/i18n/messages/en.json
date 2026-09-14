@@ -24,7 +24,8 @@
       "heading": "Admin sign in",
       "notAdmin": "This is a user account, not an administrator — please sign in through the main app.",
       "invalidCredentials": "Invalid email/username or password.",
-      "genericError": "Unable to sign in. Please try again."
+      "genericError": "Unable to sign in. Please try again.",
+      "sessionExpired": "Your admin session expired. Please sign in again."
     },
     "adminForcedPassword": {
       "info": "Set a new password before continuing to the admin console."
@@ -242,6 +243,16 @@
     }
   },
   "common": {
+    "assetType": {
+      "stock": "Stock",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Commodity",
+      "crypto": "Crypto",
+      "custom": "Custom",
+      "other": "Other"
+    },
     "save": "Save",
     "done": "Done",
     "cancel": "Cancel",
@@ -322,8 +333,8 @@
       "selectedOne": "1 selected",
       "selectedOther": "{{count}} selected",
       "scopeDescription": {
-        "portfolio:read": "View your portfolios, holdings, transactions and cash balances",
-        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash",
+        "portfolio:read": "View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them",
+        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash, and change the account's tax regime for every future sell and dividend",
         "workboard:read": "View your watchlist, conglomerates and backtests",
         "workboard:write": "Create and edit your watchlist and conglomerates",
         "market:read": "Search assets and read market data",
@@ -333,13 +344,13 @@
         "notifications:write": "Mark your notifications as read and change your notification settings",
         "chat:read": "Read your messages",
         "chat:write": "Send messages on your behalf",
-        "account:security": "Manage your account security: sign-in sessions, two-factor, password change and app PIN",
+        "account:security": "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault",
         "alerts:read": "View your price alerts",
         "alerts:write": "Create, edit, re-arm and delete your price alerts",
         "cash:read": "View your cash tags, budgets, rules, summaries and trends",
         "cash:write": "Create and edit your cash tags, budgets and rules",
         "mirrorchain:read": "View your group portfolios, members, activity and invitations",
-        "mirrorchain:write": "Accept or decline group invitations and leave group portfolios",
+        "mirrorchain:write": "Join or leave group portfolios and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio",
         "vault:sync": "Synchronize your client-encrypted vault across your devices",
         "feedback:write": "Send feedback, feature requests and bug reports on your behalf",
         "feedback:read": "View your feedback submissions and their status"
@@ -347,7 +358,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Read your portfolios, holdings and cash balances, or create and edit portfolios, transactions, custom assets and cash movements."
+          "description": "Read your portfolios, holdings, cash balances and the dividend, earnings and news feeds derived from them, or create and edit portfolios, transactions, custom assets and cash movements and change the account's tax regime for every future sell and dividend."
         },
         "workboard": {
           "label": "Workbench",
@@ -379,7 +390,7 @@
         },
         "mirrorchain": {
           "label": "Group portfolios",
-          "description": "View your group portfolios, members, activity and invitations, or accept and decline invitations and leave group portfolios."
+          "description": "View your group portfolios, members, activity and invitations, or join and leave them and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio."
         },
         "vaultSync": {
           "label": "Vault sync",
@@ -387,7 +398,7 @@
         },
         "accountSecurity": {
           "label": "Account security",
-          "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
+          "description": "Manage sign-in sessions, two-factor authentication, password, the app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault."
         },
         "feedback": {
           "label": "Feedback",
@@ -1042,7 +1053,19 @@
           "empty": "No deliveries recorded yet.",
           "loadError": "Couldn't load deliveries.",
           "success": "Delivered",
-          "failed": "Failed"
+          "failed": "Failed",
+          "showDetail": "Why?",
+          "hideDetail": "Hide",
+          "attempts": "Attempts: {{count}}",
+          "reason": {
+            "http": "The receiver rejected the delivery with HTTP {{status}}.",
+            "refused": "The destination was blocked — it resolves to a network range webhooks may not reach.",
+            "unresolved": "The destination host could not be resolved.",
+            "timeout": "The receiver did not respond in time.",
+            "secret": "The signing secret could not be read, so nothing was sent.",
+            "unsubscribed": "This event type was removed from the webhook before the delivery was sent.",
+            "network": "The connection to the receiver failed."
+          }
         },
         "secretModal": {
           "title": "Your webhook signing secret",
@@ -1366,9 +1389,10 @@
       "readyUntil": "Your export is ready to download until {{date}}.",
       "readyNoToken": "Your export is ready, but download access is not kept across page reloads. After this export expires, request a new one.",
       "download": "Download export",
-      "downloadFailed": "Could not download your export. The one-time link may have expired or already been used.",
+      "downloadFailed": "Could not download your export. You can try the download again — an interrupted transfer does not use up your link, and it stays valid until the export expires.",
       "expired": "Your last export has expired. Request a new one to download your data.",
       "failed": "Your last export could not be built. Please request a new one — your daily allowance was not used.",
+      "stalled": "Your last export never finished being prepared. Request a new one — your daily allowance was not used.",
       "failedTooLarge": "Your account holds more data than a single export archive can carry, so nothing was built and your daily allowance was not used. Ask your administrator to raise the export limit.",
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",
@@ -1474,6 +1498,14 @@
       "uncoveredNudge": "For accurate history, register the original buy instead.",
       "uncoveredBlocked": "Acknowledge selling more than you hold to continue.",
       "uncoveredEntryPriceInvalid": "Enter a valid buy-in price, or count the shares as 0 %.",
+      "rowErrors": {
+        "withSymbol": "{{symbol}}: {{message}}",
+        "priceRequired": "Price must be greater than 0.",
+        "amountRequired": "Amount must be greater than 0.",
+        "quantityRequired": "Quantity must be greater than 0.",
+        "priceNegative": "Price must be 0 or more.",
+        "derivedQuantity": "Could not derive a valid quantity from that price and amount."
+      },
       "tax": {
         "title": "Tax on this sale (optional)",
         "description": "Manual tax mode is on. Enter the tax for this sell, or leave it blank to record none.",
@@ -2109,7 +2141,12 @@
       "exOn": "ex {{date}}",
       "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
-      "showLess": "Show less"
+      "showLess": "Show less",
+      "basis": {
+        "trailing12m": "Based on the last 12 months of payouts, so any special dividend is still counted in.",
+        "forwardAnnualized": "Based on the latest regular payout, annualised.",
+        "mixed": "Mixed basis: some holdings from the last 12 months of payouts (special dividends counted in), the rest from the annualised regular payout."
+      }
     },
     "import": {
       "title": "Broker CSV import",
@@ -2118,6 +2155,7 @@
       "fileLabel": "CSV export",
       "brokerLabel": "Broker",
       "brokerAuto": "Detect automatically",
+      "aiBudgetNote": "If no broker recognises the file, the local assistant helps name its columns and read unclear rows — it draws on the same daily AI budget as the rest of the app ({{remaining}} of {{cap}} left today).",
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
@@ -2465,6 +2503,7 @@
       },
       "rangeAriaLabel": "Select backtest range",
       "benchmarkAriaLabel": "Choose a benchmark",
+      "benchmarkUnresolvedShare": "{{pct}} without assets — this column is the rest",
       "modeAriaLabel": "Select late-listing mode",
       "rebalanceAriaLabel": "Select rebalance frequency",
       "noPositions": "Add positions to preview a backtest",
@@ -2614,6 +2653,7 @@
       "viewStored": "As built",
       "viewResolved": "Resolved",
       "resolvedHint": "Effective asset weights after resolving nested blueprints.",
+      "unresolvedShare": "{{pct}} of this blueprint is a nested blueprint that holds no assets. The weights, the allocation chart and the backtest below cover only the rest of it — and the calculator leaves that share of a budget unallocated.",
       "resolvedLoadError": "The resolved view could not be loaded.",
       "deleteInUseError": "This blueprint is a constituent of {{parents}} — remove it there first."
     },
@@ -2690,7 +2730,9 @@
         "duplicateConglomerate": "That blueprint is already a constituent.",
         "selfNest": "A blueprint cannot contain itself.",
         "nestingCycle": "This nesting would create a cycle — a blueprint cannot contain itself, directly or through another blueprint.",
-        "nestingTooDeep": "Blueprints can be nested at most {{max}} levels deep."
+        "nestingTooDeep": "Blueprints can be nested at most {{max}} levels deep.",
+        "normalizeLockedFull": "Locked weights already total 100 % or more — unlock a position to normalize.",
+        "normalizeNoUnlocked": "There are no unlocked positions to normalize."
       }
     },
     "ideas": {
@@ -2752,6 +2794,7 @@
       "chartAriaLabel": "Blueprint comparison chart",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
+      "unresolvedShare": "{{pct}} without assets",
       "grid": {
         "ariaLabel": "Blueprint comparison statistics",
         "metric": "Metric"
@@ -2775,15 +2818,16 @@
       "horizonHint": "Between 1 and 30 years.",
       "factorsLegend": "Factors",
       "factor": {
-        "return": "Average return",
+        "return": "Average return (excluding deposits)",
         "standingOrders": "Standing orders",
         "dividends": "Projected dividends"
       },
+      "ordersUnconvertible": "Your standing orders are recorded in {{orderCurrency}}, but this projection is in {{baseCurrency}}. We don't convert between currencies here, so this factor stays out of the projection.",
       "dividendsUnresolved": "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.",
       "dividendsTruncated": "You hold more assets than we project in one pass, so this factor stays out of the projection.",
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
-      "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",
+      "returnPctHint": "Sampled from your history as a time-weighted return, so money you paid in doesn't count as growth; edit to explore. Between -100% and 100%.",
       "returnPctClamped": "The return rate is limited to -100% to 100%. The nearest value is used for this projection.",
       "window": {
         "1Y": "1Y",
@@ -2806,6 +2850,11 @@
         "returnLabel": "Return (%)",
         "returnPlaceholder": "Base",
         "remove": "Remove"
+      },
+      "dividendsBasis": {
+        "trailing12m": "Dividends come from the last 12 months of payouts, so any special dividend is still counted in.",
+        "forwardAnnualized": "Dividends come from the latest regular payout, annualised.",
+        "mixed": "Dividends mix two bases: part from the last 12 months of payouts (special dividends counted in), part from the annualised regular payout."
       }
     },
     "calculators": {
@@ -2829,14 +2878,23 @@
     },
     "savings": {
       "title": "Savings plan",
-      "summary": "What monthly contribution reaches your target.",
+      "summary": "What monthly contribution reaches your target — or how long it takes.",
+      "solve": {
+        "label": "Solve for",
+        "contribution": "Contribution",
+        "years": "Years"
+      },
       "target": "Target (€)",
       "principal": "Starting principal (€)",
       "ratePct": "Annual return (%)",
       "years": "Years",
+      "monthlyContributionInput": "Monthly contribution (€)",
       "compoundingPerYear": "Compounding steps per year",
       "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily.",
       "monthlyContribution": "Required monthly contribution",
+      "yearsNeeded": "Years needed",
+      "yearsValue": "≈ {{years}} years",
+      "notReachable": "Not reachable with these inputs.",
       "feasible": "Reachable"
     },
     "dividend": {
@@ -2852,9 +2910,15 @@
     },
     "withdrawal": {
       "title": "Withdrawal plan",
-      "summary": "How long a balance lasts at a given monthly draw.",
+      "summary": "How long a balance lasts, or what you can safely take each month.",
+      "solve": {
+        "label": "Solve for",
+        "horizon": "Horizon",
+        "rate": "Safe withdrawal"
+      },
       "balance": "Starting balance (€)",
       "monthlyWithdrawal": "Monthly withdrawal (€)",
+      "horizonYears": "Payout horizon (years)",
       "annualReturnPct": "Expected annual return (%)",
       "horizonLabel": "Depletion horizon",
       "statusLabel": "Status",
@@ -2862,7 +2926,8 @@
       "statusDepletes": "Depletes",
       "sustainable": "Never depletes at this rate.",
       "notComputable": "Not computable with these inputs.",
-      "monthsValue": "≈ {{months}} months (≈ {{years}} years)"
+      "monthsValue": "≈ {{months}} months (≈ {{years}} years)",
+      "rateLabel": "Sustainable monthly withdrawal"
     },
     "standingOrders": {
       "title": "Standing orders",
@@ -2898,6 +2963,8 @@
         "notBookedQuoteUnavailable": "Not booked — quote unavailable — oldest missed booking due since {{date}}",
         "notBookedInsufficientCash": "Not booked — insufficient cash — oldest missed booking due since {{date}}",
         "notBookedFailed": "Not booked — booking error — oldest missed booking due since {{date}}",
+        "droppedPeriods": "{{count}} missed period(s) skipped, up to {{date}} — only the newest one is caught up, the rest are not booked",
+        "bookedStalePrice": "Booked at your own valuation from {{date}} — no newer value point exists",
         "pause": "Pause",
         "pausing": "Pausing…",
         "resume": "Resume",
@@ -2958,10 +3025,12 @@
         "title": "Dividends",
         "forwardYield": "Forward yield",
         "trailing": "TTM per share",
+        "trailingForward": "Annualised per share",
         "nextExDate": "Next ex-date",
         "nextPayDate": "Next pay date",
         "history": "Payout history",
-        "historyAriaLabel": "Dividend payout history"
+        "historyAriaLabel": "Dividend payout history",
+        "historyRange": "{{from}} – {{to}}"
       },
       "earnings": {
         "title": "Earnings",
@@ -2970,7 +3039,8 @@
         "estimated": "Estimated",
         "confirmed": "Confirmed",
         "epsEstimate": "Est. EPS {{value}}",
-        "epsActual": "EPS {{value}}"
+        "epsActual": "EPS {{value}}",
+        "periodEnded": "Period ended {{date}}"
       },
       "splits": {
         "title": "Stock splits",
@@ -2999,6 +3069,8 @@
       "waiting": "Waiting for live prices…",
       "fallbackNote": "Live updates every 60 s while the stream reconnects.",
       "chartAriaLabel": "Live price chart for {{symbol}}",
+      "unavailable": "Live unavailable — showing delayed data",
+      "unavailableHint": "The server paused live updates. The chart refreshes every 60 s instead.",
       "marketClosed": "Market closed",
       "marketClosedHint": "Showing the most recent session. Live updates resume when the market reopens."
     },
@@ -3147,6 +3219,10 @@
     "friendsSelect": "Select friends",
     "allFriendsConfirm": "This shares a read-only view with everyone you are friends with.",
     "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This may let more people see this item.",
+    "audienceGroupNamed": {
+      "one": "group “{{name}}” ({{count}} member)",
+      "other": "group “{{name}}” ({{count}} members)"
+    },
     "audienceWidenAcknowledge": "I understand this change widens access.",
     "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
     "publicAcknowledge": "I understand that anyone with the link can see this.",
@@ -3177,7 +3253,11 @@
     "friendsNoMatch": "No friends match “{{query}}”.",
     "share": "Share…",
     "groupsNone": "You have no groups yet. Create one on the Friends page to share with a circle.",
-    "groupMemberCount": { "one": "{{count}} member", "other": "{{count}} members" },
+    "groupMemberCount": {
+      "one": "{{count}} member",
+      "other": "{{count}} members"
+    },
+    "groupsAtLimit": "This is all {{count}} of your groups — the maximum. Manage them on the People page.",
     "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
   },
   "watchlists": {
@@ -3490,7 +3570,10 @@
       "cloneError": "Couldn't clone this idea."
     },
     "comments": {
-      "count": { "one": "{{count}} comment", "other": "{{count}} comments" },
+      "count": {
+        "one": "{{count}} comment",
+        "other": "{{count}} comments"
+      },
       "empty": "No comments yet.",
       "loadError": "Couldn't load the comments. Please try again.",
       "placeholder": "Add a comment…",
@@ -3515,7 +3598,10 @@
       "loadError": "Could not load your groups. Please try again.",
       "emptyTitle": "No groups yet",
       "emptyDescription": "Create a group to share with a specific circle of friends.",
-      "memberCount": { "one": "{{count}} member", "other": "{{count}} members" },
+      "memberCount": {
+        "one": "{{count}} member",
+        "other": "{{count}} members"
+      },
       "nameLabel": "Group name",
       "renameAction": "Rename",
       "membersHeading": "Members",
@@ -3523,6 +3609,8 @@
       "addMemberHeading": "Add a friend",
       "addMemberNone": "All your friends are already in this group.",
       "add": "Add",
+      "limitReached": "You've reached the maximum of {{count}} groups. Delete one to create another.",
+      "memberLimitReached": "This group is full — a group can hold at most {{count}} members.",
       "mutateError": "Could not update the group. Please try again.",
       "delete": "Delete group",
       "deleteTitle": "Delete “{{name}}”",
@@ -4759,7 +4847,8 @@
         "revoked": "Revoked",
         "tierAria": "Tier for {{name}}",
         "defaultTier": "Default",
-        "viewAudit": "View audit"
+        "viewAudit": "View audit",
+        "showRevoked": "Show revoked keys"
       },
       "audit": {
         "title": "Request log — {{name}}",
@@ -4932,6 +5021,7 @@
         "change": "Change email",
         "enabledNotice": "Email codes enabled.",
         "disabledNotice": "Email codes disabled.",
+        "disableError": "Couldn't turn off email codes. Please try again.",
         "turnOff": "Turn off",
         "turningOff": "Turning off…"
       },
@@ -5733,6 +5823,30 @@
         "neverValue": "No direct price-row edits, no blind duplicate merges, and no per-user data — only affected-user counts."
       },
       "why": "Editing a price by hand would put money math behind a browser session, and merging duplicates without provenance, a dry run and a rollback is a change nobody can undo. Both need a domain answer first, so this package ships the reading and stops there."
+    },
+    "audit": {
+      "title": "Audit log",
+      "subtitle": "Every administrative and security-relevant action.",
+      "loading": "Loading audit log…",
+      "empty": "No audit entries yet.",
+      "loadError": "Could not load the audit log.",
+      "loadMoreError": "Could not load more audit entries.",
+      "loadMore": "Load more",
+      "loadingMore": "Loading…",
+      "actorSystem": "system",
+      "columns": {
+        "when": "When",
+        "action": "Action",
+        "actor": "Actor",
+        "target": "Target",
+        "ip": "IP",
+        "details": "Details"
+      }
+    },
+    "pagination": {
+      "range": "{{first}}–{{last}} of {{total}}",
+      "previous": "Previous",
+      "next": "Next"
     }
   },
   "create": {
@@ -5910,6 +6024,8 @@
         "title": "News",
         "description": "Headlines on the assets you hold",
         "empty": "No headlines for your holdings right now.",
+        "emptyPartial": "No headlines in the part of your assets we could look up.",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass.",
         "unavailable": "News is not available."
       },
       "attention": {
@@ -5975,6 +6091,8 @@
         "title": "Dividends",
         "description": "Upcoming ex- and pay dates",
         "empty": "No dividends coming up.",
+        "emptyPartial": "No dividends coming up in the part of your assets we could look up.",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass.",
         "unavailable": "Dividend data is not available.",
         "exDate": "Ex-date",
         "payDate": "Pay date"
@@ -6796,15 +6914,6 @@
     "keys": {
       "navigate": "Navigate",
       "open": "Open"
-    },
-    "assetType": {
-      "stock": "Stock",
-      "etf": "ETF",
-      "index": "Index",
-      "fx": "FX",
-      "commodity": "Commodity",
-      "crypto": "Crypto",
-      "other": "Other"
     }
   },
   "firstrun": {

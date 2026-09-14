@@ -3,6 +3,7 @@ import {
   backtestResponseSchema,
   MAX_NESTING_DEPTH,
   sharedSandboxAggregateResponseSchema,
+  sharedSandboxPreviewRequestSchema,
   sharedSandboxPreviewResponseSchema,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
@@ -16,6 +17,7 @@ import {
   backtestComparisonCacheKey,
   backtestPreviewCacheKey,
   createBacktestService,
+  SANDBOX_MAX_NESTED_SHARE_PCT,
 } from '../backtestService';
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,58 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
     { date: '2026-01-02', close: 30 },
     { date: '2026-01-05', close: 33 },
   ],
+  // A long-history pair for the comparison COVERAGE fixtures (#1755), sparse on
+  // purpose — the axis is the union of the basket's own price dates.
+  LONG: [
+    { date: '2024-01-02', close: 100 },
+    { date: '2024-07-01', close: 110 },
+    { date: '2025-01-02', close: 120 },
+    { date: '2025-06-16', close: 130 },
+    { date: '2026-01-05', close: 137 },
+  ],
+  // Delisted 2025-06-15 after falling 100 → 5: data STOPS inside the window.
+  DELISTED: [
+    { date: '2024-01-02', close: 100 },
+    { date: '2024-07-01', close: 80 },
+    { date: '2025-01-02', close: 40 },
+    { date: '2025-06-15', close: 5 },
+  ],
+  // Alive throughout, but its exchange was shut on the window's final day —
+  // the calendar mismatch a coverage check must NOT read as a delisting.
+  HOLIDAY_SHY: [
+    { date: '2024-01-02', close: 100 },
+    { date: '2024-07-01', close: 105 },
+    { date: '2025-01-02', close: 115 },
+    { date: '2025-06-16', close: 125 },
+    { date: '2026-01-02', close: 131 },
+  ],
+  // Old enough that no clip notice fires, but the provider has a GAP over the
+  // window's first four weeks: its first day INSIDE the window is 2024-01-29,
+  // 27 days after the primary's t₀ (#1811).
+  GAP_START: [
+    { date: '2022-06-01', close: 90 },
+    { date: '2024-01-29', close: 100 },
+    { date: '2024-07-01', close: 120 },
+    { date: '2025-01-02', close: 150 },
+    { date: '2026-01-05', close: 176 },
+  ],
+  // Stopped one day AFTER `DELISTED`: the pair models a provider that went
+  // quiet six months ago, where the whole comparison — not one series — is
+  // stale.
+  STALE_TAIL: [
+    { date: '2024-01-02', close: 100 },
+    { date: '2025-01-02', close: 110 },
+    { date: '2025-06-16', close: 120 },
+  ],
+  // Alive throughout, but its exchange was shut on the window's FIRST day —
+  // the head-side mirror of HOLIDAY_SHY, two days and no more.
+  HOLIDAY_LATE: [
+    { date: '2023-06-01', close: 95 },
+    { date: '2024-01-04', close: 100 },
+    { date: '2024-07-01', close: 105 },
+    { date: '2025-01-02', close: 115 },
+    { date: '2026-01-05', close: 137 },
+  ],
   // Preset fallback identity (unseeded catalog): +10 % over the window.
   '^GSPC': [
     { date: '2025-12-30', close: 5000 },
@@ -129,6 +183,12 @@ const HIDDEN_NO_HISTORY_CHILD_ID = '018f0000-0000-7000-8000-000000000009';
 const HIDDEN_NO_HISTORY_ROOT_ID = '018f0000-0000-7000-8000-00000000000a';
 /** Flat fixture whose valid three-decimal weights expose redundant normalization drift. */
 const PRECISE_FLAT_ID = '018f0000-0000-7000-8000-00000000000b';
+/**
+ * A shared root whose nested child was later EMPTIED by its owner (which demotes
+ * the root to `draft` but does not un-share it): 60 % A + 40 % of nothing.
+ */
+const EMPTIED_CHILD_ID = '018f0000-0000-7000-8000-00000000000c';
+const PARTIAL_ROOT_ID = '018f0000-0000-7000-8000-00000000000d';
 /** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
 const VIEWER_ID = 'v1';
 
@@ -152,9 +212,18 @@ function createHarness() {
     findGlobal: async () => null,
   } as unknown as AssetRepository;
 
+  /**
+   * Baskets a test EDITED mid-run (#1849): the memo must notice a conglomerate
+   * benchmark whose composition changed, including through a nested child whose
+   * id never appears in the request.
+   */
+  const edited = new Map<string, { id: string; name: string; positions: unknown[] }>();
+
   const conglomerateRepo = {
     findByIdForOwner: async (ownerId: string, id: string) => {
       if (ownerId !== 'u1') return null;
+      const override = edited.get(id);
+      if (override) return override;
       if (id === CONG_ID) {
         return {
           id: CONG_ID,
@@ -239,6 +308,19 @@ function createHarness() {
           ],
         };
       }
+      if (id === EMPTIED_CHILD_ID) {
+        return { id: EMPTIED_CHILD_ID, name: 'Emptied Child', positions: [] };
+      }
+      if (id === PARTIAL_ROOT_ID) {
+        return {
+          id: PARTIAL_ROOT_ID,
+          name: 'Partly Empty',
+          positions: [
+            { kind: 'asset', assetId: 'A', weightPct: 60 },
+            { kind: 'conglomerate', childId: EMPTIED_CHILD_ID, weightPct: 40 },
+          ],
+        };
+      }
       if (id === PRECISE_FLAT_ID) {
         return {
           id: PRECISE_FLAT_ID,
@@ -297,6 +379,7 @@ function createHarness() {
         HIDDEN_CUSTOM_ROOT_ID,
         HIDDEN_NO_HISTORY_ROOT_ID,
         PRECISE_FLAT_ID,
+        PARTIAL_ROOT_ID,
       ].includes(conglomerateId)
         ? { ownerId: 'u1' }
         : undefined,
@@ -305,7 +388,14 @@ function createHarness() {
     now: () => Date.parse('2026-01-05T12:00:00Z'),
   });
 
-  return { service, store, historyCalls: () => historyCalls };
+  return {
+    service,
+    store,
+    historyCalls: () => historyCalls,
+    /** Rewrite one basket's stored constituents, as a Builder autosave would. */
+    editConglomerate: (id: string, name: string, positions: unknown[]) =>
+      edited.set(id, { id, name, positions }),
+  };
 }
 
 const PREVIEW = {
@@ -351,6 +441,69 @@ describe('backtestService.runPreview — rebalance threading (V4-P7)', () => {
     const repeat = await service.runPreview('u1', { ...PREVIEW, rebalance: 'yearly' });
     expect(historyCalls()).toBe(4); // memo hit — no refetch
     expect(repeat).toEqual(yearly);
+  });
+});
+
+/**
+ * The preview memo and a CONGLOMERATE benchmark (#1849). The request carries
+ * only `{ conglomerateId }` — a mutable handle — and the memo was consulted
+ * before the benchmark was resolved at all, so for the entry's full hour an edit
+ * to the benchmark basket, or to one of its NESTED CHILDREN (whose id is not in
+ * the request), kept serving the pre-edit curve, stats and `unresolvedPct`.
+ * Nothing purges this memo on a conglomerate write.
+ */
+describe('backtestService.runPreview — a conglomerate benchmark is content-addressed', () => {
+  /** NESTED_ID = 50 % of CONG_ID (60/40 A/B) + 50 % direct A ⇒ 80 % A / 20 % B. */
+  const withBench = { ...PREVIEW, benchmark: { conglomerateId: NESTED_ID } };
+
+  it("recomputes after the benchmark's NESTED child is edited, its own id unchanged", async () => {
+    const { service, editConglomerate } = createHarness();
+
+    const first = await service.runPreview('u1', withBench);
+    expect(first.benchmark?.refId).toBe(NESTED_ID);
+    expect(first.benchmark?.unresolvedPct).toBe(0);
+
+    // The owner empties the nested child. Neither the benchmark's id nor any
+    // other field of the request changes — the child's id never appears in it.
+    editConglomerate(CONG_ID, 'My Mix', []);
+
+    const second = await service.runPreview('u1', withBench);
+    // Half the benchmark now resolves to nothing, and the overlay is the
+    // surviving remainder rather than the pre-edit basket.
+    expect(second.benchmark?.unresolvedPct).toBeCloseTo(50, 9);
+    expect(second.benchmark?.series).not.toEqual(first.benchmark?.series);
+    expect(second.benchmark?.stats.totalReturnPct).not.toBeCloseTo(
+      first.benchmark!.stats.totalReturnPct,
+      6,
+    );
+  });
+
+  it('recomputes after the benchmark basket itself is re-weighted', async () => {
+    const { service, editConglomerate } = createHarness();
+    const first = await service.runPreview('u1', withBench);
+
+    editConglomerate(NESTED_ID, 'Nested Mix', [{ kind: 'asset', assetId: 'B', weightPct: 100 }]);
+
+    const second = await service.runPreview('u1', withBench);
+    expect(second.benchmark?.stats.totalReturnPct).not.toBeCloseTo(
+      first.benchmark!.stats.totalReturnPct,
+      6,
+    );
+  });
+
+  it('still answers two genuinely identical requests from the memo', async () => {
+    const { service, store, historyCalls } = createHarness();
+
+    const first = await service.runPreview('u1', withBench);
+    const calls = historyCalls();
+    expect(calls).toBeGreaterThan(0);
+
+    const repeat = await service.runPreview('u1', withBench);
+    // Content-addressing the benchmark must not disable memoisation: the repeat
+    // does no provider work at all and writes no second entry.
+    expect(historyCalls()).toBe(calls);
+    expect(store.size).toBe(1);
+    expect(repeat).toEqual(first);
   });
 });
 
@@ -447,6 +600,60 @@ describe('backtestService.runPreview — custom benchmarks (V4-P7)', () => {
     ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
   });
 
+  it('422s a benchmark whose history STOPS inside the window, exactly like one that starts late (#1811)', async () => {
+    const { service } = createHarness();
+    // The primary runs the whole 3Y window (LONG: 2024-01-02 → 2026-01-05); the
+    // benchmark was delisted 2025-06-15 after falling 100 → 5. Its START is
+    // fine, so the clip notice is silent and this used to be accepted: a stats
+    // grid claiming ~50 pp of outperformance that is mostly the half-year the
+    // benchmark did not exist for, under a series that just stops.
+    const primary = { positions: [{ assetId: 'LONG', weight: 100 }], range: '3Y' as const };
+    await expect(
+      service.runPreview('u1', { ...primary, benchmark: { assetId: 'DELISTED' } }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+    // Named and worded exactly as the comparison path already refuses (#1755).
+    await expect(
+      service.runPreview('u1', { ...primary, benchmark: { assetId: 'DELISTED' } }),
+    ).rejects.toMatchObject({
+      message:
+        'Benchmark DELISTED does not cover the backtest window — its data ends 2025-06-15, before 2026-01-05.',
+    });
+  });
+
+  it('tolerates a benchmark tail gap a trading calendar explains', async () => {
+    const { service } = createHarness();
+    // `HOLIDAY_SHY` is alive throughout; its exchange was simply closed on the
+    // window's final day. Refusing that would refuse every cross-market
+    // benchmark on any day the two calendars disagree.
+    const res = await service.runPreview('u1', {
+      positions: [{ assetId: 'LONG', weight: 100 }],
+      range: '3Y',
+      benchmark: { assetId: 'HOLIDAY_SHY' },
+    });
+    expect(() => backtestResponseSchema.parse(res)).not.toThrow();
+    expect(res.benchmark?.series.at(-1)?.date).toBe('2026-01-02');
+    expect(res.endDate).toBe('2026-01-05');
+  });
+
+  it('422s a duplicated position in every mode × schedule, instead of 500ing on the rebalance (#1811)', async () => {
+    const { service } = createHarness();
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      for (const rebalance of ['none', 'monthly'] as const) {
+        await expect(
+          service.runPreview('u1', {
+            positions: [
+              { assetId: 'A', weight: 60 },
+              { assetId: 'A', weight: 40 },
+            ],
+            range: '1Y',
+            mode,
+            rebalance,
+          }),
+        ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+      }
+    }
+  });
+
   it('every benchmark choice is its own memo-key axis', () => {
     const keys = new Set([
       backtestPreviewCacheKey('u1', { ...PREVIEW, benchmark: null }, 'EUR'),
@@ -468,6 +675,14 @@ const CB = '018f0000-0000-7000-8000-0000000000b1'; // 100 % B
 const CC = '018f0000-0000-7000-8000-0000000000c1'; // 100 % C — a late listing (starts 2026-01-02)
 const CD = '018f0000-0000-7000-8000-0000000000d1'; // 100 % A
 const CN = '018f0000-0000-7000-8000-0000000000e1'; // 100 % of CA — a NESTED basket
+const CEMPTY = '018f0000-0000-7000-8000-0000000000c2'; // no positions at all
+const CPARENT = '018f0000-0000-7000-8000-0000000000c3'; // 60 % A + 40 % of the EMPTY basket
+const CL = '018f0000-0000-7000-8000-0000000000f1'; // 100 % LONG — the coverage primary
+const CX = '018f0000-0000-7000-8000-0000000000f2'; // 100 % DELISTED — stops mid-window
+const CH = '018f0000-0000-7000-8000-0000000000f3'; // 100 % HOLIDAY_SHY — a 3-day tail gap
+const CG = '018f0000-0000-7000-8000-0000000000f4'; // 100 % GAP_START — a 27-day head gap
+const CJ = '018f0000-0000-7000-8000-0000000000f5'; // 100 % HOLIDAY_LATE — a 2-day head gap
+const CS = '018f0000-0000-7000-8000-0000000000f6'; // 100 % STALE_TAIL — stops one day after CX
 
 /** An asset or nested constituent, as the repository serves it. */
 type StubConstituent =
@@ -488,6 +703,35 @@ const COMPARISON_CONGLOMERATES: Record<string, { name: string; positions: StubCo
   [CN]: {
     name: 'Nested A/B Mix',
     positions: [{ kind: 'conglomerate', childId: CA, weightPct: 100 }],
+  },
+  [CEMPTY]: { name: 'Bonds', positions: [] },
+  [CPARENT]: {
+    name: 'Core',
+    positions: [
+      { kind: 'asset', assetId: 'A', weightPct: 60 },
+      { kind: 'conglomerate', childId: CEMPTY, weightPct: 40 },
+    ],
+  },
+  [CL]: { name: 'Long Runner', positions: [{ kind: 'asset', assetId: 'LONG', weightPct: 100 }] },
+  [CX]: {
+    name: 'Delisted Co',
+    positions: [{ kind: 'asset', assetId: 'DELISTED', weightPct: 100 }],
+  },
+  [CH]: {
+    name: 'Shut Friday',
+    positions: [{ kind: 'asset', assetId: 'HOLIDAY_SHY', weightPct: 100 }],
+  },
+  [CG]: {
+    name: 'Gap Runner',
+    positions: [{ kind: 'asset', assetId: 'GAP_START', weightPct: 100 }],
+  },
+  [CJ]: {
+    name: 'Shut Monday',
+    positions: [{ kind: 'asset', assetId: 'HOLIDAY_LATE', weightPct: 100 }],
+  },
+  [CS]: {
+    name: 'Quiet Tail',
+    positions: [{ kind: 'asset', assetId: 'STALE_TAIL', weightPct: 100 }],
   },
 };
 
@@ -639,13 +883,227 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
     expect(caReturn - cbReturn).not.toBeCloseTo(0, 6); // the two baselines really differ
   });
 
-  it('rejects a non-primary series that does not cover the primary window (2-series alignment semantics)', async () => {
+  it('rejects a series that does not cover the shared window, whichever id sorts first (#1811, #1832)', async () => {
+    // The pre-#1832 fixture pair here was [CA, CC] — a basket that merely LISTS
+    // later than its sibling. That is no longer a refusal: a younger basket now
+    // sets the shared window (see the test below), so this proves the refusal
+    // that survives, on the fixture ids the new semantics need. `Gap Runner` has
+    // history since 2022, so it declares the whole window and then has no price
+    // for its first 27 days — and it is refused whether it sorts first or last,
+    // where before whichever basket sorted first was never checked at all.
+    const run = (longId: string, gapId: string) => {
+      const { service, catalog } = createComparisonHarness();
+      catalog.set(longId, {
+        name: 'Long Runner',
+        positions: [{ kind: 'asset', assetId: 'LONG', weightPct: 100 }],
+      });
+      catalog.set(gapId, {
+        name: 'Gap Runner',
+        positions: [{ kind: 'asset', assetId: 'GAP_START', weightPct: 100 }],
+      });
+      return service.runComparison('u1', { conglomerateIds: [longId, gapId], range: '3Y' });
+    };
+
+    for (const [longId, gapId] of [
+      [CL, CG], // the gap basket sorts LAST — the pre-#1832 covered case
+      [CG, CL], // …and FIRST, where it used to escape the coverage rule entirely
+    ] as const) {
+      await expect(run(longId, gapId)).rejects.toMatchObject({
+        statusCode: 422,
+        code: 'BACKTEST_UNAVAILABLE',
+        message:
+          'Conglomerate Gap Runner does not cover the comparison window — its data starts 2024-01-29, after 2024-01-02.',
+      });
+    }
+  });
+
+  it('opens the shared window at the youngest basket’s listing, whichever id sorts first (#1832)', async () => {
+    // The issue's scenario in the fixture's own numbers: `Old` has history from
+    // 2025-12-30, `Young` lists 2026-01-02. The window used to be whichever
+    // basket sorted first — so `Old` first opened it at 2025-12-30 and 422'd
+    // `Young`, while the IDENTICAL request with the ids the other way round
+    // succeeded over 2026-01-02. The honest shared window is the latest common
+    // start, and the ids may not decide which of the two is used.
+    const run = (oldId: string, youngId: string) => {
+      const { service, catalog } = createComparisonHarness();
+      catalog.set(oldId, {
+        name: 'Old',
+        positions: [
+          { kind: 'asset', assetId: 'A', weightPct: 60 },
+          { kind: 'asset', assetId: 'B', weightPct: 40 },
+        ],
+      });
+      catalog.set(youngId, {
+        name: 'Young',
+        positions: [{ kind: 'asset', assetId: 'C', weightPct: 100 }],
+      });
+      return service.runComparison('u1', { conglomerateIds: [oldId, youngId], range: 'MAX' });
+    };
+
+    const oldSortsFirst = await run(CA, CC);
+    const youngSortsFirst = await run(CC, CA);
+
+    for (const cmp of [oldSortsFirst, youngSortsFirst]) {
+      expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+      // The latest common start, not the older basket's own t₀.
+      expect(cmp.startDate).toBe('2026-01-02');
+      expect(cmp.endDate).toBe('2026-01-05');
+      // …and every series really spans the window it is charted over.
+      for (const s of cmp.series) {
+        expect(s.series[0]!.date).toBe(cmp.startDate);
+        expect(s.series.at(-1)!.date).toBe(cmp.endDate);
+        expect(s.series[0]!.value).toBeCloseTo(100, 10);
+      }
+    }
+
+    // Same outcome AND the same numbers, series by series (the ids are swapped,
+    // so they line up by name): 60 % of A's 120→132 plus 40 % of a flat B, and
+    // C's 10→11.
+    const statsByName = (cmp: Awaited<ReturnType<typeof run>>) =>
+      new Map(cmp.series.map((s) => [s.name, s.stats]));
+    expect(statsByName(youngSortsFirst)).toEqual(statsByName(oldSortsFirst));
+    expect(statsByName(oldSortsFirst).get('Old')!.totalReturnPct).toBeCloseTo(6, 10);
+    expect(statsByName(oldSortsFirst).get('Young')!.totalReturnPct).toBeCloseTo(10, 10);
+  });
+
+  it('measures the tail against the furthest any series reached, not the calendar’s today', async () => {
     const { service } = createComparisonHarness();
-    // CA's window starts 2025-12-30; CC (100 % C) only lists from 2026-01-02, so
-    // it cannot cover the window — a 422, exactly as a short V4-P7 benchmark.
+    // Both baskets stopped six months ago — a provider that went quiet, not a
+    // delisting: the pair is a fortnight-stale comparison, not an impossible
+    // one. `Quiet Tail` reaches one day further than `Delisted Co`, which is
+    // inside the same grace the head side uses.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CX, CS], range: '3Y' });
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.startDate).toBe('2024-01-02');
+    // The reported end is still the day EVERY curve reaches.
+    expect(cmp.endDate).toBe('2025-06-15');
+    for (const s of cmp.series) expect(s.series.at(-1)!.date >= cmp.endDate).toBe(true);
+  });
+
+  it('refuses a series whose data STOPS inside the window, like one that starts late (#1755)', async () => {
+    const { service } = createComparisonHarness();
+    // The issue's scenario, in the fixture's own numbers: the primary runs the
+    // whole window; the second basket's only holding was delisted 2025-06-15
+    // after falling 100 → 5. Its START is fine — both list on 2024-01-02 — so
+    // the clip notice is silent and this used to be accepted and charted.
     await expect(
-      service.runComparison('u1', { conglomerateIds: [CA, CC], range: '1Y' }),
+      service.runComparison('u1', { conglomerateIds: [CL, CX], range: '3Y' }),
     ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+    // Named, exactly as a start-clipped series is named.
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CL, CX], range: '3Y' }),
+    ).rejects.toMatchObject({ message: expect.stringContaining('Delisted Co') });
+
+    // What that refusal is protecting the grid from: run the same basket on its
+    // own and its CAGR is annualised over the 1.45 years it survived, not over
+    // the window a comparison would print it in.
+    const solo = await service.runPreview('u1', {
+      positions: [{ assetId: 'DELISTED', weight: 100 }],
+      range: '3Y',
+    });
+    expect(solo.startDate).toBe('2024-01-02');
+    expect(solo.endDate).toBe('2025-06-15'); // the line just stops
+    const years = (start: string, end: string) =>
+      (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / (86_400_000 * 365.25);
+    const survived = (Math.pow(0.05, 1 / years('2024-01-02', '2025-06-15')) - 1) * 100;
+    const overTheWindow = (Math.pow(0.05, 1 / years('2024-01-02', '2026-01-05')) - 1) * 100;
+    expect(solo.stats.cagrPct).toBeCloseTo(survived, 6);
+    // The two are ~10 pp apart, and the shorter one is the more dramatic — which
+    // is precisely why it may not be differenced against a full-window series.
+    expect(survived).toBeLessThan(overTheWindow - 9);
+  });
+
+  it('tolerates a tail gap a trading calendar explains, and never reports an end a series misses', async () => {
+    const { service } = createComparisonHarness();
+    // `Shut Friday` is alive throughout; its exchange was simply closed on the
+    // primary's final day. A coverage check with no grace would refuse every
+    // cross-market comparison on any day the two calendars disagree.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CL, CH], range: '3Y' });
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.series.map((s) => s.conglomerateId)).toEqual([CL, CH]);
+
+    // …and the reported window end is the last day EVERY charted series reaches,
+    // not the primary's own — a response never claims an end one of its curves
+    // stops short of.
+    expect(cmp.endDate).toBe('2026-01-02');
+    for (const s of cmp.series) {
+      expect(s.series.at(-1)!.date >= cmp.endDate).toBe(true);
+    }
+  });
+
+  it('refuses a series that STARTS materially after the window, not only one clipped by its listing (#1811)', async () => {
+    const { service } = createComparisonHarness();
+    // `Gap Runner` has history since 2023, so no clip notice fires and it used
+    // to be accepted: its first day inside the window is 2024-01-29, 27 days
+    // after the primary's t₀, and every stat it contributed to the grid was
+    // measured over a window 27 days shorter than the one the response claimed.
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CL, CG], range: '3Y' }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CL, CG], range: '3Y' }),
+    ).rejects.toMatchObject({
+      message:
+        'Conglomerate Gap Runner does not cover the comparison window — its data starts 2024-01-29, after 2024-01-02.',
+    });
+
+    // Why no notice caught it: the clip notice only fires when a basket's
+    // common start is after the requested one, and this basket's history goes
+    // back to 2022. Asked for a window opening 2023-01-05 it silently opens on
+    // its first day after the gap — a shorter window, reported as the primary's.
+    const solo = await service.runPreview('u1', {
+      positions: [{ assetId: 'GAP_START', weight: 100 }],
+      range: '3Y',
+    });
+    expect(solo.notice).toBeNull();
+    expect(solo.startDate).toBe('2024-01-29');
+  });
+
+  it('tolerates a head gap a trading calendar explains, and never reports a start a series misses', async () => {
+    const { service } = createComparisonHarness();
+    // `Shut Monday` is alive throughout; its exchange was simply closed on the
+    // primary's first day. Two days is inside the same grace the tail side uses.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CL, CJ], range: '3Y' });
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.series.map((s) => s.conglomerateId)).toEqual([CL, CJ]);
+
+    // The reported window is the span EVERY curve reaches: it opens on the
+    // latest first day (2024-01-04, not the primary's 2024-01-02) and closes on
+    // the earliest last one — a response never claims a date a curve of its own
+    // does not have.
+    expect(cmp.startDate).toBe('2024-01-04');
+    expect(cmp.endDate).toBe('2026-01-05');
+    for (const s of cmp.series) {
+      expect(s.series[0]!.date <= cmp.startDate).toBe(true);
+      expect(s.series.at(-1)!.date >= cmp.endDate).toBe(true);
+    }
+  });
+
+  it('reports each series’ unresolved share, and the benchmark path reports its own', async () => {
+    const { service } = createComparisonHarness();
+    // `Core` is 60 % A + 40 % of an EMPTY basket: the flatten drops the child and
+    // normalizes A to 100, so the curve is the 60 % leg alone. Saying so is what
+    // stops the chart claiming to be the whole basket while the calculator on
+    // the same screen withholds 40 % of the budget.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CA, CPARENT], range: '1Y' });
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.series[0]!.unresolvedPct).toBe(0);
+    expect(cmp.series[1]!.unresolvedPct).toBeCloseTo(40, 9);
+    // It IS the 100 %-A curve — the number above is the only thing that says so.
+    expect(cmp.series[1]!.stats.totalReturnPct).toBeCloseTo(32, 6);
+
+    // The V4-P7 benchmark path resolves through the same flatten and reports it
+    // too; an asset benchmark is always fully resolved.
+    const withCong = await service.runPreview('u1', {
+      ...PREVIEW,
+      benchmark: { conglomerateId: CPARENT },
+    });
+    expect(withCong.benchmark?.unresolvedPct).toBeCloseTo(40, 9);
+    const withAsset = await service.runPreview('u1', {
+      ...PREVIEW,
+      benchmark: { assetId: 'D' },
+    });
+    expect(withAsset.benchmark?.unresolvedPct).toBe(0);
   });
 
   it("404s when a conglomerate is not the caller's", async () => {
@@ -717,26 +1175,88 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
               { assetId: 'A', weight },
               { assetId: 'B', weight: 100 - weight },
             ],
+            unresolvedPct: 0,
           },
-          { id: CB, name: 'All B', positions: [{ assetId: 'B', weight: 100 }] },
+          { id: CB, name: 'All B', positions: [{ assetId: 'B', weight: 100 }], unresolvedPct: 0 },
         ],
       });
     expect(keyFor(60)).toBe(keyFor(60));
     expect(keyFor(60)).not.toBe(keyFor(90));
   });
 
-  it('the baseline is not part of the core memo key (same ids/params share the core)', () => {
+  it('neither the baseline NOR the id order is part of the core memo key', () => {
     const base = { conglomerateIds: [CA, CB], range: '1Y' as const };
     expect(backtestComparisonCacheKey('u1', base, 'EUR')).toBe(
       backtestComparisonCacheKey('u1', { ...base, baselineId: CB }, 'EUR'),
     );
-    // Id ORDER is part of the key — the first id defines the window.
-    expect(backtestComparisonCacheKey('u1', base, 'EUR')).not.toBe(
+    // A comparison is a SET (#1755): re-ordering the picker is the same
+    // comparison and must hit the same entry. Keying by the ordered list gave
+    // one six-basket set 720 keys per (range, mode, frequency) — a memo that
+    // could essentially never be hit twice.
+    expect(backtestComparisonCacheKey('u1', base, 'EUR')).toBe(
       backtestComparisonCacheKey('u1', { conglomerateIds: [CB, CA], range: '1Y' }, 'EUR'),
+    );
+    // …and that holds for the compositions the key is content-addressed by, in
+    // whatever order the caller resolved them.
+    const compositions = [
+      { id: CA, name: 'A/B Mix', positions: [{ assetId: 'A', weight: 100 }], unresolvedPct: 0 },
+      { id: CB, name: 'All B', positions: [{ assetId: 'B', weight: 100 }], unresolvedPct: 0 },
+    ];
+    expect(backtestComparisonCacheKey('u1', base, 'EUR', { compositions })).toBe(
+      backtestComparisonCacheKey('u1', { conglomerateIds: [CB, CA], range: '1Y' }, 'EUR', {
+        compositions: [compositions[1]!, compositions[0]!],
+      }),
+    );
+    // An empty nested child changes what a basket IS without changing its
+    // resolved vector, so the unresolved share is part of the identity too.
+    expect(backtestComparisonCacheKey('u1', base, 'EUR', { compositions })).not.toBe(
+      backtestComparisonCacheKey('u1', base, 'EUR', {
+        compositions: [{ ...compositions[0]!, unresolvedPct: 40 }, compositions[1]!],
+      }),
     );
     expect(backtestComparisonCacheKey('u1', base, 'EUR')).not.toBe(
       backtestComparisonCacheKey('u1', base, 'EUR', { globalOnly: true }),
     );
+  });
+
+  it('answers a re-ordered comparison from the memo, in the caller’s own order', async () => {
+    const { service, store, historyCalls } = createComparisonHarness();
+    const forward = await service.runComparison('u1', {
+      conglomerateIds: [CA, CB, CD],
+      range: '1Y',
+    });
+    const warm = historyCalls();
+    const entries = store.size;
+
+    const reversed = await service.runComparison('u1', {
+      conglomerateIds: [CD, CB, CA],
+      range: '1Y',
+    });
+    // No second engine run and no second memo entry — the same comparison.
+    expect(historyCalls()).toBe(warm);
+    expect(store.size).toBe(entries);
+    // The RESPONSE still follows the request: the chart legend and the grid's
+    // columns are the caller's order, with each series' own stats attached.
+    expect(reversed.series.map((s) => s.conglomerateId)).toEqual([CD, CB, CA]);
+    expect(reversed.baselineId).toBe(CD);
+    const statsById = new Map(forward.series.map((s) => [s.conglomerateId, s.stats]));
+    for (const s of reversed.series) expect(s.stats).toEqual(statsById.get(s.conglomerateId));
+    // Deltas follow the new default baseline, not the old one.
+    expect(reversed.series[0]!.deltas.totalReturnPct).toBe(0);
+  });
+
+  it('loads each shared asset ONCE across the compared baskets', async () => {
+    const { service, historyCalls } = createComparisonHarness();
+    // CA is 60/40 A/B, CB is 100 % B, CD is 100 % A, CN resolves to CA's A/B
+    // mix: four baskets, seven resolved positions, but only TWO distinct assets.
+    // Loading per occurrence charged the provider layer (and the row read) once
+    // per occurrence — at the contract's ceilings, 1500 loads for 250 assets.
+    const cmp = await service.runComparison('u1', {
+      conglomerateIds: [CA, CB, CD, CN],
+      range: '1Y',
+    });
+    expect(cmp.series).toHaveLength(4);
+    expect(historyCalls()).toBe(2);
   });
 });
 
@@ -843,6 +1363,122 @@ describe('backtestService.runSharedSandboxPreview', () => {
       expect(sandbox.series[index]!.date).toBe(handFlattened.series[index]!.date);
       expect(sandbox.series[index]!.value).toBeCloseTo(handFlattened.series[index]!.value, 10);
     }
+
+    // …and what that aggregate must never become is the OPAQUE CHILD's own
+    // curve (#1755). The child is 60/40 A/B; this mix is 68/32, and the
+    // difference is what the root's public 20 % of A is doing. The redaction is
+    // a mix, so it has to stay one.
+    const childCurve = await service.runPreview('u1', PREVIEW);
+    expect(sandbox.series.at(-1)!.value).not.toBeCloseTo(childCurve.series.at(-1)!.value, 2);
+  });
+
+  it('reports the share an emptied child left unresolved instead of renormalising it away (#1832)', async () => {
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: PARTIAL_ROOT_ID,
+      positions: [
+        { id: 'A', weight: 60 },
+        { id: EMPTIED_CHILD_ID, weight: 40 },
+      ],
+      range: '1Y',
+    });
+    const parsed = sharedSandboxAggregateResponseSchema.parse(sandbox);
+
+    // The curve IS 100 % A: the flatten drops the emptied child and normalizes
+    // the survivor back to 100, so the series, total return, drawdown and
+    // best/worst day are a single-asset basket's…
+    const allA = await service.runPreview('u1', {
+      positions: [{ assetId: 'A', weight: 100 }],
+      range: '1Y',
+    });
+    expect(parsed.series).toEqual(allA.series);
+    expect(parsed.stats).toEqual(allA.stats);
+    // …and this number is the only thing that says so. Without it the response
+    // is byte-identical to the same basket at [A 100], presented to the viewer
+    // as the shared basket at its own stored weights.
+    expect(parsed.unresolvedPct).toBeCloseTo(40, 9);
+
+    // A fully-resolved nested basket is now distinguishable from it: it says 0.
+    const resolved = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: NESTED_ID,
+      positions: [
+        { id: CONG_ID, weight: 50 },
+        { id: 'A', weight: 50 },
+      ],
+      range: '1Y',
+    });
+    expect(sharedSandboxAggregateResponseSchema.parse(resolved).unresolvedPct).toBe(0);
+
+    // The unresolvable row stays part of the pinned id set — a viewer may not
+    // drop it to make the basket look whole.
+    await expect(
+      service.runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: PARTIAL_ROOT_ID,
+        positions: [{ id: 'A', weight: 60 }],
+        range: '1Y',
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
+  });
+
+  it('refuses a sandbox that collapses the basket onto the opaque child (#1755)', async () => {
+    const { service } = createHarness();
+    // The extraction: hold the public sibling at a rounding error and push the
+    // nested row as high as the wire allows. The child's share goes to ~100 %,
+    // so the "aggregate-only" series, stats, max drawdown, best/worst days and
+    // startDate become the hidden basket's own — no algebra required.
+    const extract = (childWeight: number) =>
+      service.runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: NESTED_ID,
+        positions: [
+          { id: CONG_ID, weight: childWeight },
+          { id: 'A', weight: 0.001 },
+        ],
+        range: '1Y',
+      });
+
+    // Layer one, the contract: the original 1_000_000 never reaches the service.
+    const overWire = sharedSandboxPreviewRequestSchema.safeParse({
+      positions: [
+        { id: CONG_ID, weight: 1_000_000 },
+        { id: 'A', weight: 0.001 },
+      ],
+      range: '1Y',
+    });
+    expect(overWire.success).toBe(false);
+
+    // Layer two, the service: an in-contract 100 still leaves the child at
+    // 99.999 % of the basket, so the bound is on the resulting SHARE.
+    await expect(extract(100)).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'SANDBOX_NESTED_SHARE_CAP',
+    });
+
+    // Re-weighting inside the bound stays fully available, and even at the cap
+    // the response is a genuine mix — not the child's curve.
+    expect(SANDBOX_MAX_NESTED_SHARE_PCT).toBe(90);
+    const atCap = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: NESTED_ID,
+      positions: [
+        { id: CONG_ID, weight: 90 },
+        { id: 'A', weight: 10 },
+      ],
+      range: '1Y',
+    });
+    const childCurve = await service.runPreview('u1', PREVIEW);
+    expect(atCap.series.at(-1)!.value).not.toBeCloseTo(childCurve.series.at(-1)!.value, 2);
+  });
+
+  it('leaves a root that IS one nested basket alone — the share is not the viewer’s doing', async () => {
+    const { service } = createHarness();
+    // `Opaque Root` is 100 % of its child in the SHARE ITSELF, so its stored
+    // share is already 100 %. Bounding that would refuse "reset to shared" for
+    // a basket the viewer is already allowed to see the curve of.
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: HIDDEN_ROOT_ID,
+      positions: [{ id: HIDDEN_CHILD_ID, weight: 100 }],
+      range: '1Y',
+    });
+    expect(sharedSandboxAggregateResponseSchema.safeParse(sandbox).success).toBe(true);
   });
 
   it('never serializes hidden descendant identities through contributions, notices or entry events', async () => {

@@ -124,6 +124,7 @@ export const V5_SURFACE_INVENTORY = [
       'admin/pages/AccountDefaultsPage.tsx',
       'user/components/Avatar.tsx',
       'user/components/profileIcons.tsx',
+      'user/control/panels/ProfileIconPicker.tsx',
       'user/control/panels/ProfilePanel.tsx',
     ],
     copyRoots: ['admin.accountDefaults', 'profile.icon'],
@@ -301,6 +302,29 @@ export const V5_SURFACE_INVENTORY = [
       ),
     },
     tests: ['admin/AdminApp.test.tsx', 'admin/components/AdminLayout.test.tsx'],
+  },
+  {
+    id: 'p2-admin-list-paging',
+    phases: ['P2'],
+    // Owns no route: it is the footer three P2-bounded admin lists render, and
+    // each of those routes is claimed by the phase surface that ships the page.
+    routes: [],
+    components: ['admin/components/ListPagination.tsx'],
+    copyRoots: ['admin.pagination'],
+    copyReview:
+      'The page footer #1814 gives the API-keys, invites and registration lists when V5-P2 bounded them: a range line and Previous/Next, in EN + DE. One component so the three surfaces cannot drift apart.',
+    states: {
+      loading: notAsync('Renders from the window its parent already loaded; it fetches nothing.'),
+      empty: notAsync(
+        'Renders nothing at all when one page holds everything — an operator with four invites sees no paging chrome.',
+      ),
+      error: notAsync('It owns no read, so it has no failure of its own to report.'),
+    },
+    tests: [
+      'admin/pages/ApiKeysPage.test.tsx',
+      'admin/pages/InvitesPage.test.tsx',
+      'admin/pages/RegistrationPage.test.tsx',
+    ],
   },
   {
     id: 'p2-admin-operations',
@@ -869,15 +893,20 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/admin/security'],
     components: ['admin/pages/SecuritySettingsPage.tsx'],
     copyRoots: ['admin.security'],
-    copyReview: 'Independent 6–24 h admin-session policy and no-step-up wording reviewed.',
+    copyReview:
+      'Independent 6–24 h admin-session policy and no-step-up wording reviewed, plus the expiry notice the console signs out with (#1779, EN + DE).',
     states: {
-      loading: unverified('2FA and session-policy resources render localized Spinner states.'),
+      loading: covered(
+        'Both resources (2FA status, session policy) render a localized Spinner while pending.',
+      ),
       empty: notAsync(
         'Policy is a required singleton; 2FA method absence is an actionable setup state.',
       ),
-      error: unverified('Both resource failures expose retry; save validation remains inline.'),
+      error: covered(
+        'Both resource failures render a localized Alert with retry; the keyless writes with no factor to verify (session policy, recovery-code regenerate, email-method turn-off) route through the shared write seam, so an expired admin window signs the console out with a translated notice instead of an inline banner. The factor-verifying writes — the TOTP-disable code field and the shared enroll/confirm forms this page renders (admin/components/twoFactor.tsx: TOTP enroll + confirm, email start + confirm) — keep their own mapping, because their 401/400 is a rejected code rather than auth loss, and each pins the expiry path explicitly through admin/sessionExpiry.ts. Only range validation stays purely inline.',
+      ),
     },
-    tests: ['admin/pages/SecuritySettingsPage.test.tsx'],
+    tests: ['admin/pages/SecuritySettingsPage.test.tsx', 'admin/sessionExpiry.test.tsx'],
   },
 ] as const satisfies readonly V5SurfaceReview[];
 
@@ -962,7 +991,7 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/pages/AuditPage.tsx',
     reason: 'no-v5-deliverable',
-    note: 'V1 admin audit log (#11); still English-only.',
+    note: 'V1 admin audit log (#11); fully catalogued in EN + DE by #1848, which also stopped it rendering the server error envelope.',
   },
   {
     path: 'admin/pages/EmailPage.tsx',
@@ -1607,11 +1636,26 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     delegatedTo: 'AudiencePicker',
   },
   {
+    component: 'user/social/CommentThread.tsx',
+    read: 'CommentThread.head',
+    states: ['loading'],
+    reason:
+      'While the 30 s poll of the newest window (#1855) is unresolved the surface renders exactly what the paged read left there, and that read owns the loading and empty states for the whole thread: a spinner for a background tick would report a transport detail the reader never asked for. Its FAILURE is observed (#1872) — the poll is the only read still running after mount, so it is the one that learns the item’s audience has narrowed under an open thread, and it collapses or retries the surface by the same rule as the summary read.',
+    delegatedTo: 'CommentThread.thread',
+  },
+  {
     component: 'user/components/CmdKPalette.tsx',
     read: 'CmdKPalette.capabilities',
     states: ['loading', 'error'],
     reason:
       'The deploy-time capability bootstrap defaults to "offered", so an unresolved or failed read leaves the palette exactly as it was — there is no state to draw, and the server stays the real boundary.',
+  },
+  {
+    component: 'user/workboard/WorkboardPage.tsx',
+    read: 'UpcomingEarningsZone.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the zone ASKS for the earnings calendar at all (#1874); an unresolved or failing bootstrap leaves the optional zone absent, which is the state binding P5 already prescribes when unconfigured.',
   },
   {
     component: 'user/workboard/WorkboardPage.tsx',
@@ -1671,6 +1715,34 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'The shared hook returns the complete query to MirrorInvitesSection, which renders loading and classifies terminal versus retryable failures in Social requests.',
     delegatedTo: 'MirrorInvitesSection',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'DividendsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874). While it is unresolved or failing the block is absent exactly as binding P5 requires when unconfigured, which is what the intel read below would draw anyway — there is no state of its own, and the server stays the real boundary.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'EarningsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874); an unresolved or failing bootstrap leaves the optional earnings block absent, which is the state binding P5 already prescribes when unconfigured.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'NewsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874); an unresolved or failing bootstrap leaves the optional news block absent, which is the state binding P5 already prescribes when unconfigured.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'SplitsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874); an unresolved or failing bootstrap leaves the optional splits block absent, which is the state binding P5 already prescribes when unconfigured.',
   },
   {
     component: 'user/assets/AssetDetailPage.tsx',
@@ -1761,6 +1833,13 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI, and the floating panel simply is not mounted.',
   },
   {
+    component: 'user/portfolio/ImportPage.tsx',
+    read: 'ImportPage.aiCapability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate decides only whether the upload step discloses that the generic staging path draws on the shared daily AI budget (#1857); an unresolved or failed read is treated exactly like "no provider configured", so the line is simply absent and the wizard is byte-identical — a skeleton or an error card there would report an AI bootstrap as an import failure.',
+  },
+  {
     component: 'user/parked/ParkedPage.tsx',
     read: 'AiGatedParked.capability',
     states: ['loading', 'error'],
@@ -1820,14 +1899,6 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'Every dynamic endpoint query is passed to its matching VaultManagerRow, which renders a disabled loading action or a retry action in the exact vault row.',
     delegatedTo: 'VaultManagerRow',
-  },
-  {
-    component: 'user/home/HomePage.tsx',
-    read: 'HomeBoard.$destructured',
-    states: ['loading', 'error'],
-    reason:
-      'AccountModeRoot resolves the same account-scoped privacy query before the authenticated home board can mount.',
-    delegatedTo: 'AccountModeRoot',
   },
   {
     component: 'user/control/panels/ConnectionsPanel.tsx',
@@ -2096,8 +2167,36 @@ export type V5AsyncStateDebtLedger = Readonly<
  * are the §6.18 gate — an unresolved or failed read is treated exactly like
  * "no provider configured", so there is no loading or error state to draw — and
  * are recorded as exemptions above rather than as debt; the ceiling stays zero.
+ *
+ * 223 → 224 with the V5-P8 poll bound (#1855): `CommentThread`'s 30 s poll moves
+ * off the infinite query — which refetched EVERY loaded page per tick — onto a
+ * read of the newest window alone. That read is a refresh of a page the thread
+ * read has already drawn, so it has no states of its own: it delegates to the
+ * paged read and is recorded as an exemption above, and the ceiling stays zero.
+ *
+ * 224 → 225 with the V5-P12 import-budget disclosure (#1857): the import
+ * wizard's upload step reads the same AI capability to decide whether to say
+ * that a generically-staged file spends the caller's shared daily AI budget.
+ * It is the §6.18 gate again — unresolved or failed reads render nothing about
+ * AI and leave the wizard exactly as a deployment without a provider sees it —
+ * so it is an exemption above, not debt, and the ceiling stays zero.
+ *
+ * 225 → 230 with the V5-P5 intel gating (#1874): the asset page's four intel
+ * blocks and the Workboard's earnings zone now read the deploy capability and
+ * gate their request on it, so a deployment with the arc off spends no round
+ * trips on reads that could only answer `available: false`. Each capability read
+ * decides ONLY whether its block asks — while unresolved or failing, the block
+ * stays absent exactly as binding P5 prescribes when unconfigured — so all five
+ * are exemptions above, not debt, and the ceiling stays zero.
+ *
+ * 230 → 229 with the V5-P13b home sync gate (#1878): `HomeBoard` no longer opens
+ * a read at all. It used to call `usePrivacyMode()` — a second, account-UNSCOPED
+ * `['vault','media']` query, unshared with the one the account gate already
+ * resolved — whose failure silently demoted the board to a device-local copy.
+ * The mode now comes from that gate's published context, which is synchronous,
+ * so the site and its delegated-to-AccountModeRoot exemption are both gone.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 223;
+export const V5_ASYNC_READ_SITE_BASELINE = 229;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -2293,7 +2392,11 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
  */
 export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
   'admin/pages/AnnouncementsPage.tsx': 36,
-  'admin/pages/AuditPage.tsx': 13,
+  // 13 → 0 with #1848: the page rendered the server's raw error envelope — the
+  // offender #1814 was meant to be the last of — and every label around it was
+  // English-only. Both are now catalogue copy in EN + DE, so the same zero-floor
+  // ratchet as the W2 pages below applies here.
+  'admin/pages/AuditPage.tsx': 0,
   'admin/pages/EmailPage.tsx': 21,
   // 14 → 0 and 46 → 0 with the admin rebuild W2 (#1406). Both pages were
   // rewritten and are now fully catalogued in EN + DE — InvitesPage was the
@@ -2303,4 +2406,73 @@ export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
   // re-spending a budget nobody is watching.
   'admin/pages/InvitesPage.tsx': 0,
   'admin/pages/UserDetailPage.tsx': 0,
+};
+
+/**
+ * Object-literal property names whose string value reaches the user as copy.
+ *
+ * The JSX scanner above only sees what a `.tsx` module renders as JSX, so a
+ * sentence assembled as `{ error: 'price must be greater than 0.' }` — or one
+ * living in a plain `.ts` helper — passed every gate (V5-P14, #1745; the blind
+ * spot `docs/i18n.md` describes as (a) and (b)). These are the sinks the
+ * non-JSX scanner reads: a literal parked on one of them is copy until proven
+ * otherwise, and the proof is a catalog key, not a comment.
+ */
+export const USER_FACING_SINK_PROPERTIES = [
+  'description',
+  'error',
+  'hint',
+  'label',
+  'message',
+  'notice',
+  'placeholder',
+  'reason',
+  'subtitle',
+  'title',
+] as const;
+
+/**
+ * Frozen non-JSX sink debt, by file — the ratchet for
+ * {@link USER_FACING_SINK_PROPERTIES}, seeded at the count that survived
+ * #1745's fixes. Read it exactly like {@link LEGACY_LITERAL_COPY}: a file may
+ * only ever go DOWN, no file may join the map, and a literal on a sink in any
+ * other module fails the suite.
+ *
+ * What is recorded here, and why it is not simply localized:
+ *
+ * - `user/vault/**` — English `message:` fields on internal error objects.
+ *   They are diagnostic codes, not rendered sentences: the UI dispatches the
+ *   accompanying `code` through `vaultStoreErrorKey` / `errorCopy.ts`, which
+ *   `registry.test.ts` proves carries EN + DE copy for every member. #1745
+ *   leaves them alone by scope.
+ * - `ui/charts/fixtures.ts` — sample-series `label`s (ticker symbols and
+ *   "Cash") in demo fixtures; they name instruments, not UI copy.
+ * - the three `error:`-keyed tone maps (`ImportPreviewTable`, admin `ui.tsx`,
+ *   `ProblemsPage`) — the value is a palette token (`red`, `neg`), which the
+ *   property name alone cannot distinguish from a sentence. Recorded rather
+ *   than special-cased, so the gate keeps no silent exceptions.
+ *
+ * Those last two groups (the 7 fixture labels and the 3 tone tokens) are
+ * **terminal, not reducible**: they are not copy, so nothing will ever localize
+ * them away. The ratchet therefore has a permanent floor of 10 — it is a
+ * "must not grow" guard for them, and a real burn-down only for the
+ * `user/vault/**` rows above.
+ */
+export const LEGACY_SINK_COPY: Readonly<Record<string, number>> = {
+  'admin/components/ui.tsx': 1,
+  'admin/pages/ProblemsPage.tsx': 1,
+  'ui/charts/fixtures.ts': 7,
+  'user/portfolio/import/ImportPreviewTable.tsx': 1,
+  'user/vault/drive/driveDataHome.ts': 17,
+  'user/vault/drive/gisTokenClient.ts': 4,
+  'user/vault/engine/errors.ts': 2,
+  'user/vault/engine/paranoidPortfolioStore.ts': 2,
+  'user/vault/media/driveConnection.ts': 1,
+  'user/vault/media/driveMigration.ts': 5,
+  'user/vault/media/mediaSwitcher.ts': 6,
+  'user/vault/media/replicatedDataHome.ts': 2,
+  'user/vault/portfolioStoreResolver.ts': 3,
+  'user/vault/restore.ts': 7,
+  'user/vault/serverBlobDataHome.ts': 1,
+  'user/vault/standingOrders/materialize.ts': 6,
 };

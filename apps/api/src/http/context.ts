@@ -45,10 +45,6 @@ import { createPasskeyRepository } from '../data/repositories/passkeyRepository'
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
-import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
-import { createDiscordWebhookRepository } from '../data/repositories/discordWebhookRepository';
-import { createTelegramLinkRepository } from '../data/repositories/telegramLinkRepository';
-import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createChatRepository } from '../data/repositories/chatRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
@@ -63,6 +59,7 @@ import { createWorkboardRepository } from '../data/repositories/workboardReposit
 import { createEventBus, type EventBus } from '../events';
 import {
   createBackfillScheduler,
+  createExportBuildEnqueuer,
   createQueueRegistry,
   noopBackfillScheduler,
   type BackfillScheduler,
@@ -72,7 +69,11 @@ import type { Logger } from '../logger';
 import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createHealthService, type HealthService } from '../services/health/healthService';
 import { createReadinessService, type ReadinessService } from '../services/health/readinessService';
-import { initObservability, type Observability } from '../services/observability/sentry';
+import {
+  initObservability,
+  SENTRY_REFUSED_MESSAGE,
+  type Observability,
+} from '../services/observability/sentry';
 import { createMarketData, purgeManualAssetCaches } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
@@ -151,6 +152,7 @@ import {
   createProblemService,
   type ProblemService,
 } from '../services/observability/problemService';
+import { createProblemDropTally } from '../services/observability/problemDropTally';
 import {
   createMonitoringService,
   type MonitoringService,
@@ -250,8 +252,7 @@ import {
 } from '../services/account/vaultedPortfolioEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
-import { bindHeavyTierAi } from '../services/imports/headerMappingAi';
-import { bindCheapTierAi } from '../services/imports/rowClassifierAi';
+import { bindImportAi } from '../services/imports/importAi';
 import {
   createStandingOrderService,
   type StandingOrderService,
@@ -266,7 +267,6 @@ import {
 } from '../services/customAssets/customAssetService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
-import { createFcmChannel } from '../services/notifications/fcm';
 import {
   createNotificationCenter,
   type NotificationCenter,
@@ -286,8 +286,7 @@ import {
   type NotificationSettingsService,
 } from '../services/notifications/notificationSettingsService';
 import { createPresenceStore, type PresenceStore } from '../services/notifications/presence';
-import { createTelegramChannel } from '../services/notifications/telegramChannel';
-import { createDiscordChannel } from '../services/notifications/discordChannel';
+import { createNotificationChannelSet } from '../services/notifications/channelSet';
 import {
   createTelegramSetupService,
   type TelegramSetupService,
@@ -296,7 +295,6 @@ import {
   createDiscordSetupService,
   type DiscordSetupService,
 } from '../services/notifications/discordSetupService';
-import { createWebPushChannel } from '../services/notifications/webPush';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import {
@@ -551,8 +549,9 @@ export interface AppContext {
    */
   queues: QueueRegistry | null;
   /**
-   * Error tracking handle (§13.4 V4-P5a). Real Sentry client when BT_SENTRY_DSN
-   * is set, a no-op otherwise — so the error handler always has something to call.
+   * The retired external error-tracking handle (§16 2026-07-17). Always inert —
+   * a set `BT_SENTRY_DSN` is refused, not honoured — so the error handler always
+   * has something to call and it never leaves the box.
    */
   observability: Observability;
   /** Admin health snapshot behind `GET /admin/health` (§13.4 V4-P5a). */
@@ -661,7 +660,7 @@ export interface BuildContextDeps {
    * the durable `data.export` BullMQ enqueue in production and to a direct
    * synchronous build under test (BullMQ can't run on ioredis-mock).
    */
-  exportEnqueue?: (jobId: string) => Promise<void>;
+  exportEnqueue?: (jobId: string, opts?: { delayMs?: number }) => Promise<void>;
   /** Test seam: pause an export build after collection under the transition lock. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Test seam: shrink the export build ceilings so the refusal path is provable. */
@@ -721,9 +720,10 @@ export interface BuildContextDeps {
 export function buildContext(deps: BuildContextDeps): AppContext {
   const { config, db, redis, logger } = deps;
 
-  // Error tracking (§13.4 V4-P5a): a real Sentry client only when BT_SENTRY_DSN
-  // is set (never in tests), else a no-op — so the error handler wiring below is
-  // unconditional and boot is byte-identical when the DSN is absent.
+  // Error tracking (§16 2026-07-17): external Sentry is retired, so this NEVER
+  // initialises an SDK — it returns an inert handle, and reports a configured
+  // DSN as a refusal that becomes a problem row below. The error handler wiring
+  // stays unconditional either way.
   const observability = initObservability(config, logger, { serverName: 'api' });
 
   const userRepo = createUserRepository(db);
@@ -792,7 +792,24 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement):
   // built early so the market-data breaker below can report provider failures
   // into it. Rate-capped + PII-scrubbed; the admin resolve flow uses `audit`.
-  const problems = createProblemService({ repo: createProblemRepository(db), audit, logger });
+  // The worker refuses its own captures against its own in-memory budget, and
+  // every `kind: 'job'` capture happens there — so the admin list reads that
+  // process's tally out of Redis and publishes the merged number.
+  const workerDropTally = createProblemDropTally(redis, 'worker', { logger });
+  const problems = createProblemService({
+    repo: createProblemRepository(db),
+    audit,
+    logger,
+    peerDrops: () => workerDropTally.read(),
+  });
+  // A retired-Sentry DSN in the env is an operator who believes errors are being
+  // collected somewhere they are not. Say it where the operator actually looks.
+  if (observability.refusedDsn) {
+    problems.captureError(new Error(SENTRY_REFUSED_MESSAGE), {
+      process: 'api',
+      source: 'config',
+    });
+  }
 
   // First-party usage analytics (§13.5 V5-P2 arc (b)): the capture side buffers
   // in memory and flushes on a timer in real processes; tests keep the timer off
@@ -915,51 +932,24 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const notificationRepo = createNotificationRepository(db);
   const notificationDigestRepo = createNotificationDigestRepository(db);
-  const deviceTokenRepo = createDeviceTokenRepository(db);
-  const pushSubscriptionRepo = createPushSubscriptionRepository(db);
-  // V4-P10 additive channels: Telegram (per-user chat link, bot token in env)
-  // and Discord (per-user webhook URL, encrypted at rest via secretBox).
-  const telegramLinkRepo = createTelegramLinkRepository(db);
-  const discordWebhookRepo = createDiscordWebhookRepository(db);
   const alertRepo = createAlertRepository(db);
   // Written by the realtime gateway, read at dispatch time (cross-process via
   // Redis) to suppress notifying about the surface the user is viewing (#368).
   const presence = createPresenceStore({ redis });
 
-  // Push channels, env-gated (#421): null = unconfigured/unloadable (one warn
-  // log inside the factory). The nulls also drive the settings surface's
-  // channel-availability report, so the UI can only offer live columns.
-  const fcmChannel = createFcmChannel({
-    serviceAccountFile: config.push.fcmServiceAccountFile,
+  // Every outbound channel (+ its store) comes from the ONE shared factory the
+  // worker entry uses too (#1723) — the API and worker dispatchers cannot be
+  // given different channel sets without a compile error.
+  const {
     devices: deviceTokenRepo,
-    logger,
-  });
-  const webPushChannel = createWebPushChannel({
-    vapid: config.webPush,
     subscriptions: pushSubscriptionRepo,
-    logger,
-  });
-  // Telegram channel (V4-P10, V5-P0 kill-switch): null when the global env
-  // kill-switch is OFF or BT_TELEGRAM_BOT_TOKEN is unset — the matrix column
-  // stays hidden, the setup routes 404, and the dispatcher below skips the
-  // channel entirely. Existing rows are preserved for a later re-enable.
-  const telegramChannel = config.telegram.enabled
-    ? createTelegramChannel({
-        botToken: config.telegram.botToken,
-        links: telegramLinkRepo,
-        logger,
-      })
-    : null;
-  // Discord channel (V4-P10, V5-P0 kill-switch): null when the global env
-  // kill-switch is OFF — same treatment as Telegram, per-user webhook rows are
-  // preserved so a flip-back restores them.
-  const discordChannel = config.discord.enabled
-    ? createDiscordChannel({
-        webhooks: discordWebhookRepo,
-        encryptionKey: config.recordEncryption,
-        logger,
-      })
-    : null;
+    telegramLinks: telegramLinkRepo,
+    discordWebhooks: discordWebhookRepo,
+    fcm: fcmChannel,
+    webPush: webPushChannel,
+    telegram: telegramChannel,
+    discord: discordChannel,
+  } = createNotificationChannelSet({ db, config, logger });
 
   // The delivery core. The WORKER runs the authoritative instance inside the
   // `notifications.dispatch` job; this API-side twin serves synchronous test
@@ -976,6 +966,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     webPush: webPushChannel,
     telegram: telegramChannel,
     discord: discordChannel,
+    // V5-P0 kill-switch (#1795): while a channel is deactivated the dispatcher
+    // asks whether the recipient still holds the link the switch preserves — a
+    // linked user's event is left undelivered and re-deliverable instead of
+    // being marked delivered and lost. Never queried while the channel is live.
+    deactivatedLinks: {
+      telegram: async (userId) => Boolean((await telegramLinkRepo.findForUser(userId))?.chatId),
+      discord: async (userId) => Boolean(await discordWebhookRepo.findForUser(userId)),
+    },
     presence,
     // Digest cadence + queue (V5-P3): defers a daily/weekly type's outbound
     // channels into the digest queue; the in-app row still lands instantly.
@@ -1471,12 +1469,31 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     capacity: Math.ceil(LIVE_RING_RETENTION_MS / LIVE_POLL_INTERVAL_MS),
     retentionMs: LIVE_RING_RETENTION_MS,
   });
+  // V5 cash fusion: the classification layer ON the portfolio cash ledger, which
+  // supersedes the expense island above. Budgets are per (portfolio, tag,
+  // month). Composed BEFORE the portfolio service because that service takes
+  // `onCashWrite` — the one seam every cash write evaluates budgets through
+  // (#1754), the way the retired expense island took `onTransactionWrite`.
+  const cashBudgetRepo = createCashBudgetRepository(db);
+  const cashSummaryRepo = createCashSummaryRepository(db);
+  const cashBudgets = createCashBudgetService({
+    budgets: cashBudgetRepo,
+    summaries: cashSummaryRepo,
+    tags: cashTagRepo,
+    portfolios: portfolioRepo,
+    notify,
+    now: deps.budgetNow,
+    logger,
+  });
   const portfolio = createPortfolioService({
     portfolioRepo,
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
     cashTagRepo,
+    // The cash-write seam (#1754): deposit/withdraw/fee, transfer, movement
+    // update + delete and set-balance all re-evaluate this portfolio's budgets.
+    onCashWrite: cashBudgets.onCashWrite,
     marketData,
     currencyService: currency,
     referenceBackfill,
@@ -1491,12 +1508,27 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
     now: deps.portfolioNow,
   });
+  // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
+  // Composed BEFORE the custom-asset service, which routes a delete through it:
+  // the baskets that held the deleted asset lose those positions to the cascade
+  // and are re-run through the activation gate (#1776).
+  const conglomerateRepo = createConglomerateRepository(db);
+  const conglomerate = createConglomerateService({
+    repo: conglomerateRepo,
+    assetRepo,
+    marketData,
+    currencyService: currency,
+    audience,
+    paranoid: paranoidGuard,
+    logger,
+  });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({
     repo: customAssetRepo,
     portfolio,
     snapshots,
     vaultedPortfolio: vaultedPortfolioGuard,
+    conglomerates: conglomerate,
   });
 
   // MIRRORCHAIN replication core (§13.5 V5-P7 M2): built on top of the plain
@@ -1536,17 +1568,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Late-bind the §7 pre-delete succession hook now that `mirror` exists (see the
   // holder above `admin`); both delete paths route through it.
   mirrorDeletionHook.handleAccountDeletion = (userId) => mirror.handleAccountDeletion(userId);
-
-  // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
-  const conglomerateRepo = createConglomerateRepository(db);
-  const conglomerate = createConglomerateService({
-    repo: conglomerateRepo,
-    assetRepo,
-    marketData,
-    currencyService: currency,
-    audience,
-    paranoid: paranoidGuard,
-  });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
   // keystones to feed the pure engine over inline draft positions. V4-P7:
@@ -1639,15 +1660,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     // routine refusal.
     problems,
     paranoid: paranoidGuard,
-    // Generic staging path (#964, §16 2026-07-31): both AI tiers are OPTIONAL
-    // and neither can decide anything on its own — the heavy tier only PROPOSES
-    // column labels a human confirms, and the cheap tier's row verdicts are
-    // review-flagged. `bindHeavyTierAi` refuses under a test runner by design,
-    // and either binder may throw when no provider is configured; `safeSeam` in
-    // the service turns all of that into "run deterministically", so an import
-    // never fails because AI is unavailable.
-    headerAi: (userId) => bindHeavyTierAi(ai, userId),
-    rowAi: (userId) => bindCheapTierAi(ai, userId),
+    // Generic staging path (#964, §16 2026-07-31): both AI seams are OPTIONAL
+    // and neither can decide anything on its own — the header seam only PROPOSES
+    // column labels a human confirms, and the row seam's verdicts are
+    // review-flagged. They are the SAME seam bound twice, because §6.18
+    // configures one local model and one per-user daily budget; there is no tier
+    // to pick between (#1857). A binder that throws (no provider configured) is
+    // turned into "run deterministically" by `safeSeam` in the service, so an
+    // import never fails because AI is unavailable.
+    headerAi: (userId) => bindImportAi(ai, userId),
+    rowAi: (userId) => bindImportAi(ai, userId),
   });
 
   // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from
@@ -1689,22 +1711,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     paranoid: paranoidGuard,
   });
 
-  // V5 cash fusion: the classification layer ON the portfolio cash ledger, which
-  // supersedes the expense island above. Tags are per user, budgets per
-  // (portfolio, tag, month), rules per user. `cashAutoTag` is what stamps a
-  // freshly-booked movement with its app-owned system tag — see `cashAutoTag.ts`
-  // for the kind → tag table and what an edited trade does to a manual tag.
-  const cashBudgetRepo = createCashBudgetRepository(db);
-  const cashSummaryRepo = createCashSummaryRepository(db);
-  const cashTags = createCashTagService({ tags: cashTagRepo, rules: cashRuleRepo });
-  const cashBudgets = createCashBudgetService({
-    budgets: cashBudgetRepo,
-    summaries: cashSummaryRepo,
+  // V5 cash fusion, part 2: tags + auto-tagging rules, per user. The budgets
+  // half is composed above the portfolio service, which takes its write seam.
+  // `cashAutoTag` is what stamps a freshly-booked movement with its app-owned
+  // system tag — see `cashAutoTag.ts` for the kind → tag table and what an
+  // edited trade does to a manual tag.
+  const cashTags = createCashTagService({
     tags: cashTagRepo,
-    portfolios: portfolioRepo,
-    notify,
-    now: deps.budgetNow,
-    logger,
+    rules: cashRuleRepo,
+    // A retag decides what a movement counts against, so it evaluates budgets
+    // exactly like the money write that booked it (#1754).
+    onCashWrite: cashBudgets.onCashWrite,
   });
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
@@ -1782,15 +1799,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // env-gated at the channel level; Discord is always available (per-user
   // webhook, no server env). Both are strictly user-scoped by construction.
   const telegramSetup = createTelegramSetupService({
+    // The kill-switch alone gates the service's refusals; `enabled` additionally
+    // requires the bot token and drives `available` (#1795).
+    offered: config.telegram.offered,
     enabled: config.telegram.enabled,
     botToken: config.telegram.botToken,
     links: telegramLinkRepo,
+    // Recipient locale for the link-confirmation chat message (#1723).
+    users: userRepo,
     channel: telegramChannel,
     logger,
   });
   const discordSetup = createDiscordSetupService({
     enabled: config.discord.enabled,
     webhooks: discordWebhookRepo,
+    // Recipient locale for the save probe + test message (#1723).
+    users: userRepo,
     channel: discordChannel,
     encryptionKey: config.recordEncryption,
     logger,
@@ -1866,10 +1890,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const exportEnqueue =
     deps.exportEnqueue ??
     (queues
-      ? async (jobId: string) => {
-          await queues.enqueue('data.export', { jobId });
-        }
-      : (jobId: string) => exportHolder.service!.buildExport(jobId));
+      ? // The queue mapping (including `delayMs` → BullMQ `delay`) lives once in
+        // `createExportBuildEnqueuer` so this root and the worker's cannot drift.
+        createExportBuildEnqueuer(queues)
+      : (jobId: string, opts?: { delayMs?: number }) =>
+          // The synchronous test transport has no equivalent of a delayed
+          // re-drive, and re-entering the build inline would recurse instead of
+          // waiting; a test that exercises the deferral supplies its own seam.
+          opts?.delayMs !== undefined
+            ? Promise.resolve()
+            : exportHolder.service!.buildExport(jobId));
   const dataExport = createExportService({
     config,
     db,
@@ -1961,7 +1991,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       const resolved = await auth.resolveSession(sessionId, userAgent);
       if (!resolved) return null;
       // Carry the absolute session deadline as part of socket state, so an idle
-      // connection cannot outlive the cookie that originally authenticated it.
+      // connection cannot outlive the session that originally authenticated it.
+      // `getSessionInfo` reports the EARLIEST bound that applies: the §6.1
+      // persistence window, and for an admin principal its absolute 6–24 h
+      // lifetime (§13.5 V5-P13c) — so an admin socket is scheduled to close on
+      // the admin clock, not on the 30-day user cookie. The 30 s principal sweep
+      // below re-runs `resolveSession` and remains the enforcement either way.
       const session = await auth.getSessionInfo(sessionId);
       if (!session) return null;
       return {

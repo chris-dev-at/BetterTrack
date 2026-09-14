@@ -791,6 +791,103 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
         .status,
     ).toBe(401);
   });
+
+  // The case an operator most needs the log for: the suspension committed, the
+  // cleanup did not, and the request failed. The record of the suspension has to
+  // outlive that failure (§6.12 — every `/admin/*` action is audit-logged).
+  it('audits a suspension whose cleanup fails, naming the step that did not complete', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser({
+      email: 'unaudited@test.dev',
+      username: 'unaudited_user',
+    });
+
+    const revoke = vi
+      .spyOn(harness.ctx.apiKeys, 'revokeAllForUser')
+      .mockRejectedValueOnce(new Error('simulated revocation failure'));
+    const failed = await adminAgent
+      .patch(`/api/v1/admin/users/${user.id}`)
+      .set(...XRW)
+      .send({ status: 'disabled' });
+    expect(failed.status).toBe(500);
+    revoke.mockRestore();
+
+    const [suspended] = await harness.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(suspended!.status).toBe('disabled');
+
+    const disabledRows = (
+      await harness.db.select().from(schema.auditLog).where(eq(schema.auditLog.targetId, user.id))
+    ).filter((entry) => entry.action === 'user.disabled');
+    expect(disabledRows).toHaveLength(1);
+    expect(disabledRows[0]!.meta).toEqual({ cleanup: 'incomplete', step: 'api_keys' });
+  });
+
+  it('audits a repeat disable that only repairs, instead of recording nothing', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser({ email: 'repeat@test.dev', username: 'repeat_user' });
+
+    for (const attempt of [1, 2]) {
+      const res = await adminAgent
+        .patch(`/api/v1/admin/users/${user.id}`)
+        .set(...XRW)
+        .send({ status: 'disabled' });
+      expect(res.status, `attempt ${attempt}`).toBe(200);
+    }
+
+    const disabledRows = (
+      await harness.db.select().from(schema.auditLog).where(eq(schema.auditLog.targetId, user.id))
+    ).filter((entry) => entry.action === 'user.disabled');
+    expect(disabledRows).toHaveLength(2);
+    // The second call changed no status but did repair work — it is recorded as
+    // a repair rather than disappearing from the log entirely.
+    expect(disabledRows.map((entry) => entry.meta)).toEqual(
+      expect.arrayContaining([null, { repair: true }]),
+    );
+  });
+});
+
+describe('interrupted admin delete (PROJECTPLAN.md §6.12)', () => {
+  it('audits the reservation suspension when a post-commit step throws', async () => {
+    const actor = await harness.seedAdmin();
+    const target = await harness.seedUser({
+      email: 'delete-interrupted@test.dev',
+      username: 'delete_interrupted',
+    });
+
+    const succession = vi
+      .spyOn(harness.ctx.mirror, 'handleAccountDeletion')
+      .mockRejectedValueOnce(new Error('simulated succession failure'));
+    await expect(
+      harness.ctx.admin.deleteUser(target.id, target.username, { id: actor.id }),
+    ).rejects.toThrow(/simulated succession failure/);
+    succession.mockRestore();
+
+    // The account is reserved (disabled) and locked out — and that is now
+    // visible, instead of an audit log that shows nothing at all.
+    const [reserved] = await harness.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, target.id));
+    expect(reserved!.status).toBe('disabled');
+
+    const entries = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.targetId, target.id));
+    const suspension = entries.find((entry) => entry.action === 'user.disabled');
+    expect(suspension?.meta).toEqual({
+      via: 'admin',
+      reason: 'delete_incomplete',
+      cleanup: 'incomplete',
+      statusChanged: true,
+    });
+    expect(entries.some((entry) => entry.action === 'user.deleted')).toBe(false);
+  });
 });
 
 describe('invite lifecycle (PROJECTPLAN.md §6.1, §6.12)', () => {
@@ -1205,7 +1302,17 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
       .set(...XRW)
       .send({ action: 'disable', userIds: [idA, idB] });
     expect(bulk.status).toBe(200);
-    expect(bulk.body).toEqual({ action: 'disable', disabled: 2, skipped: 0 });
+    expect(bulk.body).toEqual({
+      action: 'disable',
+      disabled: 2,
+      skipped: 0,
+      repaired: 0,
+      failed: 0,
+      results: expect.arrayContaining([
+        { userId: idA, outcome: 'disabled' },
+        { userId: idB, outcome: 'disabled' },
+      ]),
+    });
 
     const users = await adminAgent.get('/api/v1/admin/users');
     const byId = new Map(
@@ -1256,7 +1363,17 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
       { action: 'disable', userIds: [first.id, second.id] },
       { id: staleActor.id },
     );
-    expect(bulk).toEqual({ action: 'disable', disabled: 1, skipped: 1 });
+    expect(bulk).toEqual({
+      action: 'disable',
+      disabled: 1,
+      skipped: 1,
+      repaired: 0,
+      failed: 0,
+      results: expect.arrayContaining([
+        { userId: expect.any(String), outcome: 'disabled' },
+        { userId: expect.any(String), outcome: 'skipped' },
+      ]),
+    });
 
     expect(await users.countActiveAdmins()).toBe(1);
     const statuses = await Promise.all([
@@ -1264,6 +1381,72 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
       users.findById(second.id).then((user) => user?.status),
     ]);
     expect(statuses.sort()).toEqual(['active', 'disabled']);
+  });
+
+  it('finishes the batch when one row fails cleanup, and reports it per row', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const doomed = await harness.seedUser({ email: 'batch-a@test.dev', username: 'batch_a' });
+    const other = await harness.seedUser({ email: 'batch-b@test.dev', username: 'batch_b' });
+
+    const revoke = vi
+      .spyOn(harness.ctx.apiKeys, 'revokeAllForUser')
+      .mockImplementation(async (userId: string) => {
+        if (userId === doomed.id) throw new Error('simulated revocation failure');
+      });
+    const bulk = await adminAgent
+      .post('/api/v1/admin/users/bulk')
+      .set(...XRW)
+      .send({ action: 'disable', userIds: [doomed.id, other.id] });
+    revoke.mockRestore();
+
+    // No bare 500: the batch reports what happened to each row.
+    expect(bulk.status).toBe(200);
+    expect(bulk.body.disabled).toBe(1);
+    expect(bulk.body.failed).toBe(1);
+    expect(bulk.body.results).toEqual(
+      expect.arrayContaining([
+        { userId: doomed.id, outcome: 'cleanup_failed' },
+        { userId: other.id, outcome: 'disabled' },
+      ]),
+    );
+
+    // Both suspensions are durable, and both are in the log — the failed one
+    // saying so, rather than 37-of-40 suspensions going unrecorded forever.
+    const rows = await harness.db.select().from(schema.auditLog);
+    const disabledFor = (userId: string) =>
+      rows.find((entry) => entry.action === 'user.disabled' && entry.targetId === userId);
+    expect(disabledFor(doomed.id)?.meta).toEqual({
+      via: 'bulk',
+      cleanup: 'incomplete',
+      step: 'api_keys',
+    });
+    expect(disabledFor(other.id)?.meta).toEqual({ via: 'bulk' });
+    for (const id of [doomed.id, other.id]) {
+      const [row] = await harness.db.select().from(schema.users).where(eq(schema.users.id, id));
+      expect(row!.status).toBe('disabled');
+    }
+  });
+
+  it('repairs an already-disabled row instead of silently skipping it', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser({ email: 'again@test.dev', username: 'again_user' });
+    await createUserRepository(harness.db).setStatus(user.id, 'disabled');
+
+    const bulk = await adminAgent
+      .post('/api/v1/admin/users/bulk')
+      .set(...XRW)
+      .send({ action: 'disable', userIds: [user.id] });
+    expect(bulk.status).toBe(200);
+    expect(bulk.body).toMatchObject({ disabled: 0, skipped: 0, repaired: 1, failed: 0 });
+
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.targetId, user.id));
+    const repair = rows.find((entry) => entry.action === 'user.disabled');
+    expect(repair?.meta).toEqual({ via: 'bulk', repair: true });
   });
 });
 

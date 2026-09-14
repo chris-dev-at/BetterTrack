@@ -63,13 +63,27 @@ export interface RateLimiters {
    * Cost-metered guard for one expensive endpoint (§10 COST TABLE, #1643).
    * Mounted per route with the endpoint's declared weight KEY — the units
    * themselves live in `config/env.ts` and are never inlined at a call site.
+   *
+   * `multiplier` prices a route whose work scales with its own input (#1755):
+   * the declared weight is then the price of ONE unit of that work and this
+   * reads how many the request asks for, off the raw body — the meter still runs
+   * before `validateBody`, so a malformed body cannot buy a free pass. A
+   * multiplier must be bounded by the route's own contract (a caller may not
+   * name its own price) and must not throw.
    */
-  cost: (endpoint: RequestCostKey) => RequestHandler;
+  cost: (endpoint: RequestCostKey, multiplier?: (req: Request) => number) => RequestHandler;
   /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
   apiKey: RequestHandler;
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
+  /**
+   * Ordinary social interaction writes, per user (#1855) — friend circles and
+   * the V5-P8 comment/reaction surface. Its own namespace, so it neither spends
+   * nor inherits the anti-probing budget {@link RateLimiters.social} holds for
+   * friend-request creation.
+   */
+  socialWrite: RequestHandler;
   /** Authenticated feedback capture, per author. */
   feedback: RequestHandler;
   /** Support-thread replies, per author — independent of the capture budget. */
@@ -99,6 +113,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     requestCosts,
     search,
     social,
+    socialWrite,
     feedback,
     feedbackThread,
     vault,
@@ -116,12 +131,13 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
    *
    * `cost` is the number of allowance UNITS one request spends (§10 COST
    * TABLE); it defaults to 1, which is the plain request-count behaviour every
-   * limiter but `expensive` uses.
+   * limiter but `expensive` uses. A function is evaluated per request, for a
+   * route whose work scales with its input (#1755).
    */
   const guard = (
     limiters: readonly ProgressiveLimiter[],
     keyGenerator: (req: Request) => string,
-    cost = 1,
+    cost: number | ((req: Request) => number) = 1,
   ): RequestHandler => {
     return (req, res, next) => {
       if (!enabled) {
@@ -129,9 +145,10 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
         return;
       }
       const key = keyGenerator(req);
+      const units = typeof cost === 'function' ? cost(req) : cost;
       void (async () => {
         for (const limiter of limiters) {
-          const decision = await limiter.consume(key, cost);
+          const decision = await limiter.consume(key, units);
           if (!decision.allowed) {
             // The SPA's fetch chokepoint reads Retry-After to drive its toast.
             res.setHeader('Retry-After', String(decision.retryAfterSec));
@@ -221,6 +238,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   const expensiveLimiter = createProgressiveLimiter(ctx.redis, 'expensive', expensive);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
+  const socialWriteLimiter = createProgressiveLimiter(ctx.redis, 'social_write', socialWrite);
   const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
   const feedbackThreadLimiter = createProgressiveLimiter(
     ctx.redis,
@@ -239,7 +257,14 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     // account's expensive traffic can never close another's. A route mounts
     // this IN ADDITION to the app-wide `general` guard; whichever dimension
     // runs out first produces the same 429 envelope.
-    cost: (endpoint) => guard([expensiveLimiter], keyByUserOrIp, requestCosts[endpoint]),
+    cost: (endpoint, multiplier) =>
+      guard(
+        [expensiveLimiter],
+        keyByUserOrIp,
+        multiplier === undefined
+          ? requestCosts[endpoint]
+          : (req) => requestCosts[endpoint] * multiplier(req),
+      ),
     apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.
@@ -247,6 +272,10 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     search: guard([searchLimiter], keyByUserOrIp),
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
+    // Friend circles and the V5-P8 comment/reaction writes, per user (#1855).
+    // A capacity budget in its own namespace: exhausting it never closes the
+    // friend-request rail above, and exhausting that rail never closes this one.
+    socialWrite: guard([socialWriteLimiter], keyByUserOrIp),
     // Text-only feedback creation is deliberately small-volume: five accepted
     // POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),

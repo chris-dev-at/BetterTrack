@@ -620,6 +620,33 @@ export const FRIEND_GROUP_NAME_MAX = 60;
 export const friendGroupNameSchema = z.string().trim().min(1).max(FRIEND_GROUP_NAME_MAX);
 
 /**
+ * How many circles ONE user may own, and how many members ONE circle may hold
+ * (§13.5 V5-P8). Both are contract constants because they bound a READ every
+ * `AudiencePicker` open performs: `GET /social/groups` hydrates every group of
+ * the caller together with every group's roster, so without a ceiling the cost
+ * of that one request is chosen by the caller (#1780). The server refuses the
+ * write that would cross either line, the repository reads carry the matching
+ * `LIMIT`, and the SPA reads the same numbers so it can say WHICH ceiling was
+ * hit before the request is made.
+ *
+ * The numbers are product ceilings, not storage limits: a named circle is a
+ * hand-curated audience ("Family", "Work"), so dozens is generous and hundreds
+ * is a different feature. 30 × 200 bounds the worst-case picker read at 6 000
+ * roster rows.
+ */
+export const FRIEND_GROUPS_MAX = 30;
+export const FRIEND_GROUP_MEMBERS_MAX = 200;
+
+/**
+ * The typed refusal `POST /social/groups/:groupId/members` answers with when the
+ * circle is genuinely full (§8 error envelope). Shared so the SPA can name that
+ * ceiling — the one refusal the owner can act on, by removing a member they can
+ * see — instead of folding it into the generic "could not update the group"
+ * (#1830).
+ */
+export const FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE = 'FRIEND_GROUP_MEMBER_LIMIT_REACHED';
+
+/**
  * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
  * one user, its members are a subset of the owner's accepted friends, and it is
  * private to the owner — nobody else can see or use it. `members` is the current
@@ -751,7 +778,13 @@ export const PROFILE_BIO_MAX = 280;
  */
 export const updateProfileSettingsRequestSchema = z
   .object({
-    isPublic: z.boolean(),
+    /**
+     * The public-profile opt-in. OMITTING it leaves the current opt-in exactly
+     * as it is — an icon-only write (the paranoid Account row) must not carry a
+     * profile-visibility write it never meant to make. Enabling still requires
+     * an explicit `true` plus `acknowledgePublic: true`.
+     */
+    isPublic: z.boolean().optional(),
     bio: z.string().max(PROFILE_BIO_MAX).nullable().optional(),
     acknowledgePublic: z.boolean().optional(),
     /**
@@ -915,6 +948,11 @@ export type CommentThreadQuery = z.infer<typeof commentThreadQuerySchema>;
  * older page. `commentCount` is the whole thread's live count — the collapsed
  * count the SPA renders without ever fetching a page (anti-bloat), which the
  * cheaper {@link commentThreadSummaryResponseSchema} serves on its own.
+ *
+ * The count is always the exact live total, but it is not always a separate
+ * query: a first page that did not fill IS the whole live thread, so the server
+ * takes the count from the page it already read and never issues a `count(*)`
+ * (#1725). A page that filled, and every cursor page, still counts.
  */
 export const commentThreadResponseSchema = z
   .object({
@@ -932,7 +970,13 @@ export type CommentThreadResponse = z.infer<typeof commentThreadResponseSchema>;
  * The collapsed thread head: the live comment count + the item-level reactions,
  * with no comment bodies at all. Same audience rule as the thread itself. The
  * SPA reads THIS while the section is collapsed, so a 20 000-comment thread
- * costs one count and one aggregate instead of the whole conversation.
+ * costs one count and one aggregate instead of the whole conversation — and
+ * since #1725 that is true of the *work* as well as the response: the count is
+ * served by `item_comments_thread_idx`, which is partial on the tombstone, and
+ * it loads no row body at all. (An audience-narrowed thread additionally
+ * filters by author, a column that index does not carry, so that variant still
+ * checks the heap per candidate row — bounded to the thread's live entries
+ * either way.)
  */
 export const commentThreadSummaryResponseSchema = z
   .object({

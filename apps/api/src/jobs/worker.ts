@@ -5,7 +5,7 @@ import { jobOutcomesTotal } from '../metrics';
 
 import { type JobConnectionFactory } from './connection';
 import { isPermanentFailure } from './deadLetter';
-import type { JobContext, JobDefinition } from './types';
+import type { JobContext, JobDefinition, JobPayload, JobRunSummary, QueueName } from './types';
 
 /**
  * Turns a list of {@link JobDefinition}s into running BullMQ workers
@@ -122,6 +122,39 @@ export function handleWorkerError(params: {
   onWorkerError?.(err, { queue });
 }
 
+/**
+ * The ONE place a job definition is executed (§13.5 V5-P2 arc (c)).
+ *
+ * A definition that declares a {@link JobDefinition.featureFlag} runs only while
+ * that switch is ON; otherwise the run is SHED — the handler is never entered,
+ * so there is no evaluation, no side effect and no consumption of a per-run
+ * idempotency bucket (an `(alert, window)` key, say). Re-enabling therefore
+ * cannot find a window silently burnt by a run that was never allowed to fire.
+ *
+ * The read happens here, per run, rather than in each handler: a handler-local
+ * `if` is exactly what the next producer forgets. A flag read that throws is
+ * left to propagate — the job fails and BullMQ retries it — because the one
+ * outcome a kill switch must never produce is "the read failed, so we fired".
+ *
+ * Exported so a test can drive the same path the worker takes without a live
+ * BullMQ engine (which needs a real Redis; ioredis-mock cannot run its Lua).
+ */
+export async function runJobDefinition<N extends QueueName>(
+  definition: JobDefinition<N>,
+  job: Job<JobPayload<N>>,
+  ctx: JobContext,
+): Promise<void | JobRunSummary> {
+  const flag = definition.featureFlag;
+  if (flag && !(await ctx.isFeatureEnabled(flag))) {
+    ctx.logger.info(
+      { queue: definition.name, flag },
+      'job shed — the feature it produces for is switched off',
+    );
+    return;
+  }
+  return await definition.handler(job, ctx);
+}
+
 export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
   const { createConnection, definitions, ctx, logger, onPermanentFailure, onWorkerError } = deps;
 
@@ -133,8 +166,9 @@ export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
         // `returnvalue`, which is how the admin operations cockpit can say what
         // last night's sweep deleted (#1406 W4). `JobRunSummary` is counts-only,
         // so this can carry no identifier; handlers that return nothing are
-        // unaffected and store `null`.
-        return await def.handler(job as never, ctx);
+        // unaffected and store `null`. The kill-switch shed lives in
+        // `runJobDefinition`, which is the only entry into a handler.
+        return await runJobDefinition(def, job as never, ctx);
       },
       { connection: createConnection(), ...def.workerOptions },
     );

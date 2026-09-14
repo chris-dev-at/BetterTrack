@@ -1,5 +1,6 @@
 import type {
   AssetRef,
+  DividendEvent,
   DividendsResponse,
   EarningsCalendarEntry,
   EarningsCalendarResponse,
@@ -11,6 +12,7 @@ import type {
   MarketIntelStatusResponse,
   NewsDigestGroup,
   NewsDigestResponse,
+  NewsHeadline,
   NewsResponse,
   SplitsResponse,
 } from '@bettertrack/contracts';
@@ -22,7 +24,184 @@ import type { MarketIntelRepository } from '../../data/repositories/marketIntelR
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
-import { capRollupSubjects } from './rollupBudget';
+import { marketIntelDisplayDay } from './displayDay';
+import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
+
+/**
+ * Headlines one digest group may carry. The bound lives HERE, in the
+ * provider-abstracted service, not in whichever provider answered: the Yahoo
+ * provider happens to ask for 20 (`providers/yahooProvider.ts`), but a second
+ * news provider returning hundreds must not flow straight through to the client
+ * (#1758). With the per-request fan-out cap this states the response ceiling:
+ * at most {@link MARKET_INTEL_ROLLUP_MAX_ASSETS} groups ×
+ * {@link NEWS_DIGEST_HEADLINES_PER_GROUP} headlines — and, after the cross-group
+ * dedupe below, at most that many DISTINCT articles in total.
+ */
+export const NEWS_DIGEST_HEADLINES_PER_GROUP = 10;
+
+/** The stated ceiling on one digest response, in headlines. */
+export const NEWS_DIGEST_MAX_HEADLINES =
+  MARKET_INTEL_ROLLUP_MAX_ASSETS * NEWS_DIGEST_HEADLINES_PER_GROUP;
+
+/**
+ * Payouts one dividend response may carry — 50 years of MONTHLY distributions,
+ * or 150 years of quarterly ones. This one is not a formality: the history is
+ * fetched over ALL of time (`yahooProvider.ts` asks for the `MAX` range, whose
+ * start is epoch 0 — see `historyWindow.ts`), so whatever this cuts is cut from
+ * the beginning of the asset page's only payout chart.
+ *
+ * The cadence is why the number is what it is (#1873). At 100 the comment here
+ * claimed to cut no real payer while ending a monthly distributor's history —
+ * Realty Income, JEPI, most monthly ETFs — after 8.3 years; at 300 the same
+ * claim still failed for the same asset, whose ~380 payouts since its Oct-1994
+ * listing grow by one a month. 600 leaves that record ~18 years of headroom, and
+ * covers every payout history a provider actually carries today.
+ *
+ * What is NOT claimed is that nothing can exceed it. A record longer than 600
+ * keeps its most RECENT 600 and is cut at the OLD end, silently: no `truncated`
+ * marker travels with the array, and `AssetDetailPage.tsx` prints its
+ * `historyRange` label off the SURVIVING first row, so a cut history reads as a
+ * shorter one rather than as a truncated one. That is the trade this bound
+ * makes — a provider that streams thousands of rows cannot make the asset page
+ * arbitrarily large, and the cost is paid at the old end of the chart.
+ *
+ * The bound lives HERE for the same reason {@link NEWS_DIGEST_HEADLINES_PER_GROUP}
+ * does (#1790): a provider is not a trust boundary, and a mapper is per-provider
+ * while this is the one place every provider's dividend payload passes through.
+ */
+export const DIVIDEND_HISTORY_MAX_EVENTS = 600;
+
+// The remaining per-asset payload bounds (#1873), for the same reason and in the
+// same place as DIVIDEND_HISTORY_MAX_EVENTS: whichever provider answered, every
+// payload the per-asset read API returns passes through this service, so the
+// ceiling on a response is stated once HERE and not per provider. Each is sized
+// well above what a provider serves today — the coverage is spelled out per
+// constant, in the cadence that constant's rows arrive at — so a second provider
+// returning hundreds cannot flow straight through to the client. None of them
+// carries a truncation marker either, so, exactly as above, a payload longer than
+// its bound is CUT and not flagged. Which end is cut is ENFORCED here rather than
+// inherited from the provider: the helpers below order each array by the date its
+// own rows carry before cutting, so a provider that returns a forward calendar
+// newest-first cannot cost the caller the soonest event.
+
+/**
+ * Announced future ex/pay dates one dividend response may carry — two years of
+ * monthly ones (Yahoo supplies at most a single event). A forward calendar, so
+ * the SOONEST survive ({@link soonestN}).
+ */
+export const DIVIDEND_UPCOMING_MAX_EVENTS = 24;
+
+/**
+ * Past reports one earnings response may carry — ten years of quarterly reports
+ * (Yahoo's history supplies four). A history, so the MOST RECENT reports survive
+ * ({@link latestN}); Yahoo's rows date themselves by `periodEnd` with a null
+ * `date`, which is why the ordering key reads whichever the row carries.
+ */
+export const EARNINGS_RECENT_MAX_EVENTS = 40;
+
+/**
+ * Headlines one per-asset news response may carry (the Yahoo provider asks for
+ * 20). Newest-first, so the NEWEST survive ({@link newestFirst}) — the same
+ * ordering the portfolio digest applies before its own, tighter
+ * {@link NEWS_DIGEST_HEADLINES_PER_GROUP}.
+ */
+export const NEWS_HEADLINES_MAX = 50;
+
+/**
+ * Splits one splits response may carry, per array — a century of them for any
+ * real issuer (Apple has had five). `history` is a history, so the MOST RECENT
+ * survive; `upcoming` is a forward calendar, so the soonest do.
+ */
+export const SPLIT_EVENTS_MAX = 50;
+
+/** The last `max` rows of an ascending list — the recent end of a history. */
+function lastN<T>(rows: T[], max: number): T[] {
+  return rows.length > max ? rows.slice(rows.length - max) : rows;
+}
+
+/**
+ * Ascending by the ISO date each row carries. A row without one cannot be placed
+ * against the others, so it goes to whichever end the caller is about to cut:
+ * `undated: 'first'` for a history (the old end {@link lastN} drops first),
+ * `'last'` for a forward calendar (a dateless row is never the soonest). The
+ * sort is stable, so rows sharing a date keep the provider's order.
+ */
+function ascendingByDate<T>(
+  dateOf: (row: T) => string | null,
+  undated: 'first' | 'last',
+): (a: T, b: T) => number {
+  const missing = undated === 'first' ? -1 : 1;
+  return (a, b) => {
+    const x = dateOf(a);
+    const y = dateOf(b);
+    if (x === null) return y === null ? 0 : missing;
+    if (y === null) return -missing;
+    return x < y ? -1 : x > y ? 1 : 0;
+  };
+}
+
+/**
+ * The `max` most recent rows of a history, whatever order the provider sent it
+ * in. Ordering before the cut rather than trusting the payload is the point
+ * (#1873): the contracts document these arrays as ascending, but a provider is
+ * not a trust boundary, and one that answers newest-first would otherwise have
+ * `lastN` keep exactly the rows the bound exists to drop.
+ *
+ * An array that already fits is passed through untouched — the ordering of an
+ * uncut response stays the provider's, exactly as before. What these helpers
+ * enforce is which end a CUT takes, which is the claim each constant makes.
+ */
+function latestN<T>(rows: T[], dateOf: (row: T) => string | null, max: number): T[] {
+  if (rows.length <= max) return rows;
+  return lastN([...rows].sort(ascendingByDate(dateOf, 'first')), max);
+}
+
+/** The `max` soonest rows of a forward calendar, whatever order it arrived in. */
+function soonestN<T>(rows: T[], dateOf: (row: T) => string | null, max: number): T[] {
+  if (rows.length <= max) return rows;
+  return [...rows].sort(ascendingByDate(dateOf, 'last')).slice(0, max);
+}
+
+/** Headlines newest-first; a missing publication date sorts last. */
+function newestFirst(x: NewsHeadline, y: NewsHeadline): number {
+  return (y.publishedAt ?? '').localeCompare(x.publishedAt ?? '');
+}
+
+/** The `max` newest headlines, whatever order the provider listed them in. */
+function newestN(headlines: NewsHeadline[], max: number): NewsHeadline[] {
+  if (headlines.length <= max) return headlines;
+  return [...headlines].sort(newestFirst).slice(0, max);
+}
+
+/**
+ * Dedupe + bound a provider's payout history, ascending by ex-date.
+ *
+ * Duplicates are collapsed on `(exDate, amount)`: upstream re-sending one event
+ * twice is the observed failure, and it used to add a second identical bar and
+ * shift every later point of the only payout-history chart in the product. Two
+ * rows sharing an ex-date with DIFFERENT amounts are deliberately kept: from
+ * here an amended amount and a special paid alongside the regular dividend are
+ * indistinguishable, and dropping one would silently delete real money. The
+ * chart's date axis (#1790) is what stops them distorting the series.
+ */
+function normalizeDividendHistory(history: DividendEvent[]): DividendEvent[] {
+  const seen = new Set<string>();
+  const deduped: DividendEvent[] = [];
+  for (const event of history) {
+    const key = `${event.exDate ?? ''}|${event.amount ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  deduped.sort(ascendingByDate((event: DividendEvent) => event.exDate, 'first'));
+  return lastN(deduped, DIVIDEND_HISTORY_MAX_EVENTS);
+}
+
+/** Digest groups newest-first by their most recent headline, symbol as tiebreak. */
+function byNewestHeadline(x: NewsDigestGroup, y: NewsDigestGroup): number {
+  const cmp = (y.headlines[0]?.publishedAt ?? '').localeCompare(x.headlines[0]?.publishedAt ?? '');
+  return cmp !== 0 ? cmp : x.symbol.localeCompare(y.symbol);
+}
 
 /**
  * The per-asset market-intelligence read API (PROJECTPLAN.md §13.5 V5-P5). A
@@ -199,42 +378,54 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         : await intelRepo.listUserWatchAssets(userId),
     );
 
-    // "Upcoming" is UTC-day-based: a report dated today still belongs on the
-    // panel, anything strictly before today has already happened. The guard is
-    // not optional — the keystone serves a cached earnings payload stale for up
-    // to STALE_TTL_SECONDS while the provider breaker is open, so a reported
-    // date lingers and, being the smallest key, would sort to the very front.
-    const todayStart = new Date(now()).toISOString().slice(0, 10);
+    // "Upcoming" is measured on the DISPLAY day (see displayDay.ts): a report
+    // dated today still belongs on the panel, anything strictly before today has
+    // already happened — and "today" has to be the day the entry is rendered in,
+    // or the panel keeps yesterday's report between 00:00 and 02:00 Vienna. The
+    // guard is not optional — the keystone serves a cached earnings payload
+    // stale for up to STALE_TTL_SECONDS while the provider breaker is open, so a
+    // reported date lingers and, being the smallest key, would sort to the very
+    // front.
+    const todayStart = marketIntelDisplayDay(now());
 
-    const entries: EarningsCalendarEntry[] = [];
-    for (const a of selected) {
-      const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
-      // Skip assets whose resolved provider can't serve earnings.
-      if (!marketData.intelCapabilities(ref).earnings) continue;
-      let next;
-      try {
-        const cached = await marketData.getEarningsEvents(ref);
-        next = cached.value.next;
-      } catch {
-        // A single bad upstream degrades that asset to no-entry — never a 5xx
-        // across the whole calendar (§13.5 V5-P5).
-        continue;
-      }
-      // Only dated upcoming reports make the panel; an undated/absent next drops.
-      if (!next || !next.date) continue;
-      // …and so does a report that already happened (see `todayStart`).
-      if (next.date.slice(0, 10) < todayStart) continue;
-      entries.push({
-        assetId: a.assetId,
-        symbol: a.symbol,
-        name: a.name,
-        date: next.date,
-        epsEstimate: next.epsEstimate,
-        estimated: next.estimated,
-        held: a.held,
-        watched: a.watched,
-      });
-    }
+    // Concurrently, like the news digest and the dividend calendar: the cap's
+    // sizing (rollupBudget.ts) is stated against the shared outbound queue's
+    // spacing, which only bounds the request if the reads are in flight together
+    // — serially it was one full round trip per asset, and for a paranoid caller
+    // the account-transition lock stayed held for that whole window.
+    const built = await Promise.all(
+      selected.map(async (a): Promise<EarningsCalendarEntry | null> => {
+        const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
+        // Skip assets whose resolved provider can't serve earnings.
+        if (!marketData.intelCapabilities(ref).earnings) return null;
+        let next;
+        try {
+          const cached = await marketData.getEarningsEvents(ref);
+          next = cached.value.next;
+        } catch {
+          // A single bad upstream degrades that asset to no-entry — never a 5xx
+          // across the whole calendar (§13.5 V5-P5).
+          return null;
+        }
+        // Only dated upcoming reports make the panel; an undated/absent next drops.
+        if (!next || !next.date) return null;
+        // …and so does a report that already happened (see `todayStart`).
+        if (next.date.slice(0, 10) < todayStart) return null;
+        return {
+          assetId: a.assetId,
+          symbol: a.symbol,
+          name: a.name,
+          date: next.date,
+          epsEstimate: next.epsEstimate,
+          estimated: next.estimated,
+          held: a.held,
+          watched: a.watched,
+        };
+      }),
+    );
+    // Selection order is preserved by `Promise.all`, so the sort below breaks
+    // same-date ties exactly as the serial build did.
+    const entries = built.filter((entry): entry is EarningsCalendarEntry => entry !== null);
     // Ascending by date — the next report first (the panel reads chronologically).
     entries.sort((x, y) => x.date.localeCompare(y.date));
     return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
@@ -253,7 +444,16 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).dividends) return UNAVAILABLE_DIVIDENDS;
         try {
           const cached = await marketData.getDividendEvents(ref);
-          return { available: true, ...cached.value };
+          return {
+            available: true,
+            ...cached.value,
+            history: normalizeDividendHistory(cached.value.history),
+            upcoming: soonestN(
+              cached.value.upcoming,
+              (event) => event.exDate ?? event.payDate,
+              DIVIDEND_UPCOMING_MAX_EVENTS,
+            ),
+          };
         } catch {
           // A provider error/timeout (or an open breaker with nothing cached)
           // degrades to unavailable — never a 5xx on an asset page (§13.5 V5-P5).
@@ -267,7 +467,15 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).earnings) return UNAVAILABLE_EARNINGS;
         try {
           const cached = await marketData.getEarningsEvents(ref);
-          return { available: true, ...cached.value };
+          return {
+            available: true,
+            ...cached.value,
+            recent: latestN(
+              cached.value.recent,
+              (event) => event.date ?? event.periodEnd,
+              EARNINGS_RECENT_MAX_EVENTS,
+            ),
+          };
         } catch {
           return UNAVAILABLE_EARNINGS;
         }
@@ -279,7 +487,7 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).news) return UNAVAILABLE_NEWS;
         try {
           const cached = await marketData.getNewsHeadlines(ref);
-          return { available: true, headlines: cached.value };
+          return { available: true, headlines: newestN(cached.value, NEWS_HEADLINES_MAX) };
         } catch {
           return UNAVAILABLE_NEWS;
         }
@@ -291,7 +499,12 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).splits) return UNAVAILABLE_SPLITS;
         try {
           const cached = await marketData.getSplitEvents(ref);
-          return { available: true, ...cached.value };
+          return {
+            available: true,
+            ...cached.value,
+            history: latestN(cached.value.history, (event) => event.date, SPLIT_EVENTS_MAX),
+            upcoming: soonestN(cached.value.upcoming, (event) => event.date, SPLIT_EVENTS_MAX),
+          };
         } catch {
           return UNAVAILABLE_SPLITS;
         }
@@ -360,10 +573,9 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
             return;
           }
           if (headlines.length === 0) return;
-          // Newest-first within the group; a missing date sorts last.
-          const sorted = [...headlines].sort((x, y) =>
-            (y.publishedAt ?? '').localeCompare(x.publishedAt ?? ''),
-          );
+          // Newest-first within the group (a missing date sorts last), then cut
+          // to the service's own per-group bound — see the constant above.
+          const sorted = [...headlines].sort(newestFirst).slice(0, NEWS_DIGEST_HEADLINES_PER_GROUP);
           groups.push({
             assetId: a.assetId,
             symbol: a.symbol,
@@ -375,15 +587,35 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         }),
       );
 
-      // Groups newest-first by their most recent headline; ties break on symbol
-      // so the order is deterministic regardless of the fan-out resolution order.
-      groups.sort((x, y) => {
-        const cmp = (y.headlines[0]?.publishedAt ?? '').localeCompare(
-          x.headlines[0]?.publishedAt ?? '',
-        );
-        return cmp !== 0 ? cmp : x.symbol.localeCompare(y.symbol);
+      // One article, one group. Provider search routinely returns the same
+      // market-wide story for every large cap in a book, and repeating it under
+      // six symbols made the Home widget one article wide (#1758). Attribution
+      // is deterministic and prefers a HELD asset, because the Home widget only
+      // renders held groups — attributing a story to a watchlist-only group
+      // would hide it there entirely.
+      const attributionOrder = [...groups].sort((x, y) => {
+        if (x.held !== y.held) return x.held ? -1 : 1;
+        return byNewestHeadline(x, y);
       });
-      return { available: true, groups, ...(truncated ? { truncated: true as const } : {}) };
+      const seen = new Set<string>();
+      const deduped: NewsDigestGroup[] = [];
+      for (const group of attributionOrder) {
+        const headlines = group.headlines.filter((h) => !seen.has(h.id));
+        for (const h of headlines) seen.add(h.id);
+        // A group whose every headline already belongs to another asset carries
+        // no information of its own and is dropped rather than rendered empty.
+        if (headlines.length > 0) deduped.push({ ...group, headlines });
+      }
+
+      // Groups newest-first by their most recent SURVIVING headline; ties break
+      // on symbol so the order is deterministic regardless of the fan-out
+      // resolution order.
+      deduped.sort(byNewestHeadline);
+      return {
+        available: true,
+        groups: deduped,
+        ...(truncated ? { truncated: true as const } : {}),
+      };
     },
   };
 }

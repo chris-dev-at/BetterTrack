@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
@@ -418,6 +418,34 @@ function createUserQueries(db: Database) {
           .orderBy(users.createdAt);
       }
       return db.select().from(users).orderBy(users.createdAt);
+    },
+
+    /**
+     * One keyset page of announcement recipients (#1723).
+     *
+     * The announcement fan-out used to call `list()` — every column of every
+     * row into memory in a single unbounded query. This reads only what the
+     * fan-out needs (the id it writes the row for, the locale it renders in)
+     * and walks the table in bounded pages ordered by the primary key, so the
+     * peak footprint is one page regardless of how many accounts exist.
+     *
+     * `id` is the cursor because it is the unique, immutable, indexed ordering
+     * a keyset walk needs: `createdAt` is neither unique nor a good tiebreak on
+     * its own, and OFFSET paging would re-scan the prefix on every page and
+     * skip rows if an account is deleted mid-walk. A row inserted behind the
+     * cursor is simply missed by this pass — the fan-out is idempotent and
+     * re-runnable, and brand-new accounts are not announcement recipients.
+     */
+    async listRecipientsAfter(
+      afterId: string | null,
+      limit: number,
+    ): Promise<Array<{ id: string; locale: string }>> {
+      return db
+        .select({ id: users.id, locale: users.locale })
+        .from(users)
+        .where(afterId === null ? undefined : gt(users.id, afterId))
+        .orderBy(asc(users.id))
+        .limit(limit);
     },
 
     /**

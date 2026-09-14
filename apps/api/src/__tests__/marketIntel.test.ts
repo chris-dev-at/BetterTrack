@@ -3,6 +3,7 @@ import type { Application } from 'express';
 import { describe, expect, it } from 'vitest';
 
 import {
+  createApiKeyResponseSchema,
   dividendsResponseSchema,
   earningsCalendarResponseSchema,
   earningsResponseSchema,
@@ -10,6 +11,7 @@ import {
   newsResponseSchema,
   projectedDividendIncomeResponseSchema,
   splitsResponseSchema,
+  type ApiKeyScope,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -43,6 +45,22 @@ async function loginAgent(app: Application, identifier: string, password: string
     .send({ identifier, password });
   expect(res.status).toBe(200);
   return agent;
+}
+
+/** Mint a personal API key with exactly `scopes` (§6.13). */
+async function mintKey(
+  h: TestHarness,
+  identifier: string,
+  password: string,
+  scopes: ApiKeyScope[],
+) {
+  const agent = await loginAgent(h.app, identifier, password);
+  const res = await agent
+    .post('/api/v1/settings/api-keys')
+    .set(...XRW)
+    .send({ name: `intel-${scopes.join('-')}`, scopes });
+  expect(res.status, JSON.stringify(res.body)).toBe(201);
+  return createApiKeyResponseSchema.parse(res.body).token;
 }
 
 /** Flip the logged-in user's base currency via the settings endpoint (§5.4). */
@@ -535,5 +553,60 @@ describe('GET /api/v1/assets/portfolio/dividend-projection — scope (V5-P6b, #1
       .query({ portfolioId: 'not-a-uuid' });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+/**
+ * #1828 — the four portfolio-level roll-ups (§6.3) are mounted under `/assets`
+ * but read the caller's held + watched assets, and the projection enumerates
+ * per-holding `quantity`. A key consented to as "Search assets and read market
+ * data" must not reach them: they gate on `portfolio:read` like `/analytics`.
+ */
+describe('portfolio market-intel roll-ups — bearer scope (#1828)', () => {
+  const ROLLUPS = [
+    '/api/v1/assets/portfolio/dividend-projection',
+    '/api/v1/assets/portfolio/dividend-calendar',
+    '/api/v1/assets/portfolio/news-digest',
+    '/api/v1/assets/intel/earnings-calendar',
+  ] as const;
+
+  it('refuses a market:read-only key on all four with INSUFFICIENT_SCOPE', async () => {
+    const h = await createTestApp({ marketData: fullIntelStub() });
+    const user = await h.seedUser();
+    const token = await mintKey(h, user.email, user.password, ['market:read']);
+
+    for (const path of ROLLUPS) {
+      const res = await request(h.app).get(path).set('Authorization', `Bearer ${token}`);
+      expect(res.status, path).toBe(403);
+      expect(res.body.error.code, path).toBe('INSUFFICIENT_SCOPE');
+    }
+  });
+
+  it('serves a portfolio:read key, and a portfolio:write key (write implies read)', async () => {
+    const h = await createTestApp({ marketData: fullIntelStub() });
+    const user = await h.seedUser();
+    const readToken = await mintKey(h, user.email, user.password, ['portfolio:read']);
+    const writeToken = await mintKey(h, user.email, user.password, ['portfolio:write']);
+
+    for (const token of [readToken, writeToken]) {
+      for (const path of ROLLUPS) {
+        const res = await request(h.app).get(path).set('Authorization', `Bearer ${token}`);
+        expect(res.status, path).toBe(200);
+      }
+    }
+  });
+
+  it('leaves the per-asset intel feeds on market:read', async () => {
+    const h = await createTestApp({ marketData: fullIntelStub() });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const token = await mintKey(h, user.email, user.password, ['market:read']);
+
+    for (const suffix of ['', '/dividends', '/earnings', '/news', '/splits']) {
+      const res = await request(h.app)
+        .get(`/api/v1/assets/${asset.id}/intel${suffix}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status, suffix).toBe(200);
+    }
   });
 });

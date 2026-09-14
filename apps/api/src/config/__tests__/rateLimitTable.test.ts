@@ -1,3 +1,4 @@
+import { FRIEND_GROUP_MEMBERS_MAX } from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
 
 import type { ProgressiveSchedule } from '../../services/security/progressiveLimiter';
@@ -77,15 +78,31 @@ describe('§10 limiter table — capacity limiters', () => {
       ...GENERAL_LADDER,
     });
 
+    // 1200 / 5 min = 240 writes/min sustained, per user (#1855). Modelled
+    // heaviest five minutes of V5-P8 interaction = 345 writes → 3.5× headroom.
+    // It exists so the ordinary writes V5-P8 hung on the anti-probing `social`
+    // bucket — comments, reactions, moderation, friend circles — meter against a
+    // ceiling sized by normal use instead of one sized against username probing.
+    expect(shape(rateLimits.socialWrite)).toEqual({
+      windowSec: 300,
+      limit: 1200,
+      ...GENERAL_LADDER,
+    });
+
     expect(shape(rateLimits.vault)).toEqual({ windowSec: 60, limit: 60, ...GENERAL_LADDER });
     expect(shape(rateLimits.vaultRead)).toEqual({ windowSec: 60, limit: 600, ...GENERAL_LADDER });
     expect(shape(rateLimits.apiKey)).toEqual({ windowSec: 60, limit: 120, ...GENERAL_LADDER });
 
-    // The COST dimension (#1643): 3000 WORK UNITS / min, per user, on the same
-    // escalation ladder as `general` so the 429 envelope never differs.
+    // The COST dimension (#1643): 4000 WORK UNITS / min, per user, on the same
+    // escalation ladder as `general` so the 429 envelope never differs. Raised
+    // from 3000 in #1755 with the two V5-P6 reads that joined the table, from
+    // 3500 in #1829 with the comment thread, and from 3550 in #1855 with the
+    // thread's collapsed head and the audience write — the latter alongside a
+    // floor that moved from 6 units to 7, which is what let the ceiling move at
+    // all (see the weight floor asserted further down).
     expect(shape(rateLimits.expensive)).toEqual({
       windowSec: 60,
-      limit: 3000,
+      limit: 4000,
       ...GENERAL_LADDER,
     });
   });
@@ -114,6 +131,11 @@ describe('§10 limiter table — capacity limiters', () => {
     const generalPerMinute = (rateLimits.general.limit / rateLimits.general.windowSec) * 60;
     const vaultReadPerMinute = (rateLimits.vaultRead.limit / rateLimits.vaultRead.windowSec) * 60;
     expect(generalPerMinute).toBeGreaterThanOrEqual(vaultReadPerMinute);
+    // Same rule for the social write budget (#1855): a bucket the app-wide
+    // limiter would close first is a lie in the config.
+    const socialWritePerMinute =
+      (rateLimits.socialWrite.limit / rateLimits.socialWrite.windowSec) * 60;
+    expect(generalPerMinute).toBeGreaterThanOrEqual(socialWritePerMinute);
   });
 });
 
@@ -125,12 +147,69 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
    * bar below — restated here so a weight edit has to be argued, not just made.
    */
   const COST_BAR = {
-    /** Builder weight-tuning: one debounced preview every ~3 s. */
+    /**
+     * Builder weight-tuning: one debounced preview every ~3 s, in BASKET UNITS
+     * per minute — `backtestPreview` is priced per 50 positions and the route
+     * multiplies by ⌈positions / 50⌉ (#1877). A Builder draft is capped at 50
+     * positions by §6.5, so every preview in this term is exactly one unit; a
+     * blueprint detail page replaying a 250-asset flatten pays five, and is not
+     * slider-driven.
+     */
     backtestPreviewPerMinute: 20,
+    /**
+     * N-way comparison, in SERIES per minute — `backtestCompare` is priced per
+     * series and the route multiplies by the series count (#1755). Two
+     * deliberate three-basket comparisons: the page runs on an explicit
+     * selection or range change, not on a slider, and its core is memoised
+     * across every permutation of one set.
+     */
+    backtestComparePerMinute: 5,
+    /**
+     * Shared what-if sandbox. Deliberately a BROWSING minute, not a tuning one:
+     * nobody drags a friend's sliders while also driving the Builder at 20
+     * previews/min, and a viewer who does drag is bounded by this endpoint's own
+     * allowance (140 req/min below), not by this term.
+     */
+    backtestSharedSandboxPerMinute: 2,
+    /**
+     * The Invest Calculator (#1877). A deliberate submit, not a slider: one
+     * calculation plus two re-runs from changing the budget or toggling
+     * whole-shares — the toggle re-runs the last calculation immediately.
+     */
+    conglomerateAllocatePerMinute: 3,
     /** Analytics range / filter / compare changes. */
     analyticsSeriesPerMinute: 12,
     /** Shared-with-me list on tab focus + reconnect refetch. */
     socialSharedPerMinute: 6,
+    /**
+     * Friend circles. Both surfaces that read them — /people and every
+     * AudiencePicker open — share one 30 s-stale query key, so a minute of
+     * hopping between them issues the request about twice.
+     */
+    socialGroupsPerMinute: 2,
+    /**
+     * Comment threads — the PAGE read and, since #1855, the collapsed head at
+     * `…/thread/summary`, which is mounted with the same weight key because it
+     * runs the same access resolution.
+     *
+     * Three shared items opened in the minute mount three collapsed heads; one
+     * of them is expanded (one page read) and its 30 s poll ticks twice; and the
+     * reader walks back one page. Seven reads.
+     *
+     * The poll term is what #1855 corrected. `CommentThread.tsx` polled through
+     * a `useInfiniteQuery` with no `maxPages`, and TanStack v5 refetches EVERY
+     * loaded page on a background refetch — so a reader who had clicked "load
+     * older" nine times issued twenty reads a minute against a term that said
+     * three, and the understatement grew with how far back they had paged. The
+     * client now polls the newest window only, which is the behaviour this term
+     * always assumed.
+     */
+    socialThreadPerMinute: 7,
+    /**
+     * Setting a shared item's audience (#1855). A deliberate, rare act: two in
+     * the minute is a user reworking who can see a couple of items.
+     */
+    socialAudienceSetPerMinute: 2,
     /** Two CSV uploads. */
     importCreatePerMinute: 2,
     /** One bulk kind sweep over a statement's undecided rows (one PATCH each). */
@@ -145,17 +224,49 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     expect(requestCosts).toEqual({
       // Unbounded `Promise.all` fan-out over friends × shared items.
       socialShared: 10,
+      // Groups + rosters + share counts in three grouped reads, bounded by the
+      // friend-group ceilings (#1780) — cheaper than `socialShared`'s open
+      // fan-out, and at the floor where the unit budget still binds before the
+      // request COUNT limiter would. That floor is `expensive.limit / 600`, so
+      // it moved from 6 to 7 with the ceiling in #1855.
+      socialGroups: 7,
+      // Two access resolutions, one bounded participant probe, an index-served
+      // page and two grouped reaction aggregates — bounded work, but polled
+      // every 30 s per open thread (#1829). At the same floor as `socialGroups`,
+      // and shared since #1855 with the collapsed head at `…/thread/summary`,
+      // which does all of that except fetch the page.
+      socialThread: 7,
+      // The owner's whole friendship set with no LIMIT, a group roster of up to
+      // 200, a paranoid transition lock across the derived recipient set and one
+      // notification emit each — the largest fan-out of any social write, and
+      // until #1855 metered by nothing at all.
+      socialAudienceSet: 20,
       // A perturbed weight vector is a cache MISS by construction; a miss walks
-      // the positions' history sequentially through the provider layer.
+      // the positions' history sequentially through the provider layer. PER
+      // 50-POSITION BASKET UNIT since #1877: the preview bound is now the
+      // flatten bound (250), so one body can carry five drafts' worth of that
+      // walk. A ≤ 50-position Builder preview still costs exactly this.
       backtestPreview: 25,
+      // PER SERIES (#1755) — the route multiplies by the number of baskets the
+      // body overlays, so a 6-way comparison spends 120. Just under a preview
+      // each: the series share one de-duplicated asset fan-out.
+      backtestCompare: 20,
+      // A preview's engine run with no memo behind it, so every request pays.
+      backtestSharedSandbox: 25,
+      // The Invest Calculator (#1877), until then metered by nothing: one asset
+      // read, one quote and one FX conversion for each of up to 250 RESOLVED
+      // assets — the flatten bound, not the 50-position write cap. Under a
+      // comparison series, which pays for the same fan-out plus an engine run.
+      conglomerateAllocate: 15,
       // Series + optional compare series + contribution table, over a window
       // that ANALYTICS_MAX_RANGE_DAYS now bounds.
       analyticsSeries: 10,
       // The row classifier drives ≈450 pg_trgm scans per staged batch.
       importCreate: 100,
       // One call per row in the wizard's bulk sweep; each re-derives a row's
-      // instrument, hash and duplicate verdict against the portfolio.
-      importRowResolve: 6,
+      // instrument, hash and duplicate verdict against the portfolio. At the
+      // same floor as `socialGroups`.
+      importRowResolve: 7,
     });
   });
 
@@ -163,15 +274,48 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     const { expensive, requestCosts } = config().rateLimits;
     const worstMinute =
       COST_BAR.backtestPreviewPerMinute * requestCosts.backtestPreview +
+      COST_BAR.backtestComparePerMinute * requestCosts.backtestCompare +
+      COST_BAR.backtestSharedSandboxPerMinute * requestCosts.backtestSharedSandbox +
+      COST_BAR.conglomerateAllocatePerMinute * requestCosts.conglomerateAllocate +
       COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
       COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
+      COST_BAR.socialGroupsPerMinute * requestCosts.socialGroups +
+      COST_BAR.socialThreadPerMinute * requestCosts.socialThread +
+      COST_BAR.socialAudienceSetPerMinute * requestCosts.socialAudienceSet +
       COST_BAR.importCreatePerMinute * requestCosts.importCreate +
       COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(1000);
+    expect(worstMinute).toBe(1318);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
+  });
+
+  it('leaves no expensive endpoint outside the budget it is supposed to bound', () => {
+    const { requestCosts } = config().rateLimits;
+    // The two V5-P6 reads joined the table in #1755. Before that the most
+    // expensive read in the app — an N-way comparison, up to six baskets each
+    // flattening to 250 assets — spent nothing here, and `rateLimitNormalUse`
+    // pinned the omission as "nothing else meters against expensive".
+    expect(requestCosts.backtestCompare).toBeGreaterThan(0);
+    expect(requestCosts.backtestSharedSandbox).toBeGreaterThan(0);
+    // …and #1855 did the same for the audience write, whose per-recipient
+    // fan-out was the largest of any V5-P8 write and metered by nothing.
+    expect(requestCosts.socialAudienceSet).toBeGreaterThan(0);
+    // …and #1877 for the Invest Calculator, the last V5-P6 read whose fan-out
+    // follows the 250-asset flatten while `general` was its only guard.
+    expect(requestCosts.conglomerateAllocate).toBeGreaterThan(0);
+    // A preview of a full flatten is priced as the five drafts' worth of work it
+    // is, so it can never cost less than the comparison of two baskets that
+    // resolve to the same assets.
+    expect(requestCosts.backtestPreview * 5).toBeGreaterThan(requestCosts.backtestCompare * 2);
+    // A comparison is priced per SERIES, so the cheapest one (2 baskets) already
+    // costs more than the strictly cheaper single-basket preview, and the
+    // dearest (6) costs proportionally more than that.
+    const cheapest = requestCosts.backtestCompare * 2;
+    const dearest = requestCosts.backtestCompare * 6;
+    expect(cheapest).toBeGreaterThan(requestCosts.backtestPreview);
+    expect(dearest).toBe(cheapest * 3);
   });
 
   it('bounds a pathological caller by WORK before the request count would', () => {
@@ -197,6 +341,105 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     expect(expensive.cooldownsSec).toEqual(general.cooldownsSec);
     expect(expensive.decaySec).toBe(general.decaySec);
     expect(expensive.retainCountOnViolation).toBeUndefined();
+  });
+});
+
+/**
+ * The MODELLED NORMAL-USE BAR for the V5-P8 interaction surface (#1855).
+ *
+ * V5-P8 hung four ordinary writes — comments, item reactions, comment
+ * reactions, comment moderation — plus the whole friend-circle surface on
+ * `social`, which §10 lists in the STRICT set and therefore EXEMPTS from the
+ * sizing rule. The result was a bucket normal use could reach that nothing had
+ * ever sized: filling the 200-member circle the contract advertises took ~7
+ * hours of perfectly paced clicking, and spent the same counter that answers
+ * "may I send a friend request?".
+ *
+ * This table is the fix's other half. Every ordinary V5-P8 interaction is listed
+ * with the bucket it meters on, so moving one back onto a strict bucket fails
+ * the first assertion below rather than silently shipping an unsized ceiling.
+ */
+describe('§10 — the V5-P8 interaction bar (#1855)', () => {
+  /** The §10 strict set, by config key. NOT sized by normal use. */
+  const STRICT_BUCKETS = ['social', 'feedback', 'feedbackThread', 'loginIp', 'loginAccount'];
+
+  /**
+   * One row per ordinary V5-P8 interaction: what it is, which bucket meters it,
+   * and how many of it one active user reaches inside that bucket's window.
+   * Engineering estimates read off the client, exactly like the bars above.
+   */
+  const V5_P8_INTERACTIONS = [
+    {
+      what: 'fill one circle to FRIEND_GROUP_MEMBERS_MAX, one click per member',
+      bucket: 'socialWrite',
+      perWindow: 200,
+    },
+    {
+      what: 'curate circles: create / rename / delete, and remove members',
+      bucket: 'socialWrite',
+      perWindow: 20,
+    },
+    { what: 'a lively thread, a comment every ~12 s', bucket: 'socialWrite', perWindow: 25 },
+    {
+      what: 'an item owner moderating a spam flood off their portfolio',
+      bucket: 'socialWrite',
+      perWindow: 40,
+    },
+    {
+      what: 'the six item chips plus the six on each of a few comments, toggled',
+      bucket: 'socialWrite',
+      perWindow: 60,
+    },
+  ] as const;
+
+  it('never meters an ordinary interaction on a bucket the sizing rule exempts', () => {
+    for (const interaction of V5_P8_INTERACTIONS) {
+      // A strict bucket is an ABUSE control. If normal use reaches one, §10 says
+      // the client gets fixed — so an ordinary interaction may never name one.
+      expect(STRICT_BUCKETS, interaction.what).not.toContain(interaction.bucket);
+    }
+  });
+
+  it('clears the modelled window of every bucket it reaches with at least 3x headroom', () => {
+    const { rateLimits } = config();
+    const barByBucket = new Map<string, number>();
+    for (const interaction of V5_P8_INTERACTIONS) {
+      barByBucket.set(
+        interaction.bucket,
+        (barByBucket.get(interaction.bucket) ?? 0) + interaction.perWindow,
+      );
+    }
+    // Every bucket the surface reaches is present, and every one is sized.
+    expect([...barByBucket.keys()]).toEqual(['socialWrite']);
+    for (const [bucket, bar] of barByBucket) {
+      const schedule = (rateLimits as unknown as Record<string, ProgressiveSchedule>)[bucket]!;
+      expect(schedule, bucket).toBeDefined();
+      expect(schedule.limit, bucket).toBeGreaterThanOrEqual(bar * 3);
+    }
+    // Pins the model's arithmetic: editing a row above has to restate this.
+    expect(barByBucket.get('socialWrite')).toBe(345);
+  });
+
+  it('makes the advertised 200-member circle reachable one request at a time', () => {
+    const { rateLimits } = config();
+    // There is no bulk add endpoint, so the contract's ceiling is only reachable
+    // one POST at a time — and has to fit inside ONE window, or it is decorative.
+    expect(FRIEND_GROUP_MEMBERS_MAX).toBe(200);
+    expect(rateLimits.socialWrite.limit).toBeGreaterThanOrEqual(FRIEND_GROUP_MEMBERS_MAX);
+    // The regression this row exists to prevent: on the anti-probing bucket a
+    // single circle could not be filled inside an hour, let alone one window.
+    expect(rateLimits.social.limit).toBeLessThan(FRIEND_GROUP_MEMBERS_MAX);
+  });
+
+  it('keeps the interaction budget in its own namespace, on the general ladder', () => {
+    const { rateLimits } = config();
+    // A capacity limiter: a short first pause that only climbs on repeats. If
+    // this ever inherited the strict ladder it would be an abuse control again.
+    expect(rateLimits.socialWrite.cooldownsSec).toEqual(rateLimits.general.cooldownsSec);
+    expect(rateLimits.socialWrite.decaySec).toBe(rateLimits.general.decaySec);
+    expect(rateLimits.socialWrite.retainCountOnViolation).toBeUndefined();
+    // …and it is genuinely a different budget from the one it was carved out of.
+    expect(rateLimits.socialWrite.limit).not.toBe(rateLimits.social.limit);
   });
 });
 

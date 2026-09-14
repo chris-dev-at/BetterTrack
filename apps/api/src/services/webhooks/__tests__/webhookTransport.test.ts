@@ -10,6 +10,12 @@ import { createServer as createTcpServer, type Server as TcpServer } from 'node:
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  WEBHOOK_DELIVERY_ERRORS,
+  WEBHOOK_DELIVERY_NETWORK_ERROR,
+  WEBHOOK_DELIVERY_TIMEOUT_ERROR,
+} from '@bettertrack/contracts';
+
 import type { ResolvedOutboundUrl } from '../../security/outboundUrlGuard';
 import { createPinnedWebhookTransport } from '../webhookDispatcher';
 
@@ -30,6 +36,20 @@ const REBOUND = '127.0.0.2';
 
 const HEADERS = { 'content-type': 'application/json', 'x-bettertrack-event': 'alert.triggered' };
 const BODY = '{"id":"delivery-1","type":"alert.triggered"}';
+
+/**
+ * A transport failure may only ever be one of the canonical constants: no errno,
+ * no address, no port, no hostname, no certificate names. Those are what turn a
+ * delivery log the subscriber can read into a scanner for whatever the outbound
+ * guard still allows.
+ */
+function expectNoDestinationDetail(error: string | undefined, port: number): void {
+  expect(WEBHOOK_DELIVERY_ERRORS).toContain(error);
+  expect(error).not.toMatch(/\d/);
+  expect(error).not.toContain(String(port));
+  expect(error).not.toContain(VETTED);
+  expect(error).not.toContain('receiver.rebind.test');
+}
 
 interface Receivers {
   port: number;
@@ -190,7 +210,7 @@ describe('pinned webhook transport', () => {
     expect(hits).toEqual({ [VETTED]: 1, [REBOUND]: 0 });
   });
 
-  it('reports a refused connection as a status-less failure', async () => {
+  it('reports a refused connection as a status-less failure, with no socket text', async () => {
     // Bind, read the port, then close: nothing is listening on it any more.
     const idle = createHttpServer();
     const port = await listenOn(idle, VETTED);
@@ -204,9 +224,28 @@ describe('pinned webhook transport', () => {
       target: target(url),
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.status).toBeNull();
-    expect(result.error).toBeTruthy();
+    // Node's own message here is `connect ECONNREFUSED 127.0.0.1:<port>` — the
+    // address and port a subscriber may not learn anything about.
+    expect(result).toEqual({ ok: false, status: null, error: WEBHOOK_DELIVERY_NETWORK_ERROR });
+    expectNoDestinationDetail(result.error, port);
+  });
+
+  it('reports a failed TLS handshake structurally, never the certificate’s hosts', async () => {
+    // A plain-http listener answering an https request: the handshake fails, and
+    // the raw error (wrong version number / certificate altnames on a real TLS
+    // mismatch) is exactly what must not reach the log.
+    const { port } = await httpReceivers();
+    const url = `https://receiver.rebind.test:${port}/hook`;
+
+    const result = await createPinnedWebhookTransport().send({
+      url,
+      headers: HEADERS,
+      body: BODY,
+      target: target(url),
+    });
+
+    expect(result).toEqual({ ok: false, status: null, error: WEBHOOK_DELIVERY_NETWORK_ERROR });
+    expectNoDestinationDetail(result.error, port);
   });
 
   it('gives up on a receiver that never answers', async () => {
@@ -224,7 +263,11 @@ describe('pinned webhook transport', () => {
       target: target(url),
     });
 
-    expect(result).toEqual({ ok: false, status: null, error: 'timeout' });
+    // The transport's own deadline marker — the dispatcher collapses it into
+    // WEBHOOK_DELIVERY_NETWORK_ERROR before it is logged, so a filtered port and
+    // a closed one read the same in the delivery log.
+    expect(result).toEqual({ ok: false, status: null, error: WEBHOOK_DELIVERY_TIMEOUT_ERROR });
+    expectNoDestinationDetail(result.error, port);
   });
 
   it('refuses to send when the guard vetted no address at all', async () => {

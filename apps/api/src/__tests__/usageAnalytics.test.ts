@@ -1,14 +1,59 @@
+import { eq } from 'drizzle-orm';
+import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { usageAnalyticsResponseSchema } from '@bettertrack/contracts';
 
 import type { UsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
-import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
+import * as schema from '../data/schema';
+import { createUsageCaptureMiddleware } from '../http/middleware/usageCapture';
+import {
+  createUsageAnalyticsService,
+  type UsageSignal,
+} from '../services/analytics/usageAnalyticsService';
 import { flushTelemetryBuffers } from '../shutdown';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+/**
+ * A throwaway app carrying ONE principal through the capture middleware: a
+ * cookie session (`null`) or a bearer token of either kind. Everything else —
+ * the route, the user, the vault answers — is held identical, so the only
+ * variable is the principal (#1847).
+ */
+function captureApp(bearer: { kind: 'personal' | 'oauth' } | null): {
+  app: express.Express;
+  captured: UsageSignal[];
+} {
+  const captured: UsageSignal[] = [];
+  const usage = { capture: (signal: UsageSignal) => captured.push(signal) };
+  const vaulted = {
+    isOwnedPortfolioVaulted: async () => false,
+    userOwnsVaultedPortfolio: async () => false,
+  };
+  const app = express();
+  app.use((req, _res, next) => {
+    req.authUser = { id: 'user-1', privacyMode: 'normal' } as never;
+    if (bearer) {
+      req.apiKey = { id: 'principal-1', scopes: [], kind: bearer.kind } as never;
+    }
+    next();
+  });
+  app.use(createUsageCaptureMiddleware(usage as never, vaulted as never));
+  const router = express.Router();
+  router.get('/', (_req, res) => {
+    res.json({ portfolios: [] });
+  });
+  app.use('/api/v1/portfolios', router);
+  return { app, captured };
+}
+
+/** Capture runs on `finish`, one microtask behind the response. */
+async function settleCapture(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+}
 
 /**
  * Admin usage analytics (PROJECTPLAN.md §13.5 V5-P2 arc (b)) — first-party
@@ -26,6 +71,15 @@ describe('admin usage analytics', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  const eventsFor = (userId: string) =>
+    harness.db.select().from(schema.usageEvents).where(eq(schema.usageEvents.userId, userId));
+
+  const activationsFor = (userId: string) =>
+    harness.db
+      .select()
+      .from(schema.usageActivations)
+      .where(eq(schema.usageActivations.userId, userId));
 
   it('computes DAU/WAU/MAU, feature counters, top assets and the funnel', async () => {
     const alice = await harness.seedUser({ email: 'alice@test.dev', username: 'alice' });
@@ -148,6 +202,63 @@ describe('admin usage analytics', () => {
     const byFeature = Object.fromEntries(body.features.map((f) => [f.feature, f.events]));
     expect(byFeature.portfolio).toBe(1);
     expect(byFeature.assets).toBe(1);
+  });
+
+  it('counts a cookie session but never a personal API key’s traffic', async () => {
+    // "First-party" means a human on our own client (§6.12/§6.13). A program
+    // holding a token used to pin its owner into DAU/WAU/MAU, drive the feature
+    // counters at its poll rate, and write the LIFETIME activation marker for
+    // an account no human had ever used (#1847).
+    const user = await harness.seedUser({ email: 'bot-owner@test.dev', username: 'botowner' });
+    const { token } = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'polling bot',
+      scopes: ['portfolio:read'] as never,
+    });
+
+    const bot = await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set('Authorization', `Bearer ${token}`);
+    expect(bot.status).toBe(200);
+    await harness.ctx.usageAnalytics.flush();
+
+    expect(await eventsFor(user.id)).toHaveLength(0);
+    expect(await activationsFor(user.id)).toHaveLength(0);
+
+    // The IDENTICAL request on a cookie session produces all three: the event
+    // row, its feature counter, and the durable activation marker.
+    const agent = request.agent(harness.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const human = await agent.get('/api/v1/portfolios');
+    expect(human.status).toBe(200);
+    await harness.ctx.usageAnalytics.flush();
+
+    const events = await eventsFor(user.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.feature).toBe('portfolio');
+    expect(events[0]!.hits).toBe(1);
+    expect(await activationsFor(user.id)).toHaveLength(1);
+  });
+
+  it('skips both bearer principal kinds at the capture seam, and only those', async () => {
+    // An OAuth grant is the other `req.apiKey` kind (§6.13) and is skipped for
+    // the same reason; the middleware is driven directly so both kinds — and
+    // the cookie principal that must still count — are asserted side by side.
+    const kinds = ['personal', 'oauth'] as const;
+    for (const kind of kinds) {
+      const { captured, app } = captureApp({ kind });
+      await request(app).get('/api/v1/portfolios').expect(200);
+      await settleCapture();
+      expect(captured, `${kind} bearer traffic must not be captured`).toHaveLength(0);
+    }
+
+    const { captured, app } = captureApp(null);
+    await request(app).get('/api/v1/portfolios').expect(200);
+    await settleCapture();
+    expect(captured).toEqual([expect.objectContaining({ userId: 'user-1', feature: 'portfolio' })]);
   });
 
   it('404s the usage-analytics surface for anonymous and user-kind callers', async () => {

@@ -180,6 +180,56 @@ describe('AI features — NL conglomerate builder (§13.5 V5-P12 2/2)', () => {
     // Only the configured local endpoint is ever reached.
     expect(calls.every((u) => u.startsWith('http://ollama.test:11434'))).toBe(true);
   });
+
+  it('resolves intents catalog-only: a 50-intent draft spends no provider search and no enrichment budget (#1794)', async () => {
+    // The model returns the maximum number of intents, every one of them a
+    // distinct miss against an empty catalog — the worst case for a resolver
+    // that admits provider enrichment per query.
+    const queries = Array.from({ length: 50 }, (_, i) => `NOSUCHASSET${i}`);
+    const content = JSON.stringify({
+      lines: queries.map((query) => ({ query, weightPct: 2 })),
+    });
+    const { impl } = recordingAiFetch(content);
+    const marketData = createStubMarketData({ search: () => [] });
+    const harness = await createTestApp({
+      // A DELIBERATELY tiny interactive budget: if the draft spends even two
+      // slots, the assertions below fail. (Production ships 30 / 60 s.)
+      env: { ...AI_ENV, BT_SEARCH_ENRICHMENT_BUDGET: '2' },
+      marketData,
+      aiFetch: impl,
+    });
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const res = await agent
+      .post('/api/v1/ai/conglomerate-draft')
+      .set(...XRW)
+      .send({ prompt: 'fifty things' });
+    expect(res.status).toBe(200);
+    const body = aiConglomerateDraftResponseSchema.parse(res.body);
+
+    // Nothing is dropped and nothing resolved — the catalog is empty and the
+    // builder flags every line rather than inventing an asset.
+    expect(body.lines).toHaveLength(50);
+    expect(body.lines.every((l) => l.asset === null)).toBe(true);
+
+    // ZERO upstream searches: the draft is local-first by construction (§6.2).
+    await harness.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(0);
+
+    // …and the user's whole interactive budget is intact: BOTH slots still buy
+    // a real enrichment, and the third is refused — so the budget is genuinely
+    // being enforced and this assertion is not vacuous.
+    const first = await agent.get('/api/v1/search?q=zzzalpha');
+    expect(first.body.enriching).toBe(true);
+    const second = await agent.get('/api/v1/search?q=zzzbeta');
+    expect(second.body.enriching).toBe(true);
+    const third = await agent.get('/api/v1/search?q=zzzgamma');
+    expect(third.body.enriching).toBe(false);
+
+    await harness.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(2);
+  });
 });
 
 describe('AI features — gating & cap (§13.5 V5-P12 2/2)', () => {

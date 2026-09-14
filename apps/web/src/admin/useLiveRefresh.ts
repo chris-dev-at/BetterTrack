@@ -97,8 +97,15 @@ export function useLiveRefresh(reload: () => void): LiveRefresh {
     [setParams],
   );
 
+  // Bumped by every explicit refresh so the interval effect tears down and
+  // starts again: a manual read is a read, and the next automatic one is a full
+  // cadence away from it (#1848). Without this, hitting Refresh at t=29 s of a
+  // 30 s cadence fired a second full cockpit refetch one second later.
+  const [phase, setPhase] = useState(0);
+
   const refreshNow = useCallback(() => {
     setLastRefreshedAt(new Date());
+    setPhase((n) => n + 1);
     reloadRef.current();
   }, []);
 
@@ -125,7 +132,7 @@ export function useLiveRefresh(reload: () => void): LiveRefresh {
       reloadRef.current();
     }, seconds * 1000);
     return () => clearInterval(id);
-  }, [seconds, paused]);
+  }, [seconds, paused, phase]);
 
   return { seconds, setSeconds, paused, lastRefreshedAt, refreshNow };
 }

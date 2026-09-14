@@ -1,26 +1,34 @@
-import * as Sentry from '@sentry/node';
-
 import type { AppConfig } from '../../config/env';
 import type { Logger } from '../../logger';
 
-import { scrubEvent, type ScrubbableValue } from './scrubber';
+import type { ScrubbableValue } from './scrubber';
 
 /**
- * Sentry error tracking (PROJECTPLAN.md §13.4 V4-P5a).
+ * The retired external error-tracking seam (§16 2026-07-17 "Sentry is OUT —
+ * permanently"; §13.5 V5-P2 arc (d)).
  *
- * Env-gated: {@link initObservability} is a no-op unless `config.sentry.enabled`
- * (BT_SENTRY_DSN is set), so with no DSN the SDK never initializes and API/worker
- * boot is byte-identical. When on, every event is tagged with the deployed
- * release, sampled per the configured rates, and passed through the pure
- * {@link scrubEvent} PII scrubber as `beforeSend` before it can leave the process.
+ * The SDK is never initialised, on any code path: this module does not import
+ * it, so no client, no transport and no DSN-derived endpoint can be constructed
+ * — a restored old `.env` cannot silently resume shipping BetterTrack errors to
+ * a third party. `BT_SENTRY_DSN` being set is therefore not configuration, it is
+ * a PROBLEM: {@link initObservability} refuses it, says so in the log, and
+ * reports it as {@link Observability.refusedDsn} so the caller captures a row on
+ * the admin Problems page — the zero-setup replacement and the only management
+ * surface the operator is expected to read (§6.12).
  *
- * The handle it returns is the ONLY way the rest of the process reports errors,
- * so a disabled build calls a harmless no-op instead of reaching into the SDK.
+ * The handle it returns is still the seam the rest of the process reports
+ * through, so every call site stays unconditional and does nothing.
  */
 export interface Observability {
-  /** True once the SDK actually initialized (DSN present). */
+  /** Always false: the external SDK is retired and never initialises. */
   readonly enabled: boolean;
-  /** Report an exception (no-op when disabled). Extra context is scrubbed too. */
+  /**
+   * True when a DSN was configured and REFUSED. The caller turns this into a
+   * captured problem, because a silently ignored DSN is an operator who thinks
+   * errors are being collected somewhere they are not.
+   */
+  readonly refusedDsn: boolean;
+  /** Report an exception. A no-op — the DB capture owns this now. */
   captureException(err: unknown, context?: Record<string, ScrubbableValue>): void;
   /** Flush buffered events (graceful shutdown / deterministic tests). */
   flush(timeoutMs?: number): Promise<boolean>;
@@ -28,26 +36,29 @@ export interface Observability {
   close(timeoutMs?: number): Promise<boolean>;
 }
 
-/** Shared no-op used whenever Sentry is disabled. */
-const disabledObservability: Observability = {
-  enabled: false,
-  captureException() {},
-  async flush() {
-    return true;
-  },
-  async close() {
-    return true;
-  },
-};
+/** The one and only handle shape — there is no enabled variant any more. */
+function inertObservability(refusedDsn: boolean): Observability {
+  return {
+    enabled: false,
+    refusedDsn,
+    captureException() {},
+    async flush() {
+      return true;
+    },
+    async close() {
+      return true;
+    },
+  };
+}
+
+/** What an operator is told when a retired DSN is found in the env. */
+export const SENTRY_REFUSED_MESSAGE =
+  'BT_SENTRY_DSN is set but external Sentry is retired: no events are sent. ' +
+  'Remove the variable — the admin Problems page is the error surface.';
 
 export interface InitObservabilityOptions {
-  /** Identifies the process in events (`api` vs `worker`). */
+  /** Identifies the process in the refusal log line (`api` vs `worker`). */
   serverName?: string;
-  /**
-   * Test seam: a Sentry transport factory to capture envelopes in-memory instead
-   * of shipping them over the network. Production leaves this unset (real HTTP).
-   */
-  transport?: Sentry.NodeOptions['transport'];
 }
 
 export function initObservability(
@@ -55,37 +66,12 @@ export function initObservability(
   logger: Logger,
   options: InitObservabilityOptions = {},
 ): Observability {
-  if (!config.sentry.enabled || !config.sentry.dsn) return disabledObservability;
+  if (!config.sentry.dsnConfigured) return inertObservability(false);
 
-  Sentry.init({
-    dsn: config.sentry.dsn,
-    release: config.sentry.release,
-    environment: config.sentry.environment,
-    serverName: options.serverName,
-    sampleRate: config.sentry.errorSampleRate,
-    tracesSampleRate: config.sentry.tracesSampleRate,
-    // Never let the SDK attach PII on its own (client IP, cookies, request body):
-    // the scrubber is the backstop, but not collecting it in the first place is
-    // the primary guard.
-    sendDefaultPii: false,
-    transport: options.transport,
-    // The zero-PII gate (§13.4 V4-P5a): every error AND transaction event passes
-    // through the pure scrubber before transport.
-    beforeSend: (event) => scrubEvent(event),
-    beforeSendTransaction: (event) => scrubEvent(event),
-  });
-
-  logger.info(
-    { release: config.sentry.release, environment: config.sentry.environment },
-    'Sentry error tracking enabled',
+  // Loud, and not only in the log: the caller captures this as a problem row.
+  logger.error(
+    { serverName: options.serverName, release: config.sentry.release },
+    SENTRY_REFUSED_MESSAGE,
   );
-
-  return {
-    enabled: true,
-    captureException(err, context) {
-      Sentry.captureException(err, context ? { extra: context } : undefined);
-    },
-    flush: (timeoutMs = 2000) => Sentry.flush(timeoutMs),
-    close: (timeoutMs = 2000) => Sentry.close(timeoutMs),
-  };
+  return inertObservability(true);
 }

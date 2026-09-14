@@ -115,6 +115,17 @@ function moduleForScope(scope: ApiKeyScope): ScopeModule | undefined {
 }
 
 /**
+ * The module row a scope is rendered under — its info-point copy has to name
+ * the same capabilities the scope's own consent line does (#1860), so the copy
+ * guard needs this mapping rather than a second hand-kept copy of it.
+ */
+export function scopeModuleKey(scope: ApiKeyScope): ScopeModule['key'] {
+  const module = moduleForScope(scope);
+  if (!module) throw new Error(`ScopePicker: scope ${scope} has no module row`);
+  return module.key;
+}
+
+/**
  * Toggle a scope with write-implies-read (#371): selecting a `:write`
  * auto-selects its `:read`, and a read stays locked on while its implying
  * `:write` is still selected.

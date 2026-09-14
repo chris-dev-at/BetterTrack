@@ -35,7 +35,7 @@ function loginErrorMessage(t: TranslateFn, err: unknown): string {
  */
 export function LoginPage() {
   const t = useT();
-  const { status, login } = useAuth();
+  const { status, login, signedOutReason } = useAuth();
   const navigate = useNavigate();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -106,6 +106,13 @@ export function LoginPage() {
           onSubmit={onSubmit}
           className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
         >
+          {/* V5-P13c: the console signs itself out when the absolute admin
+              window closes — say so here, rather than leaving the operator with
+              a save that "failed". A credentials error from the attempt that
+              follows replaces it. */}
+          {!error && signedOutReason === 'expired' ? (
+            <Alert tone="info">{t('auth.adminLogin.sessionExpired')}</Alert>
+          ) : null}
           {error ? <Alert tone="error">{error}</Alert> : null}
           <TextField
             label={t('auth.login.identifierLabel')}

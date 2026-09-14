@@ -106,7 +106,7 @@ vi.mock('recharts', async (importOriginal) => {
 });
 
 import { ApiError } from '../../lib/apiClient';
-import { formatDate } from '../../lib/format';
+import { formatDate, formatMoney, formatUnitPrice } from '../../lib/format';
 import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
@@ -329,6 +329,7 @@ const UNAVAILABLE_PROJECTION: ProjectedDividendIncomeResponse = {
   currency: 'EUR',
   monthlyTotalBase: 0,
   yearlyTotalBase: 0,
+  basis: null,
   holdings: [],
 };
 
@@ -344,6 +345,7 @@ const RESOLVED_PROJECTION: ProjectedDividendIncomeResponse = {
   currency: 'EUR',
   monthlyTotalBase: 100,
   yearlyTotalBase: 1200,
+  basis: 'trailing-12m',
   holdings: [
     {
       assetId: 'a1',
@@ -358,14 +360,21 @@ const RESOLVED_PROJECTION: ProjectedDividendIncomeResponse = {
   ],
 };
 
+/**
+ * Calendar dates relative to the real clock: whether a date is upcoming is now
+ * part of what the page renders (#1758), so a fixture pinned to a fixed day
+ * would start asserting the opposite of itself once that day passed.
+ */
+const calendarIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
 function calendarEntry(over: Partial<DividendCalendarEntry> = {}): DividendCalendarEntry {
   return {
     assetId: 'a1',
     symbol: 'AAPL',
     name: 'Apple Inc.',
     source: 'holding',
-    exDate: '2026-08-08T00:00:00.000Z',
-    payDate: '2026-08-15T00:00:00.000Z',
+    exDate: calendarIso(2),
+    payDate: calendarIso(9),
     amount: 0.24,
     currency: 'USD',
     ...over,
@@ -1715,15 +1724,13 @@ describe('PortfolioPage — dividend calendar dates', () => {
     // actually has.
     vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
       available: true,
-      entries: [calendarEntry({ exDate: null, payDate: '2026-08-15T00:00:00.000Z' })],
+      entries: [calendarEntry({ exDate: null, payDate: calendarIso(7) })],
     });
 
     renderPage();
 
     const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
-    expect(
-      within(calendar).getByText(`paid ${formatDate('2026-08-15T00:00:00.000Z')}`),
-    ).toBeInTheDocument();
+    expect(within(calendar).getByText(`paid ${formatDate(calendarIso(7))}`)).toBeInTheDocument();
     expect(within(calendar).queryByText(/^ex /)).not.toBeInTheDocument();
     // The em dash is what `formatDate(null)` used to render into the ex-label.
     expect(within(calendar).queryByText(/—/)).not.toBeInTheDocument();
@@ -1738,9 +1745,42 @@ describe('PortfolioPage — dividend calendar dates', () => {
     renderPage();
 
     const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(calendar).getByText(`ex ${formatDate(calendarIso(2))}`)).toBeInTheDocument();
+  });
+
+  test('labels an event already gone ex with its PAY date, never the past ex-date', async () => {
+    // The API's own fixture (portfolioMarketIntelService.test.ts): ex a week
+    // ago, paid in a week. The endpoint keeps the event and sorts it on the pay
+    // date; the page used to print the ex-date behind us under "upcoming".
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry({ exDate: calendarIso(-7), payDate: calendarIso(7) })],
+    });
+
+    renderPage();
+
+    const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(calendar).getByText(`paid ${formatDate(calendarIso(7))}`)).toBeInTheDocument();
+    expect(within(calendar).queryByText(/^ex /)).not.toBeInTheDocument();
     expect(
-      within(calendar).getByText(`ex ${formatDate('2026-08-08T00:00:00.000Z')}`),
-    ).toBeInTheDocument();
+      within(calendar).queryByText(new RegExp(formatDate(calendarIso(-7)))),
+    ).not.toBeInTheDocument();
+  });
+
+  test('keeps a sub-cent per-share amount readable, exactly as the Home widget does', async () => {
+    // A per-SHARE distribution, not a total: monthly ETFs and some ADRs pay
+    // below a cent, and the whole-money formatter rounded that to 0,00 $ here
+    // while the Home widget printed the real figure (#1874).
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry({ amount: 0.0042 })],
+    });
+
+    renderPage();
+
+    const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(calendar).getByText(formatUnitPrice(0.0042, 'USD'))).toBeInTheDocument();
+    expect(within(calendar).queryByText(formatMoney(0.0042, 'USD'))).not.toBeInTheDocument();
   });
 });
 
@@ -1787,9 +1827,9 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
       available: true,
       entries: [
         calendarEntry(),
-        calendarEntry({ assetId: 'a2', symbol: 'MSFT', exDate: '2026-08-09T00:00:00.000Z' }),
-        calendarEntry({ assetId: 'a3', symbol: 'KO', exDate: '2026-08-10T00:00:00.000Z' }),
-        calendarEntry({ assetId: 'a4', symbol: 'JNJ', exDate: '2026-08-11T00:00:00.000Z' }),
+        calendarEntry({ assetId: 'a2', symbol: 'MSFT', exDate: calendarIso(3) }),
+        calendarEntry({ assetId: 'a3', symbol: 'KO', exDate: calendarIso(4) }),
+        calendarEntry({ assetId: 'a4', symbol: 'JNJ', exDate: calendarIso(5) }),
       ],
     });
 
@@ -1862,6 +1902,37 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
     const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
     expect(within(block).getByText('100,00 $')).toBeInTheDocument();
     expect(within(block).queryByText('100,00 €')).not.toBeInTheDocument();
+  });
+
+  test('renders what the projected total is made of, beside the total (#1790)', async () => {
+    // RESOLVED_PROJECTION is a `trailing-12m` book: the realized last twelve
+    // months, so a special dividend is inside it and the figure reads well above
+    // forward income for a year. The contract has carried the basis since #1741
+    // and no surface rendered it — the number read as a forward promise.
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue(RESOLVED_PROJECTION);
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(
+      within(block).getByText(
+        'Based on the last 12 months of payouts, so any special dividend is still counted in.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('says so when one total sums two different bases (#1790)', async () => {
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+      ...RESOLVED_PROJECTION,
+      basis: 'mixed',
+    });
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(block).getByText(/^Mixed basis:/)).toBeInTheDocument();
   });
 
   test('keeps the projection when the calendar has nothing to show', async () => {

@@ -1,10 +1,12 @@
 import type { DiscordSettingsResponse } from '@bettertrack/contracts';
 
 import type { DiscordWebhookRepository } from '../../data/repositories/discordWebhookRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type { Logger } from '../../logger';
 import { encryptSecret, type SecretBoxKeyring } from '../crypto/secretBox';
 
 import type { DiscordChannel, DiscordSendOutcome } from './discordChannel';
+import { channelSetupText } from './notificationI18n';
 
 /**
  * User-facing Discord setup surface (§13.4 V4-P10). The webhook URL is the
@@ -25,12 +27,19 @@ export interface DiscordSetupService {
 
 export interface DiscordSetupServiceDeps {
   /**
-   * From `config.discord.enabled`; when false the setup routes 404 and
-   * `linkedFor` reports the channel unavailable even if the caller has a saved
-   * webhook row. The row itself is preserved so flipping the flag restores.
+   * From `config.discord.enabled` (the kill-switch — Discord needs no server
+   * credential, so `offered` and `enabled` coincide); when false the setup
+   * routes refuse, EVERY service operation refuses — `remove` included (#1795)
+   * — and `linkedFor` reports the channel unavailable even if the caller has a
+   * saved webhook row. The row itself is preserved so flipping the flag restores.
    */
   enabled: boolean;
   webhooks: DiscordWebhookRepository;
+  /**
+   * Recipient lookup for the stored locale (#1723) — the save probe and the
+   * test send land in the user's own Discord channel, in their language.
+   */
+  users: Pick<UserRepository, 'findById'>;
   /** Null when the deployment kill-switch is off — no channel to probe. */
   channel: DiscordChannel | null;
   /** Dedicated record-encryption keyring (`config.recordEncryption`). */
@@ -39,7 +48,13 @@ export interface DiscordSetupServiceDeps {
 }
 
 export function createDiscordSetupService(deps: DiscordSetupServiceDeps): DiscordSetupService {
-  const { enabled, webhooks, channel, encryptionKey, logger } = deps;
+  const { enabled, webhooks, users, channel, encryptionKey, logger } = deps;
+
+  /** The recipient's stored locale; a missing row falls back to English. */
+  async function localeFor(userId: string): Promise<string | null> {
+    const user = await users.findById(userId);
+    return user?.locale ?? null;
+  }
 
   async function toResponse(userId: string): Promise<DiscordSettingsResponse> {
     if (!enabled) {
@@ -79,7 +94,7 @@ export function createDiscordSetupService(deps: DiscordSetupServiceDeps): Discor
       // stale webhook is rejected at save (never persisted).
       const outcome = await channel.probe(
         url,
-        'BetterTrack — Discord webhook configured. This channel is now armed.',
+        channelSetupText('discordConfigured', await localeFor(userId)),
       );
       if (outcome !== 'ok') {
         // Never log the URL — a probe failure is enough context for the user.
@@ -94,10 +109,15 @@ export function createDiscordSetupService(deps: DiscordSetupServiceDeps): Discor
 
     async test(userId): Promise<DiscordSendOutcome> {
       if (!enabled || !channel) return 'gone';
-      return channel.sendTest(userId);
+      return channel.sendTest(userId, await localeFor(userId));
     },
 
     async remove(userId): Promise<DiscordSettingsResponse> {
+      // Kill-switch OFF ⇒ refuse before touching the row (#1795), mirroring
+      // Telegram's `unlink`: the webhook row is state the V5-P0 directive
+      // promises to preserve, so the router guard must not be the only thing
+      // preventing its deletion.
+      if (!enabled) throw new DiscordSetupError('not_available');
       await webhooks.deleteForUser(userId);
       return toResponse(userId);
     },

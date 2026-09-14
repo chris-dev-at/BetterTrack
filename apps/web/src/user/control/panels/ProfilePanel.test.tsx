@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { ProfileSettingsResponse } from '@bettertrack/contracts';
+import { PROFILE_ICON_IDS, type ProfileSettingsResponse } from '@bettertrack/contracts';
 
 vi.mock('../../../lib/socialApi', () => ({
   getProfileSettings: vi.fn(),
@@ -175,6 +175,11 @@ describe('ProfilePanel', () => {
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
 
     await user.click(toggle);
+    // One shared picker component: the general grid offers exactly the curated
+    // set, in the same order the paranoid row in AccountPanel asserts.
+    expect(screen.getAllByRole('radio').map((el) => el.getAttribute('data-icon-id'))).toEqual([
+      ...PROFILE_ICON_IDS,
+    ]);
     const fox = screen.getByRole('radio', { name: 'Fox' });
     await user.click(fox);
     expect(fox).toHaveAttribute('aria-checked', 'true');

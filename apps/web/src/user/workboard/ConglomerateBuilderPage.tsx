@@ -189,6 +189,8 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   nameRef.current = name;
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   // Persistence bookkeeping: the id (null until the first save creates the draft)
   // and what the server currently holds, so autosave only writes real diffs.
@@ -225,8 +227,23 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 
       const payloadKey = JSON.stringify(payload);
       if (payloadKey !== savedPositionsKeyRef.current) {
-        await replaceConglomeratePositions(id, payload);
+        // The server may DEMOTE inside this very request: an active basket whose
+        // new weights no longer sum to 100 — or whose nested child was emptied —
+        // is relabelled `draft` rather than left claiming a status it no longer
+        // earns (#1840). The autosave is the one screen the user is looking at
+        // while that happens, so take the status off the write's own response
+        // instead of leaving the badge and the Activate button describing the
+        // basket as it was before the save (#1877).
+        const saved = await replaceConglomeratePositions(id, payload);
         savedPositionsKeyRef.current = payloadKey;
+        // The write's response IS the detail, so seed the cache with it rather
+        // than spending a refetch per autosave.
+        queryClient.setQueryData(['conglomerate', id], saved);
+        if (saved.status !== statusRef.current) {
+          setStatus(saved.status);
+          // The list renders the same badge; wake it only when it moved.
+          void queryClient.invalidateQueries({ queryKey: ['conglomerates'] });
+        }
       }
     },
     [queryClient, defaultName],
@@ -343,12 +360,15 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const handleNormalize = useCallback(() => {
     const result = normalize(positionsRef.current);
     if (!result.ok) {
-      setNotice(result.error);
+      setNotice(t(result.reason.key, result.reason.params));
       return;
     }
     setNotice(null);
     setPositions(result.positions);
-  }, []);
+    // `t` is rebuilt per locale (I18nProvider) and `setLocale` does not remount
+    // the tree — without it here the notice would stay in the locale that was
+    // active when the page mounted.
+  }, [t]);
 
   // ── Activate ──
 

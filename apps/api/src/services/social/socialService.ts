@@ -27,7 +27,13 @@ import type {
   SharedWithMeResponse,
   UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
-import { PROFILE_BIO_MAX, profileIconIdSchema } from '@bettertrack/contracts';
+import {
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
+  FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
+  PROFILE_BIO_MAX,
+  profileIconIdSchema,
+} from '@bettertrack/contracts';
 
 import { coerceProfileIcon } from '../../http/serializers';
 import type {
@@ -215,6 +221,24 @@ const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOU
 const GROUP_NOT_FOUND = () => notFound('Group not found.', 'FRIEND_GROUP_NOT_FOUND');
 const NOT_A_FRIEND = () =>
   badRequest('Only your accepted friends can be added to a group.', 'GROUP_MEMBER_NOT_FRIEND');
+/**
+ * The two friend-group ceilings (§13.5 V5-P8, #1780). They exist because `GET
+ * /social/groups` — the read every `AudiencePicker` open performs — hydrates
+ * every circle of the caller WITH every circle's roster: without a cap the cost
+ * of that request is chosen by the caller. Both numbers come from the contract,
+ * so the SPA can name the ceiling it is about to hit instead of discovering it
+ * as an opaque refusal.
+ */
+const GROUP_LIMIT_REACHED = () =>
+  badRequest(
+    `You can have at most ${FRIEND_GROUPS_MAX} groups. Delete one to create another.`,
+    'FRIEND_GROUP_LIMIT_REACHED',
+  );
+const GROUP_MEMBER_LIMIT_REACHED = () =>
+  badRequest(
+    `A group can have at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
+    FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
+  );
 /**
  * The unfriend transaction rolled back, so NOTHING changed — the friendship and
  * every group roster / grant it owns are exactly as they were. Typed and 503 so
@@ -727,6 +751,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async createGroup(userId, name) {
+      // The per-user ceiling, checked before the insert (#1780). The count and
+      // the insert are two statements, so two simultaneous creates at the
+      // boundary can both pass — that costs one circle over the line, not an
+      // unbounded surface, and `listGroups` carries the same `LIMIT` regardless.
+      if ((await groups.countGroups(userId)) >= FRIEND_GROUPS_MAX) throw GROUP_LIMIT_REACHED();
       const groupId = await groups.createGroup(userId, name);
       // A fresh circle has no members and nothing shared to it yet.
       return { id: groupId, name, memberCount: 0, members: [], shareCount: 0 };
@@ -750,6 +779,26 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
       if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
       const add = async () => {
+        // The roster ceiling (#1780), inside the lock so a paranoid-mode add
+        // cannot slip past it. An add that is a no-op (the member is already in
+        // the circle) must still succeed at the cap: refusing it would make the
+        // idempotent repeat the one call a full circle cannot answer.
+        if (
+          (await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX &&
+          !(await groups.isMember(groupId, memberId))
+        ) {
+          // The ceiling counts STORED rows, but the owner only ever sees the
+          // LIVE roster — a row for a disabled or no-longer-friend member is
+          // absent from `members`, so it has no Remove button and the refusal it
+          // causes can neither be explained nor cleared (#1830). Drop those rows
+          // first: what is left blocking the add is then exactly the population
+          // `memberCount` reports and the owner can act on, so the refusal below
+          // names a real, fixable cause.
+          await groups.pruneUnreachableMembers(groupId);
+          if ((await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX) {
+            throw GROUP_MEMBER_LIMIT_REACHED();
+          }
+        }
         await groups.addMember(groupId, memberId);
         return groupOrThrow(userId, groupId);
       };
@@ -1238,10 +1287,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         }
         const current = await profile.getProfileSettings(userId);
         if (!current) throw PROFILE_NOT_FOUND();
-        await profile.updateProfileSettings(userId, {
-          isPublic: input.isPublic,
-          bio: bio === undefined ? current.bio : bio,
-        });
+        // Both fields pass through as sent: `undefined` (omitted) is NOT resolved
+        // to the stored value here, it is dropped from the UPDATE's SET list by
+        // the repository. An icon-only write therefore issues no
+        // profile-visibility write at all — not even one that happens to
+        // round-trip the current value, which would republish a profile a
+        // concurrent paranoid-enable had just taken private (the lock below is
+        // only taken when the request actually carries `isPublic`).
+        await profile.updateProfileSettings(userId, { isPublic: input.isPublic, bio });
         // Profile-icon picker (§13.5 V5-P0 (c)). `undefined` = untouched; `null` clears
         // the choice; a valid id from the finite allow-list persists. The service
         // re-validates the id against {@link profileIconIdSchema} — the request

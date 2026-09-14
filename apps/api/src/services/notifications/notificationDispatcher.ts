@@ -44,8 +44,12 @@ import type { EmailService } from '../email/emailService';
 import type { MirrorEmailVariant } from '../email/templates';
 import type { Logger } from '../../logger';
 
+import { notificationChannelSkippedTotal } from '../../metrics';
+
 import type { DiscordChannel } from './discordChannel';
 import { digestPeriodKey } from './digestService';
+import { notificationTypeShipsEmail } from './emailTypeRules';
+import type { DeactivatableChannel } from './killSwitch';
 import type { FcmChannel, PushMessage } from './fcm';
 import type { PresenceStore } from './presence';
 import { isInQuietHours, quietHoursWindowEnd } from './quietHours';
@@ -79,6 +83,25 @@ import { notificationMessage, renderNotificationMessage } from './notificationI1
  *    bell push, no email/push) and the message simply lands in the open thread.
  *  - **Defaults on.** A user with no settings row gets every channel; only an
  *    explicit override (or mute/presence) suppresses.
+ *  - **A deactivated channel never CONSUMES an event** (V5-P0 kill-switch,
+ *    #1795). Telegram and Discord arrive here as `null` while
+ *    `BT_TELEGRAM_DISCORD_ENABLED` is off. The rule, in one sentence: *an event
+ *    whose only destinations are deactivated channels the recipient is actually
+ *    linked to is left undelivered and re-deliverable — no inbox row, no dedupe
+ *    marker, nothing written* — so the very same event re-dispatched after the
+ *    env flip delivers exactly once. It is deliberately NOT rerouted to the bell
+ *    (that would invent a channel the user routed off) and deliberately NOT
+ *    marked delivered (that is precisely the permanent swallow this rule exists
+ *    to prevent). Two deliberate exclusions: a recipient with no linked chat /
+ *    saved webhook loses nothing (the default matrix routes both channels ON for
+ *    every type, so treating that as a loss would defer nearly every event on a
+ *    deactivated deployment), and a globally muted recipient keeps the existing
+ *    hidden marker (mute is the user's own decision, not a deployment failure).
+ *    Every skipped fan-out — whether the event reached other live channels
+ *    (`dropped`) or had none (`deferred`) — increments
+ *    `bettertrack_notification_channel_skipped_total` and warns once per
+ *    (channel, outcome) per process, so an operator running with the switch off
+ *    can see what it costs.
  *
  * The dispatcher is NOT a bus subscriber anymore: the Redis pub/sub bus stays
  * strictly ephemeral (realtime fan-out — it still carries the
@@ -168,6 +191,36 @@ interface RenderedNotification {
 type LocalizedNotification = RenderedNotification & { title: string; body: string };
 
 /**
+ * What a DEFERRED e-mail (a digest row or a quiet-hours deferral) may carry for
+ * this event, or `null` when the type ships no e-mail at all (#1816).
+ *
+ * The instant path applies both rules inside `sendEmail`: a type with no e-mail
+ * template returns without sending, and `chat.message` sends a template that
+ * deliberately omits the message preview. A deferral is rendered from the queue
+ * row instead of from the event, so the same rules have to be applied HERE, at
+ * enqueue time — otherwise quiet hours and the digest deliver an e-mail the
+ * instant path would never have sent, with content it deliberately withholds.
+ */
+function deferredEmailContent(
+  event: DispatchableEvent,
+  localized: LocalizedNotification,
+  locale: string | null | undefined,
+): { title: string; body: string } | null {
+  if (!notificationTypeShipsEmail(event.type)) return null;
+  if (event.type === 'chat.message' && event.bodyPreview) {
+    // Carries no message content, exactly like the instant chat e-mail: the
+    // no-preview bell copy is the same statement ("a message is waiting"),
+    // already EN+DE, so no new copy key is involved. Withholding it here also
+    // keeps it out of the digest summary line, which is built from this body.
+    return renderNotificationMessage(
+      notificationMessage('chatMessagePlain', { sender: event.senderUsername }),
+      locale,
+    );
+  }
+  return { title: localized.title, body: localized.body };
+}
+
+/**
  * The dedupe key per event: type + what makes the *logical* event unique.
  * Combined with the recipient userId (repo-side) this is §6.10's
  * "(user, event key)".
@@ -217,6 +270,12 @@ function eventKeyFor(event: DispatchableEvent): string {
       // Deduped per (asset, report date): one reminder per upcoming report, so a
       // daily re-scan across the multi-day lead window never re-notifies. The
       // recipient userId (repo-side) keeps every holder/watcher's row distinct.
+      // REPORT-level identity (an estimated date firming up is still one report,
+      // #1758) is resolved by the producer, which is the only layer that sees
+      // the date move: `marketIntel/earningsReminder.ts` holds a per-(user,
+      // asset) anchor and simply does not emit the second time. This key stays
+      // date-shaped because here it backstops REDELIVERY of one emit, and a
+      // redelivered emit always carries the same date.
       return `earnings.reminder:${event.assetId}:${event.earningsDate.slice(0, 10)}`;
     case 'chat.message':
       return `chat.message:${event.messageId}`;
@@ -226,11 +285,17 @@ function eventKeyFor(event: DispatchableEvent): string {
       // recipient userId (repo-side) keeps holders distinct.
       return `dividend.event:${event.assetId}:${event.exDate.slice(0, 10)}`;
     case 'budget.exceeded':
-      // Deduped per (budget, period): the producer already claims the
-      // `expense_budget_fires` marker before emitting, and this key backs it up
-      // at the dispatch layer so a redelivered/duplicated emit no-ops — exactly
-      // one alert per budget per month.
-      return `budget.exceeded:${event.budgetId}:${event.period}`;
+      // Deduped per FIRE CLAIM, which the producer takes before emitting; this
+      // key backs it up at the dispatch layer so a redelivered/duplicated emit
+      // no-ops. The cash producer sends the claim's id (#1754) because it
+      // RELEASES the claim once the budget falls back under its target, so the
+      // same month may legitimately alert again — keying on (budget, period)
+      // alone would have swallowed that second, genuine overrun forever. The
+      // retired expense island sends no `fireId` and keeps the old key, whose
+      // marker is never released and so still means one alert per month.
+      return event.fireId
+        ? `budget.exceeded:${event.budgetId}:${event.period}:${event.fireId}`
+        : `budget.exceeded:${event.budgetId}:${event.period}`;
     case 'standing_order.skipped':
       // A retriable defer may be observed by every daily retry, while the same
       // period can later be permanently dropped. Fold the outcome into the key
@@ -289,7 +354,11 @@ function mirrorMessage(event: MirrorNotificationEvent): NotificationMessage {
   }
 }
 
-/** Localizable budget-overrun descriptor; amounts stay raw interpolation data. */
+/**
+ * Localizable budget-overrun descriptor; amounts stay raw interpolation data so
+ * every channel renders them in its own locale. `notificationMessage()` marks
+ * `spent`/`target` as money (§6.16) for the in-app renderer.
+ */
 function budgetExceededMessage(event: BudgetExceededEvent): NotificationMessage {
   return notificationMessage('budgetExceeded', {
     category: event.categoryName,
@@ -407,6 +476,20 @@ export interface NotificationDispatcherDeps {
   telegram?: TelegramChannel | null;
   /** Discord channel; always built when webhooks storage is wired. Deliveries no-op for a user with no saved webhook (V4-P10). */
   discord?: DiscordChannel | null;
+  /**
+   * Per-user link state for the two channels the V5-P0 kill-switch can
+   * deactivate (#1795): does this recipient have the linked chat / saved
+   * webhook the switch promises to preserve? Consulted ONLY when the channel
+   * itself is null (i.e. the deployment deactivated it) — a live deployment
+   * never pays for it. It is what separates "this user genuinely loses a
+   * delivery" from "the default matrix routes a channel this user never set
+   * up", and only the former may defer an event. Omit/null ⇒ no recipient is
+   * treated as linked, so the pre-#1795 marker behaviour stands.
+   */
+  deactivatedLinks?: {
+    telegram(userId: string): Promise<boolean>;
+    discord(userId: string): Promise<boolean>;
+  } | null;
   /** Active-view presence (#368). Omit to disable suppression (never suppresses). */
   presence?: PresenceStore;
   /**
@@ -462,12 +545,51 @@ export function createNotificationDispatcher(
     webPush,
     telegram,
     discord,
+    deactivatedLinks,
     presence,
     digest,
     quietHours,
     logger,
   } = deps;
   const now = deps.now ?? (() => new Date());
+
+  // V5-P0 kill-switch signal (#1795). The counter carries the volume; the log
+  // carries the discovery, once per (channel, outcome) per process so a
+  // deactivated deployment gets an operator-visible line without a log flood.
+  const warnedDeactivated = new Set<string>();
+  function recordDeactivatedSkip(
+    channel: DeactivatableChannel,
+    outcome: 'dropped' | 'deferred',
+    type: string,
+  ): void {
+    notificationChannelSkippedTotal.inc({ channel, outcome });
+    const key = `${channel}:${outcome}`;
+    if (warnedDeactivated.has(key)) return;
+    warnedDeactivated.add(key);
+    logger?.warn(
+      { channel, outcome, type },
+      outcome === 'deferred'
+        ? `${channel} is deactivated (BT_TELEGRAM_DISCORD_ENABLED) and was this notification's only routed channel: nothing delivered, nothing recorded — it stays deliverable after an env flip`
+        : `${channel} is deactivated (BT_TELEGRAM_DISCORD_ENABLED): fan-out skipped for a user who still routes notifications to it`,
+    );
+  }
+
+  /**
+   * Does the recipient hold the link/webhook a deactivated channel preserves?
+   * A probe failure answers `false` — the conservative direction, since it
+   * keeps the pre-#1795 marker behaviour rather than inventing a deferral.
+   */
+  async function hasPreservedLink(channel: DeactivatableChannel, userId: string): Promise<boolean> {
+    if (!deactivatedLinks) return false;
+    try {
+      return channel === 'telegram'
+        ? await deactivatedLinks.telegram(userId)
+        : await deactivatedLinks.discord(userId);
+    } catch (err) {
+      logger?.warn({ err, channel }, 'deactivated channel link probe failed');
+      return false;
+    }
+  }
 
   /** Build the event's locale-neutral message + routing payload. */
   async function render(event: DispatchableEvent): Promise<RenderedNotification | null> {
@@ -997,6 +1119,34 @@ export function createNotificationDispatcher(
     const muted = recipient.notificationsMuted;
     const routing: TypeRouting = await repo.routingFor(event.userId, event.type);
 
+    // V5-P0 kill-switch (#1795): channels this event is routed to that the
+    // deployment cannot deliver on AND where the recipient holds the link the
+    // switch promises to preserve — i.e. a delivery genuinely lost, not merely
+    // the default matrix routing a channel this user never set up. When no
+    // destination survives, return before the insert below: writing the dedupe
+    // marker here is what used to consume the event forever, invisibly, and
+    // reduced the promised env-flip restore to a restore of the link row alone.
+    const deactivatedRouted: DeactivatableChannel[] = [];
+    if (routing.telegram && !telegram && (await hasPreservedLink('telegram', event.userId))) {
+      deactivatedRouted.push('telegram');
+    }
+    if (routing.discord && !discord && (await hasPreservedLink('discord', event.userId))) {
+      deactivatedRouted.push('discord');
+    }
+    const hasLiveDestination =
+      routing.inapp ||
+      (routing.email && Boolean(email) && Boolean(recipient.email)) ||
+      (routing.push && Boolean(fcm)) ||
+      (routing.webpush && Boolean(webPush)) ||
+      (routing.telegram && Boolean(telegram)) ||
+      (routing.discord && Boolean(discord));
+    if (!muted && !hasLiveDestination && deactivatedRouted.length > 0) {
+      for (const channel of deactivatedRouted) {
+        recordDeactivatedSkip(channel, 'deferred', event.type);
+      }
+      return;
+    }
+
     // Presence suppression (#368): never on stale data — the store's TTL bounds
     // it. Errors fail open (deliver rather than swallow) and log.
     let suppressedByPresence = false;
@@ -1092,32 +1242,44 @@ export function createNotificationDispatcher(
     // the others — and never re-throws into the queue (the marker exists; a
     // retry would no-op anyway).
     if (routing.email && email && recipient.email) {
+      // The per-type e-mail rules the instant path applies below, resolved BEFORE
+      // either deferral branch enqueues (#1816): `null` = this type ships no
+      // e-mail, so it ships none deferred either. `data` rides along so the
+      // deferred send can deep-link to the notification's own target instead of
+      // the app root.
+      const deferrable = deferredEmailContent(event, localized, recipient.locale);
       if (digest && deferredCadence && period) {
-        try {
-          await digest.enqueue({
-            userId: event.userId,
-            type: event.type,
-            channel: 'email',
-            cadence: deferredCadence,
-            period,
-            title: localized.title,
-            body: localized.body,
-          });
-        } catch (err) {
-          logger?.warn({ err, type: event.type }, 'digest email enqueue failed');
+        if (deferrable) {
+          try {
+            await digest.enqueue({
+              userId: event.userId,
+              type: event.type,
+              channel: 'email',
+              cadence: deferredCadence,
+              period,
+              title: deferrable.title,
+              body: deferrable.body,
+              data: rendered.data,
+            });
+          } catch (err) {
+            logger?.warn({ err, type: event.type }, 'digest email enqueue failed');
+          }
         }
       } else if (quietHours && quietDeferUntil) {
-        try {
-          await quietHours.enqueueDeferred({
-            userId: event.userId,
-            type: event.type,
-            channel: 'email',
-            title: localized.title,
-            body: localized.body,
-            deliverAfter: quietDeferUntil,
-          });
-        } catch (err) {
-          logger?.warn({ err, type: event.type }, 'quiet-hours email defer failed');
+        if (deferrable) {
+          try {
+            await quietHours.enqueueDeferred({
+              userId: event.userId,
+              type: event.type,
+              channel: 'email',
+              title: deferrable.title,
+              body: deferrable.body,
+              data: rendered.data,
+              deliverAfter: quietDeferUntil,
+            });
+          } catch (err) {
+            logger?.warn({ err, type: event.type }, 'quiet-hours email defer failed');
+          }
         }
       } else {
         try {
@@ -1224,6 +1386,12 @@ export function createNotificationDispatcher(
         // through the redactor here too (Pino serializes the `err` object).
         logger?.warn({ err, type: event.type }, 'telegram fan-out failed');
       }
+    } else if (deactivatedRouted.includes('telegram')) {
+      // The recipient is linked and routes this type here, but the channel is
+      // not built in this deployment. The event did reach a live channel (else
+      // the early return above fired), so this is a per-channel loss — still
+      // worth an operator-visible signal (#1795).
+      recordDeactivatedSkip('telegram', 'dropped', event.type);
     }
     if (routing.discord && discord) {
       try {
@@ -1231,6 +1399,8 @@ export function createNotificationDispatcher(
       } catch (err) {
         logger?.warn({ err, type: event.type }, 'discord fan-out failed');
       }
+    } else if (deactivatedRouted.includes('discord')) {
+      recordDeactivatedSkip('discord', 'dropped', event.type);
     }
   }
 

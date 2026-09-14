@@ -71,12 +71,13 @@ const STATS: Record<
   c3: { total: 5, cagr: 4, dd: -3, vol: 9, best: 2, worst: -2 },
 };
 
-function seriesFor(id: string, baselineId: string) {
+function seriesFor(id: string, baselineId: string, unresolvedPct = 0) {
   const s = STATS[id]!;
   const b = STATS[baselineId]!;
   return {
     conglomerateId: id,
     name: NAMES[id]!,
+    unresolvedPct,
     series: [
       { date: '2021-01-04', value: 100 },
       { date: '2026-01-05', value: 100 * (1 + s.total / 100) },
@@ -100,14 +101,18 @@ function seriesFor(id: string, baselineId: string) {
   };
 }
 
-function buildResponse(ids: string[], baselineId: string): BacktestComparisonResponse {
+function buildResponse(
+  ids: string[],
+  baselineId: string,
+  unresolvedById: Record<string, number> = {},
+): BacktestComparisonResponse {
   return {
     startDate: '2021-01-04',
     endDate: '2026-01-05',
     baselineId,
     mode: 'clip',
     rebalance: 'none',
-    series: ids.map((id) => seriesFor(id, baselineId)),
+    series: ids.map((id) => seriesFor(id, baselineId, unresolvedById[id] ?? 0)),
   } as BacktestComparisonResponse;
 }
 
@@ -248,6 +253,33 @@ describe('ComparisonPage', () => {
     // Six selected → the seventh is disabled; the selected six stay toggleable.
     expect(screen.getByRole('checkbox', { name: /Cong6/ })).toBeDisabled();
     expect(screen.getByRole('checkbox', { name: /Cong0/ })).toBeEnabled();
+  });
+
+  test('flags a column whose blueprint only partly resolved (#1755)', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
+    });
+    // Beta is 60 % an asset + 40 % an empty nested blueprint: its curve and
+    // every stat in this column cover only that 60 %, normalized to 100.
+    vi.mocked(compareConglomerates).mockImplementation((body: BacktestComparisonRequest) =>
+      Promise.resolve(
+        buildResponse(body.conglomerateIds, body.baselineId ?? body.conglomerateIds[0]!, {
+          c2: 40,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Beta']);
+    const grid = await screen.findByRole('table', { name: 'Blueprint comparison statistics' });
+
+    expect(within(grid).getByText('40,00 % without assets')).toBeInTheDocument();
+    // …and a fully-resolved column says nothing at all.
+    expect(within(grid).queryByText('0,00 % without assets')).not.toBeInTheDocument();
   });
 
   test('picking a different baseline recomputes the deltas against it', async () => {

@@ -4,7 +4,12 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { ConglomerateResolvedResponse, Idea, IdeaResponse } from '@bettertrack/contracts';
+import {
+  backtestPreviewRequestSchema,
+  type ConglomerateResolvedResponse,
+  type Idea,
+  type IdeaResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/ideasApi', () => ({ getIdea: vi.fn(), updateIdea: vi.fn() }));
 vi.mock('../../lib/conglomerateApi', () => ({ getResolvedConglomerate: vi.fn() }));
@@ -124,6 +129,32 @@ describe('IdeaWorkboardPage', () => {
       source: { kind: 'conglomerate', conglomerateId: CONGLOMERATE_ID },
       initialParams: { range: '1Y', benchmark: null, mode: 'clip', rebalance: 'none' },
     });
+  });
+
+  test('hands the panel a 200-asset flatten the preview contract accepts (#1877)', async () => {
+    // A nested blueprint the server activates resolves to up to
+    // MAX_FLATTENED_POSITIONS assets, and this page posts that whole vector —
+    // so the request it builds must be one the preview contract admits, not a
+    // permanent 400 at the old 50-position bound.
+    const positions = Array.from({ length: 200 }, (_, i) => ({
+      assetId: `018f0000-0000-7000-8000-${(i + 1).toString(16).padStart(12, '0')}`,
+      weightPct: 0.5,
+      asset: { symbol: `A${i}`, name: `Asset ${i}` },
+    }));
+    vi.mocked(getIdea).mockResolvedValue({ idea: conglomerateIdea() });
+    vi.mocked(getResolvedConglomerate).mockResolvedValue({
+      ...resolvedConglomerate(),
+      nested: true,
+      positions,
+    } as unknown as ConglomerateResolvedResponse);
+    renderPage();
+
+    await screen.findByTestId('backtest-panel');
+    const handed = (panelProps.current as { positions: unknown[] }).positions;
+    expect(handed).toHaveLength(200);
+    expect(backtestPreviewRequestSchema.safeParse({ positions: handed, range: '1Y' }).success).toBe(
+      true,
+    );
   });
 
   test('shows an error with a retry button when the idea cannot be loaded', async () => {

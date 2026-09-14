@@ -15,6 +15,15 @@ import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, FAKE_GOOGLE_URL } from './support/config';
 import { dismissFirstRun, expectUserShellReady } from './support/flows';
 import { provisionUser } from './support/users';
+import en from '../apps/web/src/i18n/messages/en.json';
+
+/**
+ * The Drive group's heading, read from the message bundle the app renders it
+ * from — never a second hardcoded copy. The guard below asserted a string
+ * ("Google Drive app data") that exists in no source file and no bundle, so it
+ * passed vacuously and could never catch the gate regressing (#1859).
+ */
+const DRIVE_VAULT_HEADING = en.settings.connections.drive.title;
 
 /**
  * Google sign-in end-to-end (§13.4 V4-P11, issue #520). Drives the REAL redirect
@@ -87,13 +96,14 @@ test('google identity block lives under Settings → Connections and is gone fro
     });
     await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
     // Drive is the paranoid VAULT's storage medium — `DriveVaultSection`
-    // returns null unless the account's `privacyMode` is 'paranoid', correctly,
-    // since Drive-as-a-vault-medium is meaningless for a normal account. So for
+    // returns null unless the account is paranoid, in EVERY state of its
+    // storage read (pending, failed, resolved), correctly, since
+    // Drive-as-a-vault-medium is meaningless for a normal account. So for
     // this spec's normal user the section must stay absent: Connections must
     // not make an unavailable integration look configurable. Covering its
     // presence end-to-end means enabling paranoid mode, which is its own arc
     // (§13.5 PD6) and not what a Google-identity spec is for.
-    await expect(page.getByRole('heading', { name: 'Google Drive app data' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: DRIVE_VAULT_HEADING })).toHaveCount(0);
 
     // The old home no longer shows it (only relocated, never duplicated). The
     // former Security page is the Sign-in panel now (credentials); devices and

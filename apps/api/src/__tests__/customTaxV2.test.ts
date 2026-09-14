@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   cashMovementsResponseSchema,
+  SOURCE_TAG_MANUAL,
+  SOURCE_TAG_STANDING_ORDER,
+  SOURCE_TAG_SYNC_MIRRORCHAIN,
   taxSettingsResponseSchema,
   taxYearListResponseSchema,
   taxYearReportResponseSchema,
@@ -169,6 +172,41 @@ async function frozenRow(txId: string) {
     taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
     taxParams: row.taxParams,
   };
+}
+
+/**
+ * Plan the tax of one entry-less-or-explicit sell under a given source tag,
+ * straight at the planner — the seam every write path shares, and the only
+ * place a source tag the booking paths cannot produce yet can be asserted.
+ */
+async function planSell(
+  userId: string,
+  pid: string,
+  asset: Awaited<ReturnType<typeof seedAsset>>,
+  entry: { taxAmountEur?: number; taxRatePct?: number },
+  source?: string,
+) {
+  const { sources } = await harness.ctx.portfolio.listCashSources(userId, pid);
+  const main = sources.find((s) => s.isMain);
+  if (!main) throw new Error('Portfolio has no main cash source');
+  return harness.ctx.tax.planTransactionTaxes({
+    userId,
+    portfolioId: pid,
+    inputs: [
+      {
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 10,
+        price: 19,
+        fee: 0,
+        executedAt: '2026-02-10T10:00:00.000Z',
+        ...entry,
+      },
+    ],
+    assetsById: new Map([[asset.id, asset]]),
+    resolveSourceId: async () => main.id,
+    source,
+  });
 }
 
 // ─── Settings: manual default + custom parameter set ─────────────────────────
@@ -408,6 +446,64 @@ describe('manual default applies where no explicit entry arrives (V5-P4c)', () =
     expect(recorded.dividend.taxAmountEur).toBeNull();
     const cash = await cashState(agent, pid);
     expect(taxMovements(cash.movements)).toHaveLength(0);
+  });
+
+  it('a standing-order-booked sell takes the default (the planner rule, ahead of its booking path)', async () => {
+    // Issue #1861: the gate is "is this a row the account owner is responsible
+    // for", not "was it typed in a browser". The V5-P6b recorder writes to the
+    // repository directly today, so the rule is pinned where it lives — at the
+    // planner — and cannot resurface as a second bug when that path moves.
+    const { user, agent, pid, asset } = await setup({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+
+    const planned = await planSell(user.id, pid, asset, {}, SOURCE_TAG_STANDING_ORDER);
+    expect(planned.rows[0]!.tax).toMatchObject({ mode: 'manual_per_trade', amountEur: 5 });
+    expect(planned.rows[0]!.movement).toMatchObject({ kind: 'tax_withholding', amountEur: -5 });
+  });
+
+  it('an explicit per-trade entry is kept whatever the row’s source tag is', async () => {
+    const { user, agent, pid, asset } = await setup({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+
+    // Gain 10·(19−10) = 90 → an explicit 10 % is 9.00 on every path; an
+    // explicit €1 stays €1. Neither the default (5) nor the import gate (null)
+    // may touch a row that states its own tax.
+    for (const source of [
+      SOURCE_TAG_MANUAL,
+      SOURCE_TAG_STANDING_ORDER,
+      SOURCE_TAG_SYNC_MIRRORCHAIN,
+      'import:george',
+      undefined,
+    ]) {
+      const byRate = await planSell(user.id, pid, asset, { taxRatePct: 10 }, source);
+      expect(byRate.rows[0]!.tax, `rate entry under ${source ?? 'no tag'}`).toMatchObject({
+        mode: 'manual_per_trade',
+        amountEur: 9,
+      });
+      const byAmount = await planSell(user.id, pid, asset, { taxAmountEur: 1 }, source);
+      expect(byAmount.rows[0]!.tax, `amount entry under ${source ?? 'no tag'}`).toMatchObject({
+        mode: 'manual_per_trade',
+        amountEur: 1,
+      });
+    }
   });
 });
 

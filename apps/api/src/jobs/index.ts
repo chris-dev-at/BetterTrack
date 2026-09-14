@@ -5,6 +5,9 @@
 export {
   QUEUE_NAMES,
   ALL_QUEUE_NAMES,
+  QUEUE_FEATURE_FLAGS,
+  featureFlagForQueue,
+  flagOwningQueues,
   type QueueName,
   type JobPayloads,
   type JobPayload,
@@ -17,6 +20,7 @@ export {
   DEFAULT_JOB_OPTIONS,
   BACKOFF_BASE_MS,
   QUEUE_JOB_OPTIONS,
+  WEBHOOK_BACKOFF_JITTER,
   jobOptionsForQueue,
 } from './options';
 export {
@@ -47,7 +51,12 @@ export {
   toRepeatOptions,
   type SchedulableQueue,
 } from './scheduler';
-export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
+export {
+  createJobWorkers,
+  runJobDefinition,
+  type RunningWorkers,
+  type CreateJobWorkersDeps,
+} from './worker';
 export {
   assertParanoidJobBindings,
   bindParanoidJob,
@@ -125,6 +134,7 @@ export {
   DEFERRED_DELIVERY_SCHEDULER_ID,
   DEFERRED_DELIVERY_INTERVAL_MS,
   type DigestJobDeps,
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   EXPORT_CLEANUP_SCHEDULER_ID,

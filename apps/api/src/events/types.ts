@@ -348,9 +348,12 @@ export interface DividendEventNotice {
 /**
  * `budget.exceeded` → a per-category monthly expense budget was blown (§13.5
  * V5-P9, issue 3/3). `userId` is the budget's owner. Emitted at most once per
- * (budget, period): the producer claims the `expense_budget_fires` marker before
- * emitting, and the dispatcher additionally dedupes per (recipient, budget,
- * period) via its eventKey — so a blown budget fires exactly one alert per month.
+ * FIRE CLAIM: the producer claims a marker row before emitting, and the
+ * dispatcher dedupes per (recipient, claim) via its eventKey — so a blown
+ * budget fires exactly one alert while it stays blown. The cash producer
+ * releases that claim when the budget falls back under its target, which is
+ * why {@link BudgetExceededEvent.fireId} is part of the key (#1754); the
+ * retired expense island never releases, so it keeps the (budget, period) key.
  * All display strings ride the event (category name, target, spend, period) so
  * the dispatcher renders the notification without any expense-side lookup —
  * keeping the notification core free of the strictly-separate expense tables.
@@ -377,6 +380,18 @@ export interface BudgetExceededEvent {
   portfolioId?: string;
   /** The month whose spend blew the budget (`YYYY-MM`) — the dedupe period. */
   period: string;
+  /**
+   * The identity of the FIRE CLAIM this alert was emitted under (#1754) —
+   * `cash_budget_fires.id`, the row the cash producer inserts before emitting.
+   *
+   * It exists because a claim is no longer permanent: the cash evaluator
+   * RELEASES it when the budget drops back under its target, so the same
+   * (budget, period) may legitimately alert again later in the month. The
+   * dispatcher keys its dedupe off this when present — one alert per claim, so
+   * a redelivered emit still no-ops — and falls back to (budget, period) for
+   * the retired expense island, whose marker is never released.
+   */
+  fireId?: string;
   /** The monthly target that was exceeded. */
   amount: number;
   /** The recorded spend for the period (`> amount`). */

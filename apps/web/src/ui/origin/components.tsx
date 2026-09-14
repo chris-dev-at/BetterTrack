@@ -116,20 +116,38 @@ export function PageHead({
   title,
   sub,
   actions,
+  media,
   children,
 }: {
   title: ReactNode;
   sub?: ReactNode;
   actions?: ReactNode;
+  /**
+   * Leading media for the title block — the owner's avatar on the shared-item
+   * pages (§6.9: a curated profile icon renders wherever a user appears). It
+   * sits INSIDE the titles column, next to the heading, so the header keeps its
+   * `space-between` split with the actions and gains no extra row.
+   */
+  media?: ReactNode;
   children?: ReactNode;
 }) {
+  const titles = (
+    <>
+      <h1 className="bt-page-title">{title}</h1>
+      {sub ? <p className="bt-page-sub">{sub}</p> : null}
+      {children}
+    </>
+  );
   return (
     <header className="bt-page-head">
-      <div className="bt-page-head__titles">
-        <h1 className="bt-page-title">{title}</h1>
-        {sub ? <p className="bt-page-sub">{sub}</p> : null}
-        {children}
-      </div>
+      {media ? (
+        <div className="bt-page-head__titles flex items-center gap-3">
+          {media}
+          <div className="min-w-0">{titles}</div>
+        </div>
+      ) : (
+        <div className="bt-page-head__titles">{titles}</div>
+      )}
       {actions ? <div className="bt-page-head__actions">{actions}</div> : null}
     </header>
   );

@@ -38,8 +38,12 @@ import {
   useAddToWatchlist,
   useWatchlistMembership,
 } from '../../lib/workboardApi';
+import { assetTypeLabelKey } from '../../lib/assetTypeLabel';
 import { cx } from '../../lib/cx';
+import { nextUpcomingDividend } from '../../lib/dividendDates';
+import { useDeployCapability } from '../../lib/featureFlags';
 import {
+  displayZoneDay,
   formatDate,
   formatDateTime,
   formatPercent,
@@ -138,7 +142,10 @@ function AssetHeader({
               </>
             ) : null}
             <span className="mx-1.5 bt-muted">·</span>
-            <span className="capitalize">{asset.type}</span>
+            {/* The taxonomy slug is an English enum, not copy: it goes through
+                the shared label helper so this page, the search rows and the ⌘K
+                palette all name the same asset the same way in EN and DE. */}
+            <span>{t(assetTypeLabelKey(asset.type))}</span>
           </p>
           <CapabilityTags type={asset.type} className="mt-1.5" />
         </div>
@@ -291,27 +298,65 @@ function AlertsSection({
  */
 function DividendsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  // A deployment without the arc can only answer `available: false`, so the
+  // request is pure waste — the same `enabled:` gate the portfolio, forecast,
+  // nav and command surfaces already apply (§13.5 V5-P5).
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_DIVIDENDS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetDividends(assetId, signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
 
   // Invisible when unconfigured — the whole block disappears (regression-guarded).
   if (!data?.available) return null;
 
-  const { history, upcoming, forwardYield, trailingAmount, currency } = data;
-  const next = upcoming[0] ?? null;
+  const { history, upcoming, forwardYield, trailingAmount, trailingAmountBasis, currency } = data;
+  // The next event that is genuinely still ahead — and its ex-date only when
+  // THAT has not passed either. A payload whose ex-date is behind us but whose
+  // payout is still to come is the normal shape upstream (#1758): showing
+  // "Next ex-date" for a day already gone is a date in the past under an
+  // upcoming label, so only the pay date survives for that event.
+  const today = displayZoneDay();
+  const next = nextUpcomingDividend(upcoming, today);
+  const nextExDate = next?.exDate && next.exDate.slice(0, 10) >= today ? next.exDate : null;
+  const nextPayDate = next?.payDate && next.payDate.slice(0, 10) >= today ? next.payDate : null;
+  // An amount whose denomination the payload never gave would be rendered in the
+  // user's base currency by default, relabelling a $2.40 dividend as €2,40 —
+  // the same hazard the Home widget guards against, and `currency` is genuinely
+  // nullable here (the provider maps an unmappable code to null).
+  const showTrailing = trailingAmount != null && currency !== null;
+  // The field name is historical: the mapper publishes whichever basis the
+  // provider had — a realized 12-month sum OR a forward-annualized regular rate
+  // (`providers/yahooMapping.ts`) — and the contract is explicit that a consumer
+  // must read `trailingAmountBasis` to know which. Captioning an annualised rate
+  // "TTM per share" asserts twelve months of payouts nobody read (#1790); the
+  // portfolio and forecast surfaces already caption it from the basis.
+  const trailingLabel =
+    trailingAmountBasis === 'forward-annualized'
+      ? t('assets.detail.dividends.trailingForward')
+      : t('assets.detail.dividends.trailing');
   const nothingToShow =
     forwardYield == null &&
-    trailingAmount == null &&
+    !showTrailing &&
     history.length === 0 &&
-    (!next || (!next.exDate && !next.payDate));
+    nextExDate === null &&
+    nextPayDate === null;
   if (nothingToShow) return null;
 
-  const sparkData = history
-    .map((h) => h.amount)
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  // Payouts carry their ex-date onto the chart's axis (#1790). A dividend series
+  // is genuinely irregular — a skipped quarter, a special beside the regular
+  // payout, a switch from quarterly to monthly — and drawing the amounts in
+  // array order rendered every one of those as a steady cadence, so a duplicated
+  // upstream row also shifted every later point. A payout with no usable ex-date
+  // has no place on a time axis and is not plotted.
+  const payouts: Array<{ amount: number; at: number }> = [];
+  for (const h of history) {
+    const at = h.exDate === null ? Number.NaN : Date.parse(h.exDate);
+    if (typeof h.amount !== 'number' || !Number.isFinite(h.amount) || Number.isNaN(at)) continue;
+    payouts.push({ amount: h.amount, at });
+  }
 
   return (
     <section aria-labelledby="dividends-heading" className="flex flex-col gap-3">
@@ -325,34 +370,44 @@ function DividendsSection({ assetId }: { assetId: string }) {
             value={formatPercent(forwardYield * 100)}
           />
         ) : null}
-        {trailingAmount != null ? (
-          <StatCard
-            label={t('assets.detail.dividends.trailing')}
-            value={formatUnitPrice(trailingAmount, currency ?? undefined)}
-          />
+        {showTrailing ? (
+          <StatCard label={trailingLabel} value={formatUnitPrice(trailingAmount, currency)} />
         ) : null}
-        {next?.exDate ? (
+        {nextExDate ? (
           <StatCard
             label={t('assets.detail.dividends.nextExDate')}
-            value={formatDate(next.exDate)}
+            value={formatDate(nextExDate)}
           />
         ) : null}
-        {next?.payDate ? (
+        {nextPayDate ? (
           <StatCard
             label={t('assets.detail.dividends.nextPayDate')}
-            value={formatDate(next.payDate)}
+            value={formatDate(nextPayDate)}
           />
         ) : null}
       </div>
-      {sparkData.length > 1 ? (
-        <div className="flex items-center gap-3 bt-panel bt-panel--pad">
+      {payouts.length > 1 ? (
+        // Wraps because the row cannot shrink: the chart is a fixed 140px and
+        // the two captions only shrink to their longest word, so on a 360px
+        // phone the German label plus the range pushed the page 16px wider than
+        // the viewport (mobile overflow gate, #1799). Wrapping drops the range
+        // onto its own line there and leaves the single-line desktop row as it
+        // was.
+        <div className="flex flex-wrap items-center gap-3 bt-panel bt-panel--pad">
           <span className="text-xs bt-muted">{t('assets.detail.dividends.history')}</span>
           <Sparkline
-            data={sparkData}
+            data={payouts.map((p) => p.amount)}
+            at={payouts.map((p) => p.at)}
             width={140}
             height={32}
             ariaLabel={t('assets.detail.dividends.historyAriaLabel')}
           />
+          <span className="text-xs bt-muted">
+            {t('assets.detail.dividends.historyRange', {
+              from: formatDate(new Date(payouts[0]!.at).toISOString()),
+              to: formatDate(new Date(payouts[payouts.length - 1]!.at).toISOString()),
+            })}
+          </span>
         </div>
       ) : null}
     </section>
@@ -404,16 +459,29 @@ function EstimatedBadge({ estimated }: { estimated: boolean }) {
  */
 function EarningsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_EARNINGS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetEarnings(assetId, signal),
+    enabled: marketIntel,
     staleTime: 15 * 60_000,
   });
 
   // Invisible when unconfigured (gate off / no capability / upstream error) or
   // when the provider knows of no earnings at all.
   if (!data || !data.available) return null;
-  if (!data.next && data.recent.length === 0) return null;
+  // A report that has already happened is not the NEXT one. The provider keeps
+  // returning the last date it knew about until the following call is scheduled,
+  // and the keystone serves that payload stale for days while a breaker is open,
+  // so without this the page announces "Next report — 31 Jul" in mid-August. The
+  // Workboard calendar and the reminder job both drop it (marketIntelService.ts,
+  // earningsReminder.ts); this surface is the one that did not (#1790). Same
+  // boundary as the calendar: the DISPLAY-zone day this date is rendered in
+  // (#1827), on which a report dated today is still ahead.
+  const today = displayZoneDay();
+  const next =
+    data.next && data.next.date && data.next.date.slice(0, 10) >= today ? data.next : null;
+  if (!next && data.recent.length === 0) return null;
 
   return (
     <section aria-labelledby="earnings-heading" className="flex flex-col gap-3">
@@ -421,23 +489,23 @@ function EarningsSection({ assetId }: { assetId: string }) {
         {t('assets.detail.earnings.title')}
       </h2>
       <div className="flex flex-col gap-3 bt-panel bt-panel--pad">
-        {data.next && data.next.date ? (
+        {next ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-col">
               <span className="text-xs uppercase tracking-wide bt-muted">
                 {t('assets.detail.earnings.nextLabel')}
               </span>
-              <span className="text-sm font-medium">{formatDate(data.next.date)}</span>
+              <span className="text-sm font-medium">{formatDate(next.date)}</span>
             </div>
             <div className="flex items-center gap-2">
-              {data.next.epsEstimate != null ? (
+              {next.epsEstimate != null ? (
                 <span className="text-xs bt-muted">
                   {t('assets.detail.earnings.epsEstimate', {
-                    value: data.next.epsEstimate.toFixed(2),
+                    value: next.epsEstimate.toFixed(2),
                   })}
                 </span>
               ) : null}
-              <EstimatedBadge estimated={data.next.estimated} />
+              <EstimatedBadge estimated={next.estimated} />
             </div>
           </div>
         ) : null}
@@ -453,10 +521,22 @@ function EarningsSection({ assetId }: { assetId: string }) {
                 .reverse()
                 .map((e) => (
                   <li
-                    key={e.date ?? `${e.epsActual}-${e.epsEstimate}`}
+                    key={e.periodEnd ?? e.date ?? `${e.epsActual}-${e.epsEstimate}`}
                     className="flex items-center justify-between text-sm bt-soft"
                   >
-                    <span className="tabular-nums bt-muted">{formatDate(e.date)}</span>
+                    {/* A past report carries its fiscal PERIOD END, not the day
+                        results were announced (over a month later for a June
+                        quarter), so the row says which of the two it is rather
+                        than printing it under a heading that means the other
+                        one (#1790). A provider that ever supplies the real
+                        announcement date renders it as the date it is. */}
+                    <span className="tabular-nums bt-muted">
+                      {e.periodEnd
+                        ? t('assets.detail.earnings.periodEnded', {
+                            date: formatDate(e.periodEnd),
+                          })
+                        : formatDate(e.date)}
+                    </span>
                     <span className="tabular-nums">
                       {e.epsActual != null
                         ? t('assets.detail.earnings.epsActual', { value: e.epsActual.toFixed(2) })
@@ -489,9 +569,11 @@ function splitRatio(numerator: number, denominator: number, ratio: string): stri
  */
 function SplitsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_SPLITS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetSplits(assetId, signal),
+    enabled: marketIntel,
     staleTime: 60 * 60_000,
   });
 
@@ -542,9 +624,11 @@ function SplitsSection({ assetId }: { assetId: string }) {
  */
 function NewsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_NEWS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetNews(assetId, signal),
+    enabled: marketIntel,
     staleTime: 15 * 60_000,
   });
 
@@ -926,6 +1010,7 @@ export function AssetDetailPage() {
     chartPoints: livePoints,
     generation: liveGeneration,
     streaming,
+    unavailable: liveUnavailable,
     marketState: liveMarketState,
   } = useLiveSeries(id, liveWindow, liveRate, liveActive, quoteQuery.data);
 
@@ -1015,7 +1100,18 @@ export function AssetDetailPage() {
               onWindowChange={setLiveWindow}
               onRateChange={setLiveRate}
             />
-            {liveActive && marketClosed ? (
+            {/* The server shed Live Mode (§13.5 V5-P2 arc (c)). Say so: the
+                chart is on the 60 s poll, not on a stream that happens to be
+                quiet — never present the last frame as a current live price. */}
+            {liveActive && liveUnavailable ? (
+              <span
+                className="bt-badge gap-1 px-2 py-0.5 text-xs"
+                title={t('assets.live.unavailableHint')}
+              >
+                <span aria-hidden="true" className="bt-dot h-1.5 w-1.5" />
+                {t('assets.live.unavailable')}
+              </span>
+            ) : liveActive && marketClosed ? (
               <span
                 className="bt-badge gap-1 px-2 py-0.5 text-xs"
                 title={t('assets.live.marketClosedHint')}

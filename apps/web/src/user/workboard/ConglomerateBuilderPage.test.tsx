@@ -39,6 +39,8 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
+import { I18nProvider, localizedMessage, useI18n } from '../../i18n';
+import { draftConglomerate, useAiCapability } from '../../lib/aiApi';
 import {
   activateConglomerate,
   createConglomerate,
@@ -47,7 +49,6 @@ import {
   replaceConglomeratePositions,
   updateConglomerate,
 } from '../../lib/conglomerateApi';
-import { draftConglomerate, useAiCapability } from '../../lib/aiApi';
 import { searchAssets } from '../../lib/searchApi';
 import { ConglomerateBuilderPage } from './ConglomerateBuilderPage';
 
@@ -133,6 +134,44 @@ function renderBuilder(initialPath: string) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+/** A language toggle rendered beside the Builder, sharing its provider. */
+function LocaleSwitch() {
+  const { setLocale } = useI18n();
+  return (
+    <button type="button" onClick={() => setLocale('de')}>
+      Deutsch
+    </button>
+  );
+}
+
+/**
+ * Like {@link renderEdit}, but under a real {@link I18nProvider} seeded to EN
+ * with a switch to DE — `setLocale` rebuilds `t` without remounting the tree,
+ * so this is what catches a callback that captured a stale translator.
+ */
+async function renderEditWithLocaleSwitch(
+  positions: Array<{ id: string; symbol: string; weightPct: number }>,
+) {
+  vi.mocked(getConglomerate).mockResolvedValue(detail(positions));
+  vi.mocked(updateConglomerate).mockResolvedValue(detail(positions));
+  vi.mocked(replaceConglomeratePositions).mockResolvedValue(detail(positions));
+  render(
+    <I18nProvider initialLocale="en">
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={[`/workbench/blueprints/${CONGLOMERATE_ID}/edit`]}>
+          <Routes>
+            <Route path="/workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+      <LocaleSwitch />
+    </I18nProvider>,
+  );
+  for (const p of positions) {
+    await screen.findByLabelText(`Weight for ${p.symbol}`);
+  }
 }
 
 /** Load the Builder in edit mode with the given positions and wait for the rows. */
@@ -327,7 +366,36 @@ describe('ConglomerateBuilderPage', () => {
     await user.click(screen.getByRole('button', { name: /lock aapl/i }));
     await user.click(screen.getByRole('button', { name: /normalize/i }));
 
-    expect(await screen.findByText(/Locked weights already total 100%/i)).toBeInTheDocument();
+    // The notice comes from the catalog now (#1745), not from an English
+    // literal returned by `normalize()`.
+    expect(
+      await screen.findByText(
+        localizedMessage('en', 'workboard.builder.errors.normalizeLockedFull'),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('the normalize notice follows an in-session language switch', async () => {
+    await renderEditWithLocaleSwitch([
+      { id: 'a1', symbol: 'AAPL', weightPct: 100 },
+      { id: 'a2', symbol: 'MSFT', weightPct: 10 },
+    ]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /lock aapl/i }));
+    // Grab the button while its label is still English; the DOM node survives
+    // the re-render that the language switch triggers.
+    const normalize = screen.getByRole('button', { name: /normalize/i });
+
+    await user.click(screen.getByRole('button', { name: 'Deutsch' }));
+    await user.click(normalize);
+
+    const de = localizedMessage('de', 'workboard.builder.errors.normalizeLockedFull');
+    expect(await screen.findByText(de)).toBeInTheDocument();
+    expect(
+      screen.queryByText(localizedMessage('en', 'workboard.builder.errors.normalizeLockedFull')),
+    ).not.toBeInTheDocument();
+    // The provider persists the choice; keep it out of the other tests.
+    localStorage.removeItem('bettertrack.locale');
   });
 
   test('activate is blocked until Σ = 100 ± 0.01, then flips to active', async () => {
@@ -361,6 +429,43 @@ describe('ConglomerateBuilderPage', () => {
     await user.click(screen.getByRole('button', { name: /^activate$/i }));
     await waitFor(() => expect(activateConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID));
     await waitFor(() => expect(screen.getByText('Detail view')).toBeInTheDocument());
+  });
+
+  test('an autosave the server demotes relabels the Builder, without a reload (#1877)', async () => {
+    // The #1840 rule: a write that leaves an ACTIVE basket no longer earning the
+    // status demotes it to `draft` inside that same request. The Builder is the
+    // one screen the user is watching while that happens, so it has to read the
+    // status off the write's own response instead of the one it loaded with.
+    const positions = [
+      { id: 'a1', symbol: 'AAPL', weightPct: 60 },
+      { id: 'a2', symbol: 'MSFT', weightPct: 40 },
+    ];
+    const active = { ...detail(positions), status: 'active' as const };
+    vi.mocked(getConglomerate).mockResolvedValue(active);
+    vi.mocked(updateConglomerate).mockResolvedValue(active);
+    vi.mocked(replaceConglomeratePositions).mockResolvedValue({ ...active, status: 'draft' });
+    renderBuilder(`/workbench/blueprints/${CONGLOMERATE_ID}/edit`);
+    await screen.findByLabelText('Weight for AAPL');
+
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /re-activate/i })).toBeInTheDocument();
+
+    // Σ = 90 now: the server accepts the write and demotes.
+    fireEvent.change(screen.getByLabelText('Weight for MSFT'), { target: { value: '30' } });
+    await waitFor(
+      () =>
+        expect(replaceConglomeratePositions).toHaveBeenCalledWith(CONGLOMERATE_ID, [
+          { assetId: 'a1', weightPct: 60 },
+          { assetId: 'a2', weightPct: 30 },
+        ]),
+      { timeout: 3000 },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^activate$/i })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /re-activate/i })).not.toBeInTheDocument();
   });
 
   test('an AI draft writes NOTHING until the user confirms it (regression)', async () => {

@@ -3,6 +3,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  createAssetRepository,
+  REFRESHABLE_ASSET_FIELDS,
+  type GlobalAssetUpsert,
+} from '../data/repositories/assetRepository';
 import * as schema from '../data/schema';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -140,7 +145,7 @@ describe('conditional reads — portfolio summary (GET /api/v1/portfolios/:id)',
     expect(res.headers['last-modified']).toBeUndefined();
   });
 
-  it('carries ETag + Last-Modified and serves a 304 on an unchanged summary', async () => {
+  it('carries an ETag and serves a 304 on an unchanged summary', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
@@ -150,7 +155,10 @@ describe('conditional reads — portfolio summary (GET /api/v1/portfolios/:id)',
     const first = await agent.get(`/api/v1/portfolios/${pid}`);
     expect(first.status).toBe(200);
     expect(first.headers.etag).toMatch(/^W\/"/);
-    expect(first.headers['last-modified']).toBeTruthy();
+    // §6.8.6: the portfolio rail emits no Last-Modified. liveToday makes the
+    // date validator unreachable, so producing one only cost an ownership-
+    // checked snapshot-state round-trip per request (#1762).
+    expect(first.headers['last-modified']).toBeUndefined();
     expect(first.headers['cache-control']).toBe('private, no-cache');
     expect(first.headers.vary).toContain('Cookie');
 
@@ -250,7 +258,8 @@ describe('conditional reads — portfolio series (GET /api/v1/portfolios/:id/his
     const first = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(first.status).toBe(200);
     expect(first.headers.etag).toMatch(/^W\/"/);
-    expect(first.headers['last-modified']).toBeTruthy();
+    // As with the summary: ETag only on the series read (§6.8.6, #1762).
+    expect(first.headers['last-modified']).toBeUndefined();
 
     const revalidate = await agent
       .get(`/api/v1/portfolios/${pid}/history?range=MAX`)
@@ -414,6 +423,166 @@ describe('conditional reads — catalog search (GET /api/v1/search)', () => {
     const symbols = after.body.results.map((r: { symbol: string }) => r.symbol);
     expect(symbols).not.toContain('CONDX');
     expect(symbols).toContain('CONDZ');
+  });
+
+  it('answers 200 with the new name after a custom-asset rename (#1762)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const [row] = await harness.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'manual',
+        providerRef: 'COND-RENAME',
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'CONDR',
+        name: 'ACME Immobilien',
+        currency: 'EUR',
+      })
+      .returning();
+    const customId = row!.id;
+
+    const first = await agent.get('/api/v1/search?q=COND');
+    expect(first.status).toBe(200);
+    expect(first.body.results.map((r: { name: string }) => r.name)).toContain('ACME Immobilien');
+    const watermark = first.headers['last-modified'] as string;
+    expect(watermark).toBeTruthy();
+
+    // `name` is what the search read returns AND ranks on, and the edit keeps
+    // the row's id — so "newest visible id" cannot see it. Only the write stamp
+    // can.
+    const patch = await agent
+      .patch(`/api/v1/custom-assets/${customId}`)
+      .set(...XRW)
+      .send({ name: 'Zeta Immobilien' });
+    expect(patch.status).toBe(200);
+
+    // Only the date validator, exactly as a bare API-key/CLI client — or an
+    // intermediary that strips ETags — would send it.
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    const names = after.body.results.map((r: { name: string }) => r.name);
+    expect(names).toContain('Zeta Immobilien');
+    expect(names).not.toContain('ACME Immobilien');
+    expect(Date.parse(after.headers['last-modified'] as string)).toBeGreaterThan(
+      Date.parse(watermark),
+    );
+  });
+
+  it('moves the watermark for every column the search read returns or ranks on (#1762)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const assetId = await seedAsset(harness, 'CONDF');
+
+    // The columns `assetRepository.searchCatalog` projects, matches or orders
+    // on. `meta` is in the list although it is in none of those three: the
+    // trigger is deliberately column-agnostic, so the day a column joins the
+    // search projection it is already covered — by construction, not by
+    // remembering to extend a WHEN clause. `ownerId` goes last so the earlier
+    // edits run against the global-market-asset shape they were seeded as.
+    const edits: [string, Record<string, unknown>][] = [
+      ['name', { name: 'CONDF Renamed AG' }],
+      ['symbol', { symbol: 'CONDF2' }],
+      ['exchange', { exchange: 'XNAS' }],
+      ['currency', { currency: 'USD' }],
+      ['type', { type: 'etf' }],
+      ['providerRef', { providerRef: 'COND-FIELDS-2' }],
+      ['providerId', { providerId: 'stooq' }],
+      ['meta', { meta: { note: 'not in the projection — covered anyway' } }],
+      ['ownerId', { ownerId: user.id }],
+    ];
+
+    let watermark = (await agent.get('/api/v1/search?q=COND')).headers['last-modified'] as string;
+    expect(watermark).toBeTruthy();
+
+    for (const [column, patch] of edits) {
+      await harness.db.update(schema.assets).set(patch).where(eq(schema.assets.id, assetId));
+      const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+      expect(after.status, `an update of "${column}" must not answer 304`).toBe(200);
+      const next = after.headers['last-modified'] as string;
+      expect(
+        Date.parse(next),
+        `an update of "${column}" must advance the watermark`,
+      ).toBeGreaterThan(Date.parse(watermark));
+      watermark = next;
+    }
+  });
+
+  it('answers 200 with the corrected name after a global catalog refresh (#1810)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const repo = createAssetRepository(harness.db);
+    const seeded: GlobalAssetUpsert = {
+      providerId: 'yahoo',
+      providerRef: 'COND-REFRESH',
+      type: 'stock',
+      symbol: 'CONDG',
+      name: 'CONDG Computer Inc',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    };
+    await repo.upsertGlobal(seeded);
+
+    const first = await agent.get('/api/v1/search?q=COND');
+    expect(first.status).toBe(200);
+    expect(first.body.results.map((r: { name: string }) => r.name)).toContain('CONDG Computer Inc');
+    const watermark = first.headers['last-modified'] as string;
+
+    // A global row was write-once before #1810, so this is a new write path on
+    // the same rail as the custom-asset rename above: the seed (or a provider
+    // re-enrichment) correcting a stale name keeps the row's id, so only the
+    // catalog write stamp can carry it to a client holding the old validator.
+    const { created, refreshed } = await repo.upsertGlobal(
+      { ...seeded, name: 'CONDG Corp' },
+      { refresh: REFRESHABLE_ASSET_FIELDS },
+    );
+    expect({ created, refreshed }).toEqual({ created: false, refreshed: true });
+
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    const names = after.body.results.map((r: { name: string }) => r.name);
+    expect(names).toContain('CONDG Corp');
+    expect(names).not.toContain('CONDG Computer Inc');
+    expect(Date.parse(after.headers['last-modified'] as string)).toBeGreaterThan(
+      Date.parse(watermark),
+    );
+  });
+
+  it('answers 200 for a catalog insert inside the current watermark second (#1762)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    // Two crafted UUIDv7 ids 256 ms apart INSIDE one second (the leading 48 bits
+    // are the creation ms, §4.4), and far newer than every seeded row so they
+    // are what the "newest visible id" term reads. `Last-Modified` /
+    // `If-Modified-Since` are second-granular, so that term alone cannot
+    // separate them — the second insert would be delivered as a 304. This is
+    // the §6.2 "Searching providers…" refetch loop: background enrichment lands
+    // a row in the same second the client last revalidated.
+    const earlier = '01b80000-0100-7000-8000-0000000000c1';
+    const later = '01b80000-0200-7000-8000-0000000000c2';
+    const insert = (id: string, symbol: string) =>
+      harness.db.insert(schema.assets).values({
+        id,
+        providerId: 'yahoo',
+        providerRef: symbol,
+        ownerId: null,
+        type: 'stock',
+        symbol,
+        name: `${symbol} Corp`,
+        currency: 'EUR',
+      });
+
+    await insert(earlier, 'CONDS');
+    const first = await agent.get('/api/v1/search?q=COND');
+    expect(first.status).toBe(200);
+    const watermark = first.headers['last-modified'] as string;
+
+    await insert(later, 'CONDT');
+
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    expect(after.body.results.map((r: { symbol: string }) => r.symbol)).toContain('CONDT');
   });
 
   it('does not leak a catalog validator across the auth boundary', async () => {

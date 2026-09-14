@@ -8,8 +8,10 @@ import {
   backtestResponseSchema,
   COMPARISON_MAX_SERIES,
   sharedSandboxAggregateResponseSchema,
+  sharedSandboxPreviewRequestSchema,
   sharedSandboxPreviewResponseSchema,
 } from './backtest';
+import { MAX_FLATTENED_POSITIONS } from './conglomerate';
 
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
 const UUID_B = '018f0000-0000-7000-8000-00000000000b';
@@ -86,6 +88,83 @@ describe('backtestPreviewRequestSchema — benchmark field (V4-P7)', () => {
   });
 });
 
+describe('backtestPreviewRequestSchema — sized by the flatten, not by the write cap (#1877)', () => {
+  /** N distinct valid UUIDs, wide enough for a full 250-asset flatten. */
+  function positionUuids(n: number): { assetId: string; weight: number }[] {
+    return Array.from({ length: n }, (_, i) => ({
+      assetId: `018f0000-0000-7000-8000-${(i + 1).toString(16).padStart(12, '0')}`,
+      weight: 1,
+    }));
+  }
+
+  it('accepts exactly MAX_FLATTENED_POSITIONS positions and refuses one more', () => {
+    // The bound IS the flatten bound: a nested blueprint the server activates
+    // resolves to up to MAX_FLATTENED_POSITIONS assets, and the detail page
+    // backtests that resolved vector. A tighter bound here made an activatable
+    // blueprint's own backtest a permanent 400 VALIDATION_ERROR.
+    expect(
+      backtestPreviewRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        positions: positionUuids(MAX_FLATTENED_POSITIONS),
+      }).success,
+    ).toBe(true);
+    const tooMany = backtestPreviewRequestSchema.safeParse({
+      ...BASE_REQUEST,
+      positions: positionUuids(MAX_FLATTENED_POSITIONS + 1),
+    });
+    expect(tooMany.success).toBe(false);
+    expect(tooMany.error?.issues[0]?.path).toEqual(['positions']);
+  });
+
+  it('still requires at least one position', () => {
+    expect(backtestPreviewRequestSchema.safeParse({ ...BASE_REQUEST, positions: [] }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('backtestPreviewRequestSchema — one position per asset (#1811)', () => {
+  it('rejects a repeated assetId, in every mode × rebalance combination', () => {
+    // The engine keys a basket by asset id — a repeat is two cursors on one key,
+    // not a heavier weight — so this is a wire invariant, exactly as
+    // `conglomerateIds must be unique` is for a comparison. Without it the same
+    // body 500ed or not depending on the mode and schedule chosen.
+    for (const mode of ['clip', 'cash', 'redistribute']) {
+      for (const rebalance of ['none', 'monthly']) {
+        const parsed = backtestPreviewRequestSchema.safeParse({
+          ...BASE_REQUEST,
+          mode,
+          rebalance,
+          positions: [
+            { assetId: UUID_A, weight: 60 },
+            { assetId: UUID_A, weight: 40 },
+          ],
+        });
+        expect(parsed.success).toBe(false);
+        expect(parsed.error?.issues[0]?.path).toEqual(['positions']);
+      }
+    }
+  });
+
+  it('accepts distinct assets, and the same weight expressed once', () => {
+    expect(
+      backtestPreviewRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        positions: [
+          { assetId: UUID_A, weight: 60 },
+          { assetId: UUID_B, weight: 40 },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      backtestPreviewRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        positions: [{ assetId: UUID_A, weight: 100 }],
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
   it('accepts a full benchmark block with kind, refId, label, series and stats', () => {
     const response = {
@@ -115,6 +194,9 @@ describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
           bestDay: null,
           worstDay: null,
         },
+        // A conglomerate benchmark carries the share of itself that resolved to
+        // no asset (#1755); an asset or preset benchmark is always 0.
+        unresolvedPct: 0,
       },
       mode: 'clip',
       rebalance: 'quarterly',
@@ -127,7 +209,7 @@ describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
 });
 
 describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested privacy', () => {
-  const aggregateResponse = {
+  const sharedFields = {
     startDate: '2021-01-04',
     endDate: '2026-01-05',
     series: [{ date: '2021-01-04', value: 100 }],
@@ -145,8 +227,11 @@ describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested p
     idleCashAvgPct: null,
   };
 
+  /** The nested (aggregate) variant: no identity fields, plus the missing share. */
+  const aggregateResponse = { ...sharedFields, unresolvedPct: 0 };
+
   const fullResponse = {
-    ...aggregateResponse,
+    ...sharedFields,
     contributions: [],
     notice: null,
     benchmark: null,
@@ -158,6 +243,23 @@ describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested p
     expect(sharedSandboxPreviewResponseSchema.safeParse(aggregateResponse).success).toBe(true);
     expect(sharedSandboxPreviewResponseSchema.parse(fullResponse)).toEqual(fullResponse);
     expect(backtestResponseSchema.safeParse(fullResponse).success).toBe(true);
+  });
+
+  it('carries the unresolved share on the aggregate variant, and only there (#1832)', () => {
+    // A partially-resolved nested basket (an emptied child) is normalized back
+    // to 100 % over what survived, so without this number its response is
+    // byte-identical to a fully-resolved basket at the surviving weights.
+    expect(
+      sharedSandboxAggregateResponseSchema.safeParse({ ...sharedFields, unresolvedPct: 40 })
+        .success,
+    ).toBe(true);
+    // It is not optional: a nested sandbox always states what it resolved.
+    expect(sharedSandboxAggregateResponseSchema.safeParse(sharedFields).success).toBe(false);
+    // …and the flat variant keeps its exact legacy shape — an asset row always
+    // resolves, so bolting the field onto a full response is a hybrid.
+    expect(
+      sharedSandboxPreviewResponseSchema.safeParse({ ...fullResponse, unresolvedPct: 0 }).success,
+    ).toBe(false);
   });
 
   it('rejects partially-redacted hybrids', () => {
@@ -226,6 +328,26 @@ describe('backtestComparisonRequestSchema — N-way comparison (V5-P6)', () => {
   });
 });
 
+describe('sharedSandboxPreviewRequestSchema — the weight band is a privacy bound (#1755)', () => {
+  const position = (weight: number) => ({ positions: [{ id: UUID_A, weight }], range: '1Y' });
+
+  it('accepts the same 0 < w ≤ 100 band an owner’s stored weight lives in', () => {
+    for (const weight of [0.001, 60, 100]) {
+      expect(sharedSandboxPreviewRequestSchema.safeParse(position(weight)).success).toBe(true);
+    }
+  });
+
+  it('rejects a weight above 100 — the lever that turned an aggregate into an extraction', () => {
+    // Weights are relative, so an unbounded one against a sibling's 0.001 drove
+    // a nested constituent's share to ~100 % and made the aggregate-only
+    // response the opaque child's own base-100 curve.
+    for (const weight of [100.001, 1_000_000]) {
+      expect(sharedSandboxPreviewRequestSchema.safeParse(position(weight)).success).toBe(false);
+    }
+    expect(sharedSandboxPreviewRequestSchema.safeParse(position(0)).success).toBe(false);
+  });
+});
+
 describe('backtestComparisonResponseSchema — series + deltas (V5-P6)', () => {
   it('accepts a two-series comparison with full stats and per-metric deltas', () => {
     const response = {
@@ -247,6 +369,7 @@ describe('backtestComparisonResponseSchema — series + deltas (V5-P6)', () => {
             bestDay: { date: '2022-03-01', returnPct: 3 },
             worstDay: { date: '2022-03-02', returnPct: -3 },
           },
+          unresolvedPct: 0,
           deltas: {
             totalReturnPct: 0,
             cagrPct: 0,
@@ -268,6 +391,9 @@ describe('backtestComparisonResponseSchema — series + deltas (V5-P6)', () => {
             bestDay: null,
             worstDay: null,
           },
+          // 40 % of this basket is a nested blueprint holding nothing: the curve
+          // and every stat above cover only the rest of it (#1755).
+          unresolvedPct: 40,
           deltas: {
             totalReturnPct: -2.5,
             cagrPct: null,

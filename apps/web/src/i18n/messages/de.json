@@ -24,7 +24,8 @@
       "heading": "Admin-Anmeldung",
       "notAdmin": "Dies ist ein Nutzerkonto, kein Administratorkonto — melde dich bitte über die Haupt-App an.",
       "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
-      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut."
+      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut.",
+      "sessionExpired": "Deine Admin-Sitzung ist abgelaufen. Bitte melde dich erneut an."
     },
     "adminForcedPassword": {
       "info": "Lege ein neues Passwort fest, bevor du mit der Admin-Konsole fortfährst."
@@ -242,6 +243,16 @@
     }
   },
   "common": {
+    "assetType": {
+      "stock": "Aktie",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Rohstoff",
+      "crypto": "Krypto",
+      "custom": "Eigene Anlage",
+      "other": "Sonstige"
+    },
     "save": "Speichern",
     "done": "Fertig",
     "cancel": "Abbrechen",
@@ -322,8 +333,8 @@
       "selectedOne": "1 ausgewählt",
       "selectedOther": "{{count}} ausgewählt",
       "scopeDescription": {
-        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen und Cashbestände ansehen",
-        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten",
+        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen, Cashbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds ansehen",
+        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten und das Steuerregime des Kontos für alle künftigen Verkäufe und Dividenden ändern",
         "workboard:read": "Deine Watchlist, Konglomerate und Backtests ansehen",
         "workboard:write": "Deine Watchlist und Konglomerate erstellen und bearbeiten",
         "market:read": "Anlagen suchen und Marktdaten lesen",
@@ -333,13 +344,13 @@
         "notifications:write": "Deine Benachrichtigungen als gelesen markieren und deine Benachrichtigungseinstellungen ändern",
         "chat:read": "Deine Nachrichten lesen",
         "chat:write": "Nachrichten in deinem Namen senden",
-        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung und App-PIN",
+        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung, App-PIN, Passkeys und verbundene Apps – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen",
         "alerts:read": "Deine Preisalarme ansehen",
         "alerts:write": "Deine Preisalarme erstellen, bearbeiten, neu aktivieren und löschen",
         "cash:read": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends ansehen",
         "cash:write": "Deine Cash-Tags, Budgets und Regeln erstellen und bearbeiten",
         "mirrorchain:read": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen ansehen",
-        "mirrorchain:write": "Einladungen zu Gruppenportfolios annehmen oder ablehnen und Gruppenportfolios verlassen",
+        "mirrorchain:write": "Gruppenportfolios beitreten oder verlassen und verwalten: Gruppen erstellen und umbenennen, Mitglieder einladen, befördern und entfernen, die Eigentümerschaft übertragen und ein Gruppenportfolio löschen",
         "vault:sync": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren",
         "feedback:write": "Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden",
         "feedback:read": "Deine Feedback-Einreichungen und deren Status ansehen"
@@ -347,7 +358,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Deine Portfolios, Bestände und Kassenbestände lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
+          "description": "Deine Portfolios, Bestände, Kassenbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten und das Steuerregime des Kontos für alle künftigen Verkäufe und Dividenden ändern."
         },
         "workboard": {
           "label": "Workbench",
@@ -379,7 +390,7 @@
         },
         "mirrorchain": {
           "label": "Gruppenportfolios",
-          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder Einladungen annehmen und ablehnen sowie Gruppenportfolios verlassen."
+          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder ihnen beitreten und sie verlassen sowie verwalten: Gruppen erstellen und umbenennen, Mitglieder einladen, befördern und entfernen, die Eigentümerschaft übertragen und ein Gruppenportfolio löschen."
         },
         "vaultSync": {
           "label": "Tresor-Synchronisierung",
@@ -387,7 +398,7 @@
         },
         "accountSecurity": {
           "label": "Kontosicherheit",
-          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort, App-PIN, Passkeys und verbundene Apps verwalten – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen."
         },
         "feedback": {
           "label": "Feedback",
@@ -425,7 +436,7 @@
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
     "collapseSection": "{{section}} einklappen",
-    "back": "Zur\u00fcck"
+    "back": "Zurück"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -1042,7 +1053,19 @@
           "empty": "Noch keine Zustellungen aufgezeichnet.",
           "loadError": "Zustellungen konnten nicht geladen werden.",
           "success": "Zugestellt",
-          "failed": "Fehlgeschlagen"
+          "failed": "Fehlgeschlagen",
+          "showDetail": "Warum?",
+          "hideDetail": "Ausblenden",
+          "attempts": "Versuche: {{count}}",
+          "reason": {
+            "http": "Der Empfänger hat die Zustellung mit HTTP {{status}} abgelehnt.",
+            "refused": "Das Ziel wurde blockiert — es zeigt auf einen Netzbereich, den Webhooks nicht erreichen dürfen.",
+            "unresolved": "Der Zielhost konnte nicht aufgelöst werden.",
+            "timeout": "Der Empfänger hat nicht rechtzeitig geantwortet.",
+            "secret": "Der Signaturschlüssel konnte nicht gelesen werden, daher wurde nichts gesendet.",
+            "unsubscribed": "Dieser Ereignistyp wurde vor der Zustellung aus dem Webhook entfernt.",
+            "network": "Die Verbindung zum Empfänger ist fehlgeschlagen."
+          }
         },
         "secretModal": {
           "title": "Dein Webhook-Signaturschlüssel",
@@ -1366,9 +1389,10 @@
       "readyUntil": "Dein Export steht bis zum {{date}} zum Download bereit.",
       "readyNoToken": "Dein Export ist fertig, aber der Download-Zugriff wird beim Neuladen der Seite nicht gespeichert. Fordere nach Ablauf dieses Exports einen neuen an.",
       "download": "Export herunterladen",
-      "downloadFailed": "Dein Export konnte nicht heruntergeladen werden. Der einmalige Link ist möglicherweise abgelaufen oder wurde bereits verwendet.",
+      "downloadFailed": "Dein Export konnte nicht heruntergeladen werden. Du kannst den Download erneut versuchen — ein abgebrochener Transfer verbraucht deinen Link nicht, und er bleibt gültig, bis der Export abläuft.",
       "expired": "Dein letzter Export ist abgelaufen. Fordere einen neuen an, um deine Daten herunterzuladen.",
       "failed": "Dein letzter Export konnte nicht erstellt werden. Bitte fordere einen neuen an — dein Tageskontingent wurde nicht verbraucht.",
+      "stalled": "Dein letzter Export wurde nie fertig vorbereitet. Fordere einen neuen an — dein Tageskontingent wurde nicht verbraucht.",
       "failedTooLarge": "Dein Konto enthält mehr Daten, als ein einzelnes Export-Archiv fassen kann. Es wurde nichts erstellt und dein Tageskontingent wurde nicht verbraucht. Bitte deine Administration, das Export-Limit anzuheben.",
       "currentWrong": "Dein Passwort ist falsch.",
       "codeWrong": "Dieser Zwei-Faktor-Code ist falsch oder abgelaufen.",
@@ -1474,6 +1498,14 @@
       "uncoveredNudge": "Erfasse für eine korrekte Historie besser den ursprünglichen Kauf.",
       "uncoveredBlocked": "Bestätige den Verkauf über deinen Bestand hinaus, um fortzufahren.",
       "uncoveredEntryPriceInvalid": "Gib einen gültigen Kaufpreis ein oder zähle die Stücke als 0 %.",
+      "rowErrors": {
+        "withSymbol": "{{symbol}}: {{message}}",
+        "priceRequired": "Der Preis muss größer als 0 sein.",
+        "amountRequired": "Der Betrag muss größer als 0 sein.",
+        "quantityRequired": "Die Anzahl muss größer als 0 sein.",
+        "priceNegative": "Der Preis muss 0 oder mehr sein.",
+        "derivedQuantity": "Aus diesem Preis und Betrag ließ sich keine gültige Anzahl ableiten."
+      },
       "tax": {
         "title": "Steuer auf diesen Verkauf (optional)",
         "description": "Der manuelle Steuermodus ist aktiv. Gib die Steuer für diesen Verkauf ein oder lass das Feld leer, um keine zu erfassen.",
@@ -2109,7 +2141,12 @@
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
-      "showLess": "Weniger anzeigen"
+      "showLess": "Weniger anzeigen",
+      "basis": {
+        "trailing12m": "Basiert auf den Ausschüttungen der letzten 12 Monate — eine Sonderdividende ist darin enthalten.",
+        "forwardAnnualized": "Basiert auf der letzten regulären Ausschüttung, auf ein Jahr hochgerechnet.",
+        "mixed": "Gemischte Basis: ein Teil aus den Ausschüttungen der letzten 12 Monate (inklusive Sonderdividenden), der Rest aus der hochgerechneten regulären Ausschüttung."
+      }
     },
     "import": {
       "title": "Broker-CSV-Import",
@@ -2118,6 +2155,7 @@
       "fileLabel": "CSV-Export",
       "brokerLabel": "Broker",
       "brokerAuto": "Automatisch erkennen",
+      "aiBudgetNote": "Erkennt kein Broker die Datei, hilft die lokale KI beim Benennen der Spalten und beim Lesen unklarer Zeilen — sie nutzt dasselbe tägliche KI-Kontingent wie der Rest der App (heute noch {{remaining}} von {{cap}} übrig).",
       "uploadCta": "Vorschau erstellen",
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",
@@ -2465,6 +2503,7 @@
       },
       "rangeAriaLabel": "Backtest-Zeitraum auswählen",
       "benchmarkAriaLabel": "Benchmark wählen",
+      "benchmarkUnresolvedShare": "{{pct}} ohne Assets — diese Spalte zeigt nur den Rest",
       "modeAriaLabel": "Modus für spät notierte Werte wählen",
       "rebalanceAriaLabel": "Rebalancing-Frequenz wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
@@ -2614,6 +2653,7 @@
       "viewStored": "Wie gebaut",
       "viewResolved": "Aufgelöst",
       "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Blueprints.",
+      "unresolvedShare": "{{pct}} dieses Blueprints sind ein verschachtelter Blueprint ohne Assets. Die Gewichte, das Aufteilungsdiagramm und der Backtest unten zeigen nur den Rest — und der Rechner lässt diesen Anteil eines Budgets unverteilt.",
       "resolvedLoadError": "Die aufgelöste Ansicht konnte nicht geladen werden.",
       "deleteInUseError": "Dieser Blueprint ist Bestandteil von {{parents}} — entferne ihn zuerst dort."
     },
@@ -2690,7 +2730,9 @@
         "duplicateConglomerate": "Dieser Blueprint ist bereits ein Bestandteil.",
         "selfNest": "Ein Blueprint kann sich nicht selbst enthalten.",
         "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Blueprint kann sich nicht selbst enthalten, auch nicht über einen anderen Blueprint.",
-        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden."
+        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden.",
+        "normalizeLockedFull": "Gesperrte Gewichte ergeben bereits 100 % oder mehr — entsperre eine Position, um zu normalisieren.",
+        "normalizeNoUnlocked": "Es gibt keine entsperrten Positionen zum Normalisieren."
       }
     },
     "ideas": {
@@ -2752,6 +2794,7 @@
       "chartAriaLabel": "Vergleichschart der Blueprints",
       "baselineLabel": "Basis",
       "setBaseline": "{{name}} als Basis verwenden",
+      "unresolvedShare": "{{pct}} ohne Assets",
       "grid": {
         "ariaLabel": "Vergleichsstatistiken der Blueprints",
         "metric": "Kennzahl"
@@ -2775,15 +2818,16 @@
       "horizonHint": "Zwischen 1 und 30 Jahren.",
       "factorsLegend": "Faktoren",
       "factor": {
-        "return": "Durchschnittliche Rendite",
+        "return": "Durchschnittliche Rendite (ohne Einzahlungen)",
         "standingOrders": "Daueraufträge",
         "dividends": "Erwartete Dividenden"
       },
+      "ordersUnconvertible": "Deine Daueraufträge sind in {{orderCurrency}} erfasst, diese Prognose läuft aber in {{baseCurrency}}. Wir rechnen hier nicht zwischen Währungen um, deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "dividendsTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
-      "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
+      "returnPctHint": "Aus deiner Historie als zeitgewichtete Rendite ermittelt — eingezahltes Geld zählt also nicht als Wertzuwachs; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
       "returnPctClamped": "Der Renditesatz ist auf -100 % bis 100 % begrenzt. Für diese Prognose wird der nächstgelegene Wert verwendet.",
       "window": {
         "1Y": "1 J",
@@ -2806,6 +2850,11 @@
         "returnLabel": "Rendite (%)",
         "returnPlaceholder": "Basis",
         "remove": "Entfernen"
+      },
+      "dividendsBasis": {
+        "trailing12m": "Die Dividenden stammen aus den Ausschüttungen der letzten 12 Monate — eine Sonderdividende ist darin enthalten.",
+        "forwardAnnualized": "Die Dividenden stammen aus der letzten regulären Ausschüttung, auf ein Jahr hochgerechnet.",
+        "mixed": "Die Dividenden mischen zwei Grundlagen: teils aus den Ausschüttungen der letzten 12 Monate (inklusive Sonderdividenden), teils aus der hochgerechneten regulären Ausschüttung."
       }
     },
     "calculators": {
@@ -2829,14 +2878,23 @@
     },
     "savings": {
       "title": "Sparplan",
-      "summary": "Welcher Monatsbetrag erreicht dein Ziel?",
+      "summary": "Welcher Monatsbetrag erreicht dein Ziel – oder wie lange es dauert?",
+      "solve": {
+        "label": "Berechnen",
+        "contribution": "Sparbetrag",
+        "years": "Jahre"
+      },
       "target": "Ziel (€)",
       "principal": "Startkapital (€)",
       "ratePct": "Jährliche Rendite (%)",
       "years": "Jahre",
+      "monthlyContributionInput": "Monatlicher Sparbetrag (€)",
       "compoundingPerYear": "Verzinsungsschritte pro Jahr",
       "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich.",
       "monthlyContribution": "Benötigter Monatsbetrag",
+      "yearsNeeded": "Benötigte Jahre",
+      "yearsValue": "≈ {{years}} Jahre",
+      "notReachable": "Mit diesen Werten nicht erreichbar.",
       "feasible": "Erreichbar"
     },
     "dividend": {
@@ -2852,9 +2910,15 @@
     },
     "withdrawal": {
       "title": "Entnahmeplan",
-      "summary": "Wie lange reicht ein Kapitalstock bei fester Monatsentnahme.",
+      "summary": "Wie lange ein Kapitalstock reicht – oder was du monatlich sicher entnehmen kannst.",
+      "solve": {
+        "label": "Berechnen",
+        "horizon": "Reichweite",
+        "rate": "Sichere Entnahme"
+      },
       "balance": "Startkapital (€)",
       "monthlyWithdrawal": "Monatliche Entnahme (€)",
+      "horizonYears": "Entnahmedauer (Jahre)",
       "annualReturnPct": "Erwartete Jahresrendite (%)",
       "horizonLabel": "Reichweite bis zur Erschöpfung",
       "statusLabel": "Status",
@@ -2862,7 +2926,8 @@
       "statusDepletes": "Wird aufgebraucht",
       "sustainable": "Wird bei dieser Rate nie aufgebraucht.",
       "notComputable": "Mit diesen Werten nicht berechenbar.",
-      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)"
+      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)",
+      "rateLabel": "Tragfähige Monatsentnahme"
     },
     "standingOrders": {
       "title": "Daueraufträge",
@@ -2898,6 +2963,8 @@
         "notBookedQuoteUnavailable": "Nicht gebucht — Kurs nicht verfügbar — älteste verpasste Buchung fällig seit {{date}}",
         "notBookedInsufficientCash": "Nicht gebucht — nicht genügend Cash — älteste verpasste Buchung fällig seit {{date}}",
         "notBookedFailed": "Nicht gebucht — Buchungsfehler — älteste verpasste Buchung fällig seit {{date}}",
+        "droppedPeriods": "{{count}} verpasste Periode(n) übersprungen, bis {{date}} — nur die neueste wird nachgeholt, die übrigen werden nicht gebucht",
+        "bookedStalePrice": "Gebucht mit deiner eigenen Bewertung vom {{date}} — es gibt keinen neueren Wertpunkt",
         "pause": "Pausieren",
         "pausing": "Pausiere…",
         "resume": "Fortsetzen",
@@ -2958,10 +3025,12 @@
         "title": "Dividenden",
         "forwardYield": "Erwartete Rendite",
         "trailing": "Letzte 12 Monate je Anteil",
+        "trailingForward": "Hochgerechnet je Anteil",
         "nextExDate": "Nächster Ex-Tag",
         "nextPayDate": "Nächster Zahltag",
         "history": "Ausschüttungsverlauf",
-        "historyAriaLabel": "Verlauf der Dividendenausschüttungen"
+        "historyAriaLabel": "Verlauf der Dividendenausschüttungen",
+        "historyRange": "{{from}} – {{to}}"
       },
       "earnings": {
         "title": "Quartalszahlen",
@@ -2970,7 +3039,8 @@
         "estimated": "Geschätzt",
         "confirmed": "Bestätigt",
         "epsEstimate": "Erw. EPS {{value}}",
-        "epsActual": "EPS {{value}}"
+        "epsActual": "EPS {{value}}",
+        "periodEnded": "Zeitraum bis {{date}}"
       },
       "splits": {
         "title": "Aktiensplits",
@@ -2999,6 +3069,8 @@
       "waiting": "Warte auf Live-Kurse…",
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
       "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}",
+      "unavailable": "Live nicht verfügbar – verzögerte Daten",
+      "unavailableHint": "Der Server hat Live-Aktualisierungen pausiert. Der Chart aktualisiert stattdessen alle 60 s.",
       "marketClosed": "Markt geschlossen",
       "marketClosedHint": "Zeigt die letzte Handelssitzung. Live-Updates werden fortgesetzt, sobald der Markt wieder öffnet."
     },
@@ -3147,6 +3219,10 @@
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
     "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dadurch könnten mehr Personen diesen Eintrag sehen.",
+    "audienceGroupNamed": {
+      "one": "Gruppe „{{name}}“ ({{count}} Mitglied)",
+      "other": "Gruppe „{{name}}“ ({{count}} Mitglieder)"
+    },
     "audienceWidenAcknowledge": "Mir ist bewusst, dass diese Änderung den Zugriff erweitert.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
@@ -3177,7 +3253,11 @@
     "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
     "share": "Teilen…",
     "groupsNone": "Du hast noch keine Gruppen. Erstelle auf der Freunde-Seite eine, um mit einem Kreis zu teilen.",
-    "groupMemberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
+    "groupMemberCount": {
+      "one": "{{count}} Mitglied",
+      "other": "{{count}} Mitglieder"
+    },
+    "groupsAtLimit": "Das sind alle {{count}} Gruppen – das Maximum. Verwalte sie auf der Personen-Seite.",
     "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
   },
   "watchlists": {
@@ -3490,7 +3570,10 @@
       "cloneError": "Diese Idee konnte nicht geklont werden."
     },
     "comments": {
-      "count": { "one": "{{count}} Kommentar", "other": "{{count}} Kommentare" },
+      "count": {
+        "one": "{{count}} Kommentar",
+        "other": "{{count}} Kommentare"
+      },
       "empty": "Noch keine Kommentare.",
       "loadError": "Die Kommentare konnten nicht geladen werden. Bitte versuche es erneut.",
       "placeholder": "Kommentar hinzufügen…",
@@ -3515,7 +3598,10 @@
       "loadError": "Deine Gruppen konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Noch keine Gruppen",
       "emptyDescription": "Erstelle eine Gruppe, um mit einem bestimmten Freundeskreis zu teilen.",
-      "memberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
+      "memberCount": {
+        "one": "{{count}} Mitglied",
+        "other": "{{count}} Mitglieder"
+      },
       "nameLabel": "Gruppenname",
       "renameAction": "Umbenennen",
       "membersHeading": "Mitglieder",
@@ -3523,6 +3609,8 @@
       "addMemberHeading": "Freund hinzufügen",
       "addMemberNone": "Alle deine Freunde sind bereits in dieser Gruppe.",
       "add": "Hinzufügen",
+      "limitReached": "Du hast das Maximum von {{count}} Gruppen erreicht. Lösche eine, um eine neue zu erstellen.",
+      "memberLimitReached": "Diese Gruppe ist voll – eine Gruppe fasst höchstens {{count}} Mitglieder.",
       "mutateError": "Gruppe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "delete": "Gruppe löschen",
       "deleteTitle": "„{{name}}“ löschen",
@@ -4759,7 +4847,8 @@
         "revoked": "Widerrufen",
         "tierAria": "Limitstufe für {{name}}",
         "defaultTier": "Standard",
-        "viewAudit": "Protokoll ansehen"
+        "viewAudit": "Protokoll ansehen",
+        "showRevoked": "Widerrufene Schlüssel anzeigen"
       },
       "audit": {
         "title": "Anfrageprotokoll — {{name}}",
@@ -4932,6 +5021,7 @@
         "change": "E-Mail ändern",
         "enabledNotice": "E-Mail-Codes aktiviert.",
         "disabledNotice": "E-Mail-Codes deaktiviert.",
+        "disableError": "E-Mail-Codes konnten nicht deaktiviert werden. Bitte versuche es erneut.",
         "turnOff": "Deaktivieren",
         "turningOff": "Wird deaktiviert…"
       },
@@ -5733,6 +5823,30 @@
         "neverValue": "Keine direkte Bearbeitung von Kurszeilen, kein blindes Zusammenführen von Dubletten und keine personenbezogenen Daten – nur Anzahlen betroffener Konten."
       },
       "why": "Einen Kurs von Hand zu ändern würde Geldrechnung hinter eine Browser-Sitzung stellen, und Dubletten ohne Herkunft, Probelauf und Rücknahme zusammenzuführen ist eine Änderung, die niemand rückgängig machen kann. Beides braucht zuerst eine Antwort in der Domäne – deshalb liefert dieses Paket das Lesen und hört dort auf."
+    },
+    "audit": {
+      "title": "Audit-Protokoll",
+      "subtitle": "Jede administrative und sicherheitsrelevante Aktion.",
+      "loading": "Audit-Protokoll wird geladen …",
+      "empty": "Noch keine Audit-Einträge.",
+      "loadError": "Das Audit-Protokoll konnte nicht geladen werden.",
+      "loadMoreError": "Weitere Audit-Einträge konnten nicht geladen werden.",
+      "loadMore": "Mehr laden",
+      "loadingMore": "Wird geladen …",
+      "actorSystem": "System",
+      "columns": {
+        "when": "Zeitpunkt",
+        "action": "Aktion",
+        "actor": "Akteur",
+        "target": "Ziel",
+        "ip": "IP",
+        "details": "Details"
+      }
+    },
+    "pagination": {
+      "range": "{{first}}–{{last}} von {{total}}",
+      "previous": "Zurück",
+      "next": "Weiter"
     }
   },
   "create": {
@@ -5910,6 +6024,8 @@
         "title": "News",
         "description": "Schlagzeilen zu deinen Beständen",
         "empty": "Gerade keine Schlagzeilen zu deinen Beständen.",
+        "emptyPartial": "Keine Schlagzeilen in dem Teil deiner Anlagen, den wir abfragen konnten.",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen.",
         "unavailable": "News sind nicht verfügbar."
       },
       "attention": {
@@ -5975,6 +6091,8 @@
         "title": "Dividenden",
         "description": "Kommende Ex- und Zahltage",
         "empty": "Keine Dividenden in Sicht.",
+        "emptyPartial": "Keine Dividenden in Sicht in dem Teil deiner Anlagen, den wir abfragen konnten.",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen.",
         "unavailable": "Dividendendaten sind nicht verfügbar.",
         "exDate": "Ex-Tag",
         "payDate": "Zahltag"
@@ -6796,15 +6914,6 @@
     "keys": {
       "navigate": "Navigieren",
       "open": "Öffnen"
-    },
-    "assetType": {
-      "stock": "Aktie",
-      "etf": "ETF",
-      "index": "Index",
-      "fx": "FX",
-      "commodity": "Rohstoff",
-      "crypto": "Krypto",
-      "other": "Sonstige"
     }
   },
   "firstrun": {

@@ -39,7 +39,9 @@ import { standingOrderOccurrenceId } from './occurrenceId';
 import {
   calendarDayInTimezone,
   dueStandingOrderOccurrence,
+  nextStandingOrderRunDate,
   oldestUnbookedStandingOrderDueDate,
+  skippedStandingOrderPeriods,
 } from './schedule';
 
 const DAILY_ADD_ID = '018f0000-0000-7000-8000-000000000201';
@@ -302,6 +304,67 @@ describe('paranoid standing-order materialization', () => {
    * delete surface produces on demand. It stays a per-order concern: the order
    * books its next period, and no money surface is allowed to go dark over it.
    */
+  it('reports the catch-up periods the newest-only rule discards (#1793)', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    // The issue's scenario: a €3,000 monthly salary, last booked 2025-12-01,
+    // the app not opened again until 2026-03-05. Only March books — January and
+    // February are gone, and used to vanish without a trace. The server twin
+    // sends `standing_order.skipped` / `dropped` with `droppedCount: 2` here.
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '3000',
+        label: 'Salary',
+        cadence: 'monthly',
+        anchorDay: 1,
+        startDate: '2025-09-01',
+        lastRunAt: '2025-12-01T06:00:00.000Z',
+        lastPeriodKey: '2025-12-01',
+      }),
+    ]);
+    document.entities.standingOrderRun = [
+      bookedRun(LEGACY_RUN_ID, DAILY_ADD_ID, '2025-12-01', '2025-12-01T06:00:00.000Z'),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+
+    const outcome = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market.market,
+      { now: () => new Date('2026-03-05T08:00:00.000Z'), timezone: 'Europe/Vienna' },
+    );
+
+    expect(outcome.ok, outcome.ok ? undefined : JSON.stringify(outcome.error)).toBe(true);
+    expect(outcome).toMatchObject({
+      ok: true,
+      value: {
+        today: '2026-03-05',
+        booked: [{ orderId: DAILY_ADD_ID, dueDate: '2026-03-01', kind: 'cash-add' }],
+        deferred: [],
+        failed: [],
+        dropped: [
+          {
+            orderId: DAILY_ADD_ID,
+            periods: ['2026-01-01', '2026-02-01'],
+            newestPeriod: '2026-02-01',
+            droppedCount: 2,
+          },
+        ],
+      },
+    });
+    // Reported, not booked: the newest-only rule (§16 2026-08-01) still stands.
+    const active = sync.state.active!.document;
+    expect(
+      active.entities.standingOrderRun?.map((run) => run.data.periodKey as string).sort(),
+    ).toEqual(['2025-12-01', '2026-03-01']);
+    expect(
+      (active.entities.cashMovement ?? []).filter(
+        (movement) => movement.data.source === 'standing-order',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('keeps every money surface derivable after a booked ledger row is deleted', async () => {
     const fixture = await decryptClientMoneyFixture();
     const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-26');
@@ -1756,6 +1819,11 @@ describe('paranoid standing-order materialization', () => {
         deferred: [],
       },
     });
+    // A value point from yesterday is inside the age ceiling, so nothing is
+    // flagged — this is the "priced on a fresh quote" side of #1793.
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.value.booked[0]).not.toHaveProperty('stalePriceAsOf');
     const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
     expect(live(sync.state.active!.document, 'transaction', occurrenceId)?.data).toMatchObject({
       assetId: CLIENT_MONEY_IDS.eurAsset,
@@ -1763,11 +1831,77 @@ describe('paranoid standing-order materialization', () => {
       source: 'standing-order',
       executedAt: BOOKED_AT,
     });
+    // The valuation day is this booking's market stamp, exactly as a provider
+    // `asOf` is for a market buy (and as the server engine now records).
     expect(order(sync.state.active!.document, MONTHLY_BUY_ID).data).toMatchObject({
-      lastRunAt: BOOKED_AT,
+      lastRunAt: '2026-07-26T00:00:00.000Z',
       lastPeriodKey: '2026-07-27',
     });
     expect(market.calls.quote).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+  });
+
+  it('states the age of a stale local valuation instead of booking it as fresh (#1793)', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const asset = document.entities.customAsset!.find(
+      (entity) => entity.id === CLIENT_MONEY_IDS.eurAsset,
+    )!;
+    asset.data.providerId = 'manual';
+    asset.data.providerRef = asset.id;
+    asset.data.ownerId = CLIENT_MONEY_IDS.user;
+    asset.data.type = 'custom';
+    // "Family house", valued once — the fixture the server suite uses too. A
+    // local asset is exempt from the four-day quote-age ceiling (an owner's
+    // value point is not an outage) but must say how old the basis is.
+    document.entities.customAssetValue = [
+      manualValue('018f0000-0000-7000-8000-000000000206', asset.id, '2025-01-15', '400000'),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+
+    const outcome = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market.market,
+      { now: () => new Date(BOOKED_AT), timezone: 'Europe/Vienna' },
+    );
+
+    expect(outcome.ok, outcome.ok ? undefined : JSON.stringify(outcome.error)).toBe(true);
+    expect(outcome).toMatchObject({
+      ok: true,
+      value: {
+        booked: [
+          {
+            orderId: MONTHLY_BUY_ID,
+            dueDate: '2026-07-27',
+            kind: 'buy-asset',
+            stalePriceAsOf: '2025-01-15',
+          },
+        ],
+        deferred: [],
+      },
+    });
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+    // The money row is still dated at the scan instant (#1168) — only the
+    // record-only market stamp carries the 18-month-old valuation day.
+    expect(live(sync.state.active!.document, 'transaction', occurrenceId)?.data).toMatchObject({
+      price: '400000',
+      executedAt: BOOKED_AT,
+    });
+    expect(order(sync.state.active!.document, MONTHLY_BUY_ID).data).toMatchObject({
+      lastRunAt: '2025-01-15T00:00:00.000Z',
+      lastPeriodKey: '2026-07-27',
+    });
   });
 
   it('keeps materialization and valuation on the same route for a divergent local row', async () => {
@@ -1862,13 +1996,84 @@ describe('paranoid standing-order materialization', () => {
     });
   });
 
+  it('re-arms catch-up on a calendar-day change without another unlock (#1793)', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        label: 'Netflix money',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    let nowMs = Date.parse(BOOKED_AT);
+    const engine = createVaultMoneyEngine(sync, createClientMoneyMarket().market, {
+      now: () => nowMs,
+    });
+
+    // The issue's scenario, on the fixture's own timeline: unlock once, then
+    // leave the tab open for days. The server twin fires `0 7 * * *` and books
+    // one occurrence per day; the vault twin used to memoize its first
+    // successful scan for the life of the engine, so every later day was lost.
+    await engine.afterUnlock();
+    expect(sync.mutationCount).toBe(1);
+    expect(
+      live(
+        sync.state.active!.document,
+        'cashMovement',
+        await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27'),
+      ),
+    ).toBeDefined();
+
+    // Later the same calendar day: still one scan — the memo is per day, and a
+    // derivation must not re-scan on every render.
+    nowMs = Date.parse('2026-07-27T20:00:00.000Z');
+    await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    expect(sync.mutationCount).toBe(1);
+
+    // Five days on, without another unlock.
+    nowMs = Date.parse('2026-08-01T06:00:00.000Z');
+    const derived = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    expect(derived.ok, derived.ok ? undefined : JSON.stringify(derived.error)).toBe(true);
+    expect(sync.mutationCount).toBe(2);
+    expect(
+      live(
+        sync.state.active!.document,
+        'cashMovement',
+        await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-08-01'),
+      ),
+    ).toBeDefined();
+    // The days in between are not booked (newest-only), but they are reported.
+    expect(engine.getLastStandingOrderMaterialization()).toMatchObject({
+      today: '2026-08-01',
+      dropped: [
+        {
+          orderId: DAILY_ADD_ID,
+          periods: ['2026-07-28', '2026-07-29', '2026-07-30', '2026-07-31'],
+          newestPeriod: '2026-07-31',
+          droppedCount: 4,
+        },
+      ],
+    });
+  });
+
   it('coalesces lifecycle work, retries transient failures, and waits for unlock after a lock', async () => {
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header);
     const market = createClientMoneyMarket();
     const success = {
       ok: true as const,
-      value: { today: '2026-07-27', booked: [], deferred: [], failed: [], skipped: [] },
+      value: {
+        today: '2026-07-27',
+        booked: [],
+        deferred: [],
+        failed: [],
+        skipped: [],
+        dropped: [],
+      },
     };
     let retryCalls = 0;
     const retrying = createStandingOrderMaterializationLifecycle(sync, market.market, {
@@ -1918,6 +2123,7 @@ describe('paranoid standing-order materialization', () => {
               },
             ],
             skipped: [],
+            dropped: [],
           },
         };
       },
@@ -1965,7 +2171,14 @@ describe('paranoid standing-order materialization', () => {
     };
     const success = {
       ok: true as const,
-      value: { today: '2026-07-27', booked: [], deferred: [], failed: [], skipped: [] },
+      value: {
+        today: '2026-07-27',
+        booked: [],
+        deferred: [],
+        failed: [],
+        skipped: [],
+        dropped: [],
+      },
     };
     let appOpenCalls = 0;
     let unlockCalls = 0;
@@ -2372,6 +2585,72 @@ describe('paranoid standing-order materialization', () => {
     expect(calendarDayInTimezone(new Date(BOOKED_AT), 'America/New_York')).toBe('2026-07-26');
   });
 
+  it('walks discarded periods exactly like the server scheduler (#1793)', () => {
+    // The same vectors the server's `skippedPeriods` suite pins
+    // (`apps/api/src/services/standingOrders/__tests__/schedule.test.ts`).
+    const daily = { cadence: 'daily' as const, anchorDay: null, startDate: '2026-04-01' };
+    const monthly = { cadence: 'monthly' as const, anchorDay: 1, startDate: '2026-01-01' };
+    expect(skippedStandingOrderPeriods({ ...daily, endDate: null }, null, '2026-04-04')).toEqual([
+      '2026-04-01',
+      '2026-04-02',
+      '2026-04-03',
+    ]);
+    expect(
+      skippedStandingOrderPeriods({ ...daily, endDate: null }, '2026-04-01', '2026-04-04'),
+    ).toEqual(['2026-04-02', '2026-04-03']);
+    expect(skippedStandingOrderPeriods({ ...monthly, endDate: null }, null, '2026-04-01')).toEqual([
+      '2026-01-01',
+      '2026-02-01',
+      '2026-03-01',
+    ]);
+    // Nothing discarded when the due day is the very first occurrence.
+    expect(skippedStandingOrderPeriods({ ...daily, endDate: null }, null, '2026-04-01')).toEqual(
+      [],
+    );
+    // Bounded, keeping the window nearest the due period.
+    expect(
+      skippedStandingOrderPeriods(
+        { cadence: 'daily', anchorDay: null, startDate: '2026-01-01', endDate: null },
+        null,
+        '2026-01-05',
+        3,
+      ),
+    ).toEqual(['2026-01-02', '2026-01-03', '2026-01-04']);
+  });
+
+  it('refuses a schedule the server also refuses, instead of naming an impossible day', () => {
+    const monthlyWithoutAnchor = {
+      cadence: 'monthly' as const,
+      anchorDay: null,
+      startDate: '2026-01-01',
+      endDate: null,
+    };
+    // `Math.min(undefined, 31)` is NaN: the server used to render `2026-03-NaN`
+    // into `nextRunDate`. Both engines now refuse the row, and both surfaces
+    // fall back to "nothing scheduled" instead of printing a fabricated day.
+    expect(() => dueStandingOrderOccurrence(monthlyWithoutAnchor, '2026-03-15')).toThrow(
+      RangeError,
+    );
+    expect(() => nextStandingOrderRunDate(monthlyWithoutAnchor, '2026-03-15', null, true)).toThrow(
+      RangeError,
+    );
+    expect(nextStandingOrderRunDate(monthlyWithoutAnchor, '2026-03-15', null, false)).toBeNull();
+
+    const daily = {
+      cadence: 'daily' as const,
+      anchorDay: null,
+      startDate: '2026-03-01',
+      endDate: null,
+    };
+    expect(() => nextStandingOrderRunDate(daily, '2026-03-11', '2026-02-30', true)).toThrow(
+      RangeError,
+    );
+    expect(() => skippedStandingOrderPeriods(daily, '2026-02-30', '2026-03-11')).toThrow(
+      RangeError,
+    );
+    expect(nextStandingOrderRunDate(daily, '2026-03-11', '2026-02-28', true)).toBe('2026-03-11');
+  });
+
   it('refuses invalid scan stamps at the direct standing-order store boundary', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
@@ -2450,7 +2729,7 @@ describe('paranoid standing-order materialization', () => {
       }),
     ).rejects.toMatchObject({
       code: 'VAULT_DATA_INVALID',
-      message: 'A local-asset standing order must record the scan timestamp.',
+      message: 'A local-asset standing order must record its valuation day.',
     });
     expect(sync.mutationCount).toBe(0);
   });
@@ -2957,7 +3236,14 @@ describe('paranoid standing orders — refusals shared with the server engine (#
       }),
     ).resolves.toMatchObject({
       ok: true,
-      value: { today: '2026-07-27', booked: [], deferred: [], failed: [], skipped: [] },
+      value: {
+        today: '2026-07-27',
+        booked: [],
+        deferred: [],
+        failed: [],
+        skipped: [],
+        dropped: [],
+      },
     });
     const suspendedDocument = sync.state.active!.document;
     expect(live(suspendedDocument, 'cashMovement', occurrenceId)).toBeUndefined();

@@ -36,6 +36,16 @@ vi.mock('../lib/aiApi', () => ({
   })),
 }));
 
+// This shell describes a deployment that HAS market intelligence. The
+// `/feature-flags` bootstrap is not stubbed in this harness, and an unresolved
+// capability now reads as absent rather than present (§13.5 V5-P5), so the
+// deployment's answer is stated here instead of inherited from a fallback.
+vi.mock('../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/featureFlags')>()),
+  useDeployCapabilities: () => ({ marketIntel: true }),
+  useDeployCapability: () => true,
+}));
+
 import * as api from '../lib/userApi';
 import { useAiCapability } from '../lib/aiApi';
 import { listNotifications } from '../lib/notificationsApi';

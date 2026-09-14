@@ -17,8 +17,12 @@ import { MAX_ERROR_MESSAGE_CHARS } from '../data/driverError';
 import { problems } from '../data/schema';
 import {
   createProblemService,
+  MAX_TRACKED_FINGERPRINTS,
   type ProblemService,
 } from '../services/observability/problemService';
+import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
+import { scrubOpsError } from '../services/ops/opsText';
+import { REDACTED_TOKEN, SCRUB_INPUT_MAX_CHARS } from '../services/observability/scrubber';
 import {
   createProblemRepository,
   type ProblemRepository,
@@ -35,6 +39,23 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * deduped by fingerprint with an incremented occurrence count, and rate-capped
  * so an identical-error storm cannot unbounded-write.
  */
+/**
+ * Wall-clock ceiling for one capture's scrubbing work (#1853), the same number
+ * the scrubber's own linearity guard uses. Every string the capture reads is
+ * bounded before the value rules see it — the title and the message directly,
+ * and the STACK per line, because a V8 `Error.stack` repeats the message
+ * verbatim on its first line and capping frames caps nothing about their
+ * length. The pre-fix path spent SECONDS on one message, so a regression misses
+ * this by orders of magnitude rather than flaking.
+ *
+ * Held at the scrubber guard's value as that one moves (100 ms → 500 ms,
+ * #1856): the two price the same work on the same runner, which turned out to
+ * be up to ~20x slower per scan than the dev box these numbers were first taken
+ * on. The bound is what this measures, and it leaves the margin intact — the
+ * megabyte below cost ~2.9 s unbounded and the 12 MB one far more.
+ */
+const SCRUB_TIME_BUDGET_MS = 500;
+
 describe('problem capture (Sentry replacement)', () => {
   let harness: TestHarness;
 
@@ -166,6 +187,51 @@ describe('problem capture (Sentry replacement)', () => {
     const context = rows[0]!.context as Record<string, unknown>;
     expect(context.queue).toBe('market.refresh');
     expect(context.scope).toBe('worker');
+  });
+
+  it('redacts an object id from a captured problem, exactly as the ops cockpit does', async () => {
+    // The dead-letter panel and the Problems page render the SAME failure text.
+    // The id pass lived only in `scrubOpsError`, so one surface showed
+    // `[redacted-id]` and the other the user's raw id (#1847).
+    const failure = 'no recipient for user 550e8400-e29b-41d4-a716-446655440000';
+    harness.ctx.problems.captureJobFailure(new Error(failure), {
+      queue: 'notifications.dispatch',
+      jobId: 'notify-42',
+    });
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    expect(row!.message).toBe('no recipient for user [redacted-id]');
+    // The two surfaces agree on one fixture string.
+    expect(row!.message).toBe(scrubOpsError(failure));
+    // Including the stack, whose first line repeats the message verbatim.
+    expect(JSON.stringify(row)).not.toContain('550e8400');
+    // Our own scheduling handle is NOT an object id and survives — it is what
+    // tells two identical failures apart.
+    expect((row!.context as Record<string, unknown>).jobId).toBe('notify-42');
+  });
+
+  it('stores a bounded stack for a failed job, like the request path', async () => {
+    // A permanently-failed job is the capture an operator can least often
+    // reproduce, and its row used to carry no call path at all (#1847).
+    harness.ctx.problems.captureJobFailure(new Error('handler threw'), {
+      queue: 'market.refresh',
+    });
+    harness.ctx.problems.captureProviderFailure(new Error('breaker open'), { providerId: 'yahoo' });
+    harness.ctx.problems.captureWorkerError(new Error('lock extension failed'), {
+      queue: 'alerts.evaluate',
+    });
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const stack = (row.context as Record<string, unknown>).stack as string;
+      expect(stack).toContain('Error: ');
+      // The same bound the request path uses: 20 frames plus the elision mark.
+      expect(stack.split('\n').length).toBeLessThanOrEqual(21);
+      expect(Buffer.byteLength(stack, 'utf8')).toBeLessThanOrEqual(PROBLEM_CONTEXT_VALUE_MAX_BYTES);
+    }
   });
 
   it('persists an unhandled request error through the error-handler seam (zero config)', async () => {
@@ -388,6 +454,70 @@ describe('problem capture (Sentry replacement)', () => {
     expect(row!.message).not.toContain('alice@');
     expect(row!.message).not.toContain('example.com');
   });
+
+  it('bounds a 1 MB message BEFORE the scrubber reads it, and still redacts it', async () => {
+    // #1853: capture scrubbed the RAW string and capped afterwards, so every
+    // byte past the cap was scanned for nothing — and the query rule's own
+    // keyword made that scan quadratic (296 KB cost ~2.9 s on the API's single
+    // event loop). This is a megabyte of exactly that shape.
+    const hostile =
+      'GET https://api.provider.com/v8?apikey=SUPERSECRET failed: ' +
+      `?${'{"apikey":"a","signature":"b"},'.repeat(34_000)}`;
+    expect(hostile.length).toBeGreaterThan(1_000_000);
+
+    const started = performance.now();
+    harness.ctx.problems.captureError(new Error(hostile));
+    const elapsed = performance.now() - started;
+    await harness.ctx.problems.flush();
+
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
+
+    const [row] = await harness.db.select().from(problems);
+    // Bounding the INPUT costs no redaction on the part that is kept…
+    expect(row!.message).toContain(`?apikey=${REDACTED_TOKEN}`);
+    expect(row!.message).not.toContain('SUPERSECRET');
+    // …and the row is still held to the documented caps.
+    expect(row!.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
+    expect(row!.message).toContain('[truncated]');
+  });
+
+  it('bounds the captured STACK line the message is repeated into', async () => {
+    // The message's own bound is not enough: `Error.stack`'s first line is the
+    // message verbatim, and the frame cap bounds the NUMBER of lines, not their
+    // length — so this string reached the value rules in full through the stack
+    // even after #1853's first fix, which is the whole stall again by another
+    // door. The shape is the one a `?`-run matcher rescans (~7.5 s at 300 KB).
+    //
+    // Sized in MEGABYTES on purpose. The bound is invisible in the stored row —
+    // that is its design, it only declines to read a tail the context's byte
+    // ceiling drops anyway — so cost is the only thing that can assert it, and
+    // the rules are linear now, which makes a small input cheap either way.
+    // Twelve MB of it measures ~390 ms with the bound removed (the stack is
+    // walked twice: `captureStack`, then `scrubEvent` over the context) against
+    // ~10 ms with it, so the guard has room on a loaded runner in both
+    // directions.
+    const hostile = `provider rejected ${'?a='.repeat(4_000_000)}`;
+    expect(hostile.length).toBeGreaterThan(12_000_000);
+
+    const started = performance.now();
+    harness.ctx.problems.captureError(new Error(hostile));
+    const elapsed = performance.now() - started;
+    await harness.ctx.problems.flush();
+
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
+
+    const [row] = await harness.db.select().from(problems);
+    const stack = (row!.context as Record<string, unknown>).stack as string;
+    // Reading less costs nothing that was being stored: the context's own byte
+    // ceiling sits four times below the scrub bound, so this message was never
+    // going to reach the row whole either way.
+    expect(stack.split('\n')[0]!.length).toBeLessThanOrEqual(SCRUB_INPUT_MAX_CHARS);
+    expect(Buffer.byteLength(stack, 'utf8')).toBeLessThanOrEqual(PROBLEM_CONTEXT_VALUE_MAX_BYTES);
+    expect(stack).toContain('provider rejected ?a=');
+    // The message itself is still stored, scrubbed and capped as ever.
+    expect(row!.message).toContain('provider rejected');
+    expect(row!.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
+  });
 });
 
 /** In-memory {@link ProblemRepository} that counts writes, for the rate-cap unit test. */
@@ -396,12 +526,16 @@ function fakeRepo(): {
   writes: () => number;
   occurrences: (fingerprint?: string) => number;
   fingerprints: () => number;
+  /** Every upsert, in order — the write's own `seenAt` included. */
+  upserts: () => UpsertProblemInput[];
 } {
   let writes = 0;
+  const seen: UpsertProblemInput[] = [];
   const rows = new Map<string, { occurrences: number }>();
   const repo: ProblemRepository = {
     async upsert(input: UpsertProblemInput) {
       writes += 1;
+      seen.push(input);
       const existing = rows.get(input.fingerprint);
       if (existing) existing.occurrences += input.occurrences;
       else rows.set(input.fingerprint, { occurrences: input.occurrences });
@@ -433,7 +567,19 @@ function fakeRepo(): {
         ? [...rows.values()].reduce((sum, row) => sum + row.occurrences, 0)
         : (rows.get(fingerprint)?.occurrences ?? 0),
     fingerprints: () => rows.size,
+    upserts: () => [...seen],
   };
+}
+
+/** A distinct, digit-free label per index (`a`, `b`, …, `aa`) — see below. */
+function letterLabel(index: number): string {
+  let out = '';
+  let n = index;
+  do {
+    out = String.fromCharCode(97 + (n % 26)) + out;
+    n = Math.floor(n / 26);
+  } while (n > 0);
+  return out;
 }
 
 /**
@@ -453,18 +599,118 @@ describe('problem capture rate cap', () => {
       windowMs: 1000,
     });
 
-    // 200 identical errors in one window → the insert plus one folded bump.
+    // 200 identical errors in one window → the insert, one folded bump, and the
+    // drain that flush() performs for what was throttled after those two.
     for (let i = 0; i < 200; i += 1) service.captureError(new Error('flood'));
     await service.flush();
-    expect(writes()).toBe(2);
+    expect(writes()).toBe(3);
+    expect(occurrences()).toBe(200);
 
-    // Throttled repeats are DEFERRED, not lost: the next window's first write
-    // for that fingerprint carries every occurrence observed in between.
+    // Throttled repeats are DEFERRED, not lost — and the deferral is bounded:
+    // whether or not the error ever recurs, its occurrences are written.
     clock = 1000;
     service.captureError(new Error('flood'));
     await service.flush();
-    expect(writes()).toBe(3);
+    expect(writes()).toBe(4);
     expect(occurrences()).toBe(201);
+  });
+
+  it('writes the deferred occurrences of a burst that never recurs', async () => {
+    // The deferral contract says `occurrence_count` converges on the truth "a
+    // window late at worst". For an error that stops — a one-off storm, a
+    // provider that was then fixed — that used to mean never: the pending count
+    // sat in memory waiting for a repeat that no longer came.
+    const { repo, occurrences, fingerprints } = fakeRepo();
+    let clock = 0;
+    const service = createProblemService({
+      repo,
+      now: () => clock,
+      maxWritesPerWindow: 5,
+      windowMs: 1000,
+    });
+
+    for (let i = 0; i < 50; i += 1) service.captureError(new Error('one-off storm'));
+    await service.flush();
+
+    expect(fingerprints()).toBe(1);
+    expect(occurrences()).toBe(50);
+
+    // A later window with nothing new adds nothing — the drain is not a leak of
+    // its own, and the count does not drift upward on every roll.
+    clock = 10_000;
+    await service.list({ limit: 25 });
+    await service.flush();
+    expect(occurrences()).toBe(50);
+  });
+
+  it('stamps a drained occurrence with when it happened, not when it drained', async () => {
+    // A drain runs at the window roll — up to a whole window after the
+    // occurrences it writes. Stamping the drain's own clock made every deferred
+    // occurrence look like a fresh sighting, which is what reopened problems an
+    // admin had resolved in the meantime and pushed `last_seen_at` past the
+    // last real one (#1847).
+    const { repo, upserts } = fakeRepo();
+    let clock = 1_000_000;
+    const service = createProblemService({
+      repo,
+      now: () => clock,
+      windowMs: 60_000,
+      maxRepeatWritesPerFingerprint: 1,
+    });
+
+    service.captureError(new Error('flood')); // the insert
+    service.captureError(new Error('flood')); // the one folded bump
+    clock = 1_005_000;
+    service.captureError(new Error('flood')); // throttled → deferred
+    clock = 1_009_000;
+    service.captureError(new Error('flood')); // throttled → deferred
+    clock = 1_070_000; // a window later: the roll drains
+    await service.list({ limit: 25 });
+    await service.flush();
+
+    const writes = upserts();
+    expect(writes).toHaveLength(3);
+    expect(writes[0]!.seenAt.getTime()).toBe(1_000_000);
+    expect(writes[1]!.seenAt.getTime()).toBe(1_000_000);
+    // Both deferred occurrences ride the drain, dated by the NEWEST of them —
+    // never by the drain's own clock (1_070_000).
+    expect(writes[2]!.occurrences).toBe(2);
+    expect(writes[2]!.seenAt.getTime()).toBe(1_009_000);
+  });
+
+  it('releases its tracking map every window, so new fingerprints stay welcome', async () => {
+    // Entries carrying deferred occurrences used to survive every roll, so one
+    // burst per fingerprint permanently retained an entry: at capacity the cap
+    // began refusing EVERY new fingerprint with `tracking-capacity`, and the
+    // Problems page went quiet for genuinely new errors until a restart.
+    const { repo, occurrences } = fakeRepo();
+    let clock = 0;
+    const service = createProblemService({
+      repo,
+      now: () => clock,
+      maxWritesPerWindow: MAX_TRACKED_FINGERPRINTS + 10,
+      windowMs: 1000,
+    });
+
+    // Fill the map: each fingerprint bursts (write, folded bump, then throttled
+    // occurrences it never comes back for) and is never seen again. Labelled in
+    // LETTERS — the fold key normalizes digits away, so numbered messages would
+    // all be one fingerprint.
+    for (let i = 0; i < MAX_TRACKED_FINGERPRINTS; i += 1) {
+      const label = letterLabel(i);
+      for (let burst = 0; burst < 3; burst += 1) service.captureError(new Error(`burst ${label}`));
+    }
+    await service.flush();
+    expect(service.droppedCaptures()).toBe(0);
+    expect(occurrences()).toBe(MAX_TRACKED_FINGERPRINTS * 3);
+
+    // Next window: the map has been drained and released, so something new is
+    // still accepted rather than refused for capacity.
+    clock = 1000;
+    service.captureError(new Error('a genuinely new 500 after the storm'));
+    await service.flush();
+    expect(service.droppedCaptures()).toBe(0);
+    expect(occurrences()).toBe(MAX_TRACKED_FINGERPRINTS * 3 + 1);
   });
 
   it('lets a distinct new problem through while one fingerprint floods the window', async () => {
@@ -507,7 +753,7 @@ describe('problem capture rate cap', () => {
   });
 
   it('folds a sustained worker-error storm so a dead Redis cannot flood the table', async () => {
-    const { repo, writes, fingerprints } = fakeRepo();
+    const { repo, writes, occurrences, fingerprints } = fakeRepo();
     const logger = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
     const service = createProblemService({ repo, now: () => 0, windowMs: 60_000 });
 
@@ -524,8 +770,10 @@ describe('problem capture rate cap', () => {
     await service.flush();
 
     expect(fingerprints()).toBe(1);
-    expect(writes()).toBeLessThanOrEqual(2);
-    // Folded, not refused: nothing about the outage went unrecorded.
+    // Two in-window writes plus the flush drain that carries what they deferred.
+    expect(writes()).toBeLessThanOrEqual(3);
+    // Folded, not refused, and not under-counted: every event is on the row.
+    expect(occurrences()).toBe(500);
     expect(service.droppedCaptures()).toBe(0);
     expect(logger.error).toHaveBeenCalledTimes(500);
   });
@@ -779,5 +1027,89 @@ describe('malformed request bodies are client faults, never captured problems', 
     expect(statuses[0]).toBe(400);
     expect(statuses).toContain(429);
     await limited.dispose();
+  });
+});
+
+/**
+ * Fatal process errors (§13.5 V5-P2 arc (d)). Capture was wired only where an
+ * error is HANDED to us — the express error handler, the BullMQ hooks, the
+ * provider breaker. An error thrown outside all of them (a rejected promise in
+ * a `res.on('finish')` listener, a socket handler, an unref'd timer) took the
+ * process down with NO problem row: the largest class the retired Sentry SDK
+ * used to own. The registered handler is driven directly here — crashing the
+ * test runner to prove it is not an option.
+ */
+describe('fatal process errors are captured before the process exits', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createTestApp();
+  });
+
+  const silentLogger = () =>
+    ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }) as never;
+
+  /** A `process`-shaped fake, so nothing binds to the real runner's signals. */
+  function fakeTarget() {
+    const listeners = new Map<string, (err: unknown) => void>();
+    return {
+      target: {
+        on(event: string, listener: (err: unknown) => void) {
+          listeners.set(event, listener);
+        },
+        off(event: string) {
+          listeners.delete(event);
+        },
+      } as never,
+      bound: () => [...listeners.keys()],
+    };
+  }
+
+  for (const which of ['api', 'worker'] as const) {
+    for (const source of ['unhandledRejection', 'uncaughtException'] as const) {
+      it(`captures an ${source} in the ${which} process, scrubbed, then exits`, async () => {
+        // The worker builds its own service against the same table; the API's is
+        // the one the context already wired.
+        const capturing =
+          which === 'api'
+            ? harness.ctx.problems
+            : createProblemService({ repo: createProblemRepository(harness.db) });
+        const fake = fakeTarget();
+        const exits: number[] = [];
+        const capture = registerProcessErrorCapture({
+          problems: capturing,
+          logger: silentLogger(),
+          process: which,
+          target: fake.target,
+          exit: (code) => exits.push(code),
+        });
+
+        // Both signals are bound — an unhandled rejection is fatal in node ≥ 15
+        // exactly like an uncaught exception, so both must leave a row.
+        expect(fake.bound()).toEqual(['unhandledRejection', 'uncaughtException']);
+
+        await capture.handle(source, new Error(`fatal ${source} for alice@example.com`));
+        await capturing.flush();
+        capture.unregister();
+
+        const rows = await harness.db.select().from(problems);
+        expect(rows).toHaveLength(1);
+        const row = rows[0]!;
+        expect(row.kind).toBe('error');
+        // PII-scrubbed like every other capture, and the row says WHERE it came
+        // from — a crash row that names neither process nor signal is a riddle.
+        expect(row.message).toBe(`fatal ${source} for [redacted-email]`);
+        expect(row.context).toMatchObject({ process: which, source });
+        // Still fatal: the process dies the way it did before, one row richer.
+        expect(exits).toEqual([1]);
+      });
+    }
+  }
+
+  it('is registered by both long-running entrypoints', () => {
+    const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
+    const worker = readFileSync(new URL('../scripts/worker.ts', import.meta.url), 'utf8');
+    expect(server).toContain('registerProcessErrorCapture({');
+    expect(worker).toContain('registerProcessErrorCapture({');
   });
 });

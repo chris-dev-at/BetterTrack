@@ -82,6 +82,12 @@ interface ControlPanel {
   labelKey: string;
   /** Localized setting/action names that make this panel discoverable. */
   keywordKeys: readonly [string, ...string[]];
+  /**
+   * Keywords that only apply while the account is in paranoid mode, where the
+   * hidden `profile` panel's controls move into this one. Kept off the normal
+   * list so a non-paranoid search never lands on a panel that has no such row.
+   */
+  paranoidKeywordKeys?: readonly string[];
   icon: IconName;
   Component: ComponentType;
   /** Destructive destination — rendered in negative ink, never in gold. */
@@ -112,9 +118,11 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
           'settings.account.identity',
           'language.title',
           'settings.baseCurrency.title',
-          'profile.icon.title',
           'settings.export.title',
         ],
+        // The picker lives in the `profile` panel; paranoid accounts, whose
+        // `profile` panel is hidden, get their copy of it here instead.
+        paranoidKeywordKeys: ['profile.icon.title'],
         icon: 'user',
         Component: AccountPanel,
       },
@@ -133,7 +141,12 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
       {
         id: 'profile',
         labelKey: 'control.profile',
-        keywordKeys: ['profile.groups.page', 'profile.bioLabel', 'profile.toggleLabel'],
+        keywordKeys: [
+          'profile.groups.page',
+          'profile.bioLabel',
+          'profile.toggleLabel',
+          'profile.icon.title',
+        ],
         icon: 'globe',
         Component: ProfilePanel,
       },
@@ -406,7 +419,14 @@ export function ControlCenterOverlay({
         panels: group.panels.filter(
           (panel) =>
             (!paranoid || panel.id !== 'profile') &&
-            matches(t, panel.labelKey, needle, panel.keywordKeys),
+            matches(
+              t,
+              panel.labelKey,
+              needle,
+              paranoid
+                ? [...panel.keywordKeys, ...(panel.paranoidKeywordKeys ?? [])]
+                : panel.keywordKeys,
+            ),
         ),
       })).filter((group) => group.panels.length > 0),
     [needle, paranoid, t],

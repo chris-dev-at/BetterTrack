@@ -10,7 +10,7 @@ import {
   type ClassifiableRow,
   type ClassifiedKind,
 } from '../rowClassifier';
-import type { ImportRowAiSeam } from '../rowClassifierAi';
+import { ImportAiSeamError, type ImportAiSeam } from '../importAi';
 
 /**
  * Row-kind classification cascade (PROJECTPLAN.md §16 2026-07-31). Every test
@@ -22,7 +22,7 @@ import type { ImportRowAiSeam } from '../rowClassifierAi';
 
 /** Scripted-reply stub: records requests, refuses to answer beyond its script. */
 function stubAiSeam(replies: string[]): {
-  seam: ImportRowAiSeam;
+  seam: ImportAiSeam;
   calls: { system: string; prompt: string }[];
 } {
   const calls: { system: string; prompt: string }[] = [];
@@ -35,7 +35,7 @@ function stubAiSeam(replies: string[]): {
         if (reply === undefined) {
           throw new Error('stub seam: unexpected extra completion — runaway AI loop');
         }
-        return { text: reply, model: 'stub-cheap-7b' };
+        return { text: reply, model: 'stub-7b' };
       },
     },
   };
@@ -1087,7 +1087,7 @@ describe('acceptance — the named failure is pinned', () => {
   });
 });
 
-describe('stage 3 — batched CHEAP-tier fallback', () => {
+describe('stage 3 — batched model fallback', () => {
   const AMBIGUOUS: ClassifiableRow[] = [
     row({ text: 'Booking reference 8842' }),
     row({ text: 'Abschluss' }),
@@ -1199,9 +1199,90 @@ describe('stage 3 — batched CHEAP-tier fallback', () => {
     }
   });
 
+  /** A seam that always throws the given failure, counting its attempts. */
+  function throwingSeam(thrown: unknown): { seam: ImportAiSeam; attempts: () => number } {
+    let attempts = 0;
+    return {
+      attempts: () => attempts,
+      seam: {
+        complete: async () => {
+          attempts += 1;
+          throw thrown;
+        },
+      },
+    };
+  }
+
+  it('says a spent DAILY budget on the row, not a malformed reply', async () => {
+    const { seam } = throwingSeam(new ImportAiSeamError('cap-exhausted'));
+    const results = await classifyRows(AMBIGUOUS, { ai: seam });
+
+    for (const result of results) {
+      expect(result.needsReview).toBe(true);
+      expect(result.evidence).toContain('daily ai budget spent');
+      // The three failure modes are distinguishable, which is the whole point:
+      // a user out of budget is not told the model answered badly about a row.
+      expect(result.evidence).not.toContain('missing/malformed');
+      expect(result.evidence).not.toContain('did not answer');
+    }
+  });
+
+  it('says an UNREACHABLE provider on the row, distinguishably', async () => {
+    const { seam } = throwingSeam(new Error('connection refused'));
+    const results = await classifyRows(AMBIGUOUS, { ai: seam });
+
+    for (const result of results) {
+      expect(result.needsReview).toBe(true);
+      expect(result.evidence).toContain('the assistant did not answer');
+      expect(result.evidence).not.toContain('daily ai budget spent');
+      expect(result.evidence).not.toContain('missing/malformed');
+    }
+  });
+
+  it('says MALFORMED only when the call succeeded and the reply did not', async () => {
+    const { seam } = stubAiSeam(['not a single parseable line']);
+    const results = await classifyRows(AMBIGUOUS, { ai: seam });
+
+    for (const result of results) {
+      expect(result.needsReview).toBe(true);
+      expect(result.evidence).toContain('ai reply missing/malformed for this row');
+      expect(result.evidence).not.toContain('daily ai budget spent');
+      expect(result.evidence).not.toContain('did not answer');
+    }
+  });
+
+  it('spends no further call once the daily cap is known exhausted', async () => {
+    // Three batches are budgeted and three would have been issued: the old loop
+    // learned nothing from the first 429 and paid for two more guaranteed
+    // refusals out of a cap that was already gone.
+    const { seam, attempts } = throwingSeam(new ImportAiSeamError('cap-exhausted'));
+    const results = await classifyRows(AMBIGUOUS, {
+      ai: seam,
+      aiMaxRowsPerCall: 2,
+      aiMaxCalls: 3,
+    });
+
+    expect(attempts()).toBe(1);
+    // The rows no call was made for say the same thing as the batch that
+    // learned it — not "the call budget ran out", which would be a lie.
+    for (const result of results.slice(2)) {
+      expect(result.needsReview).toBe(true);
+      expect(result.evidence).toContain('daily ai budget spent');
+      expect(result.evidence).not.toContain('ai call budget exhausted');
+    }
+  });
+
+  it('keeps trying the remaining batches when the failure is NOT a spent cap', async () => {
+    // Only an exhausted cap is a guaranteed refusal for the rest of the import;
+    // a provider that failed once may answer the next batch.
+    const { seam, attempts } = throwingSeam(new Error('timeout'));
+    await classifyRows(AMBIGUOUS, { ai: seam, aiMaxRowsPerCall: 2, aiMaxCalls: 3 });
+    expect(attempts()).toBe(3);
+  });
+
   it('degrades to needs-review (without throwing) when the provider errors', async () => {
     let attempts = 0;
-    const failingSeam: ImportRowAiSeam = {
+    const failingSeam: ImportAiSeam = {
       complete: async (request) => {
         attempts += 1;
         void request;

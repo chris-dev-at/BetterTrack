@@ -6,7 +6,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   WEBHOOK_EVENT_TYPES,
   isParanoidKilledWebhookEventType,
+  webhookDeliveryFailureReason,
   type CreateWebhookSubscriptionResponse,
+  type WebhookDelivery,
   type WebhookEventType,
   type WebhookSubscription,
 } from '@bettertrack/contracts';
@@ -290,18 +292,82 @@ function DeliveriesList({ id }: { id: string }) {
   return (
     <ul className="flex flex-col gap-1">
       {deliveries.map((d) => (
-        <li className="bt-cc-row__hint flex flex-wrap items-center gap-2" key={d.id}>
-          <Badge tone={d.status === 'success' ? 'pos' : 'neg'}>
-            {d.status === 'success'
-              ? t('settings.api.webhooks.deliveries.success')
-              : t('settings.api.webhooks.deliveries.failed')}
-          </Badge>
-          <span className="bt-cc-mono">{d.eventType}</span>
-          {d.responseStatus != null ? <span className="bt-num">· {d.responseStatus}</span> : null}
-          <span style={{ color: 'var(--bt-faint)' }}>· {formatDate(d.createdAt)}</span>
-        </li>
+        <DeliveryRow delivery={d} key={d.id} />
       ))}
     </ul>
+  );
+}
+
+/**
+ * One delivery line, with its "why" folded away (§13.5 anti-bloat): the row
+ * keeps exactly the height it had, and the explanation opens on demand.
+ *
+ * It has to exist at all because four structurally different failures — the
+ * outbound guard refusing the destination, a timeout, a host that no longer
+ * resolves, and a signing secret that will not decrypt — all record no HTTP
+ * status, so without this they are one identical bare red badge and a user whose
+ * subscription just auto-disabled cannot tell which of them happened. The reason
+ * is classified in contracts, next to the constants the dispatcher writes.
+ */
+function DeliveryRow({ delivery }: { delivery: WebhookDelivery }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const reason = webhookDeliveryFailureReason(delivery);
+  // A first-attempt success has nothing the compact line does not already say.
+  const hasDetail = reason !== null || delivery.attempts > 1;
+
+  const line = (
+    <>
+      <Badge tone={delivery.status === 'success' ? 'pos' : 'neg'}>
+        {delivery.status === 'success'
+          ? t('settings.api.webhooks.deliveries.success')
+          : t('settings.api.webhooks.deliveries.failed')}
+      </Badge>
+      <span className="bt-cc-mono">{delivery.eventType}</span>
+      {delivery.responseStatus != null ? (
+        <span className="bt-num">· {delivery.responseStatus}</span>
+      ) : null}
+      <span style={{ color: 'var(--bt-faint)' }}>· {formatDate(delivery.createdAt)}</span>
+    </>
+  );
+
+  return (
+    <li className="flex flex-col gap-0.5">
+      {hasDetail ? (
+        // The whole line is the disclosure (the NotificationLogPanel idiom): a
+        // separate control would make every row taller, which §13.5 rules out.
+        <button
+          aria-expanded={open}
+          className="bt-cc-row__hint flex w-full flex-wrap items-center gap-2 text-left"
+          onClick={() => setOpen((v) => !v)}
+          style={{ border: 0, padding: 0, background: 'none', cursor: 'pointer' }}
+          type="button"
+        >
+          {line}
+          <span className="bt-link">
+            {open
+              ? t('settings.api.webhooks.deliveries.hideDetail')
+              : t('settings.api.webhooks.deliveries.showDetail')}
+          </span>
+        </button>
+      ) : (
+        <span className="bt-cc-row__hint flex flex-wrap items-center gap-2">{line}</span>
+      )}
+      {open && hasDetail ? (
+        <span className="bt-cc-row__hint flex flex-wrap items-center gap-2">
+          {reason ? (
+            <span>
+              {t(`settings.api.webhooks.deliveries.reason.${reason}`, {
+                status: delivery.responseStatus ?? '',
+              })}
+            </span>
+          ) : null}
+          <span style={{ color: 'var(--bt-faint)' }}>
+            {t('settings.api.webhooks.deliveries.attempts', { count: delivery.attempts })}
+          </span>
+        </span>
+      ) : null}
+    </li>
   );
 }
 

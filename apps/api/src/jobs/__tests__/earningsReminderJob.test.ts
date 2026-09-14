@@ -51,7 +51,13 @@ beforeEach(async () => {
   // ioredis-mock shares its keyspace across instances — flush so each test's
   // idempotency locks start clean.
   await redis.flushall();
-  ctx = { events: inertBus, deadLetter: createDeadLetter(redis), redis, logger };
+  ctx = {
+    events: inertBus,
+    deadLetter: createDeadLetter(redis),
+    redis,
+    logger,
+    isFeatureEnabled: async () => true,
+  };
 });
 
 function makeJob(): Job<Record<string, never>> {
@@ -100,7 +106,9 @@ function marketDataWithReport(date: string | null) {
     earnings: (_ref: AssetRef) =>
       cachedIntel(
         sampleEarningsEvents({
-          next: date ? { date, epsEstimate: 1.4, epsActual: null, estimated: true } : null,
+          next: date
+            ? { date, periodEnd: null, epsEstimate: 1.4, epsActual: null, estimated: true }
+            : null,
         }),
       ),
   });
@@ -203,15 +211,105 @@ describe('earningsNotifyGate', () => {
   });
 
   it('is false when the type routes to no channel at all', async () => {
-    const gate = earningsNotifyGate({ routingFor: async () => routing() });
+    const gate = earningsNotifyGate(
+      { routingFor: async () => routing() },
+      {
+        telegram: true,
+        discord: true,
+      },
+    );
     await expect(gate('u1')).resolves.toBe(false);
   });
 
   it('is true as soon as one channel carries the type, and asks for that type', async () => {
     const routingFor = vi.fn(async () => routing({ email: true }));
-    const gate = earningsNotifyGate({ routingFor });
+    const gate = earningsNotifyGate({ routingFor }, { telegram: true, discord: true });
 
     await expect(gate('u1')).resolves.toBe(true);
     expect(routingFor).toHaveBeenCalledWith('u1', 'earnings.reminder');
+  });
+
+  // V5-P0 kill-switch (#1795): a deactivated channel is not a destination, so
+  // the scan must not spend a provider read per asset on a user routed only there.
+  it('is false when the only routed channel is deactivated in this deployment', async () => {
+    const gate = earningsNotifyGate(
+      { routingFor: async () => routing({ telegram: true }) },
+      {
+        telegram: false,
+        discord: false,
+      },
+    );
+    await expect(gate('u1')).resolves.toBe(false);
+  });
+
+  it('is true again for the same routing once the kill-switch is flipped back on', async () => {
+    const gate = earningsNotifyGate(
+      { routingFor: async () => routing({ discord: true }) },
+      {
+        telegram: true,
+        discord: true,
+      },
+    );
+    await expect(gate('u1')).resolves.toBe(true);
+  });
+});
+
+describe('notifications.earningsRemind — completion log (#1791)', () => {
+  interface LogLine {
+    payload: Record<string, unknown>;
+    msg: string;
+  }
+
+  /** A logger double that keeps the completion line the handler wrote. */
+  function capturingLogger() {
+    const info: LogLine[] = [];
+    const warn: LogLine[] = [];
+    const push = (sink: LogLine[]) => (payload: Record<string, unknown>, msg?: string) => {
+      sink.push({ payload, msg: msg ?? '' });
+    };
+    const noop = () => {};
+    const captured = {
+      info: push(info),
+      warn: push(warn),
+      error: noop,
+      debug: noop,
+      trace: noop,
+      fatal: noop,
+      child: () => captured,
+    };
+    return { logger: captured as unknown as Logger, info, warn };
+  }
+
+  it('logs a clean run as complete', async () => {
+    const captured = capturingLogger();
+    await jobFor('2026-09-04T20:00:00.000Z', recordingCenter()).handler(makeJob(), {
+      ...ctx,
+      logger: captured.logger,
+    });
+
+    expect(captured.warn).toEqual([]);
+    expect(captured.info).toHaveLength(1);
+    expect(captured.info[0]!.msg).toBe('notifications.earningsRemind complete');
+    expect(captured.info[0]!.payload).toMatchObject({ reminded: 1, skipped: 0 });
+  });
+
+  it('refuses to log a run with any skip as complete', async () => {
+    const captured = capturingLogger();
+    const job = createEarningsReminderJob({
+      intelRepo,
+      marketData: marketDataWithReport('2026-09-04T20:00:00.000Z'),
+      notify: recordingCenter(),
+      isEnabled: async () => true,
+      enabled: true,
+      // The paranoid transition guard wins for this account: its book is never
+      // read, so the run is degraded, not complete.
+      runIfAllowed: async () => false,
+    });
+    await job.handler(makeJob(), { ...ctx, logger: captured.logger });
+
+    expect(captured.info).toEqual([]);
+    expect(captured.warn).toHaveLength(1);
+    expect(captured.warn[0]!.msg).toBe('notifications.earningsRemind completed with skips');
+    expect(captured.warn[0]!.payload).toMatchObject({ skipped: 1, usersDeferred: 1 });
   });
 });

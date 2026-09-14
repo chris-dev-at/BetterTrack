@@ -6,6 +6,7 @@ import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { apiBaseUrl } from '../../lib/runtimeConfig';
 import { formatDateTime } from '../../lib/format';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
@@ -60,6 +61,7 @@ export function MonitoringPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [override, setOverride] = useState<MonitoringStatusResponse | null>(null);
+  const onFailure = useAdminCallFailure();
 
   const resource = useResource((signal) => api.getMonitoringStatus(signal), []);
   const { loading, error, reload } = resource;
@@ -72,13 +74,16 @@ export function MonitoringPage() {
       setActionError(null);
       try {
         setOverride(await api.setMonitoringExternalAccess(enabled));
-      } catch {
-        setActionError(t('admin.monitoring.actionError'));
+      } catch (err) {
+        // The kill-switch write addresses no removable row, so a 404 here is
+        // §6.12's "not an admin any more" — the console signs out rather than
+        // reporting a failed toggle it can never retry (#1814).
+        if (!onFailure(err, 'session')) setActionError(t('admin.monitoring.actionError'));
       } finally {
         setBusy(false);
       }
     },
-    [t],
+    [onFailure, t],
   );
 
   return (

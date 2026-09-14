@@ -11,6 +11,7 @@ import {
   type QueueDepthSample,
 } from './metrics';
 import { createRedis } from './redis';
+import { registerProcessErrorCapture } from './services/observability/processErrorCapture';
 import { flushTelemetryBuffers } from './shutdown';
 
 const config = loadConfig();
@@ -29,6 +30,12 @@ const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const redis = createRedis(config.redisUrl);
 
 const ctx = buildContext({ config, db, lockDb, redis, logger });
+// Errors thrown outside a request or a job (a rejected promise in a `finish`
+// listener, a socket handler, an unref'd timer) reached no capture seam at all
+// and took the container down leaving nothing on the Problems page (§13.5
+// V5-P2 arc (d)). Registered before the listener so a boot-time throw is caught
+// too; still fatal, one row richer.
+registerProcessErrorCapture({ problems: ctx.problems, logger, process: 'api' });
 const app = createApp(ctx);
 
 // Notification delivery is owned by the WORKER's durable `notifications.dispatch`
@@ -101,7 +108,8 @@ async function shutdown(signal: string): Promise<void> {
     await redis.quit();
     await lockClient.end();
     await client.end();
-    // Flush any buffered Sentry events before the process exits (§13.4 V4-P5a).
+    // Retired external tracker (§16 2026-07-17): inert, but still closed here so
+    // the shutdown sequence has one shape whatever the seam becomes.
     await ctx.observability.close();
   } catch (err) {
     logger.error({ err }, 'error during API shutdown');

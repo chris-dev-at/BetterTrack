@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clientSeriesCagrPct, trimZeroValueEdges } from './clientSeries';
+import { clientSeriesTwrCagrPct, trimZeroValueEdges } from './clientSeries';
 
 /** Two years of steady growth after a leading stretch the portfolio held nothing. */
 const WITH_ZERO_EDGES = [
@@ -33,17 +33,32 @@ describe('trimZeroValueEdges', () => {
   });
 });
 
-describe('clientSeriesCagrPct', () => {
-  it('states the annualised return from the first day the portfolio held value', () => {
-    // 100 → 121 over 366 elapsed days (2024 is a leap year), so just under the
-    // 21 % a whole-year window would state. Without the trim the window starts
-    // at 0 and no CAGR can be stated at all.
-    expect(clientSeriesCagrPct(WITH_ZERO_EDGES)).toBeCloseTo(20.95, 2);
+describe('clientSeriesTwrCagrPct', () => {
+  it('annualises the vault’s own time-weighted curve over the window it is given', () => {
+    // +21 % across 366 elapsed days (2024 is a leap year) — just under the 21 %
+    // a whole-year window would state.
+    expect(
+      clientSeriesTwrCagrPct([
+        { date: '2024-01-01', pct: 0 },
+        { date: '2025-01-01', pct: 21 },
+      ]),
+    ).toBeCloseTo(20.95, 2);
   });
 
-  it('is null when the trimmed window cannot carry a rate', () => {
-    expect(clientSeriesCagrPct([])).toBeNull();
-    expect(clientSeriesCagrPct([{ date: '2024-01-01', valueEur: 0 }])).toBeNull();
-    expect(clientSeriesCagrPct([{ date: '2024-01-01', valueEur: 100 }])).toBeNull();
+  it('rebases a since-inception curve onto the sliced window', () => {
+    // The 3Y control trims a 5Y envelope locally, so the slice it hands over
+    // starts mid-curve: +10 % of its own, not the +120 % the curve carries.
+    expect(
+      clientSeriesTwrCagrPct([
+        { date: '2024-01-01', pct: 100 },
+        { date: '2025-01-01', pct: 120 },
+      ]),
+    ).toBeCloseTo(9.98, 2);
+  });
+
+  it('is null when the window cannot carry a rate', () => {
+    expect(clientSeriesTwrCagrPct([])).toBeNull();
+    // A real window with no elapsed time states a total, but no annual rate.
+    expect(clientSeriesTwrCagrPct([{ date: '2024-01-01', pct: 0 }])).toBeNull();
   });
 });

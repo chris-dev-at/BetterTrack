@@ -15,6 +15,7 @@ import type { EmailService } from '../email/emailService';
 import { notificationCopy, resolveEmailLocale } from '../email/emailI18n';
 import type { Logger } from '../../logger';
 
+import { notificationTypeShipsEmail } from './emailTypeRules';
 import type { FcmChannel, PushMessage } from './fcm';
 import { isInQuietHours, quietHoursWindowEnd, zonedCalendarDate } from './quietHours';
 import { quietHoursConfigForUser } from './quietHoursConfig';
@@ -252,6 +253,11 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
     channel: DigestChannel,
     cache: Map<string, TypeRouting>,
   ): Promise<boolean> {
+    // A type that ships no e-mail is not deliverable on the e-mail channel, no
+    // matter what the matrix says (#1816). The dispatcher no longer enqueues
+    // such a row, so this only catches rows queued before that fix — and the
+    // admin account-defaults grid, which can still persist the cell.
+    if (channel === 'email' && !notificationTypeShipsEmail(type)) return false;
     if (!routing || type === DIGEST_SUMMARY_TYPE) return true;
     const key = `${userId} ${type}`;
     let resolved = cache.get(key);
@@ -558,6 +564,10 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
                 userId: recipient.id,
                 title: item.title,
                 body,
+                // The row's own type + deep-link ids, so the e-mail links to the
+                // notification's target rather than the app root (#1816).
+                type: item.type,
+                data: item.data,
                 locale,
               });
               sent += 1;

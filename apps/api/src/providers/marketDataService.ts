@@ -236,6 +236,14 @@ const INTEL_PAYLOAD_VERSIONS: Partial<Record<ProviderCapability, number>> = {
   // dividend). Without this bump every v1 entry would blank the whole
   // projection until it expired.
   dividends: 2,
+  // v2 (#1790): an earnings row now carries `periodEnd` — the end of the fiscal
+  // period reported on — BESIDE `date`, the announcement date the two used to
+  // share. `earningsEventSchema` requires the field (nullable, and the object is
+  // strict), so the client's response parse throws on a row a v1 release wrote
+  // and the asset page's whole earnings block disappears with no error surfaced.
+  // Without this bump every v1 entry would blank that block until it expired
+  // (6 h fresh, and a stale copy served for up to 7 days while upstream fails).
+  earnings: 2,
 };
 
 /**

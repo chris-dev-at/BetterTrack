@@ -22,6 +22,7 @@ vi.mock('../../lib/workboardApi');
 vi.mock('../../lib/conglomerateApi');
 vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/assetApi');
+import { I18nProvider } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as conglomerateApi from '../../lib/conglomerateApi';
@@ -243,7 +244,9 @@ describe('AssetSearchBox', () => {
     expect(screen.getByText(/NASDAQ/)).toBeInTheDocument();
     expect(screen.getByText('BAYN.DE')).toBeInTheDocument();
     expect(screen.getByText(/Bayer AG/)).toBeInTheDocument();
-    expect(screen.getAllByText('stock')).toHaveLength(2);
+    // The badge is translated copy, not the raw enum slug (#1874).
+    expect(screen.getAllByText('Stock')).toHaveLength(2);
+    expect(screen.queryByText('stock')).not.toBeInTheDocument();
   });
 
   test('renders the Parqet capability tag for a supported asset, and not for an unsupported one', async () => {
@@ -837,4 +840,57 @@ test('at 390 px constrains a long result subtitle without shrinking its actions'
   expect(container.querySelector('.bt-asset-result__actions')).toHaveClass('shrink-0');
   expect(screen.getByRole('button', { name: /add aply to watchlist/i })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /record a buy/i })).toBeInTheDocument();
+});
+
+describe('AssetSearchBox — the asset-type badge is copy, not an enum (#1874)', () => {
+  // Search DOES return the caller's own custom assets (`visibleTo` includes
+  // `owner_id`), so this row is reachable and used to render the literal
+  // string `custom`.
+  const MY_HOUSE: SearchResultItem = {
+    id: 'asset-house',
+    providerId: 'manual',
+    providerRef: 'house',
+    symbol: 'HOUSE',
+    name: 'Family home',
+    exchange: null,
+    type: 'custom',
+    currency: 'EUR',
+    isCustom: true,
+  };
+
+  test('labels a custom asset rather than printing its slug', async () => {
+    vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([MY_HOUSE]));
+    const user = userEvent.setup();
+    renderSearchBox();
+
+    await user.type(screen.getByRole('searchbox'), 'ho');
+
+    expect(await screen.findByText('HOUSE')).toBeInTheDocument();
+    expect(screen.getByText('Custom')).toBeInTheDocument();
+    expect(screen.queryByText('custom')).not.toBeInTheDocument();
+  });
+
+  test('translates the badge on the picker rows too, in German', async () => {
+    vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA, MY_HOUSE]));
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // `I18nProvider` seeds the format locale to de-AT, which is also the module
+    // default in tests — so this leaves no locale residue behind it.
+    render(
+      <I18nProvider initialLocale="de">
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/']}>
+            <main tabIndex={-1}>
+              <AssetSearchBox onSelect={vi.fn()} />
+            </main>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    await user.type(screen.getByRole('searchbox'), 'NV');
+
+    expect(await screen.findByText('Aktie')).toBeInTheDocument();
+    expect(screen.getByText('Eigene Anlage')).toBeInTheDocument();
+  });
 });

@@ -2,6 +2,8 @@ import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { describe, expect, it } from 'vitest';
 
+import type { AssetMeta, AssetRef, CachedResult } from '@bettertrack/contracts';
+
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import * as schema from '../../../data/schema';
 import { createTestApp } from '../../../testing/createTestApp';
@@ -11,13 +13,17 @@ import {
   providerHit,
   type StubMarketDataControls,
 } from '../../../testing/marketDataStubs';
+import { COMMON_SYMBOLS_SEED, isCuratedCatalogRef, seedAssetCatalog } from '../catalogSeed';
 import {
   createCatalogEnrichment,
   enrichGuardKey,
   ENRICH_GUARD_DONE,
   ENRICH_GUARD_RUNNING,
   ENRICH_GUARD_TTL_SECONDS,
+  ENRICH_MAX_CURRENCY_LOOKUPS,
   ENRICH_MAX_HITS,
+  ENRICH_RUN_TIMEOUT_MS,
+  rankProviderHits,
 } from '../catalogEnrichment';
 
 /**
@@ -26,7 +32,10 @@ import {
  * provider failure.
  */
 
-async function makeEnrichment(controls: StubMarketDataControls = {}) {
+async function makeEnrichment(
+  controls: StubMarketDataControls = {},
+  timeouts: { runTimeoutMs?: number; settleTimeoutMs?: number } = {},
+) {
   const h = await createTestApp({ marketData: createStubMarketData() });
   const marketData = createStubMarketData(controls);
   const assetRepo = createAssetRepository(h.db);
@@ -40,6 +49,7 @@ async function makeEnrichment(controls: StubMarketDataControls = {}) {
     backfill,
     redis,
     logger: h.ctx.logger,
+    ...timeouts,
   });
   return { h, marketData, assetRepo, backfill, redis, enrichment };
 }
@@ -198,5 +208,505 @@ describe('catalogEnrichment', () => {
     expect(rows).toHaveLength(1);
     expect(await assetRepo.findGlobal('yahoo', 'AAPL')).not.toBeNull();
     expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it('a re-enrichment corrects the NAME it finds instead of leaving it frozen (#1810)', async () => {
+    // A ref the shipped list does not curate, so the provider is the only
+    // writer this row has (see the curated case below).
+    expect(isCuratedCatalogRef('yahoo', 'SRTX.DE')).toBe(false);
+    let name = 'Sartorix Vorzug';
+    const { h, assetRepo, backfill, enrichment, redis } = await makeEnrichment({
+      search: () => [
+        providerHit({ providerRef: 'SRTX.DE', symbol: 'SRTX.DE', name, exchange: 'XETRA' }),
+      ],
+    });
+
+    await enrichment.request('sartorix');
+    await enrichment.settled();
+    const first = await assetRepo.findGlobal('yahoo', 'SRTX.DE');
+    expect(first?.name).toBe('Sartorix Vorzug');
+
+    // The provider corrects the row. `name` is what the catalog read returns
+    // AND ranks on, so a stale one makes the row unfindable by its real name —
+    // and until #1810 it had no repair path at all.
+    name = 'Sartorix AG Vorzugsaktien';
+    await redis.del(enrichGuardKey('sartorix'));
+    await enrichment.request('sartorix');
+    await enrichment.settled();
+
+    const refreshed = await assetRepo.findGlobal('yahoo', 'SRTX.DE');
+    expect(refreshed?.name).toBe('Sartorix AG Vorzugsaktien');
+    // In place: same row, same id — every transaction pointing at it survives —
+    // and no second backfill, because nothing was created.
+    expect(refreshed?.id).toBe(first?.id);
+    expect(await h.db.select({ id: schema.assets.id }).from(schema.assets)).toHaveLength(1);
+    expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it('never lets the search projection rewrite a stored currency or type (#1810)', async () => {
+    // `yahooProvider.search` has no currency to read: `currencyForSearchResult`
+    // infers one from the symbol shape and answers 'USD' when nothing matches,
+    // and `mapAssetType` answers 'stock' for an unknown quote type. Both are
+    // documented as picker-badge-only guesses. `assets.currency` is money — a
+    // pay-from-cash buy books a PERSISTED cash movement converted through it —
+    // so a guess must never land on a row that already exists.
+    let hit = providerHit({
+      providerRef: '^XYZ',
+      symbol: '^XYZ',
+      name: 'Some Traded Index',
+      type: 'index',
+      currency: 'EUR',
+    });
+    const { assetRepo, enrichment, redis } = await makeEnrichment({ search: () => [hit] });
+
+    await enrichment.request('xyz');
+    await enrichment.settled();
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({
+      currency: 'EUR',
+      type: 'index',
+    });
+
+    // Second pass: the same ref comes back with the projection's fallbacks —
+    // the exact shape `^ATX` (a seeded EUR index on VIE, which matches no rule)
+    // takes. The row keeps the currency and type it was created with.
+    hit = providerHit({
+      providerRef: '^XYZ',
+      symbol: '^XYZ',
+      name: 'Some Traded Index (renamed)',
+      type: 'stock',
+      currency: 'USD',
+    });
+    await redis.del(enrichGuardKey('xyz'));
+    await enrichment.request('xyz');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({
+      currency: 'EUR',
+      type: 'index',
+      // …while the one column the projection does carry still refreshes.
+      name: 'Some Traded Index (renamed)',
+    });
+  });
+
+  it('never rewrites a CURATED row, so the seed and the provider cannot flap (#1810)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const assetRepo = createAssetRepository(h.db);
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    // One shipped entry, seeded exactly as boot seeds it.
+    const curated = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === '^GDAXI')!;
+    await seedAssetCatalog(assetRepo, [curated]);
+
+    const enrichment = createCatalogEnrichment({
+      marketData: createStubMarketData({
+        // What Yahoo would say about the same ref: its own casing, its own
+        // exchange label.
+        search: () => [
+          providerHit({
+            providerRef: '^GDAXI',
+            symbol: '^GDAXI',
+            name: 'DAX PERFORMANCE-INDEX',
+            exchange: 'GER',
+            currency: 'USD',
+            type: 'stock',
+          }),
+        ],
+      }),
+      assetRepo,
+      backfill: createRecordingBackfill(),
+      redis,
+      logger: h.ctx.logger,
+    });
+
+    await enrichment.request('dax');
+    await enrichment.settled();
+
+    // Untouched — every column still the curated one. Were the two writers to
+    // fight over this row, each flip would also be a content-changing statement,
+    // and the catalog watermark trigger would push the instance-wide search
+    // `Last-Modified` another second ahead for every client.
+    expect(await assetRepo.findGlobal('yahoo', '^GDAXI')).toMatchObject({
+      name: curated.name,
+      exchange: curated.exchange,
+      currency: curated.currency,
+      type: curated.type,
+    });
+  });
+
+  it('does not blank a stored name when the provider supplied none (#1810)', async () => {
+    // `yahooProvider.search` falls back to the bare symbol when a quote carries
+    // neither `longname` nor `shortname`. Writing that back would replace a real
+    // name with a ticker — the exact findability §6.2 ranks on.
+    const { assetRepo, enrichment } = await makeEnrichment({
+      // The nameless shape: name === symbol, and no exchange either.
+      search: () => [
+        providerHit({
+          providerRef: 'NAMELESS.DE',
+          symbol: 'NAMELESS.DE',
+          name: 'NAMELESS.DE',
+          exchange: null,
+        }),
+      ],
+    });
+    await assetRepo.upsertGlobal({
+      providerId: 'yahoo',
+      providerRef: 'NAMELESS.DE',
+      type: 'stock',
+      symbol: 'NAMELESS.DE',
+      name: 'Nameless Holding SE',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    });
+
+    await enrichment.request('nameless');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'NAMELESS.DE')).toMatchObject({
+      name: 'Nameless Holding SE',
+      exchange: 'XETRA',
+    });
+  });
+});
+
+describe('catalogEnrichment — hits are ranked before the cap (#1794, #1810)', () => {
+  it('orders provider hits by the catalog tiers, then similarity, then name', () => {
+    const hits = [
+      providerHit({ providerRef: 'FUZZ', symbol: 'FUZZ', name: 'Something else' }),
+      providerHit({ providerRef: 'GOLDX', symbol: 'GOLDX', name: 'Prefix match' }),
+      providerHit({ providerRef: 'BARS', symbol: 'BARS', name: 'Gold Bars plc' }),
+      providerHit({ providerRef: 'GOLD', symbol: 'GOLD', name: 'Exact match' }),
+      providerHit({ providerRef: 'GOLDY', symbol: 'GOLDY', name: 'Second prefix' }),
+    ];
+
+    expect(rankProviderHits('gold', hits).map((hit) => hit.symbol)).toEqual([
+      'GOLD', // tier 0 — exact symbol
+      'GOLDX', // tier 1 — symbol prefix; equal similarity, so "Prefix match"…
+      'GOLDY', // tier 1 — …sorts before "Second prefix" (the read's `order by name`)
+      'BARS', // tier 2 — name substring
+      'FUZZ', // tier 3 — neither
+    ]);
+  });
+
+  it('admits an exact-symbol match that a provider returned past the cap', async () => {
+    // 40 hits in registration order with the exact match at position 25 — the
+    // scenario the raw `slice(0, ENRICH_MAX_HITS)` discarded. The filler names
+    // are zero-padded so that the read's last tiebreak (`order by name`, all of
+    // them scoring the same zero similarity against "gold") runs in the same
+    // order as their index, and the assertions below can name the boundary.
+    const hits = Array.from({ length: 40 }, (_, i) =>
+      providerHit({
+        providerRef: `FUZZ${i}`,
+        symbol: `FUZZ${i}`,
+        name: `Fuzzy ${String(i).padStart(2, '0')}`,
+      }),
+    );
+    hits[24] = providerHit({ providerRef: 'GOLD', symbol: 'GOLD', name: 'Gold Corp' });
+    const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
+
+    await enrichment.request('gold');
+    await enrichment.settled();
+
+    // The one row the follow-up catalog read would rank tier 0 is in the catalog…
+    expect(await assetRepo.findGlobal('yahoo', 'GOLD')).not.toBeNull();
+    // …the cap still holds, and it now sheds the LOWEST-ranked hits.
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+    expect(await assetRepo.findGlobal('yahoo', 'FUZZ18')).not.toBeNull();
+    expect(await assetRepo.findGlobal('yahoo', 'FUZZ19')).toBeNull();
+  });
+
+  it('admits a WORD match past the cap that String.includes cannot see (#1810)', async () => {
+    // `plainto_tsquery('simple', 'ag bayer')` matches "BAYN.DE Bayer AG"
+    // order-free — the SQL grades it tier 2 — while
+    // `"bayer ag".includes("ag bayer")` is false, so the old mirror graded it
+    // tier 3 with everything else and the slice dropped it at position 22.
+    const hits = Array.from({ length: 40 }, (_, i) =>
+      providerHit({ providerRef: `FUZZ${i}`, symbol: `FUZZ${i}`, name: `Fuzzy ${i}` }),
+    );
+    hits[21] = providerHit({ providerRef: 'BAYN.DE', symbol: 'BAYN.DE', name: 'Bayer AG' });
+    const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
+
+    await enrichment.request('ag bayer');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'BAYN.DE')).not.toBeNull();
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+  });
+
+  it('admits a MISSPELLED match past the cap, ranked by similarity (#1810)', async () => {
+    // The §6.2 flagship path: "etherium" is tier 3 for every hit, so the tiers
+    // decide nothing and the ordering is the whole answer. Ordered by provider
+    // registration index — the old tiebreak — `ETH-USD` at position 22 was
+    // dropped, twenty junk rows were written and backfilled instead, and the
+    // follow-up catalog read filtered those out at the similarity floor: no
+    // results at all for a query the providers had answered.
+    const hits = Array.from({ length: 30 }, (_, i) =>
+      providerHit({ providerRef: `QQQ${i}`, symbol: `QQQ${i}`, name: `Quantum Fund ${i}` }),
+    );
+    hits[21] = providerHit({ providerRef: 'ETH-USD', symbol: 'ETH-USD', name: 'Ethereum USD' });
+    const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
+
+    await enrichment.request('etherium');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'ETH-USD')).not.toBeNull();
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+    // It is not merely admitted, it is admitted FIRST — the fuzzy tier is
+    // ordered by trigram similarity, exactly as the catalog read orders it.
+    expect(rankProviderHits('etherium', hits)[0]?.symbol).toBe('ETH-USD');
+  });
+});
+
+describe('catalogEnrichment — the guard is an owned lease (#1794)', () => {
+  it('bounds one run below the lease, so the guard cannot expire under its own holder', () => {
+    // The invariant behind "exactly one upstream fetch per key" (§5.3): a run
+    // that cannot outlive its lease cannot hand a second process the NX win.
+    expect(ENRICH_RUN_TIMEOUT_MS).toBeLessThan(ENRICH_GUARD_TTL_SECONDS * 1000);
+  });
+
+  it('a finisher whose lease expired cannot clobber the successor’s guard', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { enrichment, redis } = await makeEnrichment({
+      search: async () => {
+        await gate;
+        return [];
+      },
+    });
+
+    await expect(enrichment.request('bayn')).resolves.toBe(true);
+    // The lease expires mid-run and another process wins NX for the same query.
+    const successor = `${ENRICH_GUARD_RUNNING}:successor-process`;
+    await redis.set(enrichGuardKey('bayn'), successor, 'EX', ENRICH_GUARD_TTL_SECONDS);
+
+    release();
+    await enrichment.settled();
+
+    // The first finisher must NOT have flipped a lease it no longer owns…
+    expect(await redis.get(enrichGuardKey('bayn'))).toBe(successor);
+    // …so a third caller is still correctly told an enrichment is in flight,
+    // instead of reading `done` and reporting `enriching: false`.
+    await expect(enrichment.request('bayn')).resolves.toBe(true);
+  });
+
+  it('completes its own lease normally — the negative-cache window still applies', async () => {
+    const { enrichment, redis } = await makeEnrichment({ search: () => [] });
+
+    await expect(enrichment.request('bmw')).resolves.toBe(true);
+    await enrichment.settled();
+    expect(await redis.get(enrichGuardKey('bmw'))).toBe(ENRICH_GUARD_DONE);
+  });
+
+  it('bounds settled(), so one stuck enrichment cannot hang graceful shutdown', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { enrichment, marketData } = await makeEnrichment(
+      {
+        search: async () => {
+          await gate;
+          return [];
+        },
+      },
+      { settleTimeoutMs: 25, runTimeoutMs: 30_000 },
+    );
+
+    await enrichment.request('wedged');
+    // The provider never answers; the shutdown wait returns anyway.
+    await expect(enrichment.settled()).resolves.toBeUndefined();
+    expect(marketData.calls.search).toBe(1);
+
+    release();
+    await enrichment.settled();
+  });
+});
+
+/**
+ * The authoritative-currency resolution (#1875). A provider search projection
+ * may only DEFAULT a currency — `currencyForSearchResult` answers `USD` for a
+ * symbol with no `=X`, no `-`, no venue suffix and an exchange code it does not
+ * know, which is exactly `^IBEX`, a EUR index. `assets.currency` is money, so
+ * the placeholder is re-read from the provider's own `getMeta` before it can
+ * become a stored denomination — and a row that already holds a wrong one is
+ * corrected, which is the only path that ever could.
+ */
+describe('catalogEnrichment — authoritative currency (#1875)', () => {
+  const META_AT = Date.parse('2026-06-20T10:00:00.000Z');
+
+  const cachedMeta = (ref: AssetRef, currency: string): CachedResult<AssetMeta> => ({
+    value: {
+      providerId: ref.providerId,
+      providerRef: ref.providerRef,
+      symbol: ref.providerRef,
+      name: ref.providerRef,
+      exchange: null,
+      currency,
+      type: 'index',
+    },
+    stale: false,
+    asOf: META_AT,
+  });
+
+  /** The `^IBEX` shape: a EUR index whose projection could only default to USD. */
+  const ibexHit = () =>
+    providerHit({
+      providerRef: '^IBEX',
+      symbol: '^IBEX',
+      name: 'IBEX 35',
+      exchange: 'MCE',
+      type: 'index',
+      currency: 'USD',
+      currencyGuessed: true,
+    });
+
+  it('creates the row in the currency the provider actually reports, not the default', async () => {
+    const { assetRepo, marketData, enrichment } = await makeEnrichment({
+      search: () => [ibexHit()],
+      meta: (ref) => cachedMeta(ref, 'EUR'),
+    });
+
+    await enrichment.request('ibex');
+    await enrichment.settled();
+
+    // Not USD — the whole point: this row is what `portfolioService` books a
+    // persisted cash movement through.
+    expect(await assetRepo.findGlobal('yahoo', '^IBEX')).toMatchObject({ currency: 'EUR' });
+    expect(marketData.calls.meta).toBe(1);
+  });
+
+  it('corrects a row already stored with the placeholder, in place', async () => {
+    // The provider is down on the first pass, so the create falls back to the
+    // projection's placeholder — the state every pre-#1875 install is in.
+    let metaWorks = false;
+    const { assetRepo, backfill, enrichment, redis, h } = await makeEnrichment({
+      search: () => [ibexHit()],
+      meta: (ref) => {
+        if (!metaWorks) throw new Error('upstream down');
+        return cachedMeta(ref, 'EUR');
+      },
+    });
+
+    await enrichment.request('ibex');
+    await enrichment.settled();
+    const first = await assetRepo.findGlobal('yahoo', '^IBEX');
+    expect(first?.currency).toBe('USD');
+
+    // A later enrichment reaches the provider — and the guess is not forever.
+    metaWorks = true;
+    await redis.del(enrichGuardKey('ibex'));
+    await enrichment.request('ibex');
+    await enrichment.settled();
+
+    const corrected = await assetRepo.findGlobal('yahoo', '^IBEX');
+    expect(corrected?.currency).toBe('EUR');
+    // In place: same row, so every holding and transaction pointing at it
+    // survives the correction, and nothing was created a second time.
+    expect(corrected?.id).toBe(first?.id);
+    expect(await h.db.select({ id: schema.assets.id }).from(schema.assets)).toHaveLength(1);
+    expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it("still refuses the projection's own currency, flagged or not", async () => {
+    // A hit that did NOT flag its currency carries a derivation, not a reading:
+    // deterministic from the symbol, never re-read, and never written over a
+    // stored value (#1810). No lookup is spent on it either.
+    const { assetRepo, marketData, enrichment, redis } = await makeEnrichment({
+      search: () => [
+        providerHit({
+          providerRef: '^XYZ',
+          symbol: '^XYZ',
+          name: 'Some Traded Index',
+          type: 'index',
+          currency: 'USD',
+        }),
+      ],
+      meta: (ref) => cachedMeta(ref, 'JPY'),
+    });
+    await assetRepo.upsertGlobal({
+      providerId: 'yahoo',
+      providerRef: '^XYZ',
+      type: 'index',
+      symbol: '^XYZ',
+      name: 'Some Traded Index',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    });
+
+    await redis.del(enrichGuardKey('xyz'));
+    await enrichment.request('xyz');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({ currency: 'EUR' });
+    expect(marketData.calls.meta).toBe(0);
+  });
+
+  it('spends no lookup on a curated ref and leaves its hand-checked currency alone', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const assetRepo = createAssetRepository(h.db);
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    const curated = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === '^GDAXI')!;
+    expect(isCuratedCatalogRef('yahoo', '^GDAXI')).toBe(true);
+    await seedAssetCatalog(assetRepo, [curated]);
+
+    const marketData = createStubMarketData({
+      search: () => [
+        providerHit({
+          providerRef: '^GDAXI',
+          symbol: '^GDAXI',
+          name: 'DAX PERFORMANCE-INDEX',
+          exchange: 'GER',
+          currency: 'USD',
+          currencyGuessed: true,
+          type: 'index',
+        }),
+      ],
+      meta: (ref) => cachedMeta(ref, 'JPY'),
+    });
+    const enrichment = createCatalogEnrichment({
+      marketData,
+      assetRepo,
+      backfill: createRecordingBackfill(),
+      redis,
+      logger: h.ctx.logger,
+    });
+
+    await enrichment.request('dax');
+    await enrichment.settled();
+
+    // The seed list already carries a hand-checked native currency and the row
+    // exists before any search can reach it, so there is nothing to resolve.
+    expect(await assetRepo.findGlobal('yahoo', '^GDAXI')).toMatchObject({
+      currency: curated.currency,
+    });
+    expect(marketData.calls.meta).toBe(0);
+  });
+
+  it('caps how many authoritative lookups one enrichment may make', async () => {
+    const overflow = ENRICH_MAX_CURRENCY_LOOKUPS + 3;
+    const { marketData, enrichment, h } = await makeEnrichment({
+      search: () =>
+        Array.from({ length: overflow }, (_, i) =>
+          providerHit({
+            providerRef: `^GUESS${i}`,
+            symbol: `^GUESS${i}`,
+            name: `Guessed Index ${i}`,
+            exchange: 'MCE',
+            type: 'index',
+            currency: 'USD',
+            currencyGuessed: true,
+          }),
+        ),
+      meta: (ref) => cachedMeta(ref, 'EUR'),
+    });
+
+    await enrichment.request('guess');
+    await enrichment.settled();
+
+    // One background enrichment cannot turn into `overflow` upstream calls…
+    expect(marketData.calls.meta).toBe(ENRICH_MAX_CURRENCY_LOOKUPS);
+    const rows = await h.db.select({ currency: schema.assets.currency }).from(schema.assets);
+    expect(rows).toHaveLength(overflow);
+    // …and exactly the resolved ones were stored resolved; the rest keep the
+    // placeholder for their badge until a later enrichment resolves them.
+    expect(rows.filter((row) => row.currency === 'EUR')).toHaveLength(ENRICH_MAX_CURRENCY_LOOKUPS);
   });
 });

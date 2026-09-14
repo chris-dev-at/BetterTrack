@@ -303,6 +303,22 @@ test('humanizes recent admin activity and links to the audit log', async () => {
   );
 });
 
+test('the attention column may shrink below its longest detail line', async () => {
+  // One queued row, so the truncating detail line this guards actually renders.
+  vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: false });
+  renderPage();
+
+  await screen.findByText('Outbound email is off');
+  const attention = screen.getByRole('region', { name: 'Needs your attention' });
+  // jsdom does no layout, so the class is the regression contract: a grid item
+  // defaults to `min-width: auto` (= its min-content width), and the rows below
+  // truncate a `white-space: nowrap` detail line. Without `min-w-0` the column
+  // is sized to the longest detail string — 387px of document on a 360px phone,
+  // which is what the admin half of `e2e/mobile-overflow.spec.ts` caught.
+  expect(attention).toHaveClass('min-w-0');
+  expect(attention.querySelector('.truncate')).not.toBeNull();
+});
+
 test('renders the operator Overview in German', async () => {
   renderPage('de');
 

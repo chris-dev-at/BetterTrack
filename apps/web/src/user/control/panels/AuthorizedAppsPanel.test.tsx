@@ -96,7 +96,9 @@ describe('AuthorizedAppsPanel', () => {
     expect(grantRow).toHaveTextContent('Charting Buddy can:');
     // Scopes render via OAUTH_SCOPE_LABELS, not the raw scope string.
     expect(
-      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+      within(grantRow).getByText(
+        /View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them/i,
+      ),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Revoke access' }));
@@ -161,13 +163,37 @@ describe('AuthorizedAppsPanel', () => {
     const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
     expect(within(grantRow).getAllByRole('listitem')).toHaveLength(2);
     expect(
-      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+      within(grantRow).getByText(
+        /View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them/i,
+      ),
     ).toBeInTheDocument();
     expect(
       within(grantRow).getByText(
         /Create and edit portfolios, transactions, custom assets and cash/i,
       ),
     ).toBeInTheDocument();
+  });
+
+  test('names the destructive capabilities a granted scope really carries (#1860)', async () => {
+    // The panel is the only place a user reviews a grant AFTER approving it, so
+    // an understated line here is the last chance to notice that an app can
+    // dissolve a group portfolio, delete a vault or switch the tax regime.
+    vi.mocked(listOAuthGrants).mockResolvedValue({
+      grants: [
+        {
+          ...ONE_GRANT.grants[0]!,
+          scopes: ['mirrorchain:write', 'account:security', 'portfolio:write'],
+        },
+      ],
+    });
+    renderPanel();
+
+    const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
+    expect(within(grantRow).getByText(/delete a group portfolio/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/transfer ownership/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/permanently deleting a vault/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/deleting a passkey/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/tax regime/i)).toBeInTheDocument();
   });
 
   test('marks a scope Paranoid mode refuses instead of hiding it from the grant', async () => {
@@ -186,7 +212,9 @@ describe('AuthorizedAppsPanel', () => {
     // the user granted, exactly as `ApiKeysPanel` argues for its chips.
     const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
     expect(
-      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+      within(grantRow).getByText(
+        /View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them/i,
+      ),
     ).toBeInTheDocument();
     expect(within(grantRow).getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
   });

@@ -4,7 +4,12 @@ import { join as joinPath } from 'node:path';
 
 import { z } from 'zod';
 
-import { USAGE_ANALYTICS_WINDOW_DAYS } from '@bettertrack/contracts';
+import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
+  DEFAULT_ADMIN_SESSION_LIFETIME_HOURS,
+  USAGE_ANALYTICS_WINDOW_DAYS,
+} from '@bettertrack/contracts';
 
 import {
   createSecretBoxKeyring,
@@ -12,6 +17,7 @@ import {
   type SecretBoxKeyring,
 } from '../services/crypto/secretBox';
 import { isKnownSecretPlaceholder } from '../services/password/knownPlaceholders';
+import { parseDeploymentSubnets } from '../services/security/outboundUrlGuard';
 import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
 import { API_SERVICE_NAME, API_VERSION } from '../version';
 
@@ -82,6 +88,31 @@ const envSchema = z.object({
   BT_PRODUCT_ORIGIN: optionalUrl,
   BT_MOBILE_ORIGIN: optionalUrl,
   APP_ORIGIN: optionalUrl,
+  // Names the private network THIS deployment's own services sit on, so a
+  // user-supplied outbound destination (a webhook receiver, §13.5 V5-P10) can
+  // never dial db/redis/prometheus/grafana or an exporter. Comma-separated
+  // CIDRs, or the literal `none` for a deployment that has no internal network.
+  // Blank/unset is the normal case: the guard then DERIVES the ranges from the
+  // process's own private interfaces, which in the shipped compose topology is
+  // exactly the bridge api/worker sit on.
+  //
+  // The guard reads the raw variable itself (it is a module-level singleton
+  // shared by the http context and the worker, so it takes no config object)
+  // and independently falls back to the derived answer on a value it cannot
+  // parse. It is declared HERE so the value is part of the #982 production
+  // environment contract — forwarded by the one Compose anchor, documented in
+  // the production example — and so an operator typo fails boot loudly instead
+  // of quietly reverting to derivation on a knob they believe they set.
+  BT_OUTBOUND_DEPLOYMENT_SUBNETS: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z
+      .string()
+      .refine((value) => parseDeploymentSubnets(value) !== null, {
+        message:
+          'must be a comma-separated CIDR list (e.g. "172.18.0.0/16,fd00:beef::/64") or the single literal "none"',
+      })
+      .optional(),
+  ),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: optionalPositiveInt,
@@ -94,7 +125,17 @@ const envSchema = z.object({
   // session, clamped to the plan's 6–24 h window (default 12 h). This is the
   // env fallback only — an admin can override it at runtime (audit-logged),
   // which takes effect on the next request with no redeploy.
-  ADMIN_SESSION_LIFETIME_HOURS: z.coerce.number().int().min(6).max(24).default(12),
+  //
+  // The window comes from contracts, which is where the same three numbers gate
+  // the runtime write, the response payload and the SPA's own range check.
+  // Hardcoding them again here would let a widened window be rejected at boot
+  // by the one copy nothing pins to the others.
+  ADMIN_SESSION_LIFETIME_HOURS: z.coerce
+    .number()
+    .int()
+    .min(ADMIN_SESSION_LIFETIME_MIN_HOURS)
+    .max(ADMIN_SESSION_LIFETIME_MAX_HOURS)
+    .default(DEFAULT_ADMIN_SESSION_LIFETIME_HOURS),
   // Per-provider request budget (§5.3): bounded concurrency + minimum spacing
   // between upstream call starts. Defaults match PROJECTPLAN §5.2/§5.3.
   // NOTE: the budget is per *process* — the API and the BullMQ worker each run
@@ -185,10 +226,11 @@ const envSchema = z.object({
   BT_VAPID_PUBLIC_KEY: z.string().optional(),
   BT_VAPID_PRIVATE_KEY: z.string().optional(),
   BT_VAPID_SUBJECT: z.string().optional(),
-  // ── Error tracking (Sentry, §13.4 V4-P5a) ──────────────────────────────────
-  // Env-gated: with BT_SENTRY_DSN unset the SDK never initializes and boot is
-  // byte-identical. The two sample rates are 0..1 fractions (errors default to
-  // full capture, tracing off) so an operator can dial cost without a redeploy.
+  // ── Error tracking (RETIRED external Sentry, §16 2026-07-17) ───────────────
+  // Kept in the schema so an old `.env` still VALIDATES — and so boot can name
+  // what it is refusing. None of them configures anything any more: the SDK is
+  // never initialised, and a set DSN is reported as a problem on the admin
+  // Problems page (§13.5 V5-P2 arc (d)) instead of shipping events off-box.
   BT_SENTRY_DSN: z.string().optional(),
   BT_SENTRY_ERROR_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
   BT_SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
@@ -239,6 +281,19 @@ const envSchema = z.object({
   // so a stock deploy works without configuration; set an explicit durable path
   // in production so a mid-download restart never loses a ready file.
   BT_EXPORT_DIR: z.string().optional(),
+  // Ceiling on the packaged (uncompressed) bytes of ONE export archive. Unset ⇒
+  // the built-in 128 MiB default, which is orders of magnitude past a decade of
+  // ordinary use — but an account holding many server-resident vault ciphertext
+  // documents can legitimately exceed it, and the refusal is terminal, so this
+  // knob is what keeps such an account exportable without a redeploy of new
+  // code (#1812). Bounded by the archive ceiling so `export_jobs.file_size`
+  // (an `integer` column) provably cannot overflow.
+  BT_EXPORT_MAX_CONTENT_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(1024 * 1024 * 1024)
+    .optional(),
 
   // ── Backup readiness surface (#1406 W1) ────────────────────────────────────
   // Path to the backup scheduler's machine-readable status file, mounted
@@ -295,10 +350,16 @@ const envSchema = z.object({
   // ── Telegram + Discord kill-switch (§13.5 V5-P0b, owner directive) ─────────
   // Global on/off for BOTH V4-P10 additive channels. Default OFF: the matrix
   // columns hide everywhere, `/settings/telegram/*` + `/settings/discord/*`
-  // reply 404, the dispatcher skips deliveries even for a user with a linked
-  // row, and the schema + existing rows remain intact — flipping this env back
-  // ON restores every behavior unchanged. Neither channel is deleted; the
-  // owner explicitly asked for "deactivate, not delete".
+  // reply 404 (with the standard error envelope), the settings + admin matrix
+  // writes refuse the two channels' cells, the dispatcher skips deliveries even
+  // for a user with a linked row — and, because nothing could be delivered, it
+  // writes NO dedupe row for an event that had no other live channel, so the
+  // event is still deliverable after a flip-back. The schema + existing rows
+  // remain intact; flipping this env back ON restores every behavior unchanged.
+  // Neither channel is deleted; the owner explicitly asked for "deactivate, not
+  // delete". Independent of BT_TELEGRAM_BOT_TOKEN: switch ON without a token
+  // still answers `/settings/telegram` with the documented `available: false`
+  // body rather than a 404 (#1795).
   BT_TELEGRAM_DISCORD_ENABLED: z.string().optional(),
 
   // ── Prometheus metrics endpoint (§13.5 V5-P2 arc (a), §16 2026-07-17) ───────
@@ -674,7 +735,13 @@ export function deriveOrigins(e: {
  */
 export const REQUEST_COST_KEYS = [
   'socialShared',
+  'socialGroups',
+  'socialThread',
+  'socialAudienceSet',
   'backtestPreview',
+  'backtestCompare',
+  'backtestSharedSandbox',
+  'conglomerateAllocate',
   'analyticsSeries',
   'importCreate',
   'importRowResolve',
@@ -853,17 +920,17 @@ export interface AppConfig {
     /** Fallback per-user daily completion cap when none is stored. */
     dailyCap: number;
   };
-  /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
+  /**
+   * The RETIRED external error tracker (§16 2026-07-17). There is no `enabled`
+   * and no `dsn`: the SDK is never initialised on any code path, so the DSN
+   * itself is never needed — the only thing boot cares about is that one was
+   * configured, which it refuses loudly (§13.5 V5-P2 arc (d), the admin
+   * Problems page is the replacement).
+   */
   sentry: {
-    enabled: boolean;
-    dsn?: string;
-    /** 0..1 fraction of errors captured. */
-    errorSampleRate: number;
-    /** 0..1 fraction of transactions traced. */
-    tracesSampleRate: number;
-    /** Environment tag on every event; defaults to NODE_ENV. */
-    environment: string;
-    /** Release tag stamped on every event (the deployed API version). */
+    /** True when `BT_SENTRY_DSN` is set — a refusal signal, never a switch. */
+    dsnConfigured: boolean;
+    /** Release tag of this build, named in the refusal. */
     release: string;
   };
   /** Phone push via FCM HTTP v1 (#368). Channel exists iff the file is set AND loads. */
@@ -926,6 +993,8 @@ export interface AppConfig {
    */
   dataExport: {
     dir: string;
+    /** Packaged-bytes ceiling override; `undefined` ⇒ the built-in default. */
+    maxContentBytes?: number;
   };
   /**
    * Backup readiness (#1406 W1). `statusFile` is the read-only path to the
@@ -949,23 +1018,33 @@ export interface AppConfig {
     usageEventDays: number;
   };
   /**
-   * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the
-   * global kill-switch is ON AND the bot token is set; when false the channel
-   * is invisible everywhere (matrix column hidden, link routes 404, dispatcher
-   * skips delivery). The token itself is a secret and never logged.
+   * Telegram notification channel (§13.4 V4-P10). TWO flags, deliberately kept
+   * apart (#1795):
+   *  - `offered` — the `BT_TELEGRAM_DISCORD_ENABLED` kill-switch ALONE: does
+   *    this build expose the channel at all. False ⇒ `/settings/telegram*`
+   *    refuses, no matrix cell for it is accepted, and no row is ever deleted.
+   *  - `enabled` — `offered` AND the bot token is set: the channel can actually
+   *    deliver, so the column renders and the dispatcher fans out to it.
+   * Conflating the two made the documented "bot token unset ⇒ `available:
+   * false`" branch unreachable — a token-less deployment with the switch ON
+   * answered a bare 404 instead. The token is a secret and never logged.
    */
   telegram: {
+    offered: boolean;
     enabled: boolean;
     botToken?: string;
   };
   /**
-   * Discord notification channel (§13.4 V4-P10). Deployment-scoped `enabled`
-   * mirrors the shared kill-switch — per-user webhook state is orthogonal.
-   * When false the channel is invisible everywhere (matrix column hidden,
-   * webhook routes 404, dispatcher skips delivery even for a user with a
-   * saved webhook row — the row is preserved).
+   * Discord notification channel (§13.4 V4-P10). Deployment-scoped and driven
+   * by the same shared kill-switch — per-user webhook state is orthogonal.
+   * Discord needs no server credential, so `offered` and `enabled` are the same
+   * boolean; both names exist so every call site reads the same way for both
+   * channels. When false the channel is invisible everywhere (matrix column
+   * hidden, webhook routes refuse, dispatcher skips delivery even for a user
+   * with a saved webhook row — the row is preserved).
    */
   discord: {
+    offered: boolean;
     enabled: boolean;
   };
   /**
@@ -999,6 +1078,14 @@ export interface AppConfig {
     search: ProgressiveSchedule;
     /** Friend-request creation, per user — blunts bulk email→username probing (§6.9). */
     social: ProgressiveSchedule;
+    /**
+     * Ordinary social interaction writes, per user — friend circles and the
+     * V5-P8 comment/reaction surface (§13.5 V5-P8, #1855). Deliberately NOT the
+     * anti-probing bucket above: these are normal use and are sized by §10's
+     * normal-use rule, so a shipped ceiling (a 200-member circle, a moderated
+     * spam flood) is actually reachable.
+     */
+    socialWrite: ProgressiveSchedule;
     /** Authenticated feedback submissions, per user — five per hour (#1315). */
     feedback: ProgressiveSchedule;
     /** Support-thread replies, per author — a conversation budget, not the capture guard (#1339). */
@@ -1120,6 +1207,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | vault (writes)   | user id, else IP   |  1 min |   60  | no      |
   // | vaultRead        | user id, else IP   |  1 min |  600  | no      |
   // | apiKey           | api key / grant id |  1 min |  120  | no      |
+  // | socialWrite      | user id, else IP   |  5 min | 1200  | no      |
   // | social           | user id, else IP   |  1 h   |   30  | STRICT  |
   // | feedback         | user id, else IP   |  1 h   |    5  | STRICT  |
   // | feedbackThread   | user id, else IP   |  1 h   |   60  | STRICT  |
@@ -1148,6 +1236,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //     polls ~43/min on its own) → general 9000  (5.7×)
   //   ⇒ worst realistic 1 min on /search ≈ 96  → search 300  (3.1×)
   //
+  // ── The SOCIAL WRITE bar (#1855) ──────────────────────────────────────────
+  //
+  // V5-P8 hung four ordinary interactions — comments, item and comment
+  // reactions, comment moderation — plus the whole friend-circle surface on
+  // `social`, the anti-probing bucket §10 exempts from the sizing rule. The
+  // result was a contract nobody could satisfy: `FRIEND_GROUP_MEMBERS_MAX` is
+  // 200 and there is no bulk endpoint, so filling the advertised circle at
+  // 30 requests/hour took ~7 hours of perfectly paced clicking — and spent the
+  // same counter that answers "may I send a friend request?".
+  //
+  // `socialWrite` is that bucket, sized by the rule. Its modelled window is the
+  // heaviest realistic FIVE MINUTES of one active user:
+  //
+  //   * filling one circle to the contract's 200-member ceiling, one click per
+  //     member (the whole point of the bucket)                            = 200
+  //   * curating circles: create / rename / delete + member removals       =  20
+  //   * a lively thread, a comment every ~12 s                             =  25
+  //   * an item owner moderating a spam flood off their portfolio          =  40
+  //   * the six item chips plus the six on each of a few comments, toggled
+  //     and re-toggled while reading                                       =  60
+  //
+  //   ⇒ worst realistic 5 min ≈ 345 writes → socialWrite 1200  (3.5×)
+  //
+  // Friend-request creation itself does NOT move: it stays on `social` at
+  // 30/hour with the strict ladder, because that is the bucket's actual job.
+  //
   // The exact arithmetic behind those three numbers is pinned, term by term, in
   // `config/__tests__/rateLimitTable.test.ts`.
   //
@@ -1156,10 +1270,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // `general` is a REQUEST-COUNT limiter: it cannot tell a 2 ms `GET /auth/me`
   // apart from a request that fans out N database round trips or blocks on a
   // provider. Raising its ceiling to 600 req/min (above) therefore raised the
-  // ceiling on those too. The four endpoints below were the ones for which
-  // `general` is the ONLY guard and whose per-request work is unbounded or
-  // scales with user-controlled input; they now also spend from a second
-  // dimension measured in WORK UNITS (`expensive`, 3000 units / min per user).
+  // ceiling on those too. The endpoints below are the ones for which `general`
+  // is the ONLY guard and whose per-request work is unbounded or scales with
+  // user-controlled input; they also spend from a second dimension measured in
+  // WORK UNITS (`expensive`, 4000 units / min per user).
   //
   // ONE UNIT ≈ one ordinary cheap read (a couple of indexed queries). The
   // weights are cost ESTIMATES read off the code, in the same spirit as the
@@ -1169,10 +1283,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | endpoint                                  | key             | units | why |
   // |-------------------------------------------|-----------------|-------|-----|
   // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
-  // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
+  // | GET  /social/groups                       | socialGroups    |    7  | every circle of the caller WITH every circle's roster + share counts — three grouped reads, ceiling-bounded since #1780 |
+  // | GET  /social/items/:kind/:id/thread       | socialThread    |    7  | two access resolutions, a participant probe, a page read and two grouped reaction aggregates — and the SPA POLLS it every 30 s while a thread is open (#1829) |
+  // | GET  /social/items/:kind/:id/thread/summary | socialThread  |    7  | the SAME key (#1855): the collapsed head runs the identical access-resolution path, minus only the page fetch |
+  // | PUT  /social/audience/:kind/:subjectId    | socialAudienceSet |  20 | the largest fan-out of any social write: the owner's whole friendship set (no LIMIT), a group roster of up to 200, a paranoid transition lock per derived recipient and one notification emit each (#1855) |
+  // | POST /backtest/preview                    | backtestPreview |   25  | **per 50-position basket unit** — a weight-perturbed vector is a cache MISS by construction, and a miss walks the positions' history sequentially through the provider layer; the route multiplies by ⌈positions / 50⌉ (1–5) because the body may now carry a nested blueprint's whole 250-asset flatten (#1877) |
+  // | POST /backtest/compare                    | backtestCompare |   20  | **per series** — the route multiplies by the body's id count (2–6 ⇒ 40–120): the same history walk as a preview, once per basket, over baskets that each flatten to up to 250 assets |
+  // | POST /backtest/shared/:id/preview         | backtestSharedSandbox | 25 | a preview's engine run over a friend's basket, deliberately with NO Redis memo — every request computes |
+  // | POST /conglomerates/:id/allocate          | conglomerateAllocate | 15 | the Invest Calculator's fan-out follows the FLATTEN, not the §6.5 50-position write cap: one asset row read, one quote and one FX conversion per resolved asset, up to 250 of them — and `general` was its only guard (#1877) |
   // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
-  // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    6  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
+  // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    7  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
+  //
+  // `backtestCompare` and `backtestPreview` are the table's PER-UNIT-OF-WORK
+  // weights. A flat price would either overcharge a two-basket comparison or
+  // undercharge a six-basket one by 3×, and the endpoint's whole problem was
+  // that its cost is chosen by the caller. Each multiplier is read off the raw
+  // body by the route and clamped to the contract's own bound (2–6 series;
+  // 1–250 positions ⇒ 1–5 basket units), so a caller cannot name its own price.
+  // `backtestPreview`'s unit is one 50-position basket — the §6.5 write cap —
+  // so every Builder preview still costs exactly the 25 it always did, and only
+  // a resolved nested blueprint of up to 250 assets pays the 5× it asks for.
   //
   // A note on `analyticsSeries`, so the next reader does not re-derive it from
   // the wrong bound: its work is sized by the DATA, never by the requested
@@ -1182,26 +1313,47 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // request-sanity/UX guard on an absurd window — it is NOT what makes this
   // weight sound, and shrinking it would not shrink the weight.
   //
-  // KNOWN FOLLOW-UP — the enumeration above is the set #1643 scoped, not the
-  // exhaustive set. `POST /backtest/compare` runs 2–6 conglomerate previews per
-  // request, so it is strictly heavier than the 25-unit `/preview` beside it and
-  // is still metered at one request. It wants a weight of its own (≈ `/preview`
-  // × the overlay count) in a follow-up.
+  // The follow-up this table asked for landed in #1755: `POST /backtest/compare`
+  // and `POST /backtest/shared/:id/preview` — the two remaining reads for which
+  // `general` was the only guard, and the comparison in particular the single
+  // most expensive read in the app — now have weights of their own above.
   //
   // MODELLED NORMAL-USE BAR for the unit budget — the same one active user,
-  // pessimistically doing all five things inside the SAME minute (nobody
-  // actually does):
+  // pessimistically doing all of these inside the SAME minute (nobody actually
+  // does):
   //
-  //   * builder weight-tuning, one debounced preview every ~3 s  = 20 × 25 = 500
+  //   * builder weight-tuning, one debounced preview every ~3 s, each
+  //     over a ≤ 50-position draft = ONE basket unit                = 20 × 25 = 500
   //   * analytics range/filter/compare changes, ~12 refetches     = 12 × 10 = 120
   //   * shared-with-me list on focus + reconnect refetch, ~6      =  6 × 10 =  60
   //   * two CSV uploads                                          =  2 × 100 = 200
-  //   * a bulk kind sweep over a statement's undecided rows, ~20  = 20 ×  6 = 120
+  //   * a bulk kind sweep over a statement's undecided rows, ~20  = 20 ×  7 = 140
+  //   * two three-basket comparisons (an explicit action, memoised
+  //     across every permutation of one set)                      =  5 × 20 = 100
+  //   * a couple of what-if tweaks on a friend's shared basket    =  2 × 25 =  50
+  //   * three shared items opened (a collapsed head each), one of
+  //     them expanded, and its 30 s poll — one NEWEST-WINDOW read
+  //     per tick since #1855, not one per loaded page             =  7 ×  7 =  49
+  //   * a minute of hopping between /people and an AudiencePicker =  2 ×  7 =  14
+  //   * reworking the audience on a couple of shared items        =  2 × 20 =  40
+  //   * an Invest Calculator run plus two re-runs from changing
+  //     the budget or toggling whole-shares (#1877)               =  3 × 15 =  45
   //
-  //   ⇒ worst realistic 1 min ≈ 1000 units → expensive 3000  (3.0×)
+  //   ⇒ worst realistic 1 min ≈ 1318 units → expensive 4000  (3.0×)
+  //
+  // The ceiling and the FLOOR move together, which is why #1855 could raise it
+  // at all. A weight only binds while `expensive.limit / weight` stays under
+  // `general`'s 600 req/min — otherwise the count limiter trips first and the
+  // unit is decorative. At 3550 that floor was 6 and the budget was spent: the
+  // note here said the next weight "has to fit under 3600, or move a weight".
+  // Metering the collapsed thread head (previously metered by nothing at all)
+  // pushed the modelled minute past what a 6-unit floor could fund, so the
+  // floor went to 7 and the ceiling to 4000 — 4000/7 = 571 req/min, still under
+  // `general`. Scaling both is NOT a loosening: every endpoint's
+  // requests-per-minute-before-refusal is within a few percent of where it was.
   //
   // The sweep is a BURST, not a rate: 20 is the bar for a normal statement's
-  // undecided rows, and the budget leaves room for ~500 confirmations inside one
+  // undecided rows, and the budget leaves room for ~570 confirmations inside one
   // minute before the units run out. That ceiling sits just under `general`'s
   // 600 req/min, which is what a sweep over an unusually large batch would meet
   // first anyway — so the weight bounds a caller by the work it asks for without
@@ -1209,15 +1361,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //
   // …and, on the other side, every weight is large enough that the COST budget
   // bites BEFORE the request COUNT one would: a caller doing nothing but these
-  // is stopped after 120 previews, 30 uploads or 300 shared/analytics reads per
-  // minute — all under `general`'s 600 req/min. That is the point of the
+  // is stopped after 160 single-unit previews or sandboxes (32 previews of a
+  // full 250-asset flatten), 40 uploads, ~33 six-basket comparisons, 266 budget
+  // allocations, 200 audience changes or 400 shared/analytics reads per minute —
+  // all under `general`'s 600 req/min. That is the point of the
   // dimension: a pathological caller is bounded by the WORK it asks for, not by
   // how many requests that work happens to arrive in. Both numbers are pinned
   // in `config/__tests__/rateLimitTable.test.ts`.
   //
-  // The REQUEST-COUNT bar above is unchanged by this table: these four are a
-  // handful of requests inside the modelled 30 s / 15 min windows (they are
-  // expensive, not chatty), and no ceiling set by the 2026-09-02 pass moved.
+  // The REQUEST-COUNT bar above is unchanged by this table: these are a handful
+  // of requests inside the modelled 30 s / 15 min windows (they are expensive,
+  // not chatty), and no ceiling set by the 2026-09-02 pass moved.
   //
   // The STRICT rows are abuse controls, not capacity controls, and are NOT
   // sized by this rule: credential stuffing (loginIp/loginAccount, which also
@@ -1382,11 +1536,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       dailyCap: e.BT_AI_DAILY_CAP,
     },
     sentry: {
-      enabled: Boolean(e.BT_SENTRY_DSN),
-      dsn: e.BT_SENTRY_DSN,
-      errorSampleRate: e.BT_SENTRY_ERROR_SAMPLE_RATE,
-      tracesSampleRate: e.BT_SENTRY_TRACES_SAMPLE_RATE,
-      environment: e.BT_SENTRY_ENVIRONMENT ?? e.NODE_ENV,
+      // Presence only — the value is deliberately NOT carried onto the config,
+      // so no code path can reach a DSN even by accident.
+      dsnConfigured: Boolean(e.BT_SENTRY_DSN && e.BT_SENTRY_DSN.trim() !== ''),
       release: `${API_SERVICE_NAME}@${API_VERSION}`,
     },
     push: {
@@ -1422,6 +1574,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
+      ...(e.BT_EXPORT_MAX_CONTENT_BYTES !== undefined
+        ? { maxContentBytes: e.BT_EXPORT_MAX_CONTENT_BYTES }
+        : {}),
     },
     backup: {
       statusFile: e.BT_BACKUP_STATUS_FILE,
@@ -1436,12 +1591,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // both channels are offered by this build or neither. Default OFF so an
     // upgrade quietly deactivates them without any operator action.
     telegram: {
+      // The kill-switch alone — the refusal boundary for the whole channel.
+      offered: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
+      // …and the bot token, without which the channel cannot deliver. Kept as a
+      // SECOND flag so the V4-P10 `available: false` body stays reachable on a
+      // switch-ON, token-less deployment (#1795).
       enabled:
         boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false) &&
         Boolean(e.BT_TELEGRAM_BOT_TOKEN && e.BT_TELEGRAM_BOT_TOKEN.trim() !== ''),
       botToken: e.BT_TELEGRAM_BOT_TOKEN,
     },
     discord: {
+      // No server credential exists for Discord, so the two flags coincide.
+      offered: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
       enabled: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far
@@ -1465,26 +1627,92 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
-      // COST dimension (#1643): 3000 WORK UNITS per minute per user, on the
+      // COST dimension (#1643): 3500 WORK UNITS per minute per user, on the
       // same key and the SAME escalation ladder as `general`, so a caller that
       // overspends work gets the identical short-then-climbing 429 it would get
       // for overspending requests — nothing about the envelope or the client's
       // backoff changes. Only the routes in the §10 COST TABLE above meter
       // against it; every other request leaves this counter untouched.
+      //
+      // Raised from 3000 with #1755, which brought the two remaining unmetered
+      // expensive reads (the N-way comparison and the shared what-if sandbox)
+      // into the table; and from 3500 to 3550 with #1829, which added the
+      // comment thread. Each time the modelled pessimistic minute grew and the
+      // budget had to keep clearing it by 3×.
+      //
+      // #1855 raised it to 4000 AND lifted the floor weight from 6 to 7, which
+      // is the only way the ceiling can move at all: a weight binds only while
+      // `limit / weight` stays under `general`'s 600 req/min, so at a floor of 6
+      // the ceiling could never pass 3600 — which is exactly the wall the #1829
+      // note named. Bringing the collapsed thread head onto the meter (it was
+      // metered by NOTHING) pushed the modelled minute past what that floor
+      // could fund, so both ends moved together and every endpoint's
+      // requests-before-refusal stayed within a few percent of where it was.
       expensive: {
         windowSec: 60,
-        limit: 3000,
+        limit: 4000,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
       // Per-endpoint weights, in units. Rationale for each number — and the
-      // modelled bar the budget above clears by 3.0× — is in the §10 COST TABLE.
+      // modelled bar the budget above clears by 3.1× — is in the §10 COST TABLE.
       requestCosts: {
         socialShared: 10,
+        // Three grouped reads (groups, rosters, share counts) rather than one,
+        // over a set bounded by FRIEND_GROUPS_MAX × FRIEND_GROUP_MEMBERS_MAX
+        // since #1780 — so it is cheaper than `socialShared`'s open fan-out.
+        // Seven is also the FLOOR at which the weight means anything: below it
+        // the unit budget would allow more requests per minute than `general`'s
+        // count limiter already does, and the cost dimension would be
+        // decorative. The floor is `limit / 600`, so it moved from 6 to 7 with
+        // the ceiling in #1855.
+        socialGroups: 7,
+        // The comment thread (#1829) AND — since #1855 — its collapsed head at
+        // `…/thread/summary`, which is mounted with this same key. Both run the
+        // identical bounded access-resolution path; the head skips only the page
+        // fetch, which is not enough to price it below the floor a weight has to
+        // clear to bind before `general`. The page read is also the only social
+        // read that repeats on its own, but an expanded thread now polls the
+        // NEWEST WINDOW only — one request per tick, not one per loaded page.
+        socialThread: 7,
+        // Setting an item's audience (#1855): the largest per-request fan-out of
+        // any social write. It reads the owner's entire friendship set with no
+        // LIMIT, resolves a group roster of up to FRIEND_GROUP_MEMBERS_MAX, takes
+        // a paranoid transition lock across the whole derived recipient set and
+        // emits one notification per recipient. Priced like a comparison series:
+        // heavier than any social READ, so a replay loop is refused after 200
+        // calls a minute instead of `general`'s 600.
+        socialAudienceSet: 20,
+        // PER 50-POSITION BASKET UNIT since #1877, not per request: the body may
+        // now carry a nested blueprint's whole resolved flatten (up to
+        // MAX_FLATTENED_POSITIONS = 250), which is five Builder drafts' worth of
+        // history walking. The route multiplies by ⌈positions / 50⌉ read off the
+        // raw body and clamped to the contract's bound, so a ≤ 50-position
+        // Builder preview — the only shape that existed when this weight was
+        // set — still costs exactly 25.
         backtestPreview: 25,
+        // PER SERIES, not per request (#1755): the route multiplies this by the
+        // number of conglomerates the body asks to overlay, because that is what
+        // the request costs — one flatten, one asset fan-out and one engine run
+        // each. Slightly under a preview per series: the series share one
+        // de-duplicated asset load, and the memo now answers every permutation
+        // of one set.
+        backtestCompare: 20,
+        // A preview-equivalent engine run over a friend's basket, deliberately
+        // WITHOUT a Redis memo (the sandbox never persists a thing), so every
+        // request computes where a preview may be answered from cache.
+        backtestSharedSandbox: 25,
+        // The Invest Calculator (§6.7), metered by nothing until #1877. Its work
+        // follows the FLATTEN, not the 50-position write cap: one asset row read,
+        // one quote and one FX conversion for each of up to 250 resolved assets,
+        // computed on every submit (there is no memo). Below a comparison series
+        // (20), which pays for the same fan-out plus a full engine run over
+        // per-asset history, and above `analyticsSeries` (10), whose fan-out is
+        // one portfolio's holdings.
+        conglomerateAllocate: 15,
         analyticsSeries: 10,
         importCreate: 100,
-        importRowResolve: 6,
+        importRowResolve: 7,
       },
       // Provider search, per user (§6.2). 300/min — its own generous budget
       // rather than a share of `general`, because the read is cheap and bounded:
@@ -1515,6 +1743,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         limit: 30,
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
+      },
+      // Ordinary social interaction writes, per user (#1855) — friend circles
+      // and the whole V5-P8 comment/reaction surface. A CAPACITY limiter, sized
+      // by §10's normal-use rule (1200 / 5 min = 3.5× the modelled 345-write
+      // window in the SOCIAL WRITE bar above) and riding the general escalation
+      // ladder, because a viewer toggling emoji chips or an owner filling the
+      // 200-member circle the contract advertises is not abuse.
+      //
+      // It exists to get those writes OFF `social`: that bucket is an
+      // anti-probing control for friend-request creation, which §10 exempts from
+      // the sizing rule, and sharing it made the advertised circle unbuildable
+      // while a spent emoji budget also closed the friend-request rail. Its
+      // 240/min average stays well under `general`'s 600 req/min, so the
+      // dedicated budget is genuinely reachable rather than swallowed.
+      socialWrite: {
+        windowSec: 5 * 60,
+        limit: 1200,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
       },
       // STRICT (2026-09-02: deliberately NOT raised).
       // Feedback capture (#1315): enough for a short reporting session while

@@ -2219,12 +2219,19 @@ function assertStandingOrderDefinition(
   if (
     isBuy &&
     assetId !== null &&
-    Date.parse(input.recordedAt) !== Date.parse(input.executedAt) &&
-    resolveTransactionAsset(document, assetId).isCustom
+    // Judged only when the snapshot is present: a booking whose asset row is
+    // gone is the replay path's business, not this rule's.
+    findLiveEntity(document, 'customAsset', assetId) != null &&
+    resolveTransactionAsset(document, assetId).isCustom &&
+    Date.parse(input.recordedAt) !== localValuationStamp(document, assetId, input.executedAt)
   ) {
+    // A local asset prices from the owner's newest value point, so THAT day is
+    // the booking's market stamp — the local twin of a provider `asOf` (#1793).
+    // Recording the scan instant instead let a months-old valuation pass for a
+    // fresh price on the one field that says when a buy was priced.
     throw storeError(
       'VAULT_DATA_INVALID',
-      'A local-asset standing order must record the scan timestamp.',
+      'A local-asset standing order must record its valuation day.',
     );
   }
   const lastRunAt = nullableStringField(order.data, 'lastRunAt');
@@ -2285,8 +2292,44 @@ function assertStandingOrderDue(
   }
 }
 
+/**
+ * The market stamp a local-asset booking must carry: UTC midnight of the newest
+ * value point behind its price, clamped at the scan instant (a valuation dated
+ * ahead of the scan is a stamp, never a licence to post into the future). With
+ * no value point at all there is nothing to date the price by, so the scan
+ * instant stands — that booking cannot be priced from the document anyway.
+ */
+function localValuationStamp(document: VaultDocument, assetId: string, executedAt: string): number {
+  const executedAtMs = Date.parse(executedAt);
+  const latest = valuePointsFromDocument(document, assetId)
+    .map((point) => point.date)
+    .sort()
+    .at(-1);
+  if (latest === undefined) return executedAtMs;
+  const valuationMs = Date.parse(`${latest}T00:00:00.000Z`);
+  return Number.isFinite(valuationMs) ? Math.min(valuationMs, executedAtMs) : executedAtMs;
+}
+
 function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
   return stringField(order.data, 'kind') === 'buy-asset' ? 'transaction' : 'cashMovement';
+}
+
+/**
+ * Every period this order already holds a durable claim for — the twin of the
+ * server's `listClaimedPeriodKeys`. The run ledger, not the `lastPeriodKey`
+ * watermark, is the authoritative claim state (a watermark can lag a booked
+ * run), so catch-up reporting subtracts these before calling a period dropped.
+ */
+export function claimedStandingOrderPeriodKeys(
+  document: VaultDocument,
+  orderId: string,
+): Set<string> {
+  const claimed = new Set<string>();
+  for (const run of liveEntities(document, 'standingOrderRun')) {
+    if (stringField(run.data, 'standingOrderId') !== orderId) continue;
+    claimed.add(stringField(run.data, 'periodKey'));
+  }
+  return claimed;
 }
 
 export function existingStandingOrderOccurrence(
@@ -3645,6 +3688,26 @@ function assertUniqueCashSourceName(
   }
 }
 
+/**
+ * `nextRunDate` for display, degrading to "nothing scheduled" for a schedule the
+ * math refuses — a non-calendar watermark, a monthly row without its anchor. The
+ * server's DTO does exactly the same (#1793): a document that cannot say when it
+ * runs next must not take the whole list down, and must never print a fabricated
+ * day. What is owed is still reported by the scan.
+ */
+function nextRunDateForDisplay(
+  schedule: Parameters<typeof nextStandingOrderRunDate>[0],
+  today: string,
+  lastPeriodKey: string | null,
+  active: boolean,
+): string | null {
+  try {
+    return nextStandingOrderRunDate(schedule, today, lastPeriodKey, active);
+  } catch {
+    return null;
+  }
+}
+
 function standingOrderFromEntity(
   document: VaultDocument,
   entity: VaultEntity,
@@ -3686,7 +3749,7 @@ function standingOrderFromEntity(
         suspendedByArchive,
         lastRunAt: nullableStringField(entity.data, 'lastRunAt'),
         lastPeriodKey,
-        nextRunDate: nextStandingOrderRunDate(
+        nextRunDate: nextRunDateForDisplay(
           {
             cadence: cadence === 'daily' ? 'daily' : 'monthly',
             anchorDay,

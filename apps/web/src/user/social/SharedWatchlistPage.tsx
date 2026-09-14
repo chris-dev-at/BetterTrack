@@ -6,6 +6,7 @@ import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { Button, PageHead } from '../../ui/origin';
+import { Avatar } from '../components/Avatar';
 import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -77,6 +78,7 @@ export function SharedWatchlistPage() {
         actions={
           <ItemFollowButton kind="watchlist" subjectId={data.watchlistId} ownerId={data.owner.id} />
         }
+        media={<Avatar iconId={data.owner.profileIcon} name={data.owner.username} size="lg" />}
         title={t('social.shared.watchlistTitle', {
           owner: data.owner.username,
           name: data.name,

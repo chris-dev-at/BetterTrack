@@ -1,7 +1,17 @@
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+
+import { FRIEND_GROUPS_MAX, FRIEND_GROUP_MEMBERS_MAX } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { friendGroupMembers, friendGroups, friendships, shareAudiences, users } from '../schema';
+import {
+  friendGroupMembers,
+  friendGroups,
+  friendships,
+  portfolios,
+  shareAudiences,
+  users,
+} from '../schema';
 
 /**
  * Friend-group persistence (§13.5 V5-P8). A group is a named circle owned by one
@@ -33,6 +43,19 @@ export interface FriendGroupRow {
 
 export function createFriendGroupRepository(db: Database) {
   /**
+   * The live friendship between two COLUMNS (a group's owner and one of its
+   * members), in the order-independent form every enforcement read uses. The
+   * `friendships` table stores one row per pair with no canonical side, so both
+   * orientations have to be tried.
+   */
+  function friendshipBetween(ownerCol: AnyPgColumn, memberCol: AnyPgColumn) {
+    return or(
+      and(eq(friendships.userA, ownerCol), eq(friendships.userB, memberCol)),
+      and(eq(friendships.userB, ownerCol), eq(friendships.userA, memberCol)),
+    );
+  }
+
+  /**
    * The active roster of a set of groups, keyed by group id. A member whose
    * account vanished OR was disabled is excluded by the inner join — a disabled
    * account can neither sign in nor be authorized by the enforcement layer, so
@@ -40,6 +63,18 @@ export function createFriendGroupRepository(db: Database) {
    * (§6.9). Every roster read in this file goes through here, so `GET
    * /social/groups`, the My-items reach summary and the `*.shared` fan-out can
    * never disagree about who is in a circle.
+   *
+   * Membership is DERIVED, never trusted from the roster table alone: the
+   * friendship inner join re-derives the reach exactly as the `specific_friends`
+   * rung does beside it (#1780). Unfriending already prunes rosters inside the
+   * unfriend transaction (#1710), so a stale row should not exist — but the
+   * enforcement SQL always ANDs the friendship join, so a row that somehow
+   * survives grants nothing while still being reported here as reach, and the
+   * `*.shared` fan-out would notify someone who then 404s on the item.
+   *
+   * The read is bounded: a group holds at most {@link FRIEND_GROUP_MEMBERS_MAX}
+   * members and a user at most {@link FRIEND_GROUPS_MAX} groups, so the product
+   * is the honest worst case rather than an unbounded roster scan.
    */
   async function rostersOf(groupIds: readonly string[]): Promise<Map<string, GroupMemberRow[]>> {
     const byGroup = new Map<string, GroupMemberRow[]>();
@@ -52,9 +87,12 @@ export function createFriendGroupRepository(db: Database) {
         profileIcon: users.profileIcon,
       })
       .from(friendGroupMembers)
+      .innerJoin(friendGroups, eq(friendGroups.id, friendGroupMembers.groupId))
       .innerJoin(users, and(eq(users.id, friendGroupMembers.memberId), eq(users.status, 'active')))
+      .innerJoin(friendships, friendshipBetween(friendGroups.ownerId, friendGroupMembers.memberId))
       .where(inArray(friendGroupMembers.groupId, [...groupIds]))
-      .orderBy(asc(users.username));
+      .orderBy(asc(users.username))
+      .limit(groupIds.length * FRIEND_GROUP_MEMBERS_MAX);
     for (const r of memberRows) {
       const list = byGroup.get(r.groupId) ?? [];
       list.push({ id: r.id, username: r.username, profileIcon: r.profileIcon });
@@ -62,6 +100,26 @@ export function createFriendGroupRepository(db: Database) {
     }
     return byGroup;
   }
+
+  /**
+   * The `group` share rows a member could actually OPEN — the only ones the
+   * delete warning may count (#1830). An archived portfolio keeps its audience
+   * row (`archivePortfolio` never clears it; only deleting does), but
+   * `authorizePortfolioRead` excludes archived portfolios, so that row already
+   * reaches nobody — and `listMyShared` reads with `includeArchived: false`, so
+   * it has no entry in My items either. Counting it would tell the owner "3
+   * shared items point at this group" against two rows they can see: exactly the
+   * blind confirmation #1710 set out to remove. The portfolio arm also drops a
+   * row whose subject no longer exists at all.
+   *
+   * Only `portfolio` has an archived state; the other kinds' rows are cleared
+   * with their subject, so they need no existence test. Vaulted portfolios are
+   * already clean — the move-in deletes their audience rows outright.
+   */
+  const reachableShare = or(
+    ne(shareAudiences.kind, 'portfolio'),
+    sql`exists (select 1 from ${portfolios} where ${portfolios.id} = ${shareAudiences.subjectId} and ${portfolios.archivedAt} is null)`,
+  );
 
   /**
    * Count of live shares (across all kinds) that currently point at this group —
@@ -72,7 +130,13 @@ export function createFriendGroupRepository(db: Database) {
     const [row] = await db
       .select({ count: sql<number>`count(*)`.mapWith(Number) })
       .from(shareAudiences)
-      .where(and(eq(shareAudiences.audience, 'group'), eq(shareAudiences.groupId, groupId)));
+      .where(
+        and(
+          eq(shareAudiences.audience, 'group'),
+          eq(shareAudiences.groupId, groupId),
+          reachableShare,
+        ),
+      );
     return row?.count ?? 0;
   }
 
@@ -84,7 +148,11 @@ export function createFriendGroupRepository(db: Database) {
       .select({ groupId: shareAudiences.groupId, count: sql<number>`count(*)`.mapWith(Number) })
       .from(shareAudiences)
       .where(
-        and(eq(shareAudiences.audience, 'group'), inArray(shareAudiences.groupId, [...groupIds])),
+        and(
+          eq(shareAudiences.audience, 'group'),
+          inArray(shareAudiences.groupId, [...groupIds]),
+          reachableShare,
+        ),
       )
       .groupBy(shareAudiences.groupId);
     for (const r of rows) if (r.groupId) counts.set(r.groupId, r.count);
@@ -96,13 +164,21 @@ export function createFriendGroupRepository(db: Database) {
      * The owner's groups with their current rosters (members are the owner's
      * accepted, still-active friends) and their share counts. Three grouped
      * reads, no N+1. Ordered by group name then member name.
+     *
+     * Bounded by {@link FRIEND_GROUPS_MAX} — the same ceiling `createGroup`
+     * refuses to cross — so this read, which every `AudiencePicker` open and
+     * every `/people` visit performs, can never fan out further than the service
+     * allows a user to reach (#1780). The `LIMIT` is a floor under the invariant,
+     * not the enforcement: the write path is what tells the user they are at the
+     * cap.
      */
     async listGroups(ownerId: string): Promise<FriendGroupRow[]> {
       const groups = await db
         .select({ id: friendGroups.id, name: friendGroups.name })
         .from(friendGroups)
         .where(eq(friendGroups.ownerId, ownerId))
-        .orderBy(asc(friendGroups.name), asc(friendGroups.id));
+        .orderBy(asc(friendGroups.name), asc(friendGroups.id))
+        .limit(FRIEND_GROUPS_MAX);
       if (groups.length === 0) return [];
 
       const ids = groups.map((g) => g.id);
@@ -156,17 +232,114 @@ export function createFriendGroupRepository(db: Database) {
      * fan-out. Disabled accounts are excluded by the same inner join the roster
      * reads use: they cannot sign in, so notifying them would be a `*.shared`
      * row nobody can act on, and it would contradict the reach the owner sees.
+     * The friendship join is the same one {@link rostersOf} applies, so the
+     * fan-out reaches exactly the people the enforcement layer would admit — a
+     * roster row that outlived its friendship never becomes a `*.shared` notice
+     * pointing at an item its recipient 404s on (#1780).
      */
     async listMemberIds(groupId: string): Promise<string[]> {
       const rows = await db
         .select({ memberId: friendGroupMembers.memberId })
         .from(friendGroupMembers)
+        .innerJoin(friendGroups, eq(friendGroups.id, friendGroupMembers.groupId))
         .innerJoin(
           users,
           and(eq(users.id, friendGroupMembers.memberId), eq(users.status, 'active')),
         )
-        .where(eq(friendGroupMembers.groupId, groupId));
+        .innerJoin(
+          friendships,
+          friendshipBetween(friendGroups.ownerId, friendGroupMembers.memberId),
+        )
+        .where(eq(friendGroupMembers.groupId, groupId))
+        .limit(FRIEND_GROUP_MEMBERS_MAX);
       return rows.map((r) => r.memberId);
+    },
+
+    /**
+     * How many circles the owner already holds — the ceiling check `createGroup`
+     * runs (§13.5 V5-P8, #1780). Counted rather than read, so the check costs one
+     * indexed aggregate instead of hydrating every group and its roster.
+     */
+    async countGroups(ownerId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)`.mapWith(Number) })
+        .from(friendGroups)
+        .where(eq(friendGroups.ownerId, ownerId));
+      return row?.count ?? 0;
+    },
+
+    /**
+     * How many members one circle already holds — the ceiling check
+     * `addGroupMember` runs. Counts the RAW roster rows (no friendship/active
+     * join): the ceiling bounds what is STORED, which is what makes the roster
+     * read bounded in the first place.
+     *
+     * A raw row that grants nothing is invisible in {@link rostersOf}, so the
+     * owner can neither see nor remove it — the ceiling must therefore never
+     * refuse an add on its behalf. {@link pruneUnreachableMembers} clears those
+     * rows before the refusal is reached (#1830), which keeps this count and the
+     * `memberCount` the owner reads in agreement at the boundary that matters.
+     */
+    async countMembers(groupId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)`.mapWith(Number) })
+        .from(friendGroupMembers)
+        .where(eq(friendGroupMembers.groupId, groupId));
+      return row?.count ?? 0;
+    },
+
+    /**
+     * Drop every roster row of this group that is NOT part of the live roster —
+     * a member whose account was disabled, or who is no longer the owner's
+     * friend. Such a row grants nothing (every enforcement read ANDs the same
+     * two joins), is absent from `members`, and so has no Remove button: leaving
+     * it in place lets a circle become permanently un-addable-to with the cause
+     * invisible and unclearable (#1830).
+     *
+     * Called from the add path only, and only once the stored ceiling is
+     * reached: reads never write, and a disabled account that comes back is
+     * otherwise left in its circles exactly as before. At the ceiling the
+     * ordering is the honest one — a row the owner cannot see must not outrank a
+     * member they can actually reach. Returns how many rows were dropped, and is
+     * bounded by {@link FRIEND_GROUP_MEMBERS_MAX} rows.
+     *
+     * Self-contained: the friendship side is derived from the group's OWN owner
+     * row, so it cannot prune against the wrong user.
+     */
+    async pruneUnreachableMembers(groupId: string): Promise<number> {
+      const dropped = await db
+        .delete(friendGroupMembers)
+        .where(
+          and(
+            eq(friendGroupMembers.groupId, groupId),
+            sql`not exists (
+              select 1
+              from ${users}
+              join ${friendGroups} on ${friendGroups.id} = ${friendGroupMembers.groupId}
+              join ${friendships}
+                on (${friendships.userA} = ${friendGroups.ownerId} and ${friendships.userB} = ${users.id})
+                or (${friendships.userB} = ${friendGroups.ownerId} and ${friendships.userA} = ${users.id})
+              where ${users.id} = ${friendGroupMembers.memberId} and ${users.status} = 'active'
+            )`,
+          ),
+        )
+        .returning({ memberId: friendGroupMembers.memberId });
+      return dropped.length;
+    },
+
+    /**
+     * Whether the roster already holds this member — so a repeat (idempotent)
+     * add is not refused by the roster ceiling for adding nobody.
+     */
+    async isMember(groupId: string, memberId: string): Promise<boolean> {
+      const [row] = await db
+        .select({ memberId: friendGroupMembers.memberId })
+        .from(friendGroupMembers)
+        .where(
+          and(eq(friendGroupMembers.groupId, groupId), eq(friendGroupMembers.memberId, memberId)),
+        )
+        .limit(1);
+      return row !== undefined;
     },
 
     /** Create an empty group for the owner. Returns the new group id. */

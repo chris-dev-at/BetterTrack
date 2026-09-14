@@ -278,6 +278,42 @@ function isPortfolioVaultControlPath(path: string, allowPathTemplate = false): b
   );
 }
 
+/**
+ * The portfolio-level market-intelligence roll-ups (§6.3, V5-P5). They are
+ * mounted under `/api/v1/assets` for URL locality with the per-asset intel
+ * feeds, but their INPUT is the caller's own book: every one of them is
+ * computed over the caller's held + watched assets, and the projection even
+ * enumerates per-holding `quantity`. `market:read` is consented to as "Search
+ * assets and read market data", so it must not read a holdings book — these
+ * four resolve on the portfolio scope pair instead, exactly like the
+ * `/analytics` row above (both are portfolio-derived reads that happen to live
+ * outside `/portfolios`).
+ *
+ * `intel/earnings-calendar` is included deliberately: it returns no quantities,
+ * but its row set IS the caller's holdings + watchlists, which is the same
+ * disclosure in coarser form. Keeping one classification across the whole §6.3
+ * roll-up family also stops a future sibling from being classified by accident.
+ *
+ * The paranoid kill-list classifies the same paths as `portfolioServer`
+ * (`paranoidEnforcement.ts`); a test pins the two layers together.
+ */
+const PORTFOLIO_MARKET_INTEL_ROLLUP_PATHS: ReadonlySet<string> = new Set([
+  '/assets/intel/earnings-calendar',
+  '/assets/portfolio/dividend-calendar',
+  '/assets/portfolio/dividend-projection',
+  '/assets/portfolio/news-digest',
+]);
+
+/**
+ * Express is non-strict about trailing slashes, so `/assets/portfolio/news-digest/`
+ * reaches the very same handler — match it the same way or the coarser `/assets`
+ * module row resolves for a one-character variant.
+ */
+function isPortfolioMarketIntelRollupPath(path: string): boolean {
+  const withoutTrailingSlash = path.endsWith('/') ? path.slice(0, -1) : path;
+  return PORTFOLIO_MARKET_INTEL_ROLLUP_PATHS.has(withoutTrailingSlash);
+}
+
 function routeAllowlistAccepts(
   allowlist: readonly BearerRoute[],
   method: string,
@@ -963,6 +999,13 @@ function resolvePolicy(
   // the account's tax regime. `/settings/taxes/years` keeps its own narrower
   // read-only account-security allowlist, resolved above this row.
   if (path === '/settings/taxes' || path.startsWith('/settings/taxes/')) {
+    return { kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' };
+  }
+  // #1828: the four §6.3 portfolio roll-ups are holdings reads wearing an
+  // `/assets` URL. Resolved before MODULE_POLICIES so the coarse
+  // `/assets` → market:read row cannot hand a user's book to a market-data key.
+  // The per-asset `/assets/:id/intel*` feeds are untouched and stay market:read.
+  if (isPortfolioMarketIntelRollupPath(path)) {
     return { kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' };
   }
   for (const p of MODULE_POLICIES) {
