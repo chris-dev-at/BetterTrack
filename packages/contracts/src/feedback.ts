@@ -101,11 +101,13 @@ export const FEEDBACK_TERMINAL_STATUSES = [
 export type FeedbackTerminalStatus = (typeof FEEDBACK_TERMINAL_STATUSES)[number];
 
 /**
- * The complement of the terminal set: what still occupies an open slot. Only
- * the terminal half is load-bearing at runtime (the cap predicate is a
- * `notInArray`), so this list has no production consumer by design — it exists
- * so the partition test can force a seventh status to be classified. Not dead
- * code; do not delete it as such.
+ * The complement of the terminal set: what still occupies an open slot. Both
+ * halves are load-bearing at runtime — the per-submitter open cap is a
+ * `notInArray` over the terminal half, and the `status` inbox ordering (#1341)
+ * concatenates open-then-terminal to decide which lifecycle block a row lands
+ * in. The partition test keeps the two lists exhaustive and disjoint, so a
+ * seventh status cannot be added without being classified, and whichever half
+ * it joins is where the ordering puts it.
  */
 export const FEEDBACK_OPEN_STATUSES = [
   'new',
@@ -217,12 +219,16 @@ function refineFeedbackStatusDetails(
  * yesterday is not aging just because it was filed a month ago. Appended, never
  * inserted — this enum is a wire value.
  *
- * `status` (#1341) groups the queue by lifecycle position, in
- * {@link FEEDBACK_STATUSES} order — the open states first, the settled outcomes
- * (`declined`, `shipped`) last — with the newest submission first inside each
- * group. It is the ordering that answers "what is still on me" without reading
- * a colour off every row, and it pairs with the `status` filter rather than
- * replacing it: the filter shows one state, this shows all of them in order.
+ * `status` (#1341) groups the queue by lifecycle position: every
+ * {@link FEEDBACK_OPEN_STATUSES} block first, then every
+ * {@link FEEDBACK_TERMINAL_STATUSES} one, each half in its own declared order,
+ * with the newest submission first inside a group. The rule is the open/settled
+ * partition, NOT the position of a status in {@link FEEDBACK_STATUSES} — those
+ * agree today only because the terminal pair happens to sit at that array's
+ * tail, and an open seventh status would normally be appended there too. It is
+ * the ordering that answers "what is still on me" without reading a colour off
+ * every row, and it pairs with the `status` filter rather than replacing it:
+ * the filter shows one state, this shows all of them in order.
  */
 export const FEEDBACK_SORTS = ['category', 'newest', 'aging', 'status'] as const;
 export const feedbackSortSchema = z.enum(FEEDBACK_SORTS);

@@ -17,12 +17,13 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 
 import {
+  FEEDBACK_OPEN_STATUSES,
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
-  FEEDBACK_STATUSES,
   FEEDBACK_TERMINAL_STATUSES,
   type AdminFeedbackListQuery,
   type CreateFeedbackRequest,
   type FeedbackMessageAuthorSide,
+  type FeedbackStatus,
   type UpdateFeedbackStatusRequest,
 } from '@bettertrack/contracts';
 
@@ -558,19 +559,35 @@ export function createFeedbackRepository(
       end`;
 
       /**
-       * Lifecycle grouping (#1341): the queue in `FEEDBACK_STATUSES` order, so
-       * the open states arrive as one block and the settled outcomes sink to
-       * the bottom. The CASE is BUILT from the shared enum rather than written
-       * out as a literal list, because a seventh status added in contracts must
-       * take its declared place here instead of silently sorting last — the
-       * same reason the open/terminal partition is a contract and not SQL.
+       * Lifecycle grouping (#1341): open work as one block, the settled
+       * outcomes sunk to the bottom, each half in its own declared order. The
+       * key is built from the open/terminal PARTITION rather than from a
+       * position in `FEEDBACK_STATUSES`, because those two only agree while
+       * `declined`/`shipped` sit at that array's tail: an open seventh status
+       * would be appended there like any enum value and would then sort after
+       * the settled ones, quietly contradicting this sort's own label ("open
+       * work first"). Ordering off the partition instead means a new status
+       * lands wherever contracts classified it, with no second rule to keep in
+       * sync. The contracts test holds the partition exhaustive and disjoint,
+       * so every status gets exactly one index here.
+       */
+      const lifecycleStatusOrder = [
+        ...FEEDBACK_OPEN_STATUSES,
+        ...FEEDBACK_TERMINAL_STATUSES,
+      ] satisfies readonly FeedbackStatus[];
+      /**
+       * The `else` arm is unreachable in production — the column is the
+       * `feedback_status` pg enum and the partition covers it exhaustively, so
+       * every row matches a `WHEN`. It is kept so a status that somehow escapes
+       * the partition sorts last deterministically instead of producing a NULL
+       * key; do not go looking for the query that exercises it.
        */
       const lifecycleOrder = sql<number>`case ${feedback.status} ${sql.join(
-        FEEDBACK_STATUSES.map(
+        lifecycleStatusOrder.map(
           (status, index) => sql`when ${status} then ${sql.raw(String(index))}`,
         ),
         sql` `,
-      )} else ${sql.raw(String(FEEDBACK_STATUSES.length))} end`;
+      )} else ${sql.raw(String(lifecycleStatusOrder.length))} end`;
 
       /**
        * Every ordering ends on the `id` tiebreak. Without it two rows sharing
