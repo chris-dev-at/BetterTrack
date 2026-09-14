@@ -16,6 +16,9 @@ import { newAdminBrowserContext, newAdminRequestContext } from './support/adminA
 import { ADMIN_BASE_URL, API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
 import {
+  ADMIN_OVERLAY_PRIMITIVE_SOURCES,
+  ADMIN_REQUIRED_OVERLAY_PRIMITIVES,
+  adminOverlaySurfaceSources,
   overlayPrimitiveExports,
   overlayPrimitiveRegistryProblems,
   overlayRegistrationProblems,
@@ -267,6 +270,23 @@ const ADMIN_ROUTE_EXCLUSIONS: readonly RouteExclusion[] = [
     justification: 'Wildcard not-found handling is not a product destination.',
   },
 ];
+
+/**
+ * The console palette's result rows (#1891).
+ *
+ * Structural, like `#admin-topbar button` in {@link ADMIN_TAP_TARGET_SELECTORS}
+ * and for the same reason: on a phone these rows ARE the console's destinations,
+ * so a row that drops the `admin-tap-target` marker has to FAIL this measurement
+ * rather than disappear from it. Before this they were `<li>` elements with no
+ * marker class, which also put them outside the dialog clause's `:is(a, button,
+ * select)` — 42px, and measured by nothing.
+ *
+ * `aria-disabled` rows are excluded on purpose: the palette's "Searching…" /
+ * "No users" notes are row-shaped STATUS text with no destination behind them,
+ * the same reasoning that exempts `.sr-only` from the user list.
+ */
+const ADMIN_PALETTE_ROW_SELECTOR =
+  '#admin-palette-list [role="option"]:not([aria-disabled="true"])';
 
 const LEGACY_REDIRECTS = [
   '/portfolio/custom-assets',
@@ -692,6 +712,112 @@ function assertCompleteAdminRouteInventory(): void {
   expect(
     coveredPaths.filter((path) => excluded.has(path)),
     'An admin route cannot be both covered and excluded.',
+  ).toEqual([]);
+}
+
+/**
+ * The overlay half of that same guarantee, which until #1891 did not exist.
+ *
+ * The route half above honours "every user AND admin surface"; the overlay half
+ * discovered nothing outside `apps/web/src/user` and `apps/web/src/ui`, so the
+ * console's palette, its navigation drawer and every one of the fifteen
+ * `admin/components/Modal.tsx` call sites were unmeasured — and a NEW console
+ * overlay could not turn CI red. This is the mirror of the user assertion in
+ * {@link assertCompleteRouteInventory}: discovery from source on one side, the
+ * scenario and exclusion tables on the other, and set equality between them, so
+ * an unclassified console overlay fails BY PATH NAME.
+ */
+function assertCompleteAdminOverlayInventory(): void {
+  const coreRoutes = new Set<string>([...ADMIN_ANONYMOUS_ROUTES, ...ADMIN_CORE_ROUTES]);
+
+  expect(
+    ADMIN_OVERLAY_SCENARIOS.filter(
+      ({ route, sources, justification }) =>
+        !coreRoutes.has(route) ||
+        sources.length === 0 ||
+        justification.trim() === '' ||
+        /[\r\n]/.test(justification),
+    ).map(({ label }) => label),
+    'Every admin overlay scenario must name sources, a covered console route and a one-line content-specific justification.',
+  ).toEqual([]);
+  expect(new Set(ADMIN_OVERLAY_SCENARIOS.map(({ label }) => label)).size).toBe(
+    ADMIN_OVERLAY_SCENARIOS.length,
+  );
+  expect(new Set(ADMIN_OVERLAY_EXCLUSIONS.map(({ surface }) => surface)).size).toBe(
+    ADMIN_OVERLAY_EXCLUSIONS.length,
+  );
+  expect(
+    ADMIN_OVERLAY_EXCLUSIONS.filter(
+      ({ surface, sources, routes, justification }) =>
+        surface.trim() === '' ||
+        sources.length === 0 ||
+        routes.length === 0 ||
+        routes.some((route) => !coreRoutes.has(route)) ||
+        justification.trim() === '' ||
+        /[\r\n]/.test(justification),
+    ).map(({ surface }) => surface),
+    'Every omitted console overlay must name sources, covered routes and a one-line state-specific justification.',
+  ).toEqual([]);
+
+  // Same order of business as the user half: the primitive registry the
+  // detector resolves `<Modal>` against is asserted BEFORE the equality that
+  // trusts it, or a primitive that moved would shrink discovery to nothing
+  // while both sides of the equality stayed green.
+  const detection = repoOverlayDetection();
+  expect(
+    overlayPrimitiveRegistryProblems(detection),
+    'The overlay-primitive registry must name every file that owns a shared overlay primitive.',
+  ).toEqual([]);
+
+  const discovered = adminOverlaySurfaceSources(detection);
+  // Discovery anti-shrinkage: a console that suddenly renders no overlays at
+  // all is a broken detector, not a simplified console.
+  expect(
+    discovered.length,
+    `${ADMIN_APP_SOURCE}'s world must still parse into the console's overlay surfaces.`,
+  ).toBeGreaterThan(5);
+
+  const classified = unique([
+    ...ADMIN_OVERLAY_SCENARIOS.flatMap(({ sources }) => sources),
+    ...ADMIN_OVERLAY_EXCLUSIONS.flatMap(({ sources }) => sources),
+  ]).sort();
+  expect(
+    classified,
+    'Every source-derived admin overlay component must have a measured scenario or a component-and-route exclusion; stale classifications must also be removed.',
+  ).toEqual(discovered);
+
+  // …and per OVERLAY, not merely per file (#1834's lesson, applied to the
+  // console): `UserDetailPage` alone opens four distinct dialogs.
+  expect(
+    overlayRegistrationProblems(
+      detection,
+      [
+        ...ADMIN_OVERLAY_SCENARIOS.map(({ label, sources, overlays }) => ({
+          label,
+          sources,
+          overlays,
+        })),
+        ...ADMIN_OVERLAY_EXCLUSIONS.map(({ surface, sources, overlays }) => ({
+          label: surface,
+          sources,
+          overlays,
+        })),
+      ],
+      discovered,
+    ),
+    'Every overlay a classified console file renders must be accounted for by a scenario or an exclusion.',
+  ).toEqual([]);
+
+  // A row contract is only worth anything while the sweep looks at that
+  // selector; naming one the admin measurement ignores would assert nothing.
+  expect(
+    ADMIN_OVERLAY_SCENARIOS.filter(
+      ({ rows }) =>
+        rows !== undefined &&
+        (rows.minimum < 1 ||
+          !(ADMIN_TAP_TARGET_SELECTORS as readonly string[]).includes(rows.selector)),
+    ).map(({ label }) => label),
+    'Every console overlay row contract must name a measured tap-target selector and a positive floor.',
   ).toEqual([]);
 }
 
@@ -1789,6 +1915,146 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   },
 ];
 
+// ─── The console's own overlay inventory (#1891) ─────────────────────────────
+//
+// Same two tables, same contract, a separate world: the console lives on its own
+// origin with its own session and shell, its overlays carry none of the `.bt-*`
+// language, and `assertCompleteAdminOverlayInventory` holds these two against
+// what `adminOverlaySurfaceSources` finds in `apps/web/src/admin`.
+//
+// `admin/components/Modal.tsx` is registered as overlay INFRASTRUCTURE rather
+// than measured as a surface, so what these entries classify is its fifteen call
+// sites' real content — which is what a phone actually has to fit.
+
+type AdminOverlayAction =
+  | { kind: 'keyboard'; shortcut: string }
+  | { kind: 'click'; selector: string };
+
+interface AdminOverlayScenario {
+  label: string;
+  sources: readonly string[];
+  /** As {@link OverlayScenario.overlays}: sites accounted for per source. */
+  overlays?: number;
+  route: string;
+  action: AdminOverlayAction;
+  expectedSelector: string;
+  /**
+   * Anti-shrinkage floor for the tap-target sweep on THIS overlay: a selector
+   * list that stopped matching the opened panel reports zero undersized
+   * controls, which reads exactly like a compliant one.
+   */
+  minimumMeasured: number;
+  rows?: OverlayRowContract;
+  justification: string;
+}
+
+interface AdminOverlayExclusion {
+  surface: string;
+  sources: readonly string[];
+  overlays?: number;
+  routes: readonly string[];
+  justification: string;
+}
+
+const ADMIN_OVERLAY_SCENARIOS: readonly AdminOverlayScenario[] = [
+  {
+    label: 'console command palette',
+    sources: ['apps/web/src/admin/components/AdminCommandPalette.tsx'],
+    route: '/admin',
+    action: { kind: 'keyboard', shortcut: 'Control+k' },
+    expectedSelector: '#admin-palette-list',
+    // Six destination rows render on an empty query; three is a floor that
+    // still fails loudly if the rows stop matching the measured selector.
+    rows: { selector: ADMIN_PALETTE_ROW_SELECTOR, minimum: 3 },
+    minimumMeasured: 3,
+    justification:
+      'Its rows are the console navigation a phone reaches fastest, and they shipped 2px under the floor (#1891) with nothing measuring them.',
+  },
+  {
+    label: 'console navigation drawer',
+    sources: ['apps/web/src/admin/components/AdminLayout.tsx'],
+    route: '/admin',
+    action: { kind: 'click', selector: '#admin-topbar button[aria-controls="admin-sidebar"]' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    // Close, the language switch, sign out, the palette trigger and one row per
+    // console page — an order of magnitude above this floor.
+    minimumMeasured: 10,
+    justification:
+      'The drawer IS the console navigation below 768px and exists only while open, so no swept route ever renders it.',
+  },
+  {
+    label: 'user reset-password confirmation',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    route: '/admin/users/:userId',
+    action: { kind: 'click', selector: '#main-content button:text-is("Reset password")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    minimumMeasured: 2,
+    justification:
+      'A destructive confirmation in the shared console Modal, carrying a real account email that has to wrap at 360px.',
+  },
+  {
+    label: 'user delete confirmation',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    route: '/admin/users/:userId',
+    action: { kind: 'click', selector: '#main-content button:text-is("Delete")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    minimumMeasured: 2,
+    justification:
+      "The console's most destructive dialog: a typed-username confirmation form in the Modal shell, opened on a real non-self account.",
+  },
+];
+
+const ADMIN_OVERLAY_EXCLUSIONS: readonly AdminOverlayExclusion[] = [
+  {
+    surface: 'user support snapshot and post-reset temporary password',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    overlays: 2,
+    routes: ['/admin/users/:userId'],
+    justification:
+      'Both paint the same Modal panel the two measured flows on this page open, and the temporary password only exists once a live account password has actually been reset.',
+  },
+  {
+    surface: 'users bulk-disable, temporary password and create-user form',
+    sources: ['apps/web/src/admin/pages/UsersPage.tsx'],
+    overlays: 3,
+    routes: ['/admin/users'],
+    justification:
+      'Same Modal panel as the measured user-detail flows; reaching these means disabling real accounts in bulk or minting one, which the admin-users e2e owns.',
+  },
+  {
+    surface: 'OAuth one-time client secret, delete confirmation and edit form',
+    sources: ['apps/web/src/admin/pages/OAuthAppsPage.tsx'],
+    overlays: 3,
+    routes: ['/admin/oauth-apps'],
+    justification:
+      'Same Modal panel; each requires a real OAuth client to be minted, edited or destroyed on the deployment, which oauth-consent e2e owns.',
+  },
+  {
+    surface: 'invite one-time credential',
+    sources: ['apps/web/src/admin/pages/InvitesPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/invites'],
+    justification:
+      'Same Modal panel, shown once after a real invite is minted; every other spec that mints one drives the invite flow rather than this dialog.',
+  },
+  {
+    surface: 'API key audit trail',
+    sources: ['apps/web/src/admin/pages/ApiKeysPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/api-keys'],
+    justification:
+      'Same Modal panel over a bounded request log that only exists after a provisioned personal key has actually been used.',
+  },
+  {
+    surface: 'announcement delete confirmation',
+    sources: ['apps/web/src/admin/pages/AnnouncementsPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/announcements'],
+    justification:
+      'Same Modal panel; reaching it means publishing an announcement to every account on the deployment and then destroying it.',
+  },
+];
+
 const SHELLLESS_AUTH_ROUTES = new Set([
   '/account/delete',
   '/welcome',
@@ -1963,11 +2229,22 @@ const OVERLAY_REGION_SELECTOR = [
   '[role="listbox"]',
 ].join(', ');
 
+/**
+ * The same measurement for the console (#1891), whose overlays wear none of the
+ * `.bt-*` classes above: the shared `Modal` panel, the drawer's dialog and the
+ * palette's own scrolling result list.
+ */
+const ADMIN_OVERLAY_REGION_SELECTOR = [
+  '[role="dialog"][aria-modal="true"]',
+  '#admin-palette-list',
+].join(', ');
+
 async function expectNoPageOverflow(
   page: Page,
   declaredRoute: string,
   viewportWidth: number,
   requireOverlay = isControlPanelRoute(declaredRoute),
+  regionSelector = OVERLAY_REGION_SELECTOR,
 ): Promise<void> {
   const layout = await page.evaluate((configuredViewportWidth) => {
     // window.innerWidth and the configured emulation width can diverge from
@@ -2047,7 +2324,7 @@ async function expectNoPageOverflow(
   // document.scrollWidth. Measure every visible panel/menu plus its horizontal
   // content scrollers against its OWN clientWidth. This is what catches an
   // unwrapped 600px child inside a 390px dialog.
-  const overlayLayout = await page.locator(OVERLAY_REGION_SELECTOR).evaluateAll((elements) => {
+  const overlayLayout = await page.locator(regionSelector).evaluateAll((elements) => {
     const visible = (element: HTMLElement) => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
@@ -2226,6 +2503,12 @@ const ADMIN_TAP_TARGET_SELECTORS = [
   '#admin-topbar button',
   '[role="dialog"][aria-modal="true"] :is(a, button, select)',
   '.admin-tap-target',
+  // The palette's result rows (#1891). They are `<li role="option">`, so the
+  // dialog clause above — `:is(a, button, select)` — never reached them, and
+  // they carried no marker class either: 42px, measured by nothing. Selected
+  // structurally for the same reason the burger is. See
+  // {@link ADMIN_PALETTE_ROW_SELECTOR}.
+  ADMIN_PALETTE_ROW_SELECTOR,
 ] as const;
 
 interface TapTargetScope {
@@ -2558,6 +2841,92 @@ async function exerciseOverlayScenario(
   });
 }
 
+/**
+ * Open, measure and close one console overlay (#1891).
+ *
+ * The console counterpart of {@link exerciseOverlayScenario}: same order —
+ * settle, open, wait out the entrance motion, measure overflow, hold the row
+ * contract, sweep tap targets, close with Escape — against the console's own
+ * region and tap-target selectors.
+ */
+async function exerciseAdminOverlayScenario(
+  page: Page,
+  scenario: AdminOverlayScenario,
+  userId: string,
+  viewportWidth: number,
+): Promise<void> {
+  await settleAdminRoute(page, scenario.route, concreteAdminRoute(scenario.route, userId));
+
+  if (scenario.action.kind === 'keyboard') {
+    await page.keyboard.press(scenario.action.shortcut);
+  } else {
+    const trigger = page.locator(scenario.action.selector).first();
+    await expect(
+      trigger,
+      `${scenario.label} trigger not found: ${scenario.action.selector}`,
+    ).toBeVisible({ timeout: 20_000 });
+    await trigger.click();
+  }
+
+  const overlay = page.locator(scenario.expectedSelector).last();
+  await expect(overlay, `${scenario.label} did not open`).toBeVisible({ timeout: 20_000 });
+  await waitForSettledOverlay(overlay);
+  await waitForSettledPaint(page);
+
+  const declared = `${scenario.route} — ${scenario.label}`;
+  await expectNoPageOverflow(page, declared, viewportWidth, true, ADMIN_OVERLAY_REGION_SELECTOR);
+
+  // The rows the overlay is MADE of, before the sweep reports on them: a
+  // palette whose rows stopped matching the contracted selector is
+  // indistinguishable from a compliant one in the undersized-control result.
+  if (scenario.rows && viewportWidth <= TAP_TARGET_MAX_VIEWPORT_WIDTH) {
+    const { minimum, selector } = scenario.rows;
+    await expect
+      .poll(() => page.locator(`${selector}:visible`).count(), {
+        message: `${scenario.label} must render at least ${minimum} rows matching ${selector} for the tap-target sweep to measure them`,
+        timeout: 20_000,
+      })
+      .toBeGreaterThanOrEqual(minimum);
+  }
+
+  await expectTapTargets(page, declared, viewportWidth, {
+    scope: ADMIN_TAP_TARGET_SCOPE,
+    minimumMeasured: scenario.minimumMeasured,
+  });
+  await page.keyboard.press('Escape');
+  await expect(overlay, `${scenario.label} did not close with Escape`).toBeHidden({
+    timeout: 10_000,
+  });
+}
+
+/** Monotonic disambiguator so two console fixtures never collide on a re-run. */
+let consoleFixtureSeq = 0;
+
+/**
+ * Mint a throwaway account for the console's destructive overlay scenarios.
+ *
+ * Deliberately NOT {@link firstAdminUserId}: the delete action is disabled on
+ * the operator's own row (`admin.userDetail.actions.notYourself`), so measuring
+ * the console's most destructive dialog needs an account the signed-in admin is
+ * not. Nothing is submitted — every scenario opens the dialog and leaves with
+ * Escape — so the account survives the run untouched.
+ */
+async function createConsoleFixtureUserId(api: APIRequestContext): Promise<string> {
+  const uid = `${Date.now().toString(36)}${(consoleFixtureSeq++).toString(36)}`;
+  const body = await responseJson<{ user: { id: string } }>(
+    await api.post(`${API_BASE_URL}/api/v1/admin/users`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: {
+        email: `e2e-console-overlay-${uid}@bettertrack.local`,
+        username: `e2econsole${uid}`,
+      },
+    }),
+    'minting the console overlay fixture account',
+  );
+  expect(body.user.id, 'The console overlay fixture account must have an id.').toBeTruthy();
+  return body.user.id;
+}
+
 test('mobile route inventory classifies every UserApp destination', () => {
   assertCompleteRouteInventory();
 });
@@ -2568,6 +2937,108 @@ test('the seeded home board covers every declared widget type and display form',
 
 test('mobile route inventory classifies every AdminApp destination', () => {
   assertCompleteAdminRouteInventory();
+});
+
+test('mobile overlay inventory classifies every admin console overlay', () => {
+  assertCompleteAdminOverlayInventory();
+});
+
+/**
+ * Fixture proof for #1891: the admin set-equality names the file it is missing.
+ *
+ * The console's overlays were invisible to this gate not because a
+ * classification was wrong but because NOTHING scanned `apps/web/src/admin` —
+ * an unregistered console overlay was absent from both sides of an equality that
+ * therefore stayed green. The throwaway fixture below is exactly that shape: two
+ * console pages opening the shared `Modal`, one classified, one not.
+ */
+test('admin overlay registration fails by name when a console overlay is unregistered', () => {
+  const classified = 'apps/web/src/admin/pages/ClassifiedDialogPage.tsx';
+  const throwaway = 'apps/web/src/admin/pages/ThrowawayDialogPage.tsx';
+  const consumer = (name: string) => `
+      import { Modal } from '../components/Modal';
+      export function ${name}() {
+        return <Modal title="${name}" onClose={() => {}}>body</Modal>;
+      }
+    `;
+  const detection = virtualOverlayDetection(
+    {
+      'apps/web/src/admin/components/Modal.tsx': `
+        import { createPortal } from 'react-dom';
+        export function Modal({ children }) {
+          return createPortal(
+            <div aria-modal="true" role="dialog">{children}</div>,
+            document.body,
+          );
+        }
+      `,
+      [classified]: consumer('ClassifiedDialogPage'),
+      [throwaway]: consumer('ThrowawayDialogPage'),
+    },
+    {
+      primitiveSources: new Set(ADMIN_OVERLAY_PRIMITIVE_SOURCES),
+      requiredPrimitives: ADMIN_REQUIRED_OVERLAY_PRIMITIVES,
+    },
+  );
+
+  // The shell itself is infrastructure, so what is discovered is its consumers.
+  expect(adminOverlaySurfaceSources(detection)).toEqual([classified, throwaway]);
+  // …and an admin overlay never satisfies — or disturbs — the user half.
+  expect(overlaySurfaceSources(detection)).toEqual([]);
+
+  // The gate's own equality, run against a table that classifies only one of
+  // them: it must fail, and the failure must NAME the unclassified file.
+  let failure = '';
+  try {
+    expect([classified]).toEqual(adminOverlaySurfaceSources(detection));
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  }
+  expect(
+    failure,
+    'an unregistered console overlay must fail the admin set-equality assertion',
+  ).not.toBe('');
+  expect(failure, 'and the failure must name the offending file by path').toContain(throwaway);
+
+  // The count half is live for the console too: one entry cannot cover two
+  // dialogs in one console page without saying so.
+  const twoInOne = 'apps/web/src/admin/pages/TwoDialogPage.tsx';
+  const pair = virtualOverlayDetection(
+    {
+      'apps/web/src/admin/components/Modal.tsx': `
+        import { createPortal } from 'react-dom';
+        export function Modal({ children }) {
+          return createPortal(
+            <div aria-modal="true" role="dialog">{children}</div>,
+            document.body,
+          );
+        }
+      `,
+      [twoInOne]: `
+        import { Modal } from '../components/Modal';
+        export function TwoDialogPage({ confirming, editing }) {
+          return (
+            <div>
+              {confirming ? <Modal title="confirm">confirmation</Modal> : null}
+              {editing ? <Modal title="edit">edit form</Modal> : null}
+            </div>
+          );
+        }
+      `,
+    },
+    {
+      primitiveSources: new Set(ADMIN_OVERLAY_PRIMITIVE_SOURCES),
+      requiredPrimitives: ADMIN_REQUIRED_OVERLAY_PRIMITIVES,
+    },
+  );
+  const problems = overlayRegistrationProblems(
+    pair,
+    [{ label: 'confirmation dialog', sources: [twoInOne] }],
+    adminOverlaySurfaceSources(pair),
+  );
+  expect(problems).toHaveLength(1);
+  expect(problems[0]).toContain(`${twoInOne} renders 2 overlays`);
+  expect(problems[0]).toContain('"confirmation dialog" accounts for 1');
 });
 
 /**
@@ -2919,6 +3390,23 @@ test('admin gate self-check: the pre-fix console chrome turns the measurement re
       `a 32px drawer close must fail the admin tap-target measurement at ${width}px`,
     ).rejects.toThrow(/below 44×44 CSS px/);
 
+    // main's command palette: a 42px `<li role="option">` row, 2px under the
+    // console's own declared floor, with no marker class on it (#1891). Both
+    // halves of that are planted here — the geometry AND the missing class —
+    // because the row is matched structurally, so this is what proves a future
+    // regression fails the gate instead of dropping out of it.
+    await page.setContent(
+      fixture(
+        '<ul id="admin-palette-list" role="listbox">' +
+          '<li role="option" style="width:300px;height:42px">Users</li>' +
+          '</ul>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `admin self-check ${width}px`, width, options),
+      `a 42px palette row must fail the admin tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
     // main's control kit: `Button` size="sm" is 30px tall, the tab strip 38px.
     await page.setContent(
       fixture(
@@ -2940,7 +3428,15 @@ test('admin gate self-check: the pre-fix console chrome turns the measurement re
           '<a href="#" style="display:block;width:200px;height:44px">Users</a>' +
           '<select style="width:80px;height:44px"><option>EN</option></select>' +
           '</div>' +
-          '<button class="admin-tap-target" style="width:60px;height:44px">Save</button>',
+          '<button class="admin-tap-target" style="width:60px;height:44px">Save</button>' +
+          // The palette at its post-#1891 geometry, plus the row-shaped status
+          // note the selector deliberately does NOT measure: it carries no
+          // destination, so holding it to 44px would assert a promise the
+          // design never made.
+          '<ul id="admin-palette-list" role="listbox">' +
+          '<li role="option" style="width:300px;height:44px">Users</li>' +
+          '<li role="option" aria-disabled="true" style="width:300px;height:30px">Searching…</li>' +
+          '</ul>',
       ),
     );
     await expectTapTargets(page, `admin self-check ${width}px`, width, options);
@@ -2955,6 +3451,58 @@ test('admin gate self-check: the pre-fix console chrome turns the measurement re
       `an unmatched admin selector list must fail loudly at ${width}px`,
     ).rejects.toThrow(/matched no admin console tap target/);
   }
+});
+
+/**
+ * The mutation toast clears the phone bottom bar (§7.1, V5-P13b, #1891).
+ *
+ * Geometry, not text: `apps/web/src/styles/origin.test.ts` asserts the rule is
+ * DECLARED, and only a real layout can say whether the toast's lower edge still
+ * lands on the navigation destinations. Every mutation result in the app spends
+ * four seconds in this one slot (`user/hooks/useMutationFeedback.tsx`), and at
+ * its pre-fix `bottom: 22px` it covered the bottom bar's rows on a 390px iPhone
+ * while its own lower edge sat inside the home-indicator zone.
+ *
+ * Runs against the real stylesheet on a synthetic page rather than the app: the
+ * toast appears only for the four seconds after a mutation, so no swept route
+ * renders it, and the question here is the stylesheet's geometry, not any one
+ * surface's.
+ */
+test('the mutation toast clears the phone bottom bar at 390×844', async ({ page }) => {
+  const originCss = readFileSync(resolve(process.cwd(), 'apps/web/src/styles/origin.css'), 'utf8');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(
+    `<!doctype html><html data-bt-theme="dark"><head>` +
+      `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />` +
+      `<style>body { margin: 0 }</style><style>${originCss}</style></head><body>` +
+      `<nav class="bt-bottombar"><a href="#">Home</a><a href="#">Portfolio</a><a href="#">Assets</a></nav>` +
+      `<div class="bt-toast">Saved</div>` +
+      `</body></html>`,
+  );
+  await waitForSettledOverlay(page.locator('.bt-toast'));
+
+  const geometry = await page.evaluate(() => {
+    const bar = document.querySelector('.bt-bottombar')!.getBoundingClientRect();
+    const toast = document.querySelector('.bt-toast')!.getBoundingClientRect();
+    return {
+      barHeight: bar.height,
+      barTop: bar.top,
+      toastBottom: toast.bottom,
+      toastHeight: toast.height,
+    };
+  });
+
+  // Anti-shrinkage: a bottom bar that did not lay out as the phone grid it is
+  // would put its "top edge" at the foot of the document and pass vacuously.
+  expect(
+    geometry.barHeight,
+    'the bottom bar must render as the fixed phone grid at 390px',
+  ).toBeGreaterThan(40);
+  expect(geometry.toastHeight, 'the toast must render').toBeGreaterThan(0);
+  expect(
+    geometry.toastBottom,
+    `the toast's lower edge (${geometry.toastBottom}px) must sit above the bottom bar's top edge (${geometry.barTop}px)`,
+  ).toBeLessThanOrEqual(geometry.barTop);
 });
 
 for (const profile of VIEWPORT_PROFILES) {
@@ -3149,26 +3697,21 @@ for (const profile of ADMIN_VIEWPORT_PROFILES) {
           });
         }
 
-        // The drawer IS the console's navigation below 768px, and it exists only
-        // while open — so no route in the sweep above ever renders it.
-        await test.step('admin navigation drawer', async () => {
-          await settleAdminRoute(page, '/admin', '/admin');
-          await page.locator('#admin-topbar button[aria-controls="admin-sidebar"]').click();
-          const drawer = page.getByRole('dialog');
-          await expect(drawer, 'the burger must open the console drawer').toBeVisible({
-            timeout: 10_000,
+        // The console's overlays (#1891). None of them is reachable from the
+        // route sweep above: the drawer IS the navigation below 768px and
+        // exists only while open, the palette is a ⌘K portal, and the Modal
+        // panel only appears once an operator commits to an action.
+        const overlayUserId = await createConsoleFixtureUserId(apiRequest);
+        for (const scenario of ADMIN_OVERLAY_SCENARIOS) {
+          await test.step(`admin overlay: ${scenario.label}`, async () => {
+            await exerciseAdminOverlayScenario(
+              page,
+              scenario,
+              overlayUserId,
+              profile.viewport.width,
+            );
           });
-          await waitForSettledOverlay(drawer);
-          await waitForSettledPaint(page);
-          const declared = '/admin — navigation drawer';
-          await expectNoPageOverflow(page, declared, profile.viewport.width);
-          await expectTapTargets(page, declared, profile.viewport.width, {
-            scope: ADMIN_TAP_TARGET_SCOPE,
-            // Close, the language switch, sign out, the palette trigger and one
-            // row per console page — an order of magnitude above this floor.
-            minimumMeasured: 10,
-          });
-        });
+        }
       } finally {
         await adminContext.close();
         await apiRequest.dispose();
