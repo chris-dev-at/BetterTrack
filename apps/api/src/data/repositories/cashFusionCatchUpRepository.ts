@@ -29,6 +29,7 @@ import {
   type OwnerPlan,
   type OwnerSnapshot,
 } from '../../scripts/cashFusionCatchUpCore';
+import { snapshotDirtyFromMarkerSql, snapshotRowsFromDaySql } from './portfolioSnapshotRepository';
 
 /**
  * Persistence for the V5 cash-fusion catch-up (`scripts/catchUpCashFusion.ts`).
@@ -554,10 +555,12 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
         // roll back together.
         //
         // Three conscious deviations, so a reader does not take them for misses:
-        //  - The statements are hand-copied rather than called: neither
+        //  - The statements are re-issued here rather than called: neither
         //    `markDirty` nor `deleteFrom` accepts a `tx`, and atomicity with the
-        //    ledger write is the whole point. The `least(coalesce(…))` marker
-        //    expression therefore lives in two files and must change in both.
+        //    ledger write is the whole point. Their SQL is NOT copied, though —
+        //    both expressions come from the snapshot repository's exported
+        //    `snapshotDirtyFromMarkerSql` / `snapshotRowsFromDaySql`, so the two
+        //    issuers cannot drift apart.
         //  - Lock order here is state row → snapshot rows, the reverse of
         //    `saveComputation`'s absent-state-row path, so a concurrent
         //    recompute can deadlock. Safe by construction: Postgres aborts one
@@ -581,15 +584,13 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
             .onConflictDoUpdate({
               target: portfolioSnapshotState.portfolioId,
               set: {
-                dirtyFrom: sql`least(coalesce(${portfolioSnapshotState.dirtyFrom}, excluded.dirty_from), excluded.dirty_from)`,
+                dirtyFrom: snapshotDirtyFromMarkerSql(),
                 updatedAt: sql`now()`,
               },
             });
           await tx
             .delete(portfolioDailySnapshots)
-            .where(
-              sql`${portfolioDailySnapshots.portfolioId} = ${plan.portfolioId} and ${portfolioDailySnapshots.date} >= ${invalidatedFrom}`,
-            );
+            .where(snapshotRowsFromDaySql(plan.portfolioId, invalidatedFrom));
         }
 
         return { invalidatedFrom };

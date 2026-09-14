@@ -541,6 +541,61 @@ Each wiped account then owes the one-time fresh-start notice at its next login.
 removed later by the §19 deletion train, as separate append-only migrations, once
 no straggler accounts remain. Do not drop the quarantine by hand.
 
+## Cash-fusion catch-up (`0076_cash_fusion`)
+
+Migration `0076` moved every `expense_*` row onto the portfolio cash ledger but left
+the old tables writable, so rows written through `/api/v1/expenses` after the deploy
+are missing from the fused tables. `pnpm catchup:cash-fusion` closes that gap and
+must run **before** the fused surfaces become the only ones.
+
+Run it inside the api container, which already has the env:
+
+```bash
+pnpm catchup:cash-fusion --dry-run   # report only, writes nothing
+pnpm catchup:cash-fusion --apply
+```
+
+It prints one JSON line per owner with work, then one summary line, and exits `1` if
+any owner failed or was blocked. Safe to re-run: every inserted row's primary key is
+borrowed from its source row or derived deterministically, so a second run plans
+nothing, and each owner is applied in one transaction that re-derives the
+reconciliation and rolls itself back on any mismatch.
+
+**What it invalidates.** The movements it writes are backdated external cash flows,
+so each owner's precomputed daily snapshots are invalidated from the earliest day
+actually written — in the same transaction, reported per owner as `invalidatedFrom`
+(under `--dry-run`, the day an apply _would_ invalidate). The first read after an
+apply therefore runs the engine once and re-persists.
+
+> **If `--apply` already ran under a pre-#1729 build**, that invalidation did not
+> happen: those movements were written with no marker, and re-running repairs
+> nothing — it inserts nothing, so it invalidates nothing. The nightly roll only
+> overwrites its trailing 35-day heal window, so any affected day older than that
+> stays wrong forever until invalidated by hand. Take `portfolio_id` and
+> `invalidatedFrom` from that run's per-owner output (or the earliest
+> `executed_at::date` among the movements it wrote) and, per affected portfolio, run
+> the two statements the service's own `snapshots.invalidate` issues — marker first,
+> in one transaction:
+>
+> ```sql
+> begin;
+> insert into portfolio_snapshot_state (portfolio_id, computed_through, dirty_from)
+> values ('<portfolio-id>', '<YYYY-MM-DD>', '<YYYY-MM-DD>')
+> on conflict (portfolio_id) do update
+>    set dirty_from = least(
+>          coalesce(portfolio_snapshot_state.dirty_from, excluded.dirty_from),
+>          excluded.dirty_from),
+>        updated_at = now();
+>
+> delete from portfolio_daily_snapshots
+>  where portfolio_id = '<portfolio-id>' and date >= '<YYYY-MM-DD>';
+> commit;
+> ```
+>
+> The marker must be written before the delete, so a reader that interleaves falls
+> back to the engine instead of serving a gap. No recompute needs enqueuing: the
+> read path refills lazily and the nightly roll picks the portfolio up anyway.
+
 ## Market-data provider failover
 
 BetterTrack uses Yahoo as its primary market-data provider. The optional v5

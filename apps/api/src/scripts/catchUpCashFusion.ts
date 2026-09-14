@@ -39,7 +39,10 @@ import {
  * PRE-#1729 build (movements written, no invalidation), a second run repairs
  * nothing — it inserts nothing, so it invalidates nothing. Those owners' rows
  * older than the nightly heal window stay stale and need a one-off
- * `snapshots.invalidate(portfolioId, earliestWrittenDay)`.
+ * `snapshots.invalidate(portfolioId, earliestWrittenDay)`. That repair has no
+ * CLI, so the two statements it comes down to are written out for the operator
+ * in `docs/ops.md` → "Cash-fusion catch-up (`0076_cash_fusion`)" — the person
+ * who needs this note is not reading this file.
  *
  * SAFE TO RE-RUN. Every inserted row's primary key is borrowed from its source
  * row or derived deterministically from the owner, so a second run plans nothing.

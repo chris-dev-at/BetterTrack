@@ -119,6 +119,33 @@ function stateVersionSql() {
   return sql<string>`to_char(${portfolioSnapshotState.updatedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 }
 
+/**
+ * The `dirty_from` an invalidating upsert sets: the EARLIEST of the marker
+ * already stored and the incoming day, so two invalidations in flight keep the
+ * wider range.
+ *
+ * Exported because it has a second issuer. `cashFusionCatchUpRepository` writes
+ * backdated external cash flows and must invalidate inside ITS OWN transaction
+ * (the ledger rows and their marker land or roll back together), and
+ * {@link createPortfolioSnapshotRepository.markDirty} takes no `tx` — so the
+ * statement is re-issued there rather than called. One definition, two issuers:
+ * a marker expression drifting between two copies is exactly the class of
+ * invalidation hole #1729 closes.
+ */
+export function snapshotDirtyFromMarkerSql() {
+  return sql`least(coalesce(${portfolioSnapshotState.dirtyFrom}, excluded.dirty_from), excluded.dirty_from)`;
+}
+
+/**
+ * The snapshot rows an invalidation from `fromDay` deletes — that portfolio's
+ * rows on/after the day. Strictly earlier days are never matched (the "earlier
+ * days untouched" rule). Shared with the second issuer above for the same
+ * reason as {@link snapshotDirtyFromMarkerSql}.
+ */
+export function snapshotRowsFromDaySql(portfolioId: string, fromDay: string) {
+  return sql`${portfolioDailySnapshots.portfolioId} = ${portfolioId} and ${portfolioDailySnapshots.date} >= ${fromDay}`;
+}
+
 /** The state-row columns every read of {@link SnapshotStateRecord} selects. */
 const stateSelection = {
   portfolioId: portfolioSnapshotState.portfolioId,
@@ -196,7 +223,7 @@ export function createPortfolioSnapshotRepository(db: Database) {
         .onConflictDoUpdate({
           target: portfolioSnapshotState.portfolioId,
           set: {
-            dirtyFrom: sql`least(coalesce(${portfolioSnapshotState.dirtyFrom}, excluded.dirty_from), excluded.dirty_from)`,
+            dirtyFrom: snapshotDirtyFromMarkerSql(),
             updatedAt: sql`now()`,
           },
         });
@@ -204,11 +231,7 @@ export function createPortfolioSnapshotRepository(db: Database) {
 
     /** Delete the snapshot rows from `fromDay` on; earlier rows stay untouched. */
     async deleteFrom(portfolioId: string, fromDay: string): Promise<void> {
-      await db
-        .delete(portfolioDailySnapshots)
-        .where(
-          sql`${portfolioDailySnapshots.portfolioId} = ${portfolioId} and ${portfolioDailySnapshots.date} >= ${fromDay}`,
-        );
+      await db.delete(portfolioDailySnapshots).where(snapshotRowsFromDaySql(portfolioId, fromDay));
     },
 
     /** Drop everything for a portfolio whose history vanished entirely. */
