@@ -1064,6 +1064,46 @@ describe('standing orders — source tag round-trips through the P0c filter', ()
   });
 });
 
+// The premise the Forecast's standing-order factor projects on (#1892): a
+// recurring buy is NOT a reallocation of cash the book already holds, so the
+// projection adds `quantity × unit price` to the net-worth curve. That rule
+// lives in `bookRow`'s explicitly empty `cashMovements: []`, and the web twin
+// pins its own half (`standingOrderRowKind` in `projection.test.ts`); a web test
+// cannot import this service, so the server's half is pinned here. Growing a
+// cash leg on a buy has to fail on one side or the other.
+describe('standing orders — a booked buy never touches cash', () => {
+  it('writes the BUY with no cash leg, so net worth rises by the purchase value', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('NWC');
+
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 3,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+
+    const txns = await txnRows(pid);
+    expect(txns).toHaveLength(1);
+    expect(Number(txns[0]!.quantity)).toBe(3);
+    expect(Number(txns[0]!.price)).toBe(100);
+    // No cash row of ANY source — the buy debited nothing.
+    expect(await cashRows(pid)).toHaveLength(0);
+
+    // And the recorded figure the Forecast continues forward moves by the full
+    // 3 × 100, with cash still at zero.
+    const portfolio = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(portfolio.status).toBe(200);
+    expect(portfolio.body.totals.cashEur).toBe(0);
+    expect(portfolio.body.totals.marketValueEur).toBe(300);
+    expect(portfolio.body.totals.totalValueEur).toBe(300);
+  });
+});
+
 describe('standing orders — provider failure on a buy', () => {
   it('notifies on the anchor day itself, then dedupes the later retry (#1793)', async () => {
     const { agent, pid } = await setup();
