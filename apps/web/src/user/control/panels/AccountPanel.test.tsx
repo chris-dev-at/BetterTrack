@@ -26,6 +26,11 @@ vi.mock('../../../lib/socialApi', () => ({
   getProfileSettings: vi.fn(),
   updateProfileSettings: vi.fn(),
 }));
+// The panel's only use of the auth context is the seam that mirrors a saved
+// curated icon onto the session user (so the rail avatar agrees); the context
+// itself is covered in AuthContext.test.tsx.
+const authMocks = vi.hoisted(() => ({ applyProfileIcon: vi.fn() }));
+vi.mock('../../AuthContext', () => ({ useAuth: () => authMocks }));
 vi.mock('../../vault/export/deliver', () => ({
   deliverClientDownload: vi.fn(),
   printClientDocument: vi.fn(),
@@ -371,6 +376,10 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
       expect(updateProfileSettings).toHaveBeenCalledWith({ profileIcon: PROFILE_ICON_IDS[0] }),
     );
     expect(screen.queryByRole('switch', { name: /public profile/i })).not.toBeInTheDocument();
+    // The rail/topbar avatar reads the icon off the session user, which the
+    // `/auth/me` invalidation beside this cannot reach — the saved choice gets
+    // there through the auth seam or not at all (§13.5 V5-P0 (c)).
+    await waitFor(() => expect(authMocks.applyProfileIcon).toHaveBeenCalledWith('astronaut'));
   });
 
   test('a normal account never shows the cleartext export block', async () => {

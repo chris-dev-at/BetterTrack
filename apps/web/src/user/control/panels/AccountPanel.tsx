@@ -25,6 +25,7 @@ import {
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
 import { Button, Field, Input, Select } from '../../../ui/origin';
+import { useAuth } from '../../AuthContext';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert } from '../../components/ui';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
@@ -400,6 +401,7 @@ function CleartextExportGate() {
 function ParanoidProfileIconRow() {
   const t = useT();
   const queryClient = useQueryClient();
+  const { applyProfileIcon } = useAuth();
   const [draft, setDraft] = useState<ProfileIconId | null | undefined>(undefined);
   const query = useQuery({
     queryKey: PROFILE_KEY,
@@ -413,7 +415,11 @@ function ParanoidProfileIconRow() {
     mutationFn: (profileIcon: ProfileIconId | null) => updateProfileSettings({ profileIcon }),
     onSuccess: (result) => {
       queryClient.setQueryData(PROFILE_KEY, result);
+      // Refreshes the identity rows' own `/auth/me` read …
       void queryClient.invalidateQueries({ queryKey: ME_KEY });
+      // … which the rail/topbar avatar does not observe: it renders the icon off
+      // the session user, so the saved choice only reaches it through this seam.
+      applyProfileIcon(result.profileIcon ?? null);
       setDraft(undefined);
     },
   });
