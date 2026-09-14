@@ -223,6 +223,15 @@ function MirrorInvitesSection() {
                 className="bt-band__row flex flex-wrap items-center justify-between gap-3"
               >
                 <span className="bt-meta flex items-center gap-2">
+                  {/* The inviter's own curated face, from the payload: an invite is
+                      exactly the case the viewer's graph cannot resolve locally —
+                      the inviter is not yet a co-member and need not be a friend.
+                      A null/retired id degrades to the deterministic avatar. */}
+                  <Avatar
+                    name={invite.fromUsername ?? t('common.unknown')}
+                    iconId={invite.profileIcon}
+                    size="sm"
+                  />
                   {t('mirrorchain.invites.incomingLabel', {
                     inviter: invite.fromUsername ?? t('common.unknown'),
                   })}
@@ -249,6 +258,9 @@ function MirrorInvitesSection() {
                 className="bt-band__row flex flex-wrap items-center justify-between gap-3"
               >
                 <span className="bt-meta flex items-center gap-2">
+                  {/* The other party again — on an outgoing row that is the
+                      invitee, which is the icon the payload carries here. */}
+                  <Avatar name={invite.toUsername} iconId={invite.profileIcon} size="sm" />
                   {t('mirrorchain.invites.outgoingLabel', { invitee: invite.toUsername })}
                   <span className="bt-row-title">{invite.chainName}</span>
                 </span>

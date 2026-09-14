@@ -492,6 +492,45 @@ describe('Installable PWA', () => {
     expect(originCss).toMatch(/\.bt-btn--sm \{[^}]*min-height: 28px;/);
   });
 
+  /**
+   * The mutation toast's own bottom-bar clearance (#1891).
+   *
+   * Every mutation result in the app lands in this one fixed slot for four
+   * seconds (`user/hooks/useMutationFeedback.tsx`). At its desktop `bottom: 22px`
+   * it covered the phone bottom bar's destinations and its own lower edge sat
+   * inside the home-indicator zone. The fix follows the `.bt-install-prompt`
+   * precedent above — same 760px band, same 72px lift, same `env()` inset.
+   *
+   * Source order is asserted as well as presence: both selectors are (0,1,0) and
+   * `@media` adds no specificity, so a lift declared above the base rule would
+   * read as applied while computing to 22px. The measuring half is the toast
+   * geometry test in `e2e/mobile-overflow.spec.ts`.
+   */
+  it('lifts the mutation toast clear of the phone bottom bar', () => {
+    const base = originCss.indexOf('.bt-toast {');
+    expect(base, 'the base .bt-toast rule must exist').toBeGreaterThan(-1);
+    // The desktop position is unchanged: there is no bottom bar there to clear.
+    expect(originCss).toMatch(/\.bt-toast \{[^}]*bottom: 22px;/);
+
+    const liftStart = originCss.indexOf('@media (max-width: 760px)', base);
+    expect(liftStart, 'Missing the toast phone media block').toBeGreaterThan(-1);
+    expect(
+      liftStart,
+      'the lift must be declared after the 22px base rule it overrides',
+    ).toBeGreaterThan(base);
+    const lift = originCss.slice(liftStart, originCss.indexOf('}\n}', liftStart));
+    expect(lift).toMatch(
+      /\.bt-toast \{[^}]*bottom: calc\(72px \+ env\(safe-area-inset-bottom, 0px\)\);/,
+    );
+
+    // 72px is a clearance over a real bar, not a magic number: the rows it
+    // clears are 46px plus the bar's own padding.
+    expect(originCss).toMatch(/\.bt-bottombar a \{[^}]*min-height: 46px;/);
+    expect(originCss).toMatch(
+      /\.bt-bottombar \{[^}]*padding: 4px calc\(6px \+ env\(safe-area-inset-right, 0px\)\)/,
+    );
+  });
+
   it('compensates the translucent status bar in a standalone window, both ways', () => {
     // The media query is the standard; the attribute is what pwaDisplayMode.ts
     // stamps from `navigator.standalone`, the only signal iOS below 16.4 gives.
@@ -510,6 +549,59 @@ describe('Installable PWA', () => {
     expect(originCss).toMatch(
       /:root\[data-bt-display-mode='standalone'\] body \{[^}]*overscroll-behavior-y: none;/,
     );
+  });
+
+  /**
+   * The same compensation on the ADMIN origin (#1891). `index.html` is served to
+   * both origins, so the console inherits `black-translucent` and is installable
+   * from an iPhone with no manifest at all — but `#admin-topbar` (`md:hidden`,
+   * and below 768px the only way into console navigation) had nothing above it
+   * to absorb the status bar, and nothing stamped the attribute there either.
+   */
+  it('compensates the translucent status bar on the admin origin too', () => {
+    const start = originCss.indexOf('@media (display-mode: standalone)');
+    expect(start, 'Missing the standalone media block').toBeGreaterThan(-1);
+    const standaloneBlock = originCss.slice(start, originCss.indexOf('}\n}', start));
+    expect(standaloneBlock).toMatch(
+      /#admin-topbar \{[^}]*padding-top: calc\(8px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+    expect(originCss).toMatch(
+      /:root\[data-bt-display-mode='standalone'\] #admin-topbar \{[^}]*padding-top: calc\(8px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+
+    const adminLayout = readFileSync(
+      resolve(process.cwd(), 'src/admin/components/AdminLayout.tsx'),
+      'utf8',
+    );
+    // The 8px base is the bar's own `py-2`, restated so the inset is purely
+    // additive; a different padding utility would make this rule re-tune the
+    // console's spacing while claiming to add only the safe area.
+    expect(adminLayout, 'the compensated bar must still declare py-2').toContain('px-3 py-2');
+    // …and the attribute the second selector keys off has to be stamped on the
+    // admin origin at all: `UserApp` does it for the user origin only, and the
+    // console is a separate SPA that never mounts it.
+    expect(adminLayout).toContain('applyDisplayModeAttribute');
+  });
+
+  /**
+   * The offline page renders INSIDE an installed window (§7.1: the worker serves
+   * it on a failed navigation), so it has to declare the same viewport and iOS
+   * web-app contract as the document it stands in for — otherwise the page that
+   * appears when the network drops is laid out under different rules than the
+   * app that was there a second earlier.
+   */
+  it('serves the offline page under the same viewport and iOS web-app contract', () => {
+    const offlineHtml = readFileSync(resolve(process.cwd(), 'public/offline.html'), 'utf8');
+
+    for (const declaration of [
+      'viewport-fit=cover',
+      '<meta name="apple-mobile-web-app-capable" content="yes" />',
+      '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />',
+      '<meta name="apple-mobile-web-app-title" content="BetterTrack" />',
+    ]) {
+      expect(indexHtml, `index.html must declare ${declaration}`).toContain(declaration);
+      expect(offlineHtml, `offline.html must declare ${declaration}`).toContain(declaration);
+    }
   });
 });
 
