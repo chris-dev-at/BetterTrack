@@ -66,7 +66,8 @@ export interface ReminderMarkerSpec {
   /**
    * What identifies this event APART from its date — for a payout, the money it
    * pays (see `dividendEventsJob.payoutIdentity`). Supplied, it decides a
-   * within-`matchDays` collision instead of the distance alone: an equal
+   * within-`matchDays` collision on a DIFFERENT date instead of the distance
+   * alone (the anchor's own date is decided as `same-date` first): an equal
    * identity is the same event (an amended date), a different one is a second
    * event and claims freshly, and an identity the payload does not carry — or
    * an anchor written before identities existed — is `ambiguous`: the claim
@@ -86,8 +87,9 @@ export type ReminderDuplicateReason =
   /** The anchor names the same event on a nearby date — an amended date. */
   | 'same-event'
   /**
-   * Nearby, but nothing says whether it is the same event. Silent to avoid a
-   * double notification, and NOT a clean no-op: the caller counts it apart.
+   * A DIFFERENT nearby date, and nothing says whether it is the same event.
+   * Silent to avoid a double notification, and NOT a clean no-op: the caller
+   * counts it apart.
    */
   | 'ambiguous';
 
@@ -133,6 +135,16 @@ export async function claimReminderMarker(spec: ReminderMarkerSpec): Promise<Rem
     if (anchor !== null) {
       const previous = decodeAnchor(anchor);
       if (dayDistance(previous.dateKey, dateKey) <= matchDays) {
+        // Distance ZERO is not a proximity question at all: it is the same date,
+        // which the per-date `SET NX` lock below would classify `same-date` on
+        // its own. Deciding it HERE, before the identity branches, is what keeps
+        // the ordinary daily re-scan a clean suppression — an event whose
+        // payload carries no identity (the only shipped dividend provider never
+        // sends an amount), or an anchor written before identities existed,
+        // would otherwise be called `ambiguous` on every remaining day of the
+        // window and turn every run after the first notification into a degraded
+        // one. Only a DIFFERENT nearby date is genuinely undecidable.
+        if (previous.dateKey === dateKey) return { status: 'duplicate', reason: 'same-date' };
         // Without an identity concept the distance IS the rule, exactly as
         // before. With one, only an equal identity keeps the marker silent for
         // a date this far away; a different identity falls through and claims.

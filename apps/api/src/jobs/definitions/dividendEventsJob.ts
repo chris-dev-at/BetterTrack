@@ -46,7 +46,14 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * {@link payoutIdentity} — is counted into {@link DividendScanResult.ambiguous},
  * never into `suppressed`, and folds into `skipped` like every other thing the
  * run did not do. `suppressed` therefore means exactly one thing again: this
- * payout was already notified about, which is a clean no-op.
+ * (holder, asset, ex-date) was already notified about, which is a clean no-op.
+ *
+ * One case stays outside that guarantee, unchanged from before this arc: a
+ * second payout on the regular one's OWN ex-date (a special declared for the
+ * same day). The idempotency key IS `(holder, asset, ex-date)`, so the per-date
+ * claim collapses the pair before {@link payoutIdentity} is ever consulted, and
+ * the drop is counted as `suppressed`. Separating it needs the key itself to
+ * carry the payout — a change to the marker's shape, not to its counters.
  */
 
 export const DIVIDEND_SCAN_SCHEDULER_ID = 'marketIntel.dividendScan';
@@ -97,14 +104,24 @@ export const DIVIDEND_EVENT_MATCH_DAYS = 3;
  *
  * Null when the provider gave no amount: nothing then distinguishes the two, the
  * marker refuses (a duplicate notification is the worse failure), and the scan
- * counts the refusal as `ambiguous` rather than as a clean suppression.
+ * counts the refusal as `ambiguous` rather than as a clean suppression. Note
+ * that this only ever decides a payout on a DIFFERENT nearby date — a second
+ * payout on the regular one's OWN ex-date is collapsed by the per-date claim
+ * before the identity is ever compared.
+ *
+ * The amount is canonicalised to fixed decimals rather than stringified raw: a
+ * provider re-serialising the same payout as `0.30000000000000004` must not read
+ * as a different one and produce a second notification for an amended date.
  */
+const PAYOUT_AMOUNT_DECIMALS = 6;
+
 export function payoutIdentity(
   event: Pick<DividendEvent, 'amount' | 'currency'>,
   fallbackCurrency: string | null,
 ): string | null {
-  if (event.amount === null) return null;
-  return `${event.amount}@${event.currency ?? fallbackCurrency ?? ''}`;
+  if (event.amount === null || !Number.isFinite(event.amount)) return null;
+  const amount = event.amount.toFixed(PAYOUT_AMOUNT_DECIMALS);
+  return `${amount}@${event.currency ?? fallbackCurrency ?? ''}`;
 }
 
 /**
