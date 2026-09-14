@@ -8,6 +8,7 @@ import {
   downsampledIndices,
   intradayFetchRange,
   intradayIntervalFor,
+  intradayMoneyWeightedReturn,
   intradayPerformancePoints,
   intradayStepMs,
   INTRADAY_PORTFOLIO_RANGES,
@@ -1382,5 +1383,134 @@ describe('intradayPerformancePoints — daily-TWR anchored', () => {
       flowsBase: flows,
     });
     expect(withoutEvents[1]!.pct).toBeGreaterThan(40);
+  });
+});
+
+describe('intradayMoneyWeightedReturn (#1669) — 1D parity with the intraday flow handling', () => {
+  // The 1D window opens at the prior close's daily stamp (23:59:59.999) and
+  // closes at the last intraday point; flows enter at the instant the % curve
+  // applies them (bucket end, #1120) and are weighted by the window remaining.
+  const Y_CLOSE = Date.parse(`${Y}T23:59:59.999Z`);
+  const at = (hhmm: string) => Date.parse(`${T}T${hhmm}:00.000Z`);
+  const STEP = 5 * MIN;
+
+  it('no flows in the window: V_end / V_start − 1, the same figure as the curve’s last point', () => {
+    const input = {
+      intradayPoints: [
+        { date: Y, timeMs: Y_CLOSE, valueEur: 1000 },
+        { date: T, timeMs: at('09:00'), valueEur: 1000 },
+        { date: T, timeMs: at('15:00'), valueEur: 1080 },
+      ],
+      dailyBasePoints: [
+        { date: Y, valueEur: 1000 },
+        { date: T, valueEur: 1080 },
+      ],
+      flowsBase: [],
+      flowEvents: [],
+      stepMs: STEP,
+    };
+    // (1 080 − 1 000) / 1 000 = 8 %.
+    expect(intradayMoneyWeightedReturn(input) ?? Number.NaN).toBeCloseTo(8, 9);
+    expect(intradayPerformancePoints(input).at(-1)!.pct).toBeCloseTo(8, 9);
+  });
+
+  it('a deposit at 11:50 enters where the % curve applies it (the 12:00 bucket) and is weighted by the window remaining', () => {
+    // Value 1 000 flat until +500 lands (1 500 at 12:00), then +10 % → 1 650.
+    // The 11:50 event is applied at the first point whose bucket end passes
+    // it: 09:00 + 5 min < 11:50 → not yet; 12:00 + 5 min > 11:50 → at 12:00.
+    //   window      = Y 23:59:59.999 → T 15:00, T = 15 h + 1 ms
+    //   w           = (15:00 − 12:00) / T = 3 h / (15 h + 1 ms) ≈ 0.2
+    //   numerator   = 1 650 − 1 000 − 500 = 150
+    //   denominator = 1 000 + 500 · w     ≈ 1 100
+    //   MD          ≈ 150 / 1 100          ≈ 13.636 %
+    const input = {
+      intradayPoints: [
+        { date: Y, timeMs: Y_CLOSE, valueEur: 1000 },
+        { date: T, timeMs: at('09:00'), valueEur: 1000 },
+        { date: T, timeMs: at('12:00'), valueEur: 1500 },
+        { date: T, timeMs: at('15:00'), valueEur: 1650 },
+      ],
+      dailyBasePoints: [
+        { date: Y, valueEur: 1000 },
+        { date: T, valueEur: 1650 },
+      ],
+      flowsBase: [{ date: T, flowEur: 500 }],
+      flowEvents: [{ atMs: at('11:50'), flowEur: 500 }],
+      stepMs: STEP,
+    };
+    const windowMs = at('15:00') - Y_CLOSE;
+    const w = (3 * 60 * MIN) / windowMs;
+    const md = intradayMoneyWeightedReturn(input);
+    expect(md ?? Number.NaN).toBeCloseTo((150 / (1000 + 500 * w)) * 100, 9);
+    expect(md ?? Number.NaN).toBeCloseTo(13.636, 2);
+    // The % curve applies the very same instant: flat through the deposit
+    // (no pre-deposit dip, no jump), +10 % once the market moves.
+    const perf = intradayPerformancePoints(input);
+    expect(perf.map((point) => Number(point.pct.toFixed(9)))).toEqual([0, 0, 0, 10]);
+  });
+
+  it('a flow applied at the window’s first point is inside the start value (the re-base puts it there)', () => {
+    // Yesterday's +1 000 deposit is inside yesterday's close — the window's
+    // opening capital — exactly as the curve re-bases at that point.
+    const input = {
+      intradayPoints: [
+        { date: Y, timeMs: Y_CLOSE, valueEur: 1000 },
+        { date: T, timeMs: at('09:00'), valueEur: 1000 },
+        { date: T, timeMs: at('15:00'), valueEur: 1100 },
+      ],
+      dailyBasePoints: [
+        { date: Y, valueEur: 1000 },
+        { date: T, valueEur: 1100 },
+      ],
+      flowsBase: [{ date: Y, flowEur: 1000 }],
+      flowEvents: [{ atMs: Date.parse(`${Y}T10:00:00.000Z`), flowEur: 1000 }],
+      stepMs: STEP,
+    };
+    // (1 100 − 1 000) / 1 000 = 10 %, the same as the curve.
+    expect(intradayMoneyWeightedReturn(input) ?? Number.NaN).toBeCloseTo(10, 9);
+    expect(intradayPerformancePoints(input).at(-1)!.pct).toBeCloseTo(10, 9);
+  });
+
+  it('an un-instanted day flow anchors at the day’s first point — the day-boundary convention the curve uses', () => {
+    // No flow instants: the whole +500 is applied at today's first point
+    // (09:00) on both the % curve and the Dietz window.
+    //   w = (15:00 − 09:00) / (15 h + 1 ms) ≈ 0.4 → denominator ≈ 1 200
+    //   MD ≈ (1 650 − 1 000 − 500) / 1 200 ≈ 12.5 %
+    const input = {
+      intradayPoints: [
+        { date: Y, timeMs: Y_CLOSE, valueEur: 1000 },
+        { date: T, timeMs: at('09:00'), valueEur: 1500 },
+        { date: T, timeMs: at('15:00'), valueEur: 1650 },
+      ],
+      dailyBasePoints: [
+        { date: Y, valueEur: 1000 },
+        { date: T, valueEur: 1650 },
+      ],
+      flowsBase: [{ date: T, flowEur: 500 }],
+    };
+    const windowMs = at('15:00') - Y_CLOSE;
+    const w = (6 * 60 * MIN) / windowMs;
+    expect(intradayMoneyWeightedReturn(input) ?? Number.NaN).toBeCloseTo(
+      (150 / (1000 + 500 * w)) * 100,
+      9,
+    );
+    expect(intradayMoneyWeightedReturn(input) ?? Number.NaN).toBeCloseTo(12.5, 2);
+    expect(intradayPerformancePoints(input).map((point) => Number(point.pct.toFixed(9)))).toEqual([
+      0, 0, 10,
+    ]);
+  });
+
+  it('null on an empty curve or a window without capital', () => {
+    const base = { dailyBasePoints: [], flowsBase: [] };
+    expect(intradayMoneyWeightedReturn({ ...base, intradayPoints: [] })).toBeNull();
+    expect(
+      intradayMoneyWeightedReturn({
+        ...base,
+        intradayPoints: [
+          { date: Y, timeMs: Y_CLOSE, valueEur: 0 },
+          { date: T, timeMs: at('15:00'), valueEur: 0 },
+        ],
+      }),
+    ).toBeNull();
   });
 });
