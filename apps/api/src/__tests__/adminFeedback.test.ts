@@ -1005,7 +1005,13 @@ describe('admin feedback inbox', () => {
       expect(limited.status).toBe(429);
       expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
     } finally {
-      await limitedHarness.ctx.redis.quit?.();
+      // #1456: release only what THIS harness owns. In integration mode
+      // `ctx.redis` is the worker-shared real-Redis singleton, so quitting it
+      // here closed the connection every later login reads its session through
+      // and the rest of the run answered 500. `dispose()` is the harness's own
+      // contract for exactly this: a no-op on the shared real client, and a
+      // quit on the per-harness RedisMock the PGlite path constructs.
+      await limitedHarness.dispose();
     }
   });
 
