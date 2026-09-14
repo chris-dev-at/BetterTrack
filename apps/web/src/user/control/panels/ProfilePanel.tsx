@@ -7,6 +7,7 @@ import { PROFILE_BIO_MAX, type ProfileIconId } from '@bettertrack/contracts';
 import { useT } from '../../../i18n';
 import { getProfileSettings, updateProfileSettings } from '../../../lib/socialApi';
 import { Button, SkeletonBlock, Switch, Textarea } from '../../../ui/origin';
+import { useAuth } from '../../AuthContext';
 import { Alert } from '../../components/ui';
 import { PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 import { ProfileIconPicker } from './ProfileIconPicker';
@@ -30,6 +31,7 @@ const PROFILE_KEY = ['social', 'profile'] as const;
 export function ProfilePanel() {
   const t = useT();
   const queryClient = useQueryClient();
+  const { applyProfileIcon } = useAuth();
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: PROFILE_KEY,
@@ -64,6 +66,13 @@ export function ProfilePanel() {
       }),
     onSuccess: (result) => {
       queryClient.setQueryData(PROFILE_KEY, result);
+      // The account rail/topbar avatar reads the icon off the SESSION user, not
+      // off this query, so a save that only refreshed the cache above would
+      // leave the face the user is looking at stale until a reload. Mirroring
+      // it onto the session is what makes "the rail and the profile can never
+      // disagree" (OriginShell) true; `null` clears back to the deterministic
+      // id-derived avatar.
+      applyProfileIcon(result.profileIcon ?? null);
       setDraftPublic(null);
       setDraftBio(null);
       setDraftIcon(undefined);
