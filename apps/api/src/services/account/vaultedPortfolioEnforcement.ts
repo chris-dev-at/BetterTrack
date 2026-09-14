@@ -35,18 +35,36 @@ export interface VaultedPortfolioRequestTarget {
 }
 
 /**
- * Per-asset market reads carry no portfolio id. The unlocked client engine
- * issues quote and daily-close/history reads per holding, so their asset ids
- * form a holdings roster when any portfolio on the account is vaulted.
+ * Router segments whose per-request id names an asset the ACCOUNT ITSELF holds
+ * or owns, with no portfolio attribution attached that could be checked:
+ *  - `assets` — the unlocked client engine issues one quote/history/daily-close
+ *    read per holding, so the catalog ids it asks for ARE a holdings roster;
+ *  - `custom-assets` — every row beneath it is the user's own private object
+ *    (a car, a house, an unlisted stock), so its id identifies a holding
+ *    directly, on the one asset class where it matters most.
+ *
+ * This is a CLASSIFICATION of routers, not a list of routes: it is what decides
+ * whether a request's recorded id is vault-sensitive, so adding a route under
+ * one of these segments — or a `PATCH`/`DELETE` beside the reads — cannot
+ * silently reopen the hole the suppression exists to close (#1896).
  */
-export function isVaultSensitiveUnattributedAssetRead(method: string, path: string): boolean {
-  if (method.toUpperCase() !== 'GET') return false;
-  const pathname = path.split('?', 1)[0]!.replace(/\/+$/, '');
+const VAULT_SENSITIVE_ASSET_SEGMENTS = new Set(['assets', 'custom-assets']);
+
+/**
+ * Whether this request's ids are vault-sensitive and unattributed. Any method
+ * counts: a `DELETE /custom-assets/:id` names the same private object a `GET`
+ * does, and the writes were exactly what the earlier GET-only predicate missed.
+ *
+ * Only requests BELOW the segment root qualify — `GET /custom-assets` (the
+ * collection) and `POST /custom-assets` name no existing asset, while
+ * `/custom-assets/:id…`, `/assets/:id…` and the batch reads `/assets/quotes`
+ * and `/assets/sparklines` all do.
+ */
+export function isVaultSensitiveUnattributedAssetRequest(path: string): boolean {
+  const segments = policySegments(path);
+  const segment = segments[0]?.toLowerCase();
   return (
-    /^\/api\/v1\/assets\/quotes$/i.test(pathname) ||
-    /^\/api\/v1\/assets\/[^/]+(?:\/(?:quote|history|daily-closes))?$/i.test(pathname) ||
-    /^\/assets\/quotes$/i.test(pathname) ||
-    /^\/assets\/[^/]+(?:\/(?:quote|history|daily-closes))?$/i.test(pathname)
+    segment !== undefined && VAULT_SENSITIVE_ASSET_SEGMENTS.has(segment) && segments.length >= 2
   );
 }
 

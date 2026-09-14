@@ -1,13 +1,19 @@
 import { eq } from 'drizzle-orm';
+import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
 import express from 'express';
+import postgres from 'postgres';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { usageAnalyticsResponseSchema } from '@bettertrack/contracts';
 
-import type { UsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
+import {
+  createUsageAnalyticsRepository,
+  type UsageAnalyticsRepository,
+} from '../data/repositories/usageAnalyticsRepository';
 import * as schema from '../data/schema';
-import { createUsageCaptureMiddleware } from '../http/middleware/usageCapture';
+import { FEATURE_BY_SEGMENT, createUsageCaptureMiddleware } from '../http/middleware/usageCapture';
+import { isVaultSensitiveUnattributedAssetRequest } from '../services/account/vaultedPortfolioEnforcement';
 import {
   createUsageAnalyticsService,
   type UsageSignal,
@@ -16,6 +22,7 @@ import { flushTelemetryBuffers } from '../shutdown';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 /**
  * A throwaway app carrying ONE principal through the capture middleware: a
@@ -415,18 +422,135 @@ describe('usage-analytics bounds', () => {
     expect(repo.rollupDays).toEqual(['2026-09-04']);
   });
 
-  it('does not arm the throttle when the rollup fails — the next read retries', async () => {
+  it('serves the rollup it has when today’s refresh fails, and says it is stale', async () => {
+    // The freshness optimisation used to take the whole read down with it: one
+    // rejected `rollupDay` — the concurrent-rollup collision below produced
+    // exactly that — rendered "Could not load usage analytics" over a payload
+    // whose every other number was readable (#1896).
     const repo = createFakeRepo();
     const clock = Date.parse('2026-09-04T10:00:00.000Z');
-    const service = createUsageAnalyticsService({ repo, now: () => clock });
+    let warnings = 0;
+    const service = createUsageAnalyticsService({
+      repo,
+      now: () => clock,
+      logger: { warn: () => (warnings += 1) } as never,
+    });
     const failing = vi
       .spyOn(repo, 'rollupDay')
       .mockRejectedValueOnce(new Error('rollup transaction failed'));
 
-    await expect(service.overview()).rejects.toThrow(/rollup transaction failed/);
+    const stale = await service.overview();
+    expect(stale.todayRollupStale).toBe(true);
+    expect(stale.windowDays).toBe(30);
+    expect(stale.generatedAt).toBe('2026-09-04T10:00:00.000Z');
+    // Not swallowed: it reaches the payload the admin reads AND the log.
+    expect(warnings).toBe(1);
     failing.mockRestore();
 
-    await service.overview();
+    // The throttle was not armed, so the next read retries and is fresh again.
+    const fresh = await service.overview();
+    expect(fresh.todayRollupStale).toBe(false);
     expect(repo.rollupDays).toEqual(['2026-09-04']);
   });
+});
+
+/**
+ * Which routers record an asset id, and which of those ids are vault-sensitive
+ * (#1896). `custom-assets` shares the `assets` feature bucket, and folding the
+ * id decision onto that bucket recorded a vaulted account's own private
+ * custom-asset UUIDs — the precise holdings-roster reconstruction the
+ * suppression branch exists to prevent, on the asset class where it matters
+ * most. The classification is asserted as a whole so a future router added to
+ * `FEATURE_BY_SEGMENT` cannot silently reopen it.
+ */
+describe('usage capture route classification', () => {
+  const ID = '018f0000-0000-7000-8000-0000000004f0';
+
+  it('records an asset id only on segments the vault-sensitivity predicate covers', () => {
+    const assetsBucket = Object.entries(FEATURE_BY_SEGMENT).filter(
+      ([, classification]) => classification.feature === 'assets',
+    );
+    // Not vacuous: these are the segments that feed the Top-assets panel.
+    expect(assetsBucket.map(([segment]) => segment).sort()).toEqual([
+      'assets',
+      'custom-assets',
+      'search',
+    ]);
+
+    // Every segment in the table — the assets bucket included — is either not
+    // id-recording at all, or covered by the predicate for EVERY method.
+    for (const [segment, classification] of Object.entries(FEATURE_BY_SEGMENT)) {
+      if (!classification.recordsAssetId) continue;
+      for (const path of [`/api/v1/${segment}/${ID}`, `/api/v1/${segment}/${ID}/value-points`]) {
+        expect(
+          isVaultSensitiveUnattributedAssetRequest(path),
+          `${segment} records an asset id that the vault suppression does not cover`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('leaves the ordinary catalog surfaces and collection roots countable', () => {
+    // `search` shares the bucket but has no `:id` route, so there is no id to
+    // suppress; the collection roots name no existing asset either. Neither is
+    // vault-sensitive, so a vaulted account's traffic on them is still counted
+    // — and a non-vaulted account is unaffected everywhere.
+    expect(FEATURE_BY_SEGMENT.search?.recordsAssetId).toBeUndefined();
+    expect(isVaultSensitiveUnattributedAssetRequest('/api/v1/search?q=apple')).toBe(false);
+    expect(isVaultSensitiveUnattributedAssetRequest('/api/v1/custom-assets')).toBe(false);
+    expect(isVaultSensitiveUnattributedAssetRequest('/api/v1/portfolios')).toBe(false);
+    // …while the per-asset routes stay covered whatever the method.
+    expect(isVaultSensitiveUnattributedAssetRequest(`/api/v1/assets/${ID}/quote`)).toBe(true);
+    expect(isVaultSensitiveUnattributedAssetRequest('/api/v1/assets/quotes?ids=a,b')).toBe(true);
+  });
+});
+
+/**
+ * Two re-materializations of the SAME day used to collide on the
+ * `(day, feature)` primary key — an API read refreshing today while the 03:10
+ * cron rolls it, or two API replicas doing it at once. Needs real Postgres:
+ * PGlite is one connection, so it cannot hold two transactions open at once,
+ * which is precisely the interleaving under test.
+ */
+describe('concurrent usage rollup', () => {
+  it.skipIf(!REAL_DATABASE_URL)(
+    're-materializes one day from two connections without colliding',
+    async () => {
+      const harness = await createTestApp();
+      const user = await harness.seedUser({ email: 'rollup@test.dev', username: 'rollup_race' });
+      harness.ctx.usageAnalytics.capture({ userId: user.id, feature: 'portfolio' });
+      harness.ctx.usageAnalytics.capture({ userId: user.id, feature: 'assets', assetId: 'AAPL' });
+      await harness.ctx.usageAnalytics.flush();
+      const day = new Date().toISOString().slice(0, 10);
+
+      const clientA = postgres(REAL_DATABASE_URL!, { max: 1 });
+      const clientB = postgres(REAL_DATABASE_URL!, { max: 1 });
+      try {
+        const dbA = drizzlePostgres(clientA, { schema });
+        const dbB = drizzlePostgres(clientB, { schema });
+        const repoA = createUsageAnalyticsRepository(dbA, dbA);
+        const repoB = createUsageAnalyticsRepository(dbB, dbB);
+
+        // Repeated, because the losing interleaving is a race: the old
+        // DELETE + INSERT raised 23505 whenever the second transaction's DELETE
+        // ran before the first's INSERT committed.
+        for (let round = 0; round < 3; round += 1) {
+          await Promise.all([repoA.rollupDay(day), repoB.rollupDay(day)]);
+        }
+
+        const rows = await harness.db
+          .select()
+          .from(schema.usageDaily)
+          .where(eq(schema.usageDaily.day, day));
+        const features = rows.map((row) => row.feature).sort();
+        // Exactly one row per (day, feature) — no duplicates, nothing lost.
+        expect(features).toEqual(['*', 'assets', 'portfolio']);
+        expect(rows.find((row) => row.feature === 'assets')?.events).toBe(1);
+        expect(rows.find((row) => row.feature === '*')?.events).toBe(2);
+      } finally {
+        await clientA.end();
+        await clientB.end();
+      }
+    },
+  );
 });

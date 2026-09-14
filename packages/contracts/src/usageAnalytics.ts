@@ -109,6 +109,13 @@ export const usageAnalyticsResponseSchema = z.object({
   series: z.array(usageDailyPointSchema),
   /** Window size (days) the feature counters / top assets / series cover. */
   windowDays: z.number().int().positive(),
+  /**
+   * True when the on-read refresh of TODAY's rollup failed, so the current day
+   * is served as the nightly cron last materialized it. The read deliberately
+   * survives that failure — the rest of the payload is unaffected — but the
+   * staleness travels with the numbers rather than living only in a log line.
+   */
+  todayRollupStale: z.boolean(),
   generatedAt: z.string().datetime(),
 });
 export type UsageAnalyticsResponse = z.infer<typeof usageAnalyticsResponseSchema>;

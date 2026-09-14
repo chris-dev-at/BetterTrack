@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express';
 
 import type { ApiKeyService } from '../../services/apiKeys/apiKeyService';
 import {
-  isVaultSensitiveUnattributedAssetRead,
+  isVaultSensitiveUnattributedAssetRequest,
   vaultedPortfolioTargetForRequest,
 } from '../../services/account/vaultedPortfolioEnforcement';
 
@@ -36,7 +36,7 @@ export function createApiKeyRequestLogMiddleware(apiKeys: ApiKeyService): Reques
         body: req.body,
         valid: req.valid,
       });
-      const suppressIfAnyVault = isVaultSensitiveUnattributedAssetRead(method, req.originalUrl);
+      const suppressIfAnyVault = isVaultSensitiveUnattributedAssetRequest(req.originalUrl);
       res.on('finish', () => {
         void apiKeys.recordRequest({
           keyId,
