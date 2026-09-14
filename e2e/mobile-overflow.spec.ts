@@ -2410,6 +2410,75 @@ async function expectNoPageOverflow(
   }
 }
 
+/** The Control Center's fold and the same grammar promoted into Origin. */
+const FOLD_SELECTOR = '.bt-cc-fold, .bt-disclosure';
+/** Rounding, not slack — see {@link expectNoOpenFoldOverflow}. */
+const FOLD_OVERFLOW_EPSILON_PX = 1;
+
+/**
+ * Every disclosure on the page, measured OPEN.
+ *
+ * A fold is the one surface whose closed state cannot show its own bug. The
+ * marker is turned a quarter-turn by `[open]`, and a rotated box carries its
+ * TRANSFORMED bounds into the scrollable overflow of every ancestor — so the
+ * sweep above, which only ever sees folds as it finds them (closed), measured
+ * zero while an opened `.bt-cc-fold` on /control/notifications pushed 6px past
+ * its own summary at 390px, and the Control Center's 16px of phone padding
+ * absorbed it just well enough that no region-level measurement noticed. The
+ * marker is a square box in origin.css now; this is what keeps it one.
+ *
+ * Run on the route the walk is already standing on: no page load of its own, and
+ * a route with no fold returns immediately. Each fold's open state is restored
+ * afterwards, but a CONTROLLED `<details>` answers to React and not to the DOM
+ * write, so this runs last in its route's step — whatever a toggle handler
+ * moved, nothing else measures the page after it, and the next route is a fresh
+ * navigation.
+ *
+ * The tolerance is one pixel, and it is rounding rather than slack: `clientWidth`
+ * rounds a fractional box while `scrollWidth` ceils it, so a summary 357.4px wide
+ * reads 358 against 357 with nothing overflowing at all. The regression this
+ * guards was six.
+ */
+async function expectNoOpenFoldOverflow(page: Page, declaredRoute: string): Promise<void> {
+  const folds = await page.evaluate(async (selector) => {
+    const found = [...document.querySelectorAll<HTMLDetailsElement>(selector)];
+    if (found.length === 0) return [];
+    const wasOpen = found.map((fold) => fold.open);
+    for (const fold of found) fold.open = true;
+    // The marker's 160ms turn is transient overflow of its own (a square is
+    // widest at 45°), so measure the settled box, not a frame of the animation.
+    await Promise.all(
+      document.getAnimations().map((animation) => animation.finished.catch(() => undefined)),
+    );
+    await new Promise<void>((settled) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => settled())),
+    );
+    const measured = found.map((fold, index) => {
+      const summary = fold.querySelector('summary');
+      return {
+        label: (summary?.textContent ?? '').trim().slice(0, 48) || `fold #${index + 1}`,
+        summaryOverflow: summary ? summary.scrollWidth - summary.clientWidth : 0,
+        foldOverflow: fold.scrollWidth - fold.clientWidth,
+      };
+    });
+    found.forEach((fold, index) => {
+      fold.open = wasOpen[index]!;
+    });
+    return measured;
+  }, FOLD_SELECTOR);
+
+  for (const fold of folds) {
+    expect(
+      fold.summaryOverflow,
+      `${declaredRoute} fold summary "${fold.label}" scrolls internally when open (${fold.summaryOverflow}px)`,
+    ).toBeLessThanOrEqual(FOLD_OVERFLOW_EPSILON_PX);
+    expect(
+      fold.foldOverflow,
+      `${declaredRoute} fold "${fold.label}" scrolls internally when open (${fold.foldOverflow}px)`,
+    ).toBeLessThanOrEqual(FOLD_OVERFLOW_EPSILON_PX);
+  }
+}
+
 /**
  * Phone breakpoint where origin.css declares the 44px minimum for the USER app
  * (`@media (max-width: 480px)`, mirrored by the shell's PHONE_SHELL_MAX_WIDTH).
@@ -3581,6 +3650,9 @@ for (const profile of VIEWPORT_PROFILES) {
           await expectPopulatedRouteState(owner.page, route, fixtures);
           await expectNoPageOverflow(owner.page, route, profile.viewport.width);
           await expectTapTargets(owner.page, route, profile.viewport.width);
+          // Last in the step: opening a fold can move React state a controlled
+          // `<details>` owns, so nothing else on this route measures after it.
+          await expectNoOpenFoldOverflow(owner.page, route);
         });
       }
 

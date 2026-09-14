@@ -48,6 +48,7 @@ beforeEach(async () => {
 });
 
 async function runMigration(): Promise<void> {
+  // eslint-disable-next-line sql/no-dynamic-identifier -- closed list of one: migrationSql is the checked-in apps/api/drizzle/0023_mobile_oauth_scopes.sql, read from the repo at module load. Replaying that file byte for byte is what the test exists to do.
   await harness.db.execute(sql.raw(migrationSql));
 }
 
