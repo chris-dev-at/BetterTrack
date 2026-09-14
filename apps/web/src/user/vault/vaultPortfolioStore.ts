@@ -2310,7 +2310,15 @@ function localValuationStamp(document: VaultDocument, assetId: string, executedA
   return Number.isFinite(valuationMs) ? Math.min(valuationMs, executedAtMs) : executedAtMs;
 }
 
-function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
+/**
+ * Which ledger row one booking of this order writes — the twin of the server's
+ * `standingOrderService.bookRow` branch. A buy books a `transaction` and
+ * NOTHING else (its `cashMovements` are explicitly empty upstream); only the
+ * cash kinds move the ledger. Exported so the surfaces that reason about what a
+ * booking does to net worth — the Forecast projection (#1892) — can assert
+ * against this rule instead of restating it.
+ */
+export function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
   return stringField(order.data, 'kind') === 'buy-asset' ? 'transaction' : 'cashMovement';
 }
 

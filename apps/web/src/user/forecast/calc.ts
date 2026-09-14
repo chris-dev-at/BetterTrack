@@ -5,7 +5,18 @@
  * them to hand-computed fixtures.
  *
  * Conventions across the module:
- *   • Rates are entered as percent-per-year (`5` → 5 %/yr), never as fractions.
+ *   • Rates are entered as percent-per-year (`5` → 5 %/yr), never as fractions,
+ *     and every one of them is an **effective annual** rate — the projection
+ *     engine's convention, shared through {@link periodRateFromAnnualPct}
+ *     (#1892). A per-period rate is the geometric `(1 + r/100)^(1/n) − 1`, never
+ *     the nominal `r/100/n`: the tab's own prefill hands these solvers a CAGR,
+ *     which IS an effective rate, and dividing it nominally re-compounded it
+ *     n times a year (8 %/yr read as 8.30 %, €492,680 against the projection's
+ *     €466,096 on the same €100,000 over 20 years).
+ *   • `compoundingPerYear` therefore sets the *schedule* — how often
+ *     contributions land and interest is credited — not the yield: the same
+ *     annual rate reaches the same lump-sum balance at any n, which is what
+ *     "effective annual" means.
  *   • Time inputs are in years for accumulation calculators and in months for
  *     withdrawal calculators (the shape the UI collects them in).
  *   • Contributions accumulate as an **ordinary annuity** — one contribution at
@@ -21,7 +32,7 @@
  *     touches it — see the note on the re-export below.
  */
 
-import { clampForecastReturnPct } from './projection';
+import { clampForecastReturnPct, periodRateFromAnnualPct } from './projection';
 
 /**
  * The rate bound is the projection's, not a second one: a loss beyond −100 %/yr
@@ -76,8 +87,9 @@ export interface CompoundInterestResult {
 
 /**
  * Ordinary-annuity compound growth. FV = P·(1+rp)^N + Cp·((1+rp)^N − 1)/rp,
- * with rp = ratePctPerYear/100/n, N = n·years, and Cp = monthly · 12/n.
- * Falls back to the linear formula at r = 0 so the divide never fires.
+ * with rp the EFFECTIVE per-period rate `(1 + r/100)^(1/n) − 1` (the module's one
+ * convention), N = n·years, and Cp = monthly · 12/n. Falls back to the linear
+ * formula at r = 0 so the divide never fires.
  *
  * The clamped rate keeps `1 + rp ≥ 0`, which is what guarantees a non-negative
  * final balance from a non-negative principal and contributions: below −100 %/yr
@@ -99,7 +111,7 @@ export function compoundInterest(input: CompoundInterestInput): CompoundInterest
   if (ratePctPerYear === 0) {
     finalBalance = principal + perPeriodContribution * N;
   } else {
-    const rp = ratePctPerYear / 100 / n;
+    const rp = periodRateFromAnnualPct(ratePctPerYear, n);
     const growth = Math.pow(1 + rp, N);
     finalBalance = principal * growth + (perPeriodContribution * (growth - 1)) / rp;
   }
@@ -157,7 +169,7 @@ export function savingsPlanContribution(
   if (ratePctPerYear === 0) {
     perPeriodContribution = (target - principal) / N;
   } else {
-    const rp = ratePctPerYear / 100 / n;
+    const rp = periodRateFromAnnualPct(ratePctPerYear, n);
     const growth = Math.pow(1 + rp, N);
     const annuityFactor = (growth - 1) / rp;
     perPeriodContribution = (target - principal * growth) / annuityFactor;
@@ -206,9 +218,9 @@ export function savingsPlanYears(input: SavingsYearsInput): SavingsYearsResult {
     return { years: N / n, feasible: true };
   }
 
-  const rp = ratePctPerYear / 100 / n;
-  // A total loss per period (−100 %/yr compounded once a year) leaves no growth
-  // base at all: `log(1 + rp)` is −∞ there, so no horizon reaches the target.
+  const rp = periodRateFromAnnualPct(ratePctPerYear, n);
+  // A total loss (−100 %/yr) leaves no growth base at all, at any compounding
+  // step: `log(1 + rp)` is −∞ there, so no horizon reaches the target.
   if (1 + rp <= 0) return { years: null, feasible: false };
   // FV = (1+rp)^N · (P + Cp/rp) − Cp/rp  ⇒  (1+rp)^N = (FV + Cp/rp)/(P + Cp/rp).
   const offset = perPeriodContribution / rp;
@@ -304,10 +316,10 @@ export interface WithdrawalHorizonResult {
 }
 
 /**
- * Solve N in `B·(1+rm)^N − W·((1+rm)^N − 1)/rm = 0`, where rm is the nominal
- * monthly rate `annualReturnPct/100/12`. At `W ≤ B·rm` withdrawals never
- * exhaust the balance (sustainable). At `rm = 0` the answer collapses to
- * `B/W`.
+ * Solve N in `B·(1+rm)^N − W·((1+rm)^N − 1)/rm = 0`, where rm is the monthly
+ * equivalent of the effective annual rate, `(1 + r/100)^(1/12) − 1`. At
+ * `W ≤ B·rm` withdrawals never exhaust the balance (sustainable). At `rm = 0`
+ * the answer collapses to `B/W`.
  */
 export function withdrawalHorizon(input: WithdrawalHorizonInput): WithdrawalHorizonResult {
   const { balance, monthlyWithdrawal } = input;
@@ -327,7 +339,7 @@ export function withdrawalHorizon(input: WithdrawalHorizonInput): WithdrawalHori
     return { months: balance / monthlyWithdrawal, sustainable: false };
   }
 
-  const rm = annualReturnPct / 100 / 12;
+  const rm = periodRateFromAnnualPct(annualReturnPct, 12);
   const interestPerMonth = balance * rm;
 
   if (rm > 0 && monthlyWithdrawal <= interestPerMonth) {
@@ -371,7 +383,7 @@ export function withdrawalRate(input: WithdrawalRateInput): WithdrawalRateResult
   const annualReturnPct = clampForecastReturnPct(input.annualReturnPct);
   if (N <= 0) return { monthlyWithdrawal: 0 };
   if (annualReturnPct === 0) return { monthlyWithdrawal: balance / N };
-  const rm = annualReturnPct / 100 / 12;
+  const rm = periodRateFromAnnualPct(annualReturnPct, 12);
   const growth = Math.pow(1 + rm, N);
   const monthlyWithdrawal = (balance * rm * growth) / (growth - 1);
   return { monthlyWithdrawal };
