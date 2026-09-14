@@ -2,8 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The same viewport and iOS web-app contract `index.html` declares
+         (#1891): this page replaces the app INSIDE an installed window, so a
+         different status-bar style or a missing `viewport-fit=cover` would
+         re-lay it out under rules the app it stands in for never used. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="BetterTrack" />
     <meta name="theme-color" content="#090c10" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#f1f2f3" media="(prefers-color-scheme: light)" />
     <title>BetterTrack · Offline</title>

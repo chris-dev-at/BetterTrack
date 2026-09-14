@@ -24,6 +24,29 @@ import ts from 'typescript';
 export const USER_OVERLAY_SOURCE_ROOT = 'apps/web/src/user';
 
 /**
+ * The admin console's product components (#1891).
+ *
+ * The route half of the gate has always honoured "every user AND admin surface"
+ * (`ADMIN_CORE_ROUTES` + `assertCompleteAdminRouteInventory`); the overlay half
+ * looked only at the two roots around this one, so every console overlay — the
+ * palette, the navigation drawer, and `admin/components/Modal.tsx` at fifteen
+ * call sites — was unmeasured, and a new one could not fail CI. Scanned exactly
+ * like the user root: a component here that renders an overlay is a surface in
+ * its own right, and the gate's set-equality assertion names it until it is
+ * given a measured scenario or a justified exclusion.
+ *
+ * Deliberately NOT scanned by {@link overlayPrimitiveRegistryProblems}: that
+ * check reads "a portal-rendering component in this tree is shared overlay
+ * INFRASTRUCTURE", which is true of `apps/web/src/ui` and false here — the
+ * console mixes its shell, its primitives and its pages in one tree, so the
+ * palette would be reported as an unregistered primitive rather than measured as
+ * the surface it is. A genuinely shared console primitive is registered in
+ * {@link ADMIN_OVERLAY_PRIMITIVE_SOURCES}; an unregistered one is still
+ * discovered — as a surface of its own — so it cannot go missing silently.
+ */
+export const ADMIN_OVERLAY_SOURCE_ROOT = 'apps/web/src/admin';
+
+/**
  * The shared UI layer. Everything here is infrastructure, so a portal-rendering
  * component that appears in this tree without being registered below is a new
  * overlay primitive whose consumers would go undiscovered — that is a named
@@ -55,6 +78,18 @@ export const OVERLAY_PRIMITIVE_SOURCES = [
  * this asserts the relationship instead of assuming it.
  */
 export const REQUIRED_OVERLAY_PRIMITIVES = ['Dialog', 'ODialog', 'Drawer'] as const;
+
+/**
+ * The console's own overlay infrastructure (#1891). `admin/components/Modal.tsx`
+ * is the `Dialog` of the admin world — one dependency-free portal shell behind
+ * every console dialog — so it is registered here rather than measured as a
+ * surface: what has to be opened at 390px is the fifteen CALL SITES' content,
+ * not the empty shell.
+ */
+export const ADMIN_OVERLAY_PRIMITIVE_SOURCES = ['apps/web/src/admin/components/Modal.tsx'] as const;
+
+/** {@link REQUIRED_OVERLAY_PRIMITIVES} for the console's own primitives. */
+export const ADMIN_REQUIRED_OVERLAY_PRIMITIVES = ['Modal'] as const;
 
 /**
  * Popover class the shell-owned menus are painted with.
@@ -94,6 +129,7 @@ export interface OverlayDetection {
   primitiveSources: ReadonlySet<string>;
   userRoot: string;
   uiRoot: string;
+  adminRoot: string;
   requiredPrimitives: readonly string[];
 }
 
@@ -119,10 +155,14 @@ export function repoOverlayDetection(): OverlayDetection {
   return {
     reader: diskReader,
     list: diskLister,
-    primitiveSources: new Set(OVERLAY_PRIMITIVE_SOURCES),
+    // One primitive set, both worlds: resolution has to recognise an imported
+    // `Modal` wherever it is imported, and nothing outside the console imports
+    // the console's.
+    primitiveSources: new Set([...OVERLAY_PRIMITIVE_SOURCES, ...ADMIN_OVERLAY_PRIMITIVE_SOURCES]),
     userRoot: USER_OVERLAY_SOURCE_ROOT,
     uiRoot: SHARED_UI_SOURCE_ROOT,
-    requiredPrimitives: REQUIRED_OVERLAY_PRIMITIVES,
+    adminRoot: ADMIN_OVERLAY_SOURCE_ROOT,
+    requiredPrimitives: [...REQUIRED_OVERLAY_PRIMITIVES, ...ADMIN_REQUIRED_OVERLAY_PRIMITIVES],
   };
 }
 
@@ -142,6 +182,7 @@ export function virtualOverlayDetection(
     primitiveSources: new Set(OVERLAY_PRIMITIVE_SOURCES),
     userRoot: USER_OVERLAY_SOURCE_ROOT,
     uiRoot: SHARED_UI_SOURCE_ROOT,
+    adminRoot: ADMIN_OVERLAY_SOURCE_ROOT,
     requiredPrimitives: REQUIRED_OVERLAY_PRIMITIVES,
     ...overrides,
   };
@@ -594,10 +635,12 @@ export interface OverlayClassification {
 export function overlayRegistrationProblems(
   detection: OverlayDetection,
   classifications: readonly OverlayClassification[],
+  /** Which discovered sources to count over; the user tree unless stated. */
+  sources: readonly string[] = overlaySurfaceSources(detection),
 ): string[] {
   const problems: string[] = [];
 
-  for (const source of overlaySurfaceSources(detection)) {
+  for (const source of sources) {
     const entries = classifications.filter((entry) => entry.sources.includes(source));
     if (entries.length === 0) continue; // The set-equality assertion owns this half.
     const sites = overlaySites(source, detection);
@@ -629,8 +672,22 @@ export function overlayRegistrationProblems(
  * to carry a measured scenario or a component-and-route exclusion.
  */
 export function overlaySurfaceSources(detection: OverlayDetection): string[] {
+  return surfaceSourcesUnder(detection.userRoot, detection);
+}
+
+/**
+ * The same answer for the admin console (#1891). A separate function rather than
+ * a widened {@link overlaySurfaceSources}: the two worlds have separate
+ * scenario/exclusion tables and separate set-equality assertions, so merging
+ * them would let a user classification silently satisfy an admin overlay.
+ */
+export function adminOverlaySurfaceSources(detection: OverlayDetection): string[] {
+  return surfaceSourcesUnder(detection.adminRoot, detection);
+}
+
+function surfaceSourcesUnder(root: string, detection: OverlayDetection): string[] {
   return detection
-    .list(detection.userRoot)
+    .list(root)
     .filter(
       (relativePath) =>
         !detection.primitiveSources.has(relativePath) && rendersOverlay(relativePath, detection),
