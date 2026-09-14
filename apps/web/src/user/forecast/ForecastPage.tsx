@@ -66,6 +66,13 @@ interface Prefill {
    * counts every deposit the user made as performance, and a calculator
    * prefilled with it compounds their own contributions forward as if they were
    * market growth. See {@link usePortfolioPrefill} for the per-mode source.
+   *
+   * It is handed to the solvers verbatim, and that is now correct in the one
+   * way it was not (#1892): an annualised return is an EFFECTIVE annual rate,
+   * which is exactly the convention `calc.ts` and the projection now share. The
+   * cards used to divide it nominally by their compounding steps, so the same
+   * prefill answered €492,680 in the compound-interest card against the
+   * projection's €466,096 — one tab, one rate, two answers.
    */
   averageReturnPctPerYear: number | null;
 }

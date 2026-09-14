@@ -130,6 +130,7 @@ export function cashFlowScope(
 export const CASH_MONTH_TIME_ZONE = 'Europe/Vienna';
 
 /** `to_char` bucket for {@link CASH_MONTH_TIME_ZONE} — the trend points' key. */
+// eslint-disable-next-line sql/no-dynamic-identifier -- closed list of one: CASH_MONTH_TIME_ZONE is the module-level literal above. It stays a reference rather than a second copy of 'Europe/Vienna' because every bucket, window and the evaluator's current month derive from that one constant, and two copies could disagree. A bound parameter would work too (Postgres resolves `timestamptz AT TIME ZONE $2` with an untyped $2); the zone is spelled into the statement only so the query text is self-describing in logs and EXPLAIN output.
 const MONTH_BUCKET = sql<string>`to_char(${portfolioCashMovements.executedAt} AT TIME ZONE ${sql.raw(
   `'${CASH_MONTH_TIME_ZONE}'`,
 )}, 'YYYY-MM')`;
