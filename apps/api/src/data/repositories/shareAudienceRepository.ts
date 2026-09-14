@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import { alias, type AnyPgColumn } from 'drizzle-orm/pg-core';
 
 import { SHARE_KINDS, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
 
@@ -20,6 +20,7 @@ import {
   watchlists,
   workboardItems,
 } from '../schema';
+import { activeFriendOf } from './activeFriend';
 
 /**
  * Unified sharing-audience persistence (PROJECTPLAN.md §13.3 V3-P5, §6.9). The
@@ -961,16 +962,15 @@ export function createShareAudienceRepository(db: Database) {
      * circle changes the reported reach on the very next read and the owner
      * surface can never claim a reach the enforcement layer doesn't grant.
      *
-     * Both counts carry the SAME extra joins enforcement applies, because a
-     * count without them is exactly the disagreement this summary exists to
-     * prevent (#1710): a named friend is counted only while the friendship still
-     * exists (a membership row outliving an unfriend grants nothing, since every
-     * read `AND`s an inner join on `friendships`), and a circle member only
-     * while their account is active (a disabled account cannot sign in, and
-     * every read joins `users.status = 'active'`). `friend_group_members` is
-     * joined the same way `friendGroupRepository` joins it, so `GET
-     * /social/groups` and this summary can never report different sizes for one
-     * circle.
+     * Both counts are the SAME predicate enforcement applies — literally the
+     * same fragment, {@link activeFriendOf} — because a count without it is
+     * exactly the disagreement this summary exists to prevent (#1710, #1897): a
+     * named friend and a circle member are each counted only while the
+     * friendship still exists AND the account is still active. Writing the two
+     * counts differently is what let one item shared to `specific_friends:
+     * [disabled]` report reach 1 beside a circle holding the same account
+     * reporting 0, so `GET /social/groups`, the picker and this summary now read
+     * one definition.
      *
      * That includes the friendship join (#1780): the `group` rung used to be the
      * ONE rung whose reported reach trusted a roster row instead of deriving
@@ -1003,27 +1003,15 @@ export function createShareAudienceRepository(db: Database) {
           friendCount: sql<number>`(
             select count(*)
             from ${shareAudienceMembers}
-            join ${friendships} on (
-              (${friendships.userA} = ${shareAudiences.ownerId}
-                and ${friendships.userB} = ${shareAudienceMembers.friendId})
-              or (${friendships.userB} = ${shareAudiences.ownerId}
-                and ${friendships.userA} = ${shareAudienceMembers.friendId})
-            )
             where ${shareAudienceMembers.audienceId} = ${shareAudiences.id}
               and ${shareAudiences.audience} = 'specific_friends'
+              and ${activeFriendOf(shareAudiences.ownerId, shareAudienceMembers.friendId)}
           )`.mapWith(Number),
           groupMemberCount: sql<number>`(
             select count(*)
             from ${friendGroupMembers}
-            join ${users} on ${users.id} = ${friendGroupMembers.memberId}
-              and ${users.status} = 'active'
-            join ${friendships} on (
-              (${friendships.userA} = ${shareAudiences.ownerId}
-                and ${friendships.userB} = ${friendGroupMembers.memberId})
-              or (${friendships.userB} = ${shareAudiences.ownerId}
-                and ${friendships.userA} = ${friendGroupMembers.memberId})
-            )
             where ${friendGroupMembers.groupId} = ${friendGroups.id}
+              and ${activeFriendOf(shareAudiences.ownerId, friendGroupMembers.memberId)}
           )`.mapWith(Number),
         })
         .from(shareAudiences)
@@ -1047,11 +1035,11 @@ export function createShareAudienceRepository(db: Database) {
      * The current owner-facing audience state for one subject (missing row =
      * private).
      *
-     * The membership read joins `friendships` exactly like the enforcement layer
-     * does (#1710): a `specific_friends` row whose friendship has since
-     * dissolved grants nothing, so naming it here would tell the owner — and the
-     * picker, which cannot resolve the id against the friends list and silently
-     * drops the checkbox — that someone can see the item when they cannot.
+     * The membership read applies {@link activeFriendOf} exactly like the
+     * enforcement layer does (#1710, #1897): a `specific_friends` row whose
+     * friendship has since dissolved — or whose account was disabled — grants
+     * nothing, so naming it here would tell the owner, and tick it in the
+     * picker, as though someone can see the item when they cannot.
      */
     async getOwnedState(kind: ShareKind, subjectId: string): Promise<OwnedAudienceState> {
       const [row] = await db
@@ -1075,8 +1063,12 @@ export function createShareAudienceRepository(db: Database) {
       const members = await db
         .select({ friendId: shareAudienceMembers.friendId })
         .from(shareAudienceMembers)
-        .innerJoin(friendships, friendshipWith(row.ownerId, shareAudienceMembers.friendId))
-        .where(eq(shareAudienceMembers.audienceId, row.id));
+        .where(
+          and(
+            eq(shareAudienceMembers.audienceId, row.id),
+            activeFriendOf(row.ownerId, shareAudienceMembers.friendId),
+          ),
+        );
 
       const [link] = await db
         .select({ createdAt: shareAudienceLinks.createdAt })
@@ -1096,17 +1088,25 @@ export function createShareAudienceRepository(db: Database) {
     },
 
     /**
-     * The subset of `candidateIds` that are actually the owner's current friends
-     * — so a `specific_friends` audience can never name a non-friend (defense in
-     * depth for the enforcement join, and it keeps the stored set honest).
+     * The subset of `candidateIds` that are friends of the owner who COUNT — the
+     * same {@link activeFriendOf} definition a circle's roster applies (#1897).
+     * A `specific_friends` audience can therefore never name a non-friend or a
+     * disabled account: not in the stored set, not in the reach count the owner
+     * reads, and not in the `*.shared` fan-out that rung derives from it.
+     * Candidate order is preserved.
      */
     async friendIdsOf(ownerId: string, candidateIds: readonly string[]): Promise<string[]> {
       if (candidateIds.length === 0) return [];
+      // Aliased: the shared predicate re-declares `users` in its own scope, so
+      // the candidate it is asked about needs a name of its own.
+      const candidate = alias(users, 'candidate');
       const rows = await db
-        .select({ userA: friendships.userA, userB: friendships.userB })
-        .from(friendships)
-        .where(or(eq(friendships.userA, ownerId), eq(friendships.userB, ownerId)));
-      const friendSet = new Set(rows.map((r) => (r.userA === ownerId ? r.userB : r.userA)));
+        .select({ id: candidate.id })
+        .from(candidate)
+        .where(
+          and(inArray(candidate.id, [...candidateIds]), activeFriendOf(ownerId, candidate.id)),
+        );
+      const friendSet = new Set(rows.map((r) => r.id));
       return candidateIds.filter((id) => friendSet.has(id));
     },
 
