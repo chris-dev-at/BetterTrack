@@ -97,7 +97,6 @@ or lower `COMPOSER_BATCH` rather than leaving runs to strand issues.
 same issue back through review forever (#1232 burned 140 reviewer runs).
 `requeue_for_review` now counts requeues per issue in
 `state/control/requeue-count/<issue>` and parks the issue with a human once the
-Also remove `multi-factory/state/ci-fix/issue-<n>-pr<pr>.json` when the head is unchanged: the merger keeps that record on a same-head `exhausted` park on purpose (so a re-arm cannot re-buy a fixer budget), and a re-arm that leaves it in place gets one free worker cycle and is parked again. A terminal `state/triage/issue-<n>-pr<pr>.json` must be moved aside too.
 count passes `MF_REQUEUE_MAX` (default 3, set to `3` for the master service in
 `compose.yml`). The counter is keyed by **issue**, so it survives the new PR and
 new head that a requeue produces, and it is deliberately never cleared — the
@@ -112,6 +111,8 @@ and the CI-fix state along with the queue record.
 >
 > ```bash
 > rm -f multi-factory/state/control/requeue-count/<issue>
+> rm -f multi-factory/state/ci-fix/issue-<issue>-pr<pr>.json   # same-head "exhausted" park keeps this on purpose
+> mv multi-factory/state/triage/issue-<issue>-pr<pr>.json multi-factory/state/triage/archive/   # if present
 > ```
 
 **The CI-fix `exhausted` record is head-scoped, and no queue entry is ever
