@@ -79,6 +79,14 @@ export default defineConfig({
       // #1485: disposing one harness must never close the worker-shared Redis
       // singleton that another harness is still using.
       'src/testing/createTestApp.test.ts',
+      // Same reason as #437/#1443, on the boot path: the batched catalog upsert
+      // is raw SQL through and through — an `excluded."col"` SET and IS
+      // DISTINCT FROM guard, a partial-index conflict arbiter, and a
+      // `RETURNING (xmax = 0)` that decodes inserted-vs-corrected from a system
+      // column. Its whole result arithmetic rests on that last fragment, so an
+      // engine difference would not throw, it would silently mis-count every
+      // boot seed. The engine production runs is the engine that proves it.
+      'src/data/repositories/__tests__/catalogBatchUpsert.test.ts',
     ],
     pool: 'forks',
     poolOptions: {

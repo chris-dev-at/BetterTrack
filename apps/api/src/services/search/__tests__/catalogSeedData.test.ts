@@ -110,8 +110,14 @@ describe('seedAssetCatalog with the shipped list', () => {
     // Re-seeding every boot writes nothing when nothing changed (idempotent
     // upsert, no backfill, and — because the catalog-watermark trigger stamps
     // per content-changing statement — no conditional-read invalidation either).
+    // "Writes nothing" is asserted on the watermark itself, not just the
+    // counts: a batched no-op statement whose DO UPDATE arm still touched
+    // unchanged rows would report `refreshed: 0`-adjacent numbers while
+    // silently stepping search's `Last-Modified` and 304-busting every client.
+    const watermarkAfterFirst = await repo.catalogWatermark(userId);
     const second = await seedAssetCatalog(repo, COMMON_SYMBOLS_SEED);
     expect(second).toEqual({ created: 0, existing: COMMON_SYMBOLS_SEED.length, refreshed: 0 });
+    expect((await repo.catalogWatermark(userId))!.getTime()).toBe(watermarkAfterFirst!.getTime());
 
     // But it is not "nothing happens" (#1810): a row whose provider-owned
     // fields have gone stale is CORRECTED by the next boot, without the catalog
@@ -125,6 +131,14 @@ describe('seedAssetCatalog with the shipped list', () => {
 
     const third = await seedAssetCatalog(repo, COMMON_SYMBOLS_SEED);
     expect(third).toEqual({ created: 0, existing: COMMON_SYMBOLS_SEED.length, refreshed: 1 });
+    // …and the correcting boot, unlike the no-op one, IS a content change: the
+    // one chunk statement that rewrote AAPL must step the watermark a whole
+    // HTTP-date second (the granularity `If-Modified-Since` can carry), so the
+    // client holding the pre-correction validator gets a 200, not a 304.
+    const watermarkAfterThird = await repo.catalogWatermark(userId);
+    expect(Math.floor(watermarkAfterThird!.getTime() / 1000)).toBeGreaterThan(
+      Math.floor(watermarkAfterFirst!.getTime() / 1000),
+    );
     expect(await repo.findGlobal(drifted.providerId, drifted.providerRef)).toMatchObject({
       name: drifted.name,
       currency: drifted.currency,

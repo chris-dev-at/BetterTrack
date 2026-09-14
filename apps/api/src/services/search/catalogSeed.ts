@@ -14,8 +14,9 @@ import { CATALOG_SEED_ENTRIES } from './catalogSeedData';
  *
  * Boot IS the refresh path (#1810). There is no `catalog.enrich` job — an
  * earlier version of this comment cited one that was never written — so the two
- * writers that keep a global row honest are this seed and the interactive
- * provider fallback, both through `assetRepository.upsertGlobal`, which now
+ * writers that keep a global row honest are this seed (batched, through
+ * `assetRepository.upsertGlobalMany`) and the interactive provider fallback
+ * (row-at-a-time, through `assetRepository.upsertGlobal`), each of which
  * corrects a row it finds instead of leaving it frozen at whatever its first
  * touch happened to say. They correct DIFFERENT columns and never the same row:
  * see {@link isCuratedCatalogRef}.
@@ -77,6 +78,18 @@ export interface CatalogSeedResult {
  * affected rows in place (same id, so every transaction and watchlist entry
  * pointing at them survives); an unchanged entry is not written at all.
  *
+ * The upsert is BATCHED (`assetRepository.upsertGlobalMany`): a few multi-row
+ * statements rather than two statements per entry, which is what the
+ * statement-level watermark triggers were designed around (migration 0112 —
+ * "a bulk catalog seed ... stamps ONCE for the whole statement ... and not at
+ * all for a statement that touched nothing"). So a boot whose list is
+ * unchanged writes nothing, stamps nothing, and costs a handful of statements
+ * instead of ~1300; and a fresh install's first seed advances the search
+ * `Last-Modified` by seconds, not by ten minutes. The result arithmetic leans
+ * on the batch contract: every entry either inserts (`created`) or already
+ * had a row, so `existing` is simply the remainder, of which `refreshed` were
+ * actually corrected.
+ *
  * The seed refreshes EVERY descriptive column, unlike the provider fallback
  * (`catalogEnrichment.ts`), because this list is curated: each row's type,
  * exchange and native currency were checked by hand against the real listing,
@@ -87,16 +100,8 @@ export async function seedAssetCatalog(
   assetRepo: AssetRepository,
   entries: readonly CatalogSeedEntry[],
 ): Promise<CatalogSeedResult> {
-  let created = 0;
-  let existing = 0;
-  let refreshed = 0;
-  for (const entry of entries) {
-    const { created: wasCreated, refreshed: wasRefreshed } = await assetRepo.upsertGlobal(entry, {
-      refresh: REFRESHABLE_ASSET_FIELDS,
-    });
-    if (wasCreated) created += 1;
-    else existing += 1;
-    if (wasRefreshed) refreshed += 1;
-  }
-  return { created, existing, refreshed };
+  const { created, refreshed } = await assetRepo.upsertGlobalMany(entries, {
+    refresh: REFRESHABLE_ASSET_FIELDS,
+  });
+  return { created, existing: entries.length - created, refreshed };
 }

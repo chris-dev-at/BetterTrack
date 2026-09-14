@@ -161,6 +161,28 @@ export interface UpsertGlobalOptions {
 /** The `SET` payload of a refresh: a subset of the descriptive columns. */
 type AssetRefreshValues = Partial<Pick<typeof assets.$inferInsert, RefreshableAssetField>>;
 
+/** Counts from {@link AssetRepository.upsertGlobalMany} — see there for why counts, not rows. */
+export interface UpsertGlobalManyResult {
+  /** Inputs this call inserted — first touches (§6.2). */
+  created: number;
+  /**
+   * Inputs whose row already existed with at least one named column stale,
+   * which this call corrected in place (#1810). An unchanged existing row is
+   * neither written nor counted anywhere: `inputs.length - created - refreshed`
+   * is exactly the rows the statement left untouched.
+   */
+  refreshed: number;
+}
+
+/**
+ * Rows per multi-row upsert statement in {@link AssetRepository.upsertGlobalMany}.
+ * 200 rows × 8 columns keeps a statement comfortably under every parameter
+ * ceiling (Postgres caps bind parameters at 65535) while still amortising the
+ * per-statement costs the batch exists to amortise — for the ~640-entry shipped
+ * seed that is 4 statements in place of 1284.
+ */
+const UPSERT_GLOBAL_MANY_CHUNK = 200;
+
 /**
  * The catalog read's ranking TIER for one row (§6.2), as SQL: exact symbol (0)
  * → symbol prefix (1) → name substring **or** simple-config word match (2) →
@@ -579,6 +601,136 @@ export function createAssetRepository(db: Database) {
         throw new Error('Global asset upsert found no row after conflict');
       }
       return { row: existing, created: false, refreshed: false };
+    },
+
+    /**
+     * The bulk sibling of {@link upsertGlobal}, for the boot catalog seed
+     * (§6.2(c), `services/search/catalogSeed.ts`) — same semantics per input
+     * (first touch INSERTs; a later touch corrects exactly the columns the
+     * caller named, and only where something differs), collapsed into one
+     * `INSERT ... ON CONFLICT DO UPDATE ... WHERE` per chunk instead of two
+     * statements per entry. The single-row path made an unchanged ~640-row
+     * re-seed issue ~1280 statements to write literally nothing; migration
+     * 0112's watermark triggers were built statement-level precisely so "a bulk
+     * catalog seed ... stamps ONCE for the whole statement" — this is the bulk
+     * statement they were waiting for. The single-row path stays as-is for the
+     * provider fallback (`catalogEnrichment.ts`), whose per-hit refresh set
+     * varies and which needs the row back to enqueue a backfill.
+     *
+     * The conflict arbiter is named explicitly — `(provider_id, provider_ref)
+     * WHERE owner_id IS NULL`, the partial unique index
+     * `assets_global_provider_ref_unique` — because `DO UPDATE` requires one,
+     * and because it is what makes the update arm unable to reach a custom
+     * asset: only a global row can conflict. The `owner_id IS NULL` term is
+     * restated in the update's WHERE anyway, same §10 boundary discipline as
+     * the single-row refresh. Everything {@link upsertGlobal}'s four narrowing
+     * properties promise holds here too: only caller-named columns, never
+     * `id`/`owner_id`/`meta`, and the `IS DISTINCT FROM` guard means an
+     * unchanged row is not written — so a no-op re-seed leaves the transition
+     * tables of BOTH watermark triggers empty and stamps nothing, instead of
+     * pushing the search `Last-Modified` one second per entry into the future.
+     *
+     * Accounting rides on `RETURNING (xmax = 0)`: a freshly inserted tuple has
+     * `xmax = 0`, while a tuple the `DO UPDATE` arm wrote carries the updating
+     * transaction's xid (the conflict arm locks the existing row first), and a
+     * conflicting row whose update the WHERE suppressed is not returned at all.
+     * That is why this returns counts and not rows — the untouched majority of
+     * a re-seed has no row to return, and the one caller needs only the tally.
+     *
+     * Two guards up front:
+     *  - a duplicate `(provider_id, provider_ref)` in ONE statement is a hard
+     *    Postgres error ("ON CONFLICT DO UPDATE command cannot affect row a
+     *    second time"), and a duplicate that happened to straddle a chunk
+     *    boundary would instead silently double-count — so duplicates are
+     *    rejected here, before any write, with a message that names the ref;
+     *  - an empty `refresh` is refused rather than silently degraded: `DO
+     *    UPDATE SET` with no columns is not a statement, and the one caller is
+     *    the curated seed, which by design refreshes every descriptive column.
+     *
+     * The `assets_identity_after_insert` row trigger fires only for rows
+     * genuinely inserted (an ON CONFLICT candidate that lost does not run AFTER
+     * INSERT row triggers), so identity bookkeeping is per created row here
+     * exactly as on the single-row path.
+     */
+    async upsertGlobalMany(
+      inputs: readonly GlobalAssetUpsert[],
+      options: { refresh: readonly RefreshableAssetField[] },
+    ): Promise<UpsertGlobalManyResult> {
+      const wanted = new Set(options.refresh);
+      if (wanted.size === 0) {
+        throw new Error('Bulk global asset upsert requires a non-empty refresh set');
+      }
+      const seen = new Set<string>();
+      for (const input of inputs) {
+        const key = `${input.providerId} ${input.providerRef}`;
+        if (seen.has(key)) {
+          throw new Error(
+            `Bulk global asset upsert saw (${input.providerId}, ${input.providerRef}) twice — one statement cannot touch a row twice`,
+          );
+        }
+        seen.add(key);
+      }
+
+      // `EXCLUDED` is the proposed row, so the SET payload and the change guard
+      // are expressions, not parameters — one pair per caller-named column,
+      // mirroring the single-row refresh. No casts: unlike there, both sides of
+      // every IS DISTINCT FROM are typed columns, never an inferred parameter.
+      const set: { [K in RefreshableAssetField]?: SQL } = {};
+      const changed: SQL[] = [];
+      if (wanted.has('type')) {
+        set.type = sql`excluded."type"`;
+        changed.push(sql`${assets.type} is distinct from excluded."type"`);
+      }
+      if (wanted.has('symbol')) {
+        set.symbol = sql`excluded."symbol"`;
+        changed.push(sql`${assets.symbol} is distinct from excluded."symbol"`);
+      }
+      if (wanted.has('name')) {
+        set.name = sql`excluded."name"`;
+        changed.push(sql`${assets.name} is distinct from excluded."name"`);
+      }
+      if (wanted.has('exchange')) {
+        set.exchange = sql`excluded."exchange"`;
+        changed.push(sql`${assets.exchange} is distinct from excluded."exchange"`);
+      }
+      if (wanted.has('currency')) {
+        set.currency = sql`excluded."currency"`;
+        changed.push(sql`${assets.currency} is distinct from excluded."currency"`);
+      }
+
+      let created = 0;
+      let refreshed = 0;
+      // Sequential on purpose: chunks in input order means two concurrent
+      // seeders lock rows in the same order and cannot deadlock each other.
+      for (let at = 0; at < inputs.length; at += UPSERT_GLOBAL_MANY_CHUNK) {
+        const chunk = inputs.slice(at, at + UPSERT_GLOBAL_MANY_CHUNK);
+        const rows = await db
+          .insert(assets)
+          .values(
+            chunk.map((input) => ({
+              providerId: input.providerId,
+              providerRef: input.providerRef,
+              ownerId: null,
+              type: input.type,
+              symbol: input.symbol,
+              name: input.name,
+              exchange: input.exchange,
+              currency: input.currency,
+            })),
+          )
+          .onConflictDoUpdate({
+            target: [assets.providerId, assets.providerRef],
+            targetWhere: isNull(assets.ownerId),
+            set,
+            setWhere: and(isNull(assets.ownerId), or(...changed)),
+          })
+          .returning({ created: sql<boolean>`(xmax = 0)` });
+        for (const row of rows) {
+          if (row.created) created += 1;
+          else refreshed += 1;
+        }
+      }
+      return { created, refreshed };
     },
 
     /**
