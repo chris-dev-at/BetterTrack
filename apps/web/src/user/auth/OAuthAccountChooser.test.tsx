@@ -9,6 +9,11 @@ vi.mock('../AuthContext', () => ({
 
 import { Avatar } from '../components/Avatar';
 import { OAuthAccountChooser } from './OAuthAccountChooser';
+import {
+  readRememberedAccount,
+  refreshRememberedAccount,
+  writeRememberedAccount,
+} from './rememberedAccount';
 import type { RememberedAccount } from './rememberedAccount';
 
 /**
@@ -47,6 +52,25 @@ describe('OAuthAccountChooser — the remembered account’s avatar', () => {
     expect(iconMarkup(container)).toBe(iconMarkup(expected));
     // The identity row is still the chooser's main tap target.
     expect(screen.getByRole('button', { name: /Log in as jane/i })).toBeInTheDocument();
+  });
+
+  // The record is written ONCE, at the remember-me opt-in, so a user who picks
+  // an icon afterwards used to be stuck on the lettered tile here forever.
+  test('paints the icon a later login refreshed into the record (next cold visit)', () => {
+    localStorage.clear();
+    // Remembered before any icon was picked …
+    writeRememberedAccount({ ...account, profileIcon: null });
+    // … then the user picks "Panda" and signs in again on this device.
+    refreshRememberedAccount({ ...account, profileIcon: 'panda' });
+
+    // Cold visit: the chooser renders from the stored record alone.
+    const stored = readRememberedAccount();
+    expect(stored).not.toBeNull();
+    const { container } = renderChooser(stored!);
+    const { container: expected } = render(<Avatar name="jane" iconId="panda" size="md" />);
+
+    expect(iconMarkup(container)).toBe(iconMarkup(expected));
+    localStorage.clear();
   });
 
   test('falls back to the lettered tile when no icon was ever picked', () => {

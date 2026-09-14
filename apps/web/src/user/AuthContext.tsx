@@ -20,6 +20,7 @@ import type {
   PasswordResetComplete,
   PinQuickAuthRequest,
   PinVerifyRequest,
+  ProfileIconId,
   RegisterRequest,
   TwoFactorChallengeResponse,
   TwoFactorEmailCodeRequest,
@@ -36,7 +37,11 @@ import {
 import { setDiscreetMode, setMoneyCurrency } from '../lib/format';
 import { updateAccountSettings } from '../lib/settingsApi';
 import * as api from '../lib/userApi';
-import { clearRememberedAccount, writeRememberedAccount } from './auth/rememberedAccount';
+import {
+  clearRememberedAccount,
+  refreshRememberedAccount,
+  writeRememberedAccount,
+} from './auth/rememberedAccount';
 import { requestVaultLock } from './vault/lockSignal';
 
 /**
@@ -224,6 +229,14 @@ interface AuthContextValue {
    */
   adoptUser: (me: MeResponse) => void;
   /**
+   * Mirror a just-saved curated profile icon (§6.9, §13.5 V5-P0 (c)) onto the
+   * session user, so the account rail/topbar avatar — which reads the icon off
+   * `user`, not off the social-profile query — agrees with the public profile
+   * without a reload or re-login. `null` clears the choice, falling back to the
+   * deterministic id-derived avatar. A no-op while anonymous.
+   */
+  applyProfileIcon: (profileIcon: ProfileIconId | null) => void;
+  /**
    * Promote the current session to persistent — the OAuth-login "stay signed in
    * — your PIN protects this" choice (V4-P2b, §399 §A). PIN-gated server-side.
    */
@@ -350,6 +363,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // renders masked whenever the account has discreet mode on. `undefined`
     // (pre-V5-P13 fixture) is treated as OFF.
     setDiscreetMode(me.discreetMode === true);
+    // Keep this device's remembered-account record current (§16, #399 §B): the
+    // chooser is written once at the opt-in, so a later rename or curated-icon
+    // choice (§13.5 V5-P0 (c)) would otherwise leave it showing a stale face —
+    // or the lettered tile — on every cold visit. Refresh-only: it never creates
+    // a record and never touches the one-shot remember-me prompt gate.
+    refreshRememberedAccount({
+      userId: me.id,
+      username: me.username,
+      profileIcon: me.profileIcon ?? null,
+    });
     if (me.mustChangePassword) {
       setStatus('password-change-required');
     } else if (isPinLocked(me)) {
@@ -564,6 +587,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyUser(me);
     },
     [applyUser],
+  );
+
+  // A saved curated icon reaches the rail/topbar avatar through the SAME door a
+  // login does — `adoptUser` — so there is exactly one path into the session
+  // user rather than a second, quietly diverging one. Re-applying the current
+  // MeResponse with the new icon keeps every other session-derived seam
+  // (currency, discreet mode, the PIN window) on the values it already had.
+  const applyProfileIcon = useCallback(
+    (profileIcon: ProfileIconId | null) => {
+      if (user == null) return;
+      if ((user.profileIcon ?? null) === profileIcon) return;
+      adoptUser({ ...user, profileIcon });
+    },
+    [adoptUser, user],
   );
 
   const login = useCallback(
@@ -815,6 +852,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       verifyTwoFactor,
       adoptUser,
+      applyProfileIcon,
       persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
@@ -840,6 +878,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       verifyTwoFactor,
       adoptUser,
+      applyProfileIcon,
       persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
