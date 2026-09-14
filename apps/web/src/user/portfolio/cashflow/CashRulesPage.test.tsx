@@ -249,7 +249,9 @@ describe('CashRulesPage', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm' }));
 
     expect(
-      await screen.findByText(/only your most recent movements were checked/i),
+      await screen.findByText(
+        /only the most recent movements of the portfolios it reached were checked/i,
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText('Tagged 500 movements.')).not.toBeInTheDocument();
   });

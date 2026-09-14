@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 
-import type { CashRuleMatchType } from '@bettertrack/contracts';
+import { CASH_MOVEMENT_NOTE_MAX, type CashRuleMatchType } from '@bettertrack/contracts';
 
 import { tagsByRules } from '../../services/cash/cashRuleEngine';
 
@@ -115,10 +115,14 @@ const SCAN_PAGE = 500;
  * repeatable, and matching is `O(scanned notes × rules)`, with the rule count
  * now capped alongside it in `cashTagService`.
  *
- * NEWEST FIRST, deliberately. When the bound does bite, the movements a user is
- * actually looking at are the ones that get tagged, and the response says the
- * pass was partial rather than reporting a cheerful number for a run that
- * covered a fraction of the ledger. Pressing again re-covers the same window —
+ * NEWEST FIRST WITHIN EACH PORTFOLIO, and the budget is spent portfolio by
+ * portfolio — NOT newest-first across the whole account. A global recency order
+ * would need one sort over every portfolio's movements, which is the
+ * materialize-the-ledger cost this bound exists to remove; the per-portfolio
+ * walk rides the `(portfolio_id, executed_at)` index instead. The consequence
+ * is real and the user-facing copy says it: when the bound bites, it is "the
+ * most recent movements in each portfolio that was reached", and a portfolio
+ * the walk never got to is untouched. Pressing again re-covers the same window —
  * the bound is not a cursor — which is why saying so honestly matters.
  */
 export const CASH_RULE_APPLY_MOVEMENT_SCAN_MAX = 20_000;
@@ -246,6 +250,25 @@ async function linkRuleTags(
  * The engine decides WHICH tags (first match wins, its whole set, case
  * insensitively); this decides only that they get written and that they get
  * written safely. Returns the number of movements that gained a tag.
+ *
+ * ── THE MATCHED STRING IS BOUNDED (#1743) ─────────────────────────────────
+ *
+ * Only the first `CASH_MOVEMENT_NOTE_MAX` characters of a note are handed to
+ * the engine, because matching costs `O(note length × rules)` and this function
+ * is the single door BOTH callers go through — book time and the on-demand
+ * re-run — so bounding it here bounds every pass at once.
+ *
+ * It is not theoretical. Every HTTP cash write validates `note` against that
+ * same ceiling (`cashEntryRequestSchema`), but the import apply path calls
+ * `depositCash`/`withdrawCash` SERVICE-DIRECT with the raw CSV cell, and
+ * `portfolio_cash_movements.note` is `text` — so a 5 MB memo can already be
+ * sitting in the ledger, and the re-run reads whatever is stored. Clipping the
+ * MATCHING INPUT here bounds the cost of both without touching what is stored.
+ *
+ * It also keeps import preview and import booking agreeing: `stagedRuleTags`
+ * clips the same way before previewing, so a needle sitting past the ceiling is
+ * untagged in BOTH — instead of previewing untagged and booking tagged, which
+ * is precisely the drift `importService` documents its divergences to avoid.
  */
 export async function applyCashRuleTags(
   executor: RuleTagStampExecutor,
@@ -256,7 +279,7 @@ export async function applyCashRuleTags(
   if (rules.length === 0) return 0;
   const pairs: [string, string][] = [];
   for (const movement of movements) {
-    const note = movement.note?.trim() ?? '';
+    const note = (movement.note?.trim() ?? '').slice(0, CASH_MOVEMENT_NOTE_MAX);
     if (note === '') continue;
     for (const tagId of tagsByRules(note, rules)) pairs.push([movement.id, tagId]);
   }
@@ -287,7 +310,10 @@ export interface CashRuleApplyOutcome {
   movementsTagged: number;
   /**
    * `false` when {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} stopped the walk
-   * before the ledger ran out — the pass covered the newest movements only.
+   * while movements it had not read were still there — the pass covered the
+   * newest movements of the portfolios it reached, and no more. A run that
+   * lands exactly on the bound with nothing left is `true`: the walk proves
+   * exhaustion by reading rather than inferring it from a spent budget.
    */
   complete: boolean;
 }
@@ -323,8 +349,10 @@ interface ScannedMovement extends RuleTaggableMovement {
  * repeatable request. Now each portfolio is walked by keyset page of
  * {@link SCAN_PAGE}, newest first, and the whole run stops at
  * {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} scanned movements. Memory is one
- * page whatever the ledger holds, and a run that hit the bound says so instead
- * of reporting a number that looks like a complete pass.
+ * page of rows whatever the ledger holds — and one row is bounded too, because
+ * `applyCashRuleTags` matches at most `CASH_MOVEMENT_NOTE_MAX` characters of a
+ * note however long the stored text is. A run that hit the bound says so
+ * instead of reporting a number that looks like a complete pass.
  *
  * The cursor is `(executed_at, id)`, matching the `ORDER BY` and the
  * `(portfolio_id, executed_at)` index, so a page is a range read rather than a
@@ -352,8 +380,17 @@ export async function applyCashRulesForOwner(
     let cursor: { executedAt: string; id: string } | null = null;
     for (;;) {
       const remaining = CASH_RULE_APPLY_MOVEMENT_SCAN_MAX - scanned;
-      if (remaining <= 0) return { movementsTagged, complete: false };
-      const limit = Math.min(SCAN_PAGE, remaining);
+      // A SPENT BUDGET IS NOT THE SAME AS A CUT-SHORT LEDGER. The walk only
+      // ever learns it is finished by reading a page and finding it short, so
+      // stopping the moment the budget runs out would report a run that landed
+      // exactly on the bound — 20 000 noted movements, or a last page that
+      // happens to fill the remainder — as partial, to a user whose pass was in
+      // fact complete. With nothing left to spend the loop therefore reads ONE
+      // row: it is bought from the same index range read, it is never tagged,
+      // and it answers the only question left. No row means this portfolio is
+      // done and the walk moves on; a row means the bound really did bite.
+      const probing = remaining <= 0;
+      const limit = probing ? 1 : Math.min(SCAN_PAGE, remaining);
       const after =
         cursor === null
           ? sql``
@@ -373,6 +410,7 @@ export async function applyCashRulesForOwner(
         `),
       ) as ScannedMovement[];
       if (page.length === 0) break;
+      if (probing) return { movementsTagged, complete: false };
       scanned += page.length;
       movementsTagged += await applyCashRuleTags(executor, portfolioId, page, rules);
       const last = page[page.length - 1]!;

@@ -69,6 +69,13 @@ const RULE_LIMIT_REACHED = () =>
  * user hand-writing merchant rules stops in the dozens — so the cap is a
  * backstop rather than a limit anybody works around. It is pinned by a test, so
  * raising it is a deliberate edit and not a drive-by.
+ *
+ * NOT A HARD MAXIMUM UNDER CONCURRENCY: the count is read and the rule written
+ * outside one transaction, so N simultaneous creates by the same account can
+ * settle a few rows above it. Deliberate — this bounds a cost multiplier, not a
+ * licence, and the overshoot is bounded by the caller's own concurrency. Anyone
+ * needing it exact wants the check inside the insert (a conditional INSERT …
+ * SELECT on the count), not a re-read.
  */
 export const CASH_RULES_PER_USER_MAX = 200;
 

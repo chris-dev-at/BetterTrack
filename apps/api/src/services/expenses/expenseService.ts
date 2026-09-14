@@ -170,6 +170,10 @@ export interface ExpenseService {
  * round the other. Matching cost is `O(total description bytes × rules)`, so the
  * rule count multiplies every categorization pass; 200 is far past a real rule
  * set and is pinned by a test, so raising it is a deliberate edit.
+ *
+ * Like the cash cap, it is a backstop and not a hard maximum: count-then-create
+ * is not one transaction, so concurrent creates by one account can settle a few
+ * rows above it.
  */
 export const EXPENSE_RULES_PER_USER_MAX = 200;
 

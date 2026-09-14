@@ -6274,7 +6274,7 @@
       "applying": "Applying…",
       "applyTagged": "Tagged {{count}} movements.",
       "applyNoneTagged": "Nothing new to tag — every matching movement already carries its tags.",
-      "applyPartial": "Tagged {{count}} movements — this ledger is larger than one run covers, so only your most recent movements were checked.",
+      "applyPartial": "Tagged {{count}} movements — this ledger is larger than one run covers, so only the most recent movements of the portfolios it reached were checked.",
       "applyError": "Couldn't apply the rules. Please try again.",
       "loadError": "Couldn't load your rules.",
       "deleteError": "Couldn't delete the rule. Please try again.",

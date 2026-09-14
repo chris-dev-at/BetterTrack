@@ -2,6 +2,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { sql as sqlTag } from 'drizzle-orm';
 import { expect, it } from 'vitest';
 
+import { CASH_MOVEMENT_NOTE_MAX } from '@bettertrack/contracts';
+
 import {
   applyCashRulesForOwner,
   CASH_RULE_APPLY_MOVEMENT_SCAN_MAX,
@@ -121,11 +123,57 @@ it('stops at the scan bound and says the pass was partial', async () => {
   const outcome = await applyCashRulesForOwner(exec, USER);
 
   expect(outcome.complete).toBe(false);
-  // Exactly the bound was read — no page overshoots it, and the count reported
-  // is the work actually done rather than the ledger's size.
-  const scanned = scans.reduce((total, scan) => total + Number(scan.params.at(-1)), 0);
-  expect(scanned).toBe(CASH_RULE_APPLY_MOVEMENT_SCAN_MAX);
+  const limits = scans.map((scan) => Number(scan.params.at(-1)));
+  // Exactly the bound was read into pages — no page overshoots it, and the
+  // count reported is the work actually done rather than the ledger's size.
+  expect(limits.slice(0, -1).reduce((total, limit) => total + limit, 0)).toBe(
+    CASH_RULE_APPLY_MOVEMENT_SCAN_MAX,
+  );
   expect(outcome.movementsTagged).toBe(CASH_RULE_APPLY_MOVEMENT_SCAN_MAX);
+  // The closing statement is the one-row probe: with the budget spent, the walk
+  // still has to ASK whether anything is left rather than assume it is. Here a
+  // row comes back, which is what makes the pass honestly partial.
+  expect(limits.at(-1)).toBe(1);
+});
+
+it('reports a ledger that ends exactly on the bound as a complete pass', async () => {
+  // The walk only learns it is finished by reading, so a ledger whose last page
+  // fills the budget to the byte used to be reported as partial — telling a
+  // user whose every movement was checked that only the newest ones were.
+  const rows = ledger(CASH_RULE_APPLY_MOVEMENT_SCAN_MAX);
+  const { executor: exec, scans } = executor(rows);
+
+  const outcome = await applyCashRulesForOwner(exec, USER);
+
+  expect(outcome).toEqual({
+    movementsTagged: CASH_RULE_APPLY_MOVEMENT_SCAN_MAX,
+    complete: true,
+  });
+  // Every page was full, so exhaustion could not be inferred from a short one:
+  // the closing one-row probe came back empty and settled it.
+  expect(Number(scans.at(-1)!.params.at(-1))).toBe(1);
+});
+
+it('matches at most the contract note ceiling of whatever the ledger stored', async () => {
+  // A stored note is not bounded by the cash contract on every lane that writes
+  // one: the import apply path books service-direct with the raw CSV cell, and
+  // the column is `text`. The re-run therefore clips the string it matches, so
+  // one page stays bounded in BYTES and not only in rows (#1743).
+  const buried = ledger(1);
+  buried[0]!.note = `${'x'.repeat(CASH_MOVEMENT_NOTE_MAX)} SPAR`;
+  expect(await applyCashRulesForOwner(executor(buried).executor, USER)).toEqual({
+    movementsTagged: 0,
+    complete: true,
+  });
+
+  // The same needle inside the ceiling still tags — the bound is what is
+  // pinned here, not a rule that stopped working.
+  const reachable = ledger(1);
+  reachable[0]!.note = `SPAR ${'x'.repeat(CASH_MOVEMENT_NOTE_MAX)}`;
+  expect(await applyCashRulesForOwner(executor(reachable).executor, USER)).toEqual({
+    movementsTagged: 1,
+    complete: true,
+  });
 });
 
 it('reads nothing at all when the owner has no rules', async () => {

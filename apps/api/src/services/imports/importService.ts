@@ -643,6 +643,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     // unbounded cell would make the per-row cost of staging a statement
     // unbounded too. The stored note is untouched: only the string HANDED TO
     // THE ENGINE is clipped, to the ceiling the contract already declares.
+    // `applyCashRuleTags` clips identically at book time, so a needle past the
+    // ceiling is untagged on BOTH paths — this is a parity clip, not a
+    // preview-only one.
     const note = (row.note?.trim() ?? '').slice(0, CASH_MOVEMENT_NOTE_MAX);
     if (note === '') return null;
     const tags = tagsByRules(note, rules);
