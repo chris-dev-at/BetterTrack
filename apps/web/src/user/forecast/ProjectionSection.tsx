@@ -38,6 +38,8 @@ import {
   clampForecastReturnPct,
   normalizeStandingOrders,
   projectNetWorth,
+  returnFactorContainsDistributions,
+  type ForecastAssetPrice,
   type ForecastWhatIfPlan,
 } from './projection';
 
@@ -56,6 +58,13 @@ const ProjectionChart = lazy(() =>
  * individually and the base line responds; what-if plans are local state only
  * (never persisted). The engine (`./projection`) is pure and hand-fixtured; this
  * surface only resolves inputs and renders — compact per the anti-bloat rule.
+ *
+ * The factors are not independent, and the engine owns the rule that says so
+ * (#1892): a sampled return is a TOTAL return, so the projected dividend income
+ * is already inside the line it draws and is not added on top of it. This
+ * surface renders that composition — the dividend control stays on the page,
+ * disabled, saying which factor already carries its number — rather than
+ * restating the arithmetic.
  */
 
 /**
@@ -215,8 +224,11 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     FORECAST_HORIZON_MAX_YEARS,
   );
   const enteredReturnPct = safeNumber(returnPct);
-  const annualReturnPct = returnEnabled ? clampForecastReturnPct(enteredReturnPct) : 0;
-  const returnPctIsClamped = returnEnabled && enteredReturnPct !== annualReturnPct;
+  // `null`, not 0, when the factor is off: the engine reads the absence of a
+  // return assumption as the one state where projected income is a flow of its
+  // own (#1892), and a 0 %/yr assumption is not that state.
+  const annualReturnPct = returnEnabled ? clampForecastReturnPct(enteredReturnPct) : null;
+  const returnPctIsClamped = annualReturnPct !== null && enteredReturnPct !== annualReturnPct;
   // Three distinct dividend-factor states (#1681). No market intel on this
   // deployment, or an account mode that never reads the endpoint (paranoid
   // vaults project locally) ⇒ `dividendProjection` stays undefined and no
@@ -250,6 +262,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   // refused before computing anything. "Too many holdings to fan out" and "one
   // holding could not be computed" are different answers to the user.
   const dividendTruncated = dividendProjection?.truncated === true;
+  // A fifth state, and the one the tab ships in (#1892): the return factor is
+  // on, so the curve ALREADY contains this income — the sampled TWR is a total
+  // return and a `dividend` is internal to it by design (§domain cashLedger).
+  // Adding the projection on top would book the same euro twice, so the engine
+  // drops it; the control says why instead of offering a toggle that either
+  // moves nothing or moves the line wrongly.
+  const dividendInReturn = dividendAvailable && returnFactorContainsDistributions(annualReturnPct);
   const monthlyDividend =
     dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalBase : 0;
 
@@ -261,11 +280,28 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   // schedule will book 3.000 €. Absent (no orders loaded, or none that continue
   // forward) stays the plain enabled toggle contributing nothing, and a
   // base-matching set is the ordinary resolved factor.
+  //
+  // A buy-asset order's `amount` is a share QUANTITY, so only a unit price turns
+  // it into the money its booking will record (#1892). The portfolio read this
+  // section already makes carries one per holding in the asset's own currency,
+  // and the engine puts that price through the SAME base gate as a cash order's
+  // magnitude. A buy it cannot price at all is the factor's second unresolved
+  // reason — same all-or-nothing rule, its own sentence to the user.
+  const assetPrices = useMemo(() => {
+    const prices = new Map<string, ForecastAssetPrice>();
+    for (const holding of portfolioQuery.data?.holdings ?? []) {
+      if (holding.price === null) continue;
+      prices.set(holding.asset.id, { price: holding.price, currency: holding.asset.currency });
+    }
+    return prices;
+  }, [portfolioQuery.data]);
   const normalizedOrders = normalizeStandingOrders(
     ordersQuery.data?.orders ?? [],
     netWorthCurrency,
+    assetPrices,
   );
-  const ordersUnresolved = normalizedOrders.foreignCurrencies.length > 0;
+  const ordersUnresolved =
+    normalizedOrders.foreignCurrencies.length > 0 || normalizedOrders.unpricedAssets.length > 0;
   const standingOrders = ordersEnabled && !ordersUnresolved ? normalizedOrders.orders : [];
 
   const whatIfPlans: ForecastWhatIfPlan[] = plans.map((plan, index) => ({
@@ -426,32 +462,38 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             checked={ordersEnabled && !ordersUnresolved}
             disabled={ordersUnresolved}
             note={
-              ordersUnresolved
+              normalizedOrders.foreignCurrencies.length > 0
                 ? t('forecast.projection.ordersUnconvertible', {
                     orderCurrency: normalizedOrders.foreignCurrencies.join(', '),
                     baseCurrency: netWorthCurrency,
                   })
-                : undefined
+                : normalizedOrders.unpricedAssets.length > 0
+                  ? t('forecast.projection.ordersUnpriced', {
+                      assets: normalizedOrders.unpricedAssets.join(', '),
+                    })
+                  : undefined
             }
             onChange={setOrdersEnabled}
           />
           {dividendAvailable || dividendUnresolved ? (
             <FactorToggle
               label={t('forecast.projection.factor.dividends')}
-              checked={dividendEnabled && dividendAvailable}
-              disabled={dividendUnresolved}
+              checked={dividendEnabled && dividendAvailable && !dividendInReturn}
+              disabled={dividendUnresolved || dividendInReturn}
               note={
                 dividendTruncated
                   ? t('forecast.projection.dividendsTruncated')
                   : dividendUnresolved
                     ? t('forecast.projection.dividendsUnresolved')
-                    : // A resolved factor says what its number is made of: a
-                      // `trailing-12m` estimate carries any special dividend of
-                      // the last twelve months and so projects income the
-                      // schedule does not promise, and a book may legitimately
-                      // mix the two bases (#1790). The contract has named the
-                      // basis since #1741; this is the Forecast rendering it.
-                      dividendBasisNote(dividendProjection?.basis ?? null, t)
+                    : dividendInReturn
+                      ? t('forecast.projection.dividendsInReturn')
+                      : // A resolved factor says what its number is made of: a
+                        // `trailing-12m` estimate carries any special dividend of
+                        // the last twelve months and so projects income the
+                        // schedule does not promise, and a book may legitimately
+                        // mix the two bases (#1790). The contract has named the
+                        // basis since #1741; this is the Forecast rendering it.
+                        dividendBasisNote(dividendProjection?.basis ?? null, t)
               }
               onChange={setDividendEnabled}
             />
