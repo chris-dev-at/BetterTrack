@@ -362,7 +362,10 @@ export async function runEarningsReminderScan(
   // GLOBAL watchlist provenance is kept in paranoid mode. This query never
   // joins portfolios/transactions and never selects an account-owned (custom)
   // asset row, so these rows and their provider work are safe without an
-  // account-mode guard.
+  // account-mode guard. It does carry the recipient predicate itself
+  // (`listAllWatchAssets`): the pass below discovers its recipients through
+  // `listNormalUserIds`, this one reads watchlist rows directly, and a
+  // disabled account must not be reminded from either.
   for (const watched of await intelRepo.listAllWatchAssets()) {
     await processRow(watched);
   }

@@ -133,6 +133,7 @@ const NOTHING: DividendScanResult = {
   candidates: 0,
   emitted: 0,
   suppressed: 0,
+  ambiguous: 0,
   failed: 0,
   errored: 0,
   holdersSkipped: 0,
@@ -353,6 +354,8 @@ describe('marketIntel.dividendScan — notify-once guard (#1791)', () => {
   const EX_DATE = '2026-07-21T00:00:00.000Z';
   const upcoming = [{ exDate: EX_DATE, payDate: null, amount: 0.3, currency: 'USD' }];
   const day = (n: number) => NOW + n * 86_400_000;
+  /** An ex-date `n` days after the fixed clock, as the provider stamps it. */
+  const exOn = (n: number) => new Date(day(n)).toISOString();
 
   /** Emits into the real dispatcher AND records every emit, so "one
    *  notification across all channels" is asserted at the fan-out's source. */
@@ -427,6 +430,100 @@ describe('marketIntel.dividendScan — notify-once guard (#1791)', () => {
     expect(amended).toMatchObject({ emitted: 0, suppressed: 1, degraded: false });
     expect(notify.emits).toHaveLength(1);
     expect(notify.emits[0]).toMatchObject({ exDate: EX_DATE });
+  });
+
+  it('notifies for BOTH payouts when two land inside one horizon', async () => {
+    // The weekly distributor (#1894): the horizon admits any pair of ex-dates up
+    // to DIVIDEND_EVENT_HORIZON_DAYS apart, so the match window has to sit
+    // strictly below it. At the old seven days the anchor called these two the
+    // same payout and the second was swallowed — silently, and counted as a
+    // clean `suppressed`, for the anchor's whole 45-day life.
+    const user = await harness.seedUser({ email: 'weekly@bt.test', username: 'weekly' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    // Same amount on both, so nothing but the distance can separate them.
+    const first = exOn(0);
+    const second = exOn(DIVIDEND_EVENT_HORIZON_DAYS);
+    const result = await runDividendEventsScan({
+      ...scanDeps({
+        holders: [holder(user.id)],
+        upcoming: [
+          { exDate: first, payDate: null, amount: 0.3, currency: 'USD' },
+          { exDate: second, payDate: null, amount: 0.3, currency: 'USD' },
+        ],
+      }),
+      notify,
+    });
+
+    expect(result).toMatchObject({
+      candidates: 2,
+      emitted: 2,
+      suppressed: 0,
+      ambiguous: 0,
+      degraded: false,
+    });
+    expect(notify.emits.map((e) => e.type === 'dividend.event' && e.exDate)).toEqual([
+      first,
+      second,
+    ]);
+  });
+
+  it('notifies for a special dividend paid days beside the regular one', async () => {
+    // Inside the match window the distance no longer decides alone: the payout
+    // identity does, and a special pays a different amount.
+    const user = await harness.seedUser({ email: 'special@bt.test', username: 'special' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const result = await runDividendEventsScan({
+      ...scanDeps({
+        holders: [holder(user.id)],
+        upcoming: [
+          { exDate: exOn(3), payDate: null, amount: 0.3, currency: 'USD' },
+          { exDate: exOn(4), payDate: null, amount: 2.5, currency: 'USD' },
+        ],
+      }),
+      notify,
+    });
+
+    expect(result).toMatchObject({ emitted: 2, suppressed: 0, ambiguous: 0, degraded: false });
+    expect(notify.emits.map((e) => e.type === 'dividend.event' && e.amount)).toEqual([0.3, 2.5]);
+  });
+
+  it('counts a payout it cannot tell apart as ambiguous, not as a clean suppression', async () => {
+    // A provider that gives no amount leaves nothing but the date, so a nearby
+    // date is undecidable. The marker still refuses — a duplicate notification
+    // is the worse failure — but the run says so: `ambiguous`, folded into
+    // `skipped`, so a run that may have swallowed a payout cannot log as
+    // complete.
+    const user = await harness.seedUser({ email: 'amountless@bt.test', username: 'amountless' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const deps = {
+      ...scanDeps({
+        holders: [holder(user.id)],
+        upcoming: [{ exDate: exOn(3), payDate: null, amount: null, currency: 'USD' }],
+      }),
+      notify,
+    };
+
+    const announced = await runDividendEventsScan(deps);
+    const nearby = await runDividendEventsScan({
+      ...deps,
+      marketData: marketDataWith([
+        { exDate: exOn(4), payDate: null, amount: null, currency: 'USD' },
+      ]),
+      now: () => day(1),
+    });
+
+    expect(announced.emitted).toBe(1);
+    expect(nearby).toMatchObject({
+      emitted: 0,
+      suppressed: 0,
+      ambiguous: 1,
+      skipped: 1,
+      degraded: true,
+    });
+    expect(notify.emits).toHaveLength(1);
   });
 
   it('still notifies for the NEXT payout, a month after the one already sent', async () => {

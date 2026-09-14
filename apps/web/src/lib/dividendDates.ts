@@ -1,6 +1,6 @@
 import type { DividendEvent } from '@bettertrack/contracts';
 
-import { displayZoneDay } from './format';
+import { displayZoneDay, displayZoneDayOf } from './format';
 
 /**
  * The date a dividend event is *upcoming* on, shared by every surface that
@@ -21,6 +21,12 @@ import { displayZoneDay } from './format';
  * On the UTC day (the shape until #1827) the boundary lagged for the two hours
  * after Vienna midnight, which is #1758's defect reopened nightly: an event that
  * went ex yesterday was still labelled upcoming.
+ *
+ * BOTH sides are that zone's day — the event's as much as today's
+ * ({@link displayZoneDayOf}). #1827 converted only the boundary, so a payout
+ * stamped `…T23:30:00.000Z`, which renders as the NEXT Vienna day, was compared
+ * as the previous one: the row was labelled with a date one day ahead, and then
+ * dropped on the day that label named.
  */
 
 export interface UpcomingDividendDate {
@@ -41,7 +47,7 @@ export function upcomingDividendDate(
   event: Pick<DividendEvent, 'exDate' | 'payDate'>,
   todayStart: string = displayZoneDay(),
 ): UpcomingDividendDate | null {
-  let best: UpcomingDividendDate | null = null;
+  let best: { date: UpcomingDividendDate; day: string } | null = null;
   // Ex first so a same-day tie keeps the ex label (strictly-earlier wins below).
   for (const candidate of [
     { iso: event.exDate, isEx: true },
@@ -49,11 +55,11 @@ export function upcomingDividendDate(
   ]) {
     const { iso } = candidate;
     if (iso === null) continue;
-    const day = iso.slice(0, 10);
-    if (day < todayStart) continue;
-    if (best === null || day < best.iso.slice(0, 10)) best = { iso, isEx: candidate.isEx };
+    const day = displayZoneDayOf(iso);
+    if (day === null || day < todayStart) continue;
+    if (best === null || day < best.day) best = { date: { iso, isEx: candidate.isEx }, day };
   }
-  return best;
+  return best?.date ?? null;
 }
 
 /**
@@ -70,7 +76,8 @@ export function nextUpcomingDividend<T extends Pick<DividendEvent, 'exDate' | 'p
   for (const event of upcoming) {
     const date = upcomingDividendDate(event, todayStart);
     if (date === null) continue;
-    const day = date.iso.slice(0, 10);
+    const day = displayZoneDayOf(date.iso);
+    if (day === null) continue;
     if (best === null || day < best.day) best = { event, day };
   }
   return best?.event ?? null;

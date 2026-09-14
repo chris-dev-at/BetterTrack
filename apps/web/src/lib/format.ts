@@ -443,6 +443,22 @@ export function displayZoneDay(at: Date = new Date()): string {
 }
 
 /**
+ * The display-zone day an ISO timestamp is RENDERED on — the other side of every
+ * comparison {@link displayZoneDay} supplies the boundary for (#1827 fixed the
+ * boundary and left this side as the UTC substring). A `…T23:30:00.000Z` stamp
+ * that `formatDate` prints as 06.09.2026 has to FILTER as the 6th too, or it
+ * vanishes on the very day the reader's calendar shows for it.
+ *
+ * Null when absent or unparseable, the same convention `formatDate` handles with
+ * an em dash — the caller decides what an undated row means.
+ */
+export function displayZoneDayOf(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : displayZoneDay(date);
+}
+
+/**
  * The calendar month an instant falls in, in the display zone, as `YYYY-MM` —
  * the key the cash surfaces ask the server for. It is the server's own period
  * key (`cashBudgetService.periodKeyFor`), so the month a page opens on is the

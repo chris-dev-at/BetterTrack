@@ -24,7 +24,7 @@ import type { MarketIntelRepository } from '../../data/repositories/marketIntelR
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
-import { marketIntelDisplayDay } from './displayDay';
+import { marketIntelDisplayDay, marketIntelEventDay } from './displayDay';
 import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
 
 /**
@@ -407,10 +407,15 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
           // across the whole calendar (§13.5 V5-P5).
           return null;
         }
-        // Only dated upcoming reports make the panel; an undated/absent next drops.
+        // Only dated upcoming reports make the panel; an undated/absent next
+        // drops — and so does one whose stamp will not parse.
         if (!next || !next.date) return null;
-        // …and so does a report that already happened (see `todayStart`).
-        if (next.date.slice(0, 10) < todayStart) return null;
+        const reportDay = marketIntelEventDay(next.date);
+        if (reportDay === null) return null;
+        // …and so does a report that already happened. Measured on the day the
+        // date is RENDERED in on BOTH sides (see displayDay.ts): on the UTC
+        // substring a late-UTC stamp vanished on the Vienna day it is shown as.
+        if (reportDay < todayStart) return null;
         return {
           assetId: a.assetId,
           symbol: a.symbol,
