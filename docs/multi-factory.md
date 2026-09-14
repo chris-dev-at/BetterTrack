@@ -113,6 +113,41 @@ and the CI-fix state along with the queue record.
 > rm -f multi-factory/state/control/requeue-count/<issue>
 > ```
 
+**The CI-fix `exhausted` record is head-scoped, and no queue entry is ever
+dropped silently.** `state/ci-fix/issue-<n>-pr<pr>.json` records how much of the
+one-CI-fix budget a PR has spent, together with the `source_head` it was spent
+on. `exhausted` retires that PR — but only for **that head**. When the merger
+meets an `exhausted` record it now reads the PR's current head first: a record
+naming a different head (or no head) is stale by construction, so the _record_
+is deleted and the freshly approved head starts again at `invocations 0/2`,
+while the queue entry stays put; an unreadable head keeps the entry and retries
+next tick. Only a record whose `source_head` **is** the current head is
+terminal, and then it logs `merger: CI-fix budget exhausted for PR #N on head
+…` and parks the issue `needs-human` before unlinking. That ordering is the
+whole rule: in #1900 a record written for a head ten days earlier short-circuited
+on every later head and unlinked the queue entry with no log, no park and no
+requeue — the scheduler saw a still-`autopilot` issue with nothing queued,
+re-dispatched it, and the worker re-reviewed an already-approved head 186 times
+for $434.64 of review on one PR. Every `rm -f` of a merge-queue record in the
+merger is therefore preceded by a `log` naming the PR and the reason, and
+`test.sh` guards that structurally — a new drop site without a log fails the
+suite.
+
+**Resume short-circuit (an approved head is never re-reviewed).** When a worker
+resumes an issue that already has a linked PR, it reads the PR's head and the
+canonical approval for it from the durable comment thread (the same
+`contracts.sh` helper the merger validates against). If the approval already
+covers the current head, the worker re-emits the merge-queue entry itself and
+finishes the assignment — no reviewer runs. Only a **changed** head is new work.
+Re-emitting is idempotent (`enqueue_merge` is a no-op when an entry for that PR
+already carries the same approved head, kind and comment id), so repeated
+resumes converge on one entry. Two things deliberately keep their old
+behaviour: durable triage state (`state/triage/issue-<n>-pr<pr>.json`) outranks
+the short-circuit, because it replays an exact checker/escalation stage that a
+blind re-enqueue would skip; and an unreadable PR falls through to a normal
+review rather than enqueueing on a guess. Together with the rule above this is
+belt-and-braces — a merger stall can no longer bill a single reviewer run.
+
 ## Difficulty routing & model providers (mflib.sh)
 
 Issues are classified by **difficulty**, not by model — exactly one label:
