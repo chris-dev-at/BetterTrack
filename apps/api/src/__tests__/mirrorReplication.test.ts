@@ -17,6 +17,7 @@ import { createCashMovementRepository } from '../data/repositories/cashMovementR
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import { withExclusiveParanoidTransitionTestLock } from '../data/repositories/paranoidEnforcementRepository';
 import { ApiError } from '../errors';
+import type { MirrorNotificationEvent } from '../events';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -1122,20 +1123,16 @@ describe('mirrorchain M2 — replication core', () => {
       })
       .where(eq(schema.portfolios.id, bPid));
 
-    await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
+    const swept = {
       applied: 0,
       lagging: 0,
       skipped: 0,
       advanced: 0,
       stagnant: 0,
-    });
-    await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
-      applied: 0,
-      lagging: 0,
-      skipped: 0,
-      advanced: 0,
-      stagnant: 0,
-    });
+      stagnantUserIds: [],
+    };
+    await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual(swept);
+    await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual(swept);
 
     const membershipAfter = await mirrorRepo.findActiveMembership(chain.id, bob.id);
     const rowsAfter = await harness.db
@@ -1172,7 +1169,10 @@ describe('mirrorchain — no-progress escalation + retry sync (#1611)', () => {
     repo = createMirrorchainRepository(h.db);
   });
 
-  const stalledEvents = () => events.filter((event) => event.type === 'mirror.sync_stalled');
+  const stalledEvents = () =>
+    events.filter(
+      (event): event is MirrorNotificationEvent => event.type === 'mirror.sync_stalled',
+    );
 
   async function makeParanoid(userId: string) {
     await withExclusiveParanoidTransitionTestLock(h.db, userId, async () => {
@@ -1216,7 +1216,7 @@ describe('mirrorchain — no-progress escalation + retry sync (#1611)', () => {
   }
 
   it('reports a permanently-unreplayable copy as skipped with zero forward progress', async () => {
-    const { chain } = await chainBlockedByDepartedParanoidAuthor();
+    const { alice, bob, chain } = await chainBlockedByDepartedParanoidAuthor();
 
     const result = await h.ctx.mirror.replicateChain(chain.id);
 
@@ -1227,8 +1227,10 @@ describe('mirrorchain — no-progress escalation + retry sync (#1611)', () => {
     expect(result.skipped).toBe(2);
     expect(result.lagging).toBe(2);
     // Both copies were ALREADY behind when the pass began — a genuine stall,
-    // not lag that appeared mid-pass, so the job may escalate on it.
+    // not lag that appeared mid-pass, so the job may escalate on it. The ids
+    // travel with the count: they are what aims the escalation.
     expect(result.stagnant).toBe(2);
+    expect([...result.stagnantUserIds].sort()).toEqual([alice.id, bob.id].sort());
     // Idempotent: a second pass is just as fruitless, and just as quiet.
     await expect(h.ctx.mirror.replicateChain(chain.id)).resolves.toEqual(result);
   });
@@ -1255,6 +1257,37 @@ describe('mirrorchain — no-progress escalation + retry sync (#1611)', () => {
     expect(self.sync).toMatchObject({ synced: false, stalled: true });
     const [summary] = await h.ctx.mirror.listChainsForUser(bob.id);
     expect(summary!.sync.stalled).toBe(true);
+  });
+
+  /**
+   * The escalation must act on exactly the set the DECISION was made on. The
+   * job earns the right to escalate from `stagnant`, which deliberately
+   * excludes a copy that only fell behind (or joined) while the pass ran — but
+   * the escalation re-derives "lagging" from the DB, where that copy is behind
+   * too. Unaimed, it marks them stalled and mails them "could not finish
+   * syncing… choose Retry sync" for a copy nothing was ever stuck on.
+   */
+  it('escalation marks and notifies only the copies the pass proved stagnant', async () => {
+    const { alice, bob, chain } = await chainBlockedByDepartedParanoidAuthor();
+    await h.ctx.mirror.replicateChain(chain.id);
+
+    // Alice's copy is just as far behind in the DB; only bob's is aimed at.
+    const escalation = await h.ctx.mirror.escalateStalledChain(chain.id, { userIds: [bob.id] });
+
+    expect(escalation).toEqual({ escalated: true, stalled: 1 });
+    const sheet = await h.ctx.mirror.getMemberList(bob.id, chain.id);
+    const stalledByUser = new Map(
+      sheet.members.map((member) => [member.userId, member.sync.stalled]),
+    );
+    expect(stalledByUser.get(bob.id)).toBe(true);
+    // Behind, but never marked: no "Sync stalled", no Retry sync affordance.
+    expect(stalledByUser.get(alice.id)).toBe(false);
+    // Every notice is ABOUT bob's copy — alice hears about it as the chain's
+    // owner, never as a member whose own copy was called stalled.
+    expect(stalledEvents().length).toBeGreaterThan(0);
+    expect(stalledEvents().map((event) => event.subjectUserIds)).toEqual(
+      stalledEvents().map(() => [bob.id]),
+    );
   });
 
   it('a copy that is merely behind is never marked stalled', async () => {

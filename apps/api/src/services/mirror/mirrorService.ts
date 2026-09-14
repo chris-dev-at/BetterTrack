@@ -236,7 +236,27 @@ export interface ReplicateChainResult {
    * counted here was stuck before this pass began.
    */
   stagnant: number;
+  /**
+   * The user ids behind {@link ReplicateChainResult.stagnant} (always
+   * `stagnant === stagnantUserIds.length` — both are derived from one filter).
+   * They travel so the escalation can mark and notify EXACTLY the copies the
+   * decision was made on: `escalateStalledChain` re-derives "lagging" from the
+   * DB, which also contains the copy that joined or received a write mid-pass
+   * and which `stagnant` deliberately excluded. Without the aim, that member
+   * reads "Sync stalled" + Retry sync for a copy that was merely young.
+   */
+  stagnantUserIds: string[];
 }
+
+/** A pass that swept nothing: no chain, or a copy the guards put out of reach. */
+const emptyReplication = (): ReplicateChainResult => ({
+  applied: 0,
+  lagging: 0,
+  skipped: 0,
+  advanced: 0,
+  stagnant: 0,
+  stagnantUserIds: [],
+});
 
 /** What {@link MirrorService.escalateStalledChain} did with a no-progress chain. */
 export interface MirrorStallEscalation {
@@ -390,19 +410,34 @@ export interface MirrorService {
    * (retries exhausted → dead-letter), never on a transient blip, so it never
    * tells a member to "Retry sync" for a stall BullMQ is already healing.
    * Idempotent and best-effort: re-derives the lagging set from the DB.
+   *
+   * `opts.userIds` narrows it to those copies — the escalation path passes the
+   * set it actually marked, so a member who is merely behind is not told to
+   * "Retry sync" for a copy that carries no Retry affordance. The
+   * permanent-failure path passes nothing: a poison op freezes EVERY copy
+   * behind it, so there the whole lagging set is the honest answer.
    */
-  notifyChainStalled(chainId: string): Promise<void>;
+  notifyChainStalled(chainId: string, opts?: { userIds?: readonly string[] }): Promise<void>;
   /**
    * The end of the road for a chain that replayed and moved nothing (design
-   * §2): mark every still-lagging copy stalled at its current watermark and,
+   * §2): mark the still-lagging copies stalled at their current watermark and,
    * on the transition into that state, fire the `mirror.sync_stalled` notice.
    * Called by the replicate job INSTEAD of chaining another identical pass —
    * without it a permanently-unreplayable member (a departed op author who
    * later went paranoid) spins the queue forever while the copy silently shows
    * "Syncing… 0 %". Idempotent: re-running at the same watermark re-marks and
    * reports `escalated: false`.
+   *
+   * `opts.userIds` aims it: the job passes
+   * {@link ReplicateChainResult.stagnantUserIds}, so the marked (and notified)
+   * set is exactly the set the escalation decision was made on and a copy that
+   * only fell behind DURING the pass is left alone. Omitted → every lagging
+   * copy, the pre-hysteresis behavior.
    */
-  escalateStalledChain(chainId: string): Promise<MirrorStallEscalation>;
+  escalateStalledChain(
+    chainId: string,
+    opts?: { userIds?: readonly string[] },
+  ): Promise<MirrorStallEscalation>;
   /**
    * "Retry sync" (design §2) — the action the `mirror.sync_stalled` notice has
    * always named. Replays the CALLER'S OWN copy from its watermark inline
@@ -1704,6 +1739,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     return Number.isFinite(seq) ? seq : null;
   }
 
+  function parseStalledSeq(raw: string | null | undefined): number | null {
+    if (raw == null) return null;
+    const seq = Number(raw);
+    return Number.isFinite(seq) ? seq : null;
+  }
+
   /** The stalled watermarks of a whole roster in one round trip (read paths). */
   async function stalledSeqsOf(
     chainId: string,
@@ -1714,10 +1755,29 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     if (ids.length === 0) return out;
     const values = await redis.mget(ids.map((id) => stalledKey(chainId, id)));
     ids.forEach((id, i) => {
-      const raw = values[i];
-      if (raw == null) return;
-      const seq = Number(raw);
-      if (Number.isFinite(seq)) out.set(id, seq);
+      const seq = parseStalledSeq(values[i]);
+      if (seq !== null) out.set(id, seq);
+    });
+    return out;
+  }
+
+  /**
+   * The mirror image of {@link stalledSeqsOf}: ONE member's stalled watermark
+   * across many chains, in one round trip. The portfolio-list badge and the
+   * chain list both decorate every chain the caller belongs to, and a GET per
+   * chain inside those loops is a Redis round trip per row on a hot read path.
+   */
+  async function stalledSeqsForUser(
+    userId: string,
+    chainIds: readonly string[],
+  ): Promise<Map<string, number>> {
+    const ids = [...new Set(chainIds)];
+    const out = new Map<string, number>();
+    if (ids.length === 0) return out;
+    const values = await redis.mget(ids.map((chainId) => stalledKey(chainId, userId)));
+    ids.forEach((chainId, i) => {
+      const seq = parseStalledSeq(values[i]);
+      if (seq !== null) out.set(chainId, seq);
     });
     return out;
   }
@@ -1887,6 +1947,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           activeByPortfolio.set(membership.portfolioId, membership);
         }
       }
+      // One MGET for every chain the caller still has a live copy in, instead of
+      // a GET per portfolio row inside the loop below.
+      const stalledByChain = await stalledSeqsForUser(
+        userId,
+        [...activeByPortfolio.values()].map((membership) => membership.chainId),
+      );
       const chainCache = new Map<string, Awaited<ReturnType<typeof repo.getChain>>>();
       async function getChainCached(chainId: string) {
         if (chainCache.has(chainId)) return chainCache.get(chainId)!;
@@ -1924,11 +1990,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               chainName: chain.name,
               role: active.role,
               memberCount: activeMembersByChain.get(chain.id)?.length ?? 0,
-              sync: syncStateOf(
-                active.appliedSeq,
-                chain.lastSeq,
-                await stalledSeqOf(chain.id, userId),
-              ),
+              sync: syncStateOf(active.appliedSeq, chain.lastSeq, stalledByChain.get(chain.id)),
             };
             out.push({ ...summary, mirror: badge });
             continue;
@@ -2791,10 +2853,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
     async replicateChain(chainId) {
       const chain = await repo.getChain(chainId);
-      if (!chain) return { applied: 0, lagging: 0, skipped: 0, advanced: 0, stagnant: 0 };
+      if (!chain) return emptyReplication();
       const members = await repo.listActiveMembers(chainId);
       if (await hasUnavailableActiveMemberPortfolio(members)) {
-        return { applied: 0, lagging: 0, skipped: 0, advanced: 0, stagnant: 0 };
+        return emptyReplication();
       }
       // Watermarks as they stood BEFORE the sweep: the only honest measure of
       // forward progress, since an op that applies nothing locally (a
@@ -2828,7 +2890,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const after = await repo.getChain(chainId);
       const membersAfter = await repo.listActiveMembers(chainId);
       if (await hasUnavailableActiveMemberPortfolio(membersAfter)) {
-        return { applied, lagging: 0, skipped, advanced: 0, stagnant: 0 };
+        return { ...emptyReplication(), applied, skipped };
       }
       const lagging = membersAfter.filter(
         (m) => m.userId && m.portfolioId && m.appliedSeq < (after?.lastSeq ?? 0),
@@ -2841,13 +2903,16 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       // against the watermarks and `last_seq` as they stood BEFORE the sweep, so
       // an op appended mid-pass — or a member who joined inside the window and
       // has no `seqBefore` entry — cannot make a healthy chain look stalled.
-      const stagnant = membersAfter.filter((m) => {
-        if (!m.userId || !m.portfolioId) return false;
-        const before = seqBefore.get(m.id);
-        // Joined mid-pass, or was already caught up when the pass started.
-        if (before === undefined || before >= chain.lastSeq) return false;
-        return m.appliedSeq <= before;
-      }).length;
+      const stagnantUserIds = membersAfter
+        .filter((m) => {
+          if (!m.userId || !m.portfolioId) return false;
+          const before = seqBefore.get(m.id);
+          // Joined mid-pass, or was already caught up when the pass started.
+          if (before === undefined || before >= chain.lastSeq) return false;
+          return m.appliedSeq <= before;
+        })
+        .map((m) => m.userId!);
+      const stagnant = stagnantUserIds.length;
       if (failures.length > 0) {
         // Throw AFTER the sweep so BullMQ retry/backoff → dead-letter takes over
         // (the other copies still caught up — a stalled copy lags, never
@@ -2862,17 +2927,26 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           }`,
         );
       }
-      return { applied, lagging, skipped, advanced, stagnant };
+      return { applied, lagging, skipped, advanced, stagnant, stagnantUserIds };
     },
 
-    async escalateStalledChain(chainId) {
+    async escalateStalledChain(chainId, opts) {
       const chain = await repo.getChain(chainId);
       if (!chain) return { escalated: false, stalled: 0 };
       const members = await repo.listActiveMembers(chainId);
       if (await hasUnavailableActiveMemberPortfolio(members))
         return { escalated: false, stalled: 0 };
+      // Aim at the copies the caller PROVED stagnant (see `opts.userIds`): the
+      // DB's lagging set also holds the copy that joined, or received an op,
+      // while the pass ran — marking that one would put "Sync stalled" + Retry
+      // sync on a copy whose own scheduleReplicate is already on its way.
+      const aimed = opts?.userIds ? new Set(opts.userIds) : null;
       const lagging = members.filter(
-        (member) => member.userId && member.portfolioId && member.appliedSeq < chain.lastSeq,
+        (member) =>
+          member.userId &&
+          member.portfolioId &&
+          member.appliedSeq < chain.lastSeq &&
+          (!aimed || aimed.has(member.userId)),
       );
       if (lagging.length === 0) return { escalated: false, stalled: 0 };
       let escalated = false;
@@ -2881,7 +2955,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       }
       // Only the transition notifies: a chain nobody can unblock is swept again
       // on every later write, and a notice per sweep would be a nag, not a signal.
-      if (escalated) await service.notifyChainStalled(chainId);
+      // The notice goes to exactly the copies just marked — the ones that now
+      // carry the Retry sync affordance the copy names.
+      if (escalated) {
+        await service.notifyChainStalled(chainId, {
+          userIds: lagging.map((member) => member.userId!),
+        });
+      }
       return { escalated, stalled: lagging.length };
     },
 
@@ -2933,21 +3013,25 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       };
     },
 
-    async notifyChainStalled(chainId) {
+    async notifyChainStalled(chainId, opts) {
       // The genuine-stall signal (design §2/§11), fired only once the replicate
       // job's retries are exhausted (permanent failure → dead-letter → Problems).
       // Re-derive the lagging set from the DB: every copy still behind `last_seq`
       // is stuck (ops apply strictly in order, so a poison op freezes ALL copies
       // behind it), and its member + the owner are told, deduped per copy
       // watermark so a still-stuck copy re-notifies only after it makes progress.
+      // `opts.userIds` narrows that set to the copies the caller marked stalled
+      // (the escalation path) — see the interface doc.
       const chain = await repo.getChain(chainId);
       if (!chain) return;
       const members = await repo.listActiveMembers(chainId);
       if (await hasUnavailableActiveMemberPortfolio(members)) return;
+      const aimed = opts?.userIds ? new Set(opts.userIds) : null;
       const owner = ownerOf(members);
       for (const stalled of members) {
         if (!stalled.userId || !stalled.portfolioId) continue;
         if (stalled.appliedSeq >= chain.lastSeq) continue; // caught up — not stalled
+        if (aimed && !aimed.has(stalled.userId)) continue;
         const refId = `${stalled.userId}:${stalled.appliedSeq}`;
         const principalIds = [stalled.userId, ...(owner?.userId ? [owner.userId] : [])];
         const eventPrincipals = {
@@ -3000,6 +3084,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: chain.id,
         meta: { chainId: chain.id, portfolioId },
       });
+      // No stalled watermark to read: the chain id was minted by this call, so
+      // `${chain}:${user}` cannot carry a marker and the copy is caught up.
       return summaryOf(member, chain, 1);
     },
 
@@ -3030,6 +3116,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
       return withDynamicReadPrincipalGuards(discover, async (allowedMemberIds) => {
         const memberships = await repo.listActiveMembershipsForUser(userId);
+        // One MGET for the caller's whole membership set — see stalledSeqsForUser.
+        const stalledByChain = await stalledSeqsForUser(
+          userId,
+          memberships.map((member) => member.chainId),
+        );
         const summaries: MirrorChainSummary[] = [];
         for (const member of memberships) {
           const members = await repo.listActiveMembers(member.chainId);
@@ -3038,9 +3129,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           if (!ownerId || (ownerId !== userId && !allowedMemberIds.has(ownerId))) continue;
           const chain = await repo.getChainDisplay(member.chainId);
           if (!chain) continue;
-          summaries.push(
-            summaryOf(member, chain, members.length, await stalledSeqOf(chain.id, userId)),
-          );
+          summaries.push(summaryOf(member, chain, members.length, stalledByChain.get(chain.id)));
         }
         return summaries;
       });
@@ -3748,7 +3837,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         // The chain.rename op bumped last_seq — replicate so every copy skip-acks
         // it and the sync-state read models settle to 100% (design §11).
         await scheduleReplicate(chainId);
-        return summaryOf(actor, updated, members.length);
+        // Carry the actor's stalled watermark like every other read model does:
+        // a rename by a member of a stalled chain must not answer `stalled:
+        // false` for a copy the sheet and the switcher both call stalled.
+        return summaryOf(actor, updated, members.length, await stalledSeqOf(chainId, actorId));
       });
     },
 

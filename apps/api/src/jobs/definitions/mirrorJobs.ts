@@ -85,7 +85,9 @@ export function createMirrorReplicateJob(
         }
         throw err;
       }
-      ctx.logger.info({ chainId, ...result }, 'mirror.replicate complete');
+      // The stagnant USER IDS drive the escalation's aim, not the log line.
+      const { stagnantUserIds, ...counts } = result;
+      ctx.logger.info({ chainId, ...counts }, 'mirror.replicate complete');
       if (result.lagging <= 0) return;
       // Ops appended after this run read `last_seq` would otherwise wait for
       // the next write — chain a fresh job to catch the tail now. ONLY after a
@@ -113,10 +115,16 @@ export function createMirrorReplicateJob(
       // started: an identical pass would do exactly this again.
       // Escalate to the stalled path instead — the members are marked stalled
       // (so their copies stop pretending to sync and offer Retry sync) and the
-      // notice fires once, on the transition into that state.
-      const escalation = await deps.mirror.escalateStalledChain(chainId);
+      // notice fires once, on the transition into that state. Aimed at the
+      // copies this pass PROVED stagnant, so the marked set is the set the
+      // decision was made on: a member who joined (or was written to) while the
+      // pass ran is lagging in the DB but was never stuck, and must not be told
+      // to "Retry sync".
+      const escalation = await deps.mirror.escalateStalledChain(chainId, {
+        userIds: stagnantUserIds,
+      });
       ctx.logger.warn(
-        { chainId, ...result, ...escalation },
+        { chainId, ...counts, ...escalation },
         'mirror.replicate: no forward progress — escalated instead of re-enqueueing',
       );
       if (escalation.stalled > 0 && deps.problems) {

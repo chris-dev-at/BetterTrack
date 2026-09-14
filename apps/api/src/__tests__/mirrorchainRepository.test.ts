@@ -30,7 +30,7 @@ describe('mirrorchainRepository (M1)', () => {
 
   function txPayload(
     mirrorId: string,
-    money?: { quantity?: number; price?: number; fee?: number },
+    money?: { quantity?: number; price?: number; fee?: number; executedAt?: string },
   ): MirrorOpPayload {
     return {
       opVersion: 1,
@@ -41,7 +41,7 @@ describe('mirrorchainRepository (M1)', () => {
       quantity: money?.quantity ?? 1,
       price: money?.price ?? 10,
       fee: money?.fee ?? 0,
-      executedAt: '2026-07-22T10:00:00.000Z',
+      executedAt: money?.executedAt ?? '2026-07-22T10:00:00.000Z',
       note: null,
       allowUncovered: false,
       uncoveredEntryPrice: null,
@@ -385,7 +385,7 @@ describe('mirrorchainRepository (M1)', () => {
         exchange: 'XETRA',
       })
       .returning();
-    const link = async (mirrorId: string, money: Record<string, string>) => {
+    const link = async (mirrorId: string, money: Partial<typeof transactions.$inferInsert>) => {
       const [tx] = await harness.db
         .insert(transactions)
         .values({
@@ -447,6 +447,29 @@ describe('mirrorchainRepository (M1)', () => {
 
     expect((await repo.listDivergentTransactionRows(10)).map((r) => r.mirrorId)).not.toContain(
       ROUNDED,
+    );
+
+    // Same rule on the time axis: `executedAtSchema` is `z.string().datetime()`,
+    // which accepts arbitrary fractional seconds, while the write path stores
+    // through `new Date(...)` — milliseconds. A microsecond submission is
+    // therefore stored truncated on EVERY copy, so it is converged, not
+    // divergent; truncating only the column would report it forever.
+    const SUBMS = '018f0000-0000-7000-8000-0000000000ea';
+    const submitted = '2026-07-22T10:00:00.123456Z';
+    await repo.appendOps(chain.id, [
+      {
+        kind: 'tx.create',
+        mirrorId: SUBMS,
+        actorUserId: owner.id,
+        actorUsername: owner.username,
+        payload: txPayload(SUBMS, { executedAt: submitted }),
+      },
+    ]);
+    await repo.advanceWatermark(member.id, (await repo.getChain(chain.id))!.lastSeq);
+    await link(SUBMS, { executedAt: new Date(submitted) });
+
+    expect((await repo.listDivergentTransactionRows(10)).map((r) => r.mirrorId)).not.toContain(
+      SUBMS,
     );
   });
 });

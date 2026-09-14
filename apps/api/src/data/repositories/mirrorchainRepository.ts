@@ -1223,8 +1223,11 @@ export function createMirrorchainRepository(db: Database) {
      * copy and a raw `is distinct from` would report the whole (converged)
      * chain forever. Rounding the payload to the column's scale reproduces
      * exactly what the insert did, so only a real difference survives.
-     * `executed_at` is compared at millisecond precision for the same reason —
-     * that is the resolution an ISO-8601 payload round-trips.
+     * `executed_at` is truncated to milliseconds on BOTH sides for the same
+     * reason: `executedAtSchema` is `z.string().datetime()`, which accepts
+     * arbitrary fractional seconds, while the write path stores through
+     * `new Date(payload.executedAt)` — millisecond resolution. Truncating only
+     * the column would report a `…:00.123456Z` submission forever.
      */
     async listDivergentTransactionRows(
       limit: number,
@@ -1259,7 +1262,7 @@ export function createMirrorchainRepository(db: Database) {
            or t.price is distinct from round((l.payload ->> 'price')::numeric, 6)
            or t.fee is distinct from coalesce(round((l.payload ->> 'fee')::numeric, 6), 0)
            or date_trunc('milliseconds', t.executed_at)
-              is distinct from (l.payload ->> 'executedAt')::timestamptz
+              is distinct from date_trunc('milliseconds', (l.payload ->> 'executedAt')::timestamptz)
         order by l.chain_id, l.mirror_id, r.portfolio_id
         limit ${limit} offset ${offset}
       `);
