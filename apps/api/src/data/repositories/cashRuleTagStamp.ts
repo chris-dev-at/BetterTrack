@@ -95,6 +95,35 @@ function resultRows(result: unknown): unknown[] {
 const LINK_CHUNK = 500;
 
 /**
+ * How many movements one keyset page of the on-demand re-run reads.
+ *
+ * The scan used to have neither a LIMIT nor a cursor: it selected every noted
+ * movement of every portfolio the user owns into one array and matched in JS,
+ * so a long-lived ledger was materialized whole on a single request (#1743).
+ * Paging keeps the resident set to one page regardless of ledger size, at one
+ * round trip per page — the same bargain `LINK_CHUNK` already makes for writes.
+ */
+const SCAN_PAGE = 500;
+
+/**
+ * The most noted movements ONE press of "apply to existing" may read.
+ *
+ * This is a BACKSTOP, not a pager: it is far above any personal-finance ledger
+ * (a decade of daily noted movements is ~3 600 rows), so a normal account never
+ * meets it and always gets a complete pass. It exists so that one request's
+ * cost has a ceiling at all — the endpoint is authenticated but freely
+ * repeatable, and matching is `O(scanned notes × rules)`, with the rule count
+ * now capped alongside it in `cashTagService`.
+ *
+ * NEWEST FIRST, deliberately. When the bound does bite, the movements a user is
+ * actually looking at are the ones that get tagged, and the response says the
+ * pass was partial rather than reporting a cheerful number for a run that
+ * covered a fraction of the ledger. Pressing again re-covers the same window —
+ * the bound is not a cursor — which is why saying so honestly matters.
+ */
+export const CASH_RULE_APPLY_MOVEMENT_SCAN_MAX = 20_000;
+
+/**
  * The ENABLED rules of one owner, already in evaluation order.
  *
  * `owner` is a scalar SQL expression yielding the user id, so the two callers
@@ -252,10 +281,32 @@ export async function applyCashRulesAtBookTime(
   await applyCashRuleTags(executor, portfolioId, movements, rules);
 }
 
+/** What one on-demand re-run did, and whether it reached the whole ledger. */
+export interface CashRuleApplyOutcome {
+  /** Movements that gained at least one tag in this run. */
+  movementsTagged: number;
+  /**
+   * `false` when {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} stopped the walk
+   * before the ledger ran out — the pass covered the newest movements only.
+   */
+  complete: boolean;
+}
+
+/** One page of the keyset scan: the note to match, plus its cursor position. */
+interface ScannedMovement extends RuleTaggableMovement {
+  /**
+   * `executed_at` rendered as TEXT by Postgres and handed straight back as the
+   * next page's bound. Text, not a `Date`, because a driver that parses
+   * timestamps into JS Dates truncates microseconds — and a cursor that is a
+   * hair off either re-reads a page or silently skips a movement.
+   */
+  cursorExecutedAt: string;
+}
+
 /**
- * ON-DEMAND entry point: run the user's rules across every movement they own
- * that carries a note, in every portfolio they own. Returns how many movements
- * gained at least one tag.
+ * ON-DEMAND entry point: run the user's rules across the movements they own
+ * that carry a note, in every portfolio they own. Returns how many movements
+ * gained at least one tag, and whether the run reached the end of the ledger.
  *
  * WHY THIS EXISTS AT ALL. A rule is normally written after the movements it
  * describes — you look at a month of statements and only then decide that
@@ -267,17 +318,26 @@ export async function applyCashRulesAtBookTime(
  * means the same thing in every ledger I own" (`cashRuleRepository`). Tagging
  * one portfolio and leaving its sibling stale would contradict that.
  *
- * NOT CAPPED, and deliberately so. A cap here would silently leave part of a
- * ledger untagged while reporting a cheerful number, which is worse than the
- * cost it avoids: this reads two small columns at personal-finance scale, from
- * an explicit button press, not a hot path.
+ * BOUNDED AND PAGED (#1743). It used to select every noted movement of every
+ * portfolio into one array — the resident set grew with the ledger on a freely
+ * repeatable request. Now each portfolio is walked by keyset page of
+ * {@link SCAN_PAGE}, newest first, and the whole run stops at
+ * {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} scanned movements. Memory is one
+ * page whatever the ledger holds, and a run that hit the bound says so instead
+ * of reporting a number that looks like a complete pass.
+ *
+ * The cursor is `(executed_at, id)`, matching the `ORDER BY` and the
+ * `(portfolio_id, executed_at)` index, so a page is a range read rather than a
+ * re-sort. `id` breaks ties: two movements booked in the same microsecond would
+ * otherwise make the cursor ambiguous, which is how paging loses or repeats a
+ * row.
  */
 export async function applyCashRulesForOwner(
   executor: RuleTagStampExecutor,
   userId: string,
-): Promise<number> {
+): Promise<CashRuleApplyOutcome> {
   const rules = await loadRules(executor, sql`${userId}::uuid`);
-  if (rules.length === 0) return 0;
+  if (rules.length === 0) return { movementsTagged: 0, complete: true };
 
   const portfolioRows = resultRows(
     await executor.execute(
@@ -286,20 +346,40 @@ export async function applyCashRulesForOwner(
   );
 
   let movementsTagged = 0;
+  let scanned = 0;
   for (const portfolioRow of portfolioRows) {
     const portfolioId = (portfolioRow as { id: string }).id;
-    // Only rows a rule could possibly match. `btrim` mirrors the engine's own
-    // treatment of a whitespace-only note as no note at all.
-    const movements = resultRows(
-      await executor.execute(sql`
-        SELECT "id", "note"
-        FROM "portfolio_cash_movements"
-        WHERE "portfolio_id" = ${portfolioId}::uuid
-          AND "note" IS NOT NULL
-          AND btrim("note") <> ''
-      `),
-    ) as RuleTaggableMovement[];
-    movementsTagged += await applyCashRuleTags(executor, portfolioId, movements, rules);
+    let cursor: { executedAt: string; id: string } | null = null;
+    for (;;) {
+      const remaining = CASH_RULE_APPLY_MOVEMENT_SCAN_MAX - scanned;
+      if (remaining <= 0) return { movementsTagged, complete: false };
+      const limit = Math.min(SCAN_PAGE, remaining);
+      const after =
+        cursor === null
+          ? sql``
+          : sql`AND ("executed_at", "id") < (${cursor.executedAt}::timestamptz, ${cursor.id}::uuid)`;
+      // Only rows a rule could possibly match. `btrim` mirrors the engine's own
+      // treatment of a whitespace-only note as no note at all.
+      const page = resultRows(
+        await executor.execute(sql`
+          SELECT "id", "note", "executed_at"::text AS "cursorExecutedAt"
+          FROM "portfolio_cash_movements"
+          WHERE "portfolio_id" = ${portfolioId}::uuid
+            AND "note" IS NOT NULL
+            AND btrim("note") <> ''
+            ${after}
+          ORDER BY "executed_at" DESC, "id" DESC
+          LIMIT ${limit}
+        `),
+      ) as ScannedMovement[];
+      if (page.length === 0) break;
+      scanned += page.length;
+      movementsTagged += await applyCashRuleTags(executor, portfolioId, page, rules);
+      const last = page[page.length - 1]!;
+      cursor = { executedAt: last.cursorExecutedAt, id: last.id };
+      // A short page is the end of this portfolio; a full one may not be.
+      if (page.length < limit) break;
+    }
   }
-  return movementsTagged;
+  return { movementsTagged, complete: true };
 }

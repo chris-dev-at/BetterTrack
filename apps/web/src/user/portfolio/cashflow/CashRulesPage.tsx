@@ -163,10 +163,15 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
       />
 
       {applyToExisting.isSuccess ? (
-        <Alert tone="success">
-          {applyToExisting.data.movementsTagged === 0
-            ? t('cashflow.rules.applyNoneTagged')
-            : t('cashflow.rules.applyTagged', { count: applyToExisting.data.movementsTagged })}
+        // A run that hit the server's scan bound covered the newest movements
+        // only, so it says so instead of reporting a count that reads like a
+        // whole-ledger pass (#1743).
+        <Alert tone={applyToExisting.data.complete ? 'success' : 'info'}>
+          {!applyToExisting.data.complete
+            ? t('cashflow.rules.applyPartial', { count: applyToExisting.data.movementsTagged })
+            : applyToExisting.data.movementsTagged === 0
+              ? t('cashflow.rules.applyNoneTagged')
+              : t('cashflow.rules.applyTagged', { count: applyToExisting.data.movementsTagged })}
         </Alert>
       ) : null}
       {applyToExisting.isError ? (

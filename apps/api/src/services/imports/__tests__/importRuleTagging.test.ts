@@ -9,6 +9,7 @@ import type { Application } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CASH_MOVEMENT_NOTE_MAX,
   importPreviewResponseSchema,
   type ApplyImportResponse,
   type ImportPreviewResponse,
@@ -266,6 +267,36 @@ describe('cash-rule tagging at import staging', () => {
     const booked = await ledgerTagsByNote(agent, pid);
     const spende = [...booked.entries()].find(([note]) => note.includes('Spende Rotes Kreuz'));
     expect(spende?.[1]).toContain(donation);
+  });
+
+  it('bounds the memo it hands the engine to the note ceiling the contract declares', async () => {
+    // A staged note comes from a CSV cell, bounded only by
+    // `IMPORT_MAX_FILE_BYTES` (5 MB) — while `CASH_MOVEMENT_NOTE_MAX` is the
+    // longest note any cash write accepts. Matching is linear in note length
+    // per rule, so the string handed to the engine is clipped to that ceiling
+    // (#1743). The stored note is untouched; only matching is bounded.
+    const { agent, pid } = await setup();
+    const tail = await createTag(agent, 'Tail');
+    await createRule(agent, { tagIds: [tail], pattern: 'tailneedle' });
+
+    const header = 'Buchtag;Valuta;Buchungsinformationen;TA-Nr.;Betrag';
+    const padding = 'x'.repeat(CASH_MOVEMENT_NOTE_MAX);
+    const buried = await upload(
+      agent,
+      pid,
+      `${header}\n02.04.2024;02.04.2024;Einzahlung SEPA ${padding} TAILNEEDLE;200091;1.000,00\n`,
+    );
+    // Past the ceiling, so the engine never sees it — no suggestion at all.
+    expect(rowByNote(buried, 'TAILNEEDLE').ruleTagIds).toBeUndefined();
+
+    // The SAME needle, inside the ceiling, still tags — so what is pinned here
+    // is the bound, not a rule that stopped working.
+    const reachable = await upload(
+      agent,
+      pid,
+      `${header}\n03.04.2024;03.04.2024;Einzahlung SEPA TAILNEEDLE Bonus;200092;1.100,00\n`,
+    );
+    expect(rowByNote(reachable, 'TAILNEEDLE').ruleTagIds).toEqual([tail]);
   });
 
   it('is stable across re-reads of the same staged batch', async () => {

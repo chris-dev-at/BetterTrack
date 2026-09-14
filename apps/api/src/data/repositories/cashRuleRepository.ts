@@ -1,10 +1,10 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, eq, inArray } from 'drizzle-orm';
 
 import type { CashRuleMatchType } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { cashRuleTags, cashRules, cashTags, type CashRuleRow } from '../schema';
-import { applyCashRulesForOwner } from './cashRuleTagStamp';
+import { applyCashRulesForOwner, type CashRuleApplyOutcome } from './cashRuleTagStamp';
 
 /**
  * Cash auto-tagging rule persistence (V5 cash fusion). A rule tests a movement's
@@ -116,6 +116,19 @@ export function createCashRuleRepository(db: Database) {
         rows.map((row) => row.id),
       );
       return rows.map((row) => toRule(row, tags.get(row.id) ?? []));
+    },
+
+    /**
+     * How many rules the owner already has — the cap check in `cashTagService`
+     * (#1743), which must not pay for a full `listForOwner` (rows plus their tag
+     * sets) just to learn a number.
+     */
+    async countForOwner(userId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: count() })
+        .from(cashRules)
+        .where(eq(cashRules.userId, userId));
+      return Number(row?.count ?? 0);
     },
 
     async findByIdForOwner(userId: string, ruleId: string): Promise<CashRuleRecord | null> {
@@ -232,8 +245,11 @@ export function createCashRuleRepository(db: Database) {
      * book-time path, so "what a rule does to a movement" is decided once and
      * cannot drift between the two. Additive: it attaches tags and never
      * removes one.
+     *
+     * The scan is paged and bounded there; the outcome says whether it reached
+     * the end of the ledger (#1743).
      */
-    async applyToExistingMovements(userId: string): Promise<number> {
+    async applyToExistingMovements(userId: string): Promise<CashRuleApplyOutcome> {
       return applyCashRulesForOwner(db, userId);
     },
   };

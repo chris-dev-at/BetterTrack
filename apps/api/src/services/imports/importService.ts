@@ -16,6 +16,7 @@ import type {
   TransactionInput,
 } from '@bettertrack/contracts';
 import {
+  CASH_MOVEMENT_NOTE_MAX,
   CASH_TAGS_PER_ITEM_MAX,
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
@@ -635,7 +636,14 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     // books nothing, so promising it a tag would promise something apply is
     // never going to do.
     if (flag !== 'mapped' || !isCashRowKind(row.kind)) return null;
-    const note = row.note?.trim() ?? '';
+    // BOUNDED BEFORE IT REACHES THE ENGINE (#1743). A note here comes from a CSV
+    // cell, bounded only by `IMPORT_MAX_FILE_BYTES` (5 MB) — orders of magnitude
+    // past `CASH_MOVEMENT_NOTE_MAX`, the longest note the cash write path
+    // accepts. Matching is linear in note length per rule (RE2), so an
+    // unbounded cell would make the per-row cost of staging a statement
+    // unbounded too. The stored note is untouched: only the string HANDED TO
+    // THE ENGINE is clipped, to the ceiling the contract already declares.
+    const note = (row.note?.trim() ?? '').slice(0, CASH_MOVEMENT_NOTE_MAX);
     if (note === '') return null;
     const tags = tagsByRules(note, rules);
     if (tags.length === 0) return null;

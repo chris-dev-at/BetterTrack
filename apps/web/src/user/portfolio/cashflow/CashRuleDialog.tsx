@@ -74,6 +74,12 @@ export function CashRuleDialog({ existing, tags, onClose }: CashRuleDialogProps)
         setFormError(t('cashflow.rules.dialog.regexUnsupported'));
         return;
       }
+      // The per-user rule cap (#1743) — a refusal the user can act on, so it
+      // gets its own translated line rather than the server's English text.
+      if (err instanceof ApiError && err.code === 'CASH_RULE_LIMIT_REACHED') {
+        setFormError(t('cashflow.rules.dialog.limitReached'));
+        return;
+      }
       setFormError(err instanceof ApiError ? err.message : t('cashflow.rules.dialog.saveError'));
     },
   });

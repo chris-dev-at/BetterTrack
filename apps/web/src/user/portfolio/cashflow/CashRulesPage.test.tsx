@@ -211,7 +211,7 @@ describe('CashRulesPage', () => {
 
   test('applies rules to existing movements only after confirmation and reports how many were tagged', async () => {
     vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
-    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 3 });
+    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 3, complete: true });
     const user = userEvent.setup();
     renderPage();
 
@@ -225,7 +225,7 @@ describe('CashRulesPage', () => {
 
   test('says plainly when a run changed nothing, rather than claiming work', async () => {
     vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
-    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 0 });
+    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 0, complete: true });
     const user = userEvent.setup();
     renderPage();
 
@@ -235,6 +235,23 @@ describe('CashRulesPage', () => {
     expect(
       await screen.findByText(/every matching movement already carries its tags/i),
     ).toBeInTheDocument();
+  });
+
+  test('says a bounded run was bounded, instead of reporting it as a full pass', async () => {
+    // The server pages the scan and stops at its bound (#1743). A count alone
+    // reads identically either way, so the partial case must name itself.
+    vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
+    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 500, complete: false });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Apply to existing' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    expect(
+      await screen.findByText(/only your most recent movements were checked/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Tagged 500 movements.')).not.toBeInTheDocument();
   });
 
   test('offers no catch-up run when there are no rules to run', async () => {

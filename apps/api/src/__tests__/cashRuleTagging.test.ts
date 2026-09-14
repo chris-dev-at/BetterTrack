@@ -7,10 +7,12 @@ import {
   cashRuleResponseSchema,
   cashTagResponseSchema,
   type CashMovement,
+  type CashRuleApplyResponse,
   type CashRuleMatchType,
   type CashTag,
 } from '@bettertrack/contracts';
 
+import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -131,13 +133,17 @@ async function tagsOf(agent: Agent, portfolioId: string, movementId: string): Pr
   return [...(movement!.tags ?? [])].sort();
 }
 
-async function applyRules(agent: Agent): Promise<number> {
+async function applyRun(agent: Agent): Promise<CashRuleApplyResponse> {
   const res = await agent
     .post('/api/v1/cash/rules/apply')
     .set(...XRW)
     .send();
   expect(res.status).toBe(200);
-  return cashRuleApplyResponseSchema.parse(res.body).movementsTagged;
+  return cashRuleApplyResponseSchema.parse(res.body);
+}
+
+async function applyRules(agent: Agent): Promise<number> {
+  return (await applyRun(agent)).movementsTagged;
 }
 
 /** The system tag with `systemKey`, for asserting a movement carries BOTH labels. */
@@ -466,4 +472,46 @@ it('patches a rule without touching its tags and reports the untouched tag set',
   expect([...cashRuleResponseSchema.parse(noop.body).rule.tagIds].sort()).toEqual(
     [groceries.id, household.id].sort(),
   );
+});
+
+// ── The re-run is paged and bounded ──────────────────────────────────────────
+
+it('tags a ledger LARGER THAN ONE PAGE, and reports the pass as complete', async () => {
+  // The scan reads `SCAN_PAGE` (500) movements at a time (#1743). This ledger
+  // spans three pages, so a cursor that re-read its first page — or dropped the
+  // rows after it — would tag 500 here instead of 1 200, and a scan that still
+  // loaded everything at once would pass this test only by accident of size.
+  const agent = await newUserAgent('paged@bettertrack.test', 'pageduser');
+  const portfolioId = await defaultPortfolioId(agent);
+  await deposit(agent, portfolioId, 100_000);
+
+  const sources = await agent.get(`/api/v1/portfolios/${portfolioId}/cash/sources`);
+  expect(sources.status).toBe(200);
+  const sourceId = (sources.body.sources as Array<{ id: string }>)[0]!.id;
+
+  const LEDGER = 1_200;
+  const base = Date.UTC(2026, 0, 1);
+  await harness.db.insert(schema.portfolioCashMovements).values(
+    Array.from({ length: LEDGER }, (_, i) => ({
+      portfolioId,
+      sourceId,
+      kind: 'deposit' as const,
+      amountEur: '1.000000',
+      // Distinct timestamps, so the keyset cursor has a total order to walk.
+      executedAt: new Date(base + i * 60_000),
+      note: i % 3 === 0 ? `SPAR market ${i}` : `OEBB ticket ${i}`,
+    })),
+  );
+
+  const groceries = await createTag(agent, 'Groceries');
+  await createRule(agent, { tagIds: [groceries.id], pattern: 'SPAR' });
+
+  const run = await applyRun(agent);
+
+  // Every third row matches, across all three pages — none of them stranded.
+  expect(run.movementsTagged).toBe(Math.ceil(LEDGER / 3));
+  expect(run.complete).toBe(true);
+
+  // Still idempotent at this size, and still honest about it.
+  expect(await applyRun(agent)).toEqual({ movementsTagged: 0, complete: true });
 });
