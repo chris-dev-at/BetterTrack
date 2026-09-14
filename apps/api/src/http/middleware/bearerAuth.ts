@@ -7,6 +7,7 @@ import {
   isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
+import type { BearerScopeDenialReason } from '../../services/audit/auditService';
 import { normalizeRoutePath } from '../../services/security/routePath';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
@@ -368,11 +369,9 @@ export function taxYearDocumentationRouteAcceptsBearer(method: string, path: str
 
 /** Whether one live grant-management request is in the first-party bearer allowlist. */
 export function oauthGrantRouteAcceptsBearer(method: string, path: string): boolean {
-  return routeAllowlistAccepts(
-    OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
-    method,
-    path.toLowerCase(),
-  );
+  // Same shape as every sibling above: `matchesRoute` → `normalizeRoutePath`
+  // already folds case, so no caller-side lowercasing is needed here either.
+  return routeAllowlistAccepts(OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /**
@@ -1076,6 +1075,13 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // still have a not-yet-revoked personal key or OAuth grant; disclose no
     // user surface to that principal, just as `/admin/*` discloses nothing to a
     // bearer regardless of its scopes.
+    //
+    // Defense-in-depth, not a live path: a real promotion goes through
+    // `userRepo.setRole`, which bumps `securityGeneration` and therefore already
+    // invalidates every outstanding token of that account before it can reach
+    // this branch. Read the branch (and its test) as the fence that survives a
+    // future role write which forgets the generation bump — never as proof that
+    // admin-role bearers are reaching the user API today (#1365).
     if (req.authUser?.role === 'admin') {
       next(notFound());
       return;
@@ -1117,7 +1123,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // token. Enforced here at check time — the single authoritative point that
     // also covers tokens minted before the rule.
     if (!scopeSatisfies(req.apiKey.scopes, required)) {
-      recordBearerScopeDenied(ctx, req, required).then(
+      recordBearerScopeDenied(ctx, req, required, 'insufficient-scope').then(
         () =>
           next(
             forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
@@ -1133,7 +1139,10 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       // is first-party-only — it does not imply scope alone would ever suffice.
       // Reuse the established audited denial rail: probing another app's grants
       // is a credential-boundary event the account owner must be able to trace.
-      recordBearerScopeDenied(ctx, req, required).then(
+      // The `first-party-only` discriminator keeps that event greppable — the
+      // refused token DOES hold `required`, so without it the row would read
+      // exactly like a missing-scope denial (#1365).
+      recordBearerScopeDenied(ctx, req, required, 'first-party-only').then(
         () =>
           next(
             forbidden(
@@ -1153,16 +1162,23 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
  * Persist one bearer scope refusal through the credential-kind-specific audit
  * service. Router-local defense-in-depth guards reuse this rail so a future
  * middleware remount cannot silently lose the global guard's denial audit.
+ *
+ * `reason` is mandatory, and the same discriminator lands in the meta for both
+ * principal kinds: an owner reading `api_key.scope_denied` must be able to tell
+ * "the credential lacked the scope" from "the credential HELD the scope and was
+ * refused because the route is first-party-only" (#1365).
  */
 export function recordBearerScopeDenied(
   ctx: AppContext,
   req: Request,
   requiredScope: string,
+  reason: BearerScopeDenialReason,
   path = req.path,
 ): Promise<void> {
   const common = {
     userId: req.authUser!.id,
     requiredScope,
+    reason,
     method: req.method,
     path,
     ip: req.ip ?? null,
