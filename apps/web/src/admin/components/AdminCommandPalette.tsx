@@ -9,6 +9,7 @@ import * as api from '../../lib/adminApi';
 import { ADMIN_DESTINATIONS, adminWorkspaceLabelKey } from '../adminWorkspaces';
 import { useResource } from '../useResource';
 import { Badge, cx } from './ui';
+import { TAP_TARGET } from './tokens';
 
 /** Per-section caps: enough to be useful, few enough to keep every section visible. */
 const DESTINATION_LIMIT = 6;
@@ -355,6 +356,15 @@ function Row({
       aria-selected={selected}
       className={cx(
         'flex min-h-[42px] cursor-pointer items-center gap-3 rounded-md px-3 py-2',
+        // 42px is the console's deliberate desktop density and stays; below the
+        // drawer handoff these rows ARE the console's destinations, so they take
+        // the same 44px floor every other one does (§13.5 V5-P13b, #1891). Same
+        // shape as `AdminLayout`'s `NAV_LINK_BASE`: a density utility plus the
+        // marker `styles/origin.css` declares the floor for. The phone gate
+        // measures the row structurally (`#admin-palette-list [role='option']`),
+        // so dropping this class fails the measurement rather than removing the
+        // row from it.
+        TAP_TARGET,
         selected ? 'bg-neutral-800' : 'hover:bg-neutral-800/60',
       )}
       id={row.id}

@@ -1999,6 +1999,25 @@
   animation: bt-rise-sm var(--bt-t-panel) both;
 }
 
+/* Clear of the bottom bar, which owns the foot of the screen on a phone
+   (#1891). Every mutation result in the app lands in this one slot for four
+   seconds (`user/hooks/useMutationFeedback.tsx`), and at 22px it covered the
+   primary navigation destinations while its lower edge sat inside the
+   home-indicator zone.
+
+   Modelled on `.bt-install-prompt`, the sibling fixed bottom element that
+   already does this: same 760px band — exactly where `.bt-bottombar` becomes a
+   grid — the same 72px lift over its 46px rows plus padding, and the same
+   `env()` inset. The desktop position above is untouched: there is no bottom bar
+   there to clear. Declared AFTER the base rule on purpose: both selectors are
+   (0,1,0) and `@media` adds no specificity, so source order is what decides.
+   Measured as real geometry in `e2e/mobile-overflow.spec.ts`. */
+@media (max-width: 760px) {
+  .bt-toast {
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 /* ── States ──────────────────────────────────────────────────────────────── */
 
 .bt-empty {
@@ -7863,10 +7882,27 @@ html[data-bt-askdock='open'] .bt-install-prompt {
   body {
     overscroll-behavior-y: none;
   }
+
+  /* The console's counterpart (#1891). `index.html` is served to BOTH origins,
+     so the admin SPA inherits the translucent status bar — and its sticky
+     `#admin-topbar` (`admin/components/AdminLayout.tsx`, `md:hidden`) is the
+     only way into console navigation below 768px, with nothing above it to
+     absorb the overlay. This file is unlayered while Tailwind's utilities live
+     in its `utilities` layer, so this wins over the bar's own `py-2`; the 8px
+     base is that utility's value, restated so the inset is purely additive and
+     the console's spacing is not re-tuned here. The console imports none of the
+     `.bt-*` language, hence the id selector rather than a class. */
+  #admin-topbar {
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
 }
 
 :root[data-bt-display-mode='standalone'] .bt-topbar {
   padding-top: calc(6px + env(safe-area-inset-top, 0px));
+}
+
+:root[data-bt-display-mode='standalone'] #admin-topbar {
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
 }
 
 :root[data-bt-display-mode='standalone'] body {
