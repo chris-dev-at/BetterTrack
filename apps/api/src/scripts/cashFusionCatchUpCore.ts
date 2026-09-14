@@ -350,12 +350,12 @@ export function planIsEmpty(plan: OwnerPlan): boolean {
  * are stale the moment the rows land (§16 2026-07-17 invalidation rules).
  *
  * The apply step invalidates from the day it actually WROTE, taken from the
- * insert's `RETURNING`. This day is that day's UPPER BOUND, not its equal: the
+ * insert's `RETURNING`. This day is at or BEFORE that day, never after: the
  * plan already excludes movements the ledger holds, so a first run agrees
  * exactly, but on a partial re-run the insert can skip a planned movement
- * (`ON CONFLICT DO NOTHING`) and land on a LATER day. `--dry-run` therefore
- * reports the widest range an apply could invalidate — never less — without
- * opening a write transaction.
+ * (`ON CONFLICT DO NOTHING`) and land on a LATER day. So it is an upper bound
+ * on the invalidated RANGE — `--dry-run` reports the widest range an apply
+ * could invalidate, never less — while being a lower bound on the day itself.
  */
 export function planInvalidationDay(plan: OwnerPlan): string | null {
   let earliest: string | null = null;
