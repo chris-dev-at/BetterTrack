@@ -435,10 +435,12 @@ describe('normalizeStandingOrders', () => {
   });
 
   test('the projection values a buy exactly as the booking engines record it', () => {
-    // The two contracts, pinned against each other. The server's
-    // `standingOrderService.bookRow` inserts the BUY with an explicitly empty
-    // `cashMovements: []`, and the vault twin takes the same branch — its
-    // `standingOrderRowKind` is the rule both engines book by. Net worth is
+    // The vault twin's half of the contract; the server's is pinned in its own
+    // suite (`apps/api/src/services/standingOrders/__tests__/standingOrders.test.ts`
+    // — "a booked buy never touches cash"), because a web test cannot import
+    // that service. `standingOrderService.bookRow` inserts the BUY with an
+    // explicitly empty `cashMovements: []` and the twin takes the same branch —
+    // its `standingOrderRowKind` is the rule both engines book by. Net worth is
     // `marketValue + cash`, so a booking with no cash leg moves it by the
     // purchase value and by nothing else; that is the flow below.
     function orderEntity(kind: StandingOrderKind): VaultEntity {

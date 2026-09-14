@@ -1013,6 +1013,54 @@ test('switching the return factor off hands the income back to its own factor', 
   );
 });
 
+// A rate that could not be sampled is NOT a 0 % assumption. `safeNumber('')` is
+// 0, so reading the blank field as a rate disabled the dividend factor with copy
+// naming an average return that was never sampled — and took the only factor
+// that moved a fresh portfolio's line off it.
+
+test('a return the history cannot state is not read as a 0 % assumption', async () => {
+  // `twr: null` — a portfolio with no elapsed history — prefills an EMPTY rate
+  // field while the return factor stays ON.
+  vi.mocked(getAnalyticsSeries).mockResolvedValue({ ...analytics(5), twr: null });
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_100);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await waitFor(() =>
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe(''),
+  );
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeEnabled();
+  expect(toggle).toBeChecked();
+  expect(screen.queryByText(DIVIDENDS_IN_RETURN_NOTE)).not.toBeInTheDocument();
+  // The return factor is still ticked and still projects 0 %/yr; what the blank
+  // changes is only that the €100/month is a flow of its own again.
+  expect(screen.getByRole('checkbox', { name: RETURN_FACTOR })).toBeChecked();
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
+  );
+});
+
+test('clearing the rate with the factor on hands the income back the same way', async () => {
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_100);
+  const user = userEvent.setup();
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  // The sampled 5 %/yr first: the income is inside that curve and is disabled.
+  await waitFor(() => expect(screen.getByLabelText(RETURN_RATE)).toHaveValue(5));
+  expect(await screen.findByRole('checkbox', { name: 'Projected dividends' })).toBeDisabled();
+
+  await user.clear(screen.getByLabelText(RETURN_RATE));
+
+  await waitFor(() =>
+    expect(screen.getByRole('checkbox', { name: 'Projected dividends' })).toBeEnabled(),
+  );
+  expect(screen.queryByText(DIVIDENDS_IN_RETURN_NOTE)).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
+  );
+});
+
 // ─── A recurring buy is money the schedule books (#1892) ─────────────────────
 //
 // Both booking engines write a `buy-asset` occurrence as a BUY transaction with
@@ -1113,6 +1161,36 @@ test('a buy the portfolio cannot price refuses the factor and names the asset', 
   const toggle = screen.getByRole('checkbox', { name: 'Standing orders' });
   expect(toggle).toBeDisabled();
   expect(toggle).not.toBeChecked();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+});
+
+test('two unpriced buys read as two, not as one', async () => {
+  // The assets are joined into one sentence, so the sentence has to agree with
+  // its own length — "its recurring buy" over two named assets is a copy bug.
+  // The second order also names an asset the portfolio does not hold at all,
+  // which is how a brand-new savings plan arrives (the dialog picks from the
+  // global search, not from holdings).
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioHolding(null));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [
+      buyOrder(),
+      buyOrder({
+        id: '77777777-7777-7777-7777-777777777777',
+        assetId: '88888888-8888-8888-8888-888888888888',
+        assetSymbol: 'IWDA',
+        assetName: 'iShares Core MSCI World',
+      }),
+    ],
+  } as StandingOrderListResponse);
+  renderSection();
+
+  expect(
+    await screen.findByText(
+      "We have no current price for IWDA, VWCE, so we can't say what their recurring buys add. " +
+        'This factor stays out of the projection until they can be priced.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(ORDERS_UNPRICED_NOTE)).not.toBeInTheDocument();
   await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
 });
 

@@ -61,13 +61,16 @@
  *
  * The rule: {@link ForecastInput.monthlyDividend} is a contribution ONLY when
  * the run makes no return assumption at all — `annualReturnPct === null`, which
- * is what the tab hands the engine while the return factor is off. A return
- * factor that is on carries the income already, including at 0 %/yr (a 0 %
- * TOTAL return says the distributions are offset by price decline, not that
- * there are none). {@link returnFactorContainsDistributions} is that rule's one
- * owner, so the view can explain the composition it renders without restating
- * it. Standing orders stack on top in both states: they are EXTERNAL money,
- * which a time-weighted return excludes by construction (#1759).
+ * is what the tab hands the engine whenever it states no rate: the return factor
+ * unticked, or ticked over an empty rate field (a portfolio too young to state a
+ * CAGR prefills exactly that). A run that DOES state a rate carries the income
+ * already, including at 0 %/yr (a 0 % TOTAL return says the distributions are
+ * offset by price decline, not that there are none) — which is why "no rate could
+ * be sampled" must never reach this engine as a 0.
+ * {@link returnFactorContainsDistributions} is that rule's one owner, so the
+ * view can explain the composition it renders without restating it. Standing
+ * orders stack on top in both states: they are EXTERNAL money, which a
+ * time-weighted return excludes by construction (#1759).
  *
  * What-if plans are additional contribution streams that do NOT change the base
  * line: each renders as its own overlay = base + the plan's standalone
@@ -142,11 +145,12 @@ export interface ForecastInput {
   horizonYears: number;
   /**
    * Base annual TOTAL return %/yr applied to the whole balance, or `null` when
-   * the return factor is off. `null` is NOT the same statement as `0`: a 0 %
-   * total return is an assumption about the market (distributions offset by
-   * price decline) and still carries the book's income, while `null` is the
-   * absence of any return assumption — see the composition rule in the module
-   * note and {@link returnFactorContainsDistributions}.
+   * the run states no return assumption (the factor is off, or on with no rate
+   * stated). `null` is NOT the same statement as `0`: a 0 % total return is an
+   * assumption about the market (distributions offset by price decline) and
+   * still carries the book's income, while `null` is the absence of any return
+   * assumption — see the composition rule in the module note and
+   * {@link returnFactorContainsDistributions}.
    */
   annualReturnPct: number | null;
   /** Active standing orders to continue forward; `[]` when the factor is off. */
@@ -218,8 +222,8 @@ export function monthlyRateFromAnnualPct(annualPct: number): number {
  * Whether a run with this return factor ALREADY contains the income the
  * dividend factor projects — the one owner of the composition rule stated in
  * the module note. Any return assumption is a total return and carries the
- * distributions; only "no return factor at all" (`null`) leaves them to be
- * added as their own flow.
+ * distributions; only the absence of one (`null` — no factor, or a factor with
+ * no rate stated) leaves them to be added as their own flow.
  */
 export function returnFactorContainsDistributions(annualReturnPct: number | null): boolean {
   return annualReturnPct !== null;
@@ -406,10 +410,14 @@ export interface NormalizedStandingOrders {
  * caller can name the reason instead of drawing a silently smaller curve.
  *
  * `assetPrices` maps `assetId` → its current unit price, as the caller's own
- * portfolio read states it. A buy whose asset is not in there (or is priced at
+ * portfolio read states it — i.e. the CURRENT HOLDINGS, which is the only price
+ * source the Forecast has. A buy whose asset is not in there (or is priced at
  * nothing) cannot be valued at all and lands in
  * {@link NormalizedStandingOrders.unpricedAssets}, refusing the factor on that
- * same all-or-nothing rule.
+ * same all-or-nothing rule. A savings plan for an asset the user does not hold
+ * YET is therefore refused by name until its first occurrence books — explained
+ * rather than silently smaller, and self-healing; reading a quote per distinct
+ * order asset id is the follow-up that would price it on day one.
  */
 export function normalizeStandingOrders(
   orders: readonly StandingOrder[],

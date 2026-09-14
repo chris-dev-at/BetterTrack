@@ -224,10 +224,21 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     FORECAST_HORIZON_MAX_YEARS,
   );
   const enteredReturnPct = safeNumber(returnPct);
-  // `null`, not 0, when the factor is off: the engine reads the absence of a
-  // return assumption as the one state where projected income is a flow of its
+  // `null`, not 0, whenever this run states NO return assumption: the engine
+  // reads that absence as the one state where projected income is a flow of its
   // own (#1892), and a 0 %/yr assumption is not that state.
-  const annualReturnPct = returnEnabled ? clampForecastReturnPct(enteredReturnPct) : null;
+  //
+  // Two ways to be in it, and the blank field is the one that bites. The factor
+  // may be off — or on over an EMPTY rate, which is what a portfolio whose
+  // history cannot state a CAGR prefills (`sampledReturnPct === null` ⇒ the
+  // effect above writes `''`), and what clearing the field gives. `safeNumber('')`
+  // is 0, so reading that blank as a rate would claim the user asserted a 0 %
+  // TOTAL return, disable the dividend factor and tell them an average return
+  // they never sampled already contains the income — taking the only factor
+  // that moved that line off a fresh portfolio's curve. The projected rate is 0
+  // either way; what differs is whether the income is still a flow of its own.
+  const returnAssumed = returnEnabled && returnPct.trim() !== '';
+  const annualReturnPct = returnAssumed ? clampForecastReturnPct(enteredReturnPct) : null;
   const returnPctIsClamped = annualReturnPct !== null && enteredReturnPct !== annualReturnPct;
   // Three distinct dividend-factor states (#1681). No market intel on this
   // deployment, or an account mode that never reads the endpoint (paranoid
@@ -287,6 +298,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   // and the engine puts that price through the SAME base gate as a cash order's
   // magnitude. A buy it cannot price at all is the factor's second unresolved
   // reason — same all-or-nothing rule, its own sentence to the user.
+  //
+  // That holdings read is the ONLY price source here, and the dialog picks a
+  // buy's asset from the global search rather than from holdings — so a savings
+  // plan for an asset not yet held has no entry and refuses the factor by name
+  // until its first occurrence books. Explained rather than silently smaller,
+  // and self-healing; reading a quote per distinct order asset id is the
+  // follow-up that would price it on day one.
   const assetPrices = useMemo(() => {
     const prices = new Map<string, ForecastAssetPrice>();
     for (const holding of portfolioQuery.data?.holdings ?? []) {
@@ -468,9 +486,15 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                     baseCurrency: netWorthCurrency,
                   })
                 : normalizedOrders.unpricedAssets.length > 0
-                  ? t('forecast.projection.ordersUnpriced', {
-                      assets: normalizedOrders.unpricedAssets.join(', '),
-                    })
+                  ? // The list is joined into one sentence, so the sentence has
+                    // to agree with its own length — "its recurring buy" over
+                    // two named assets reads as a copy bug in both catalogs.
+                    t(
+                      normalizedOrders.unpricedAssets.length === 1
+                        ? 'forecast.projection.ordersUnpricedOne'
+                        : 'forecast.projection.ordersUnpricedOther',
+                      { assets: normalizedOrders.unpricedAssets.join(', ') },
+                    )
                   : undefined
             }
             onChange={setOrdersEnabled}
