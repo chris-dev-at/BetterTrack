@@ -59,6 +59,12 @@ const VAULT_SENSITIVE_ASSET_SEGMENTS = new Set(['assets', 'custom-assets']);
  * collection) and `POST /custom-assets` name no existing asset, while
  * `/custom-assets/:id…`, `/assets/:id…` and the batch reads `/assets/quotes`
  * and `/assets/sparklines` all do.
+ *
+ * Accepted trade: the literal sub-routes that name no id — `/custom-assets/
+ * recategorization`, `/custom-assets/vault-snapshots` — are suppressed too.
+ * That costs a vaulted account's feature counter a few hits; carving them out
+ * would mean maintaining a route allow-list, which is the fragile shape this
+ * classification deliberately replaced.
  */
 export function isVaultSensitiveUnattributedAssetRequest(path: string): boolean {
   const segments = policySegments(path);

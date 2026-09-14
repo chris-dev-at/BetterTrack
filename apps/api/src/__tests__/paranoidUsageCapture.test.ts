@@ -285,8 +285,9 @@ describe('usage capture never records a paranoid account', () => {
     await h.ctx.usageAnalytics.flush();
 
     // The whole signal is suppressed, exactly as for the unattributed market
-    // reads — a bare `feature='assets'` row still counts how many private
-    // assets were touched.
+    // reads: dropping only the id is not enough, because a bare
+    // `feature='assets'` row would still count how many private assets were
+    // touched.
     expect(await usageRowsFor(h, user.id)).toEqual([]);
   });
 

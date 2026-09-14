@@ -528,6 +528,10 @@ describe('concurrent usage rollup', () => {
       try {
         const dbA = drizzlePostgres(clientA, { schema });
         const dbB = drizzlePostgres(clientB, { schema });
+        // Each connection doubles as its own `lockDb` ONLY because this test
+        // calls nothing but `rollupDay`, which never touches that pool. Do not
+        // copy the pattern: the privacy-lock pool must stay dedicated (a
+        // `max: 1` request pool self-deadlocks inside `upsertEvents`).
         const repoA = createUsageAnalyticsRepository(dbA, dbA);
         const repoB = createUsageAnalyticsRepository(dbB, dbB);
 

@@ -73,6 +73,11 @@ export default defineConfig({
       // #1485: disposing one harness must never close the worker-shared Redis
       // singleton that another harness is still using.
       'src/testing/createTestApp.test.ts',
+      // #1896: two re-materializations of the same usage day must serialize on
+      // the real two-session advisory lock instead of colliding on the
+      // (day, feature) primary key; PGlite has one connection, so it cannot
+      // hold the two open transactions the race needs.
+      'src/__tests__/usageAnalytics.test.ts',
     ],
     pool: 'forks',
     poolOptions: {
