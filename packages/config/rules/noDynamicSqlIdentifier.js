@@ -55,8 +55,10 @@
  * `raw` and `identifier` are only matched on a receiver literally named `sql`
  * (the drizzle convention everywhere in this repo); `express.raw({…})` is a body
  * parser, not a SQL builder, and must not be flagged. Renaming the drizzle
- * import (`import { sql as q }`) therefore defeats the check — this is a lint,
- * not a type system. `.as()` is matched on any receiver, which is why the glob
+ * import (`import { sql as q }`), destructuring (`const { raw } = sql`), a
+ * namespace receiver (`drizzle.sql.raw`), computed access (`sql[RAW]`) or
+ * `.call`/`.apply` therefore defeat the check — none occur in the repo today,
+ * and this is a lint, not a type system. `.as()` is matched on any receiver, which is why the glob
  * stays on the drizzle-speaking trees (`apps/api`, `packages/*`, `e2e`).
  */
 
