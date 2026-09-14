@@ -996,9 +996,12 @@ describe('one definition of an active friend holds at every seam (#1897)', () =>
   it('does not tick a disabled account as a selected specific-friend recipient', async () => {
     const { aliceAgent, bob, carol, pid } = await scenario();
     expect((await shareToFriends(aliceAgent, pid, [bob.id, carol.id])).status).toBe(200);
+    // Ascending by id, which is the order the read guarantees — spelled as a
+    // sort of the expectation rather than a literal pair, so this pins the
+    // guarantee itself instead of whichever of the two drew the lower uuid.
     expect(
       (await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`)).body.friendIds,
-    ).toEqual([bob.id, carol.id]);
+    ).toEqual([bob.id, carol.id].sort());
 
     await disableAccount(bob.id);
     const audience = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);

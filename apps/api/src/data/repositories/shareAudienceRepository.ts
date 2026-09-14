@@ -1040,6 +1040,9 @@ export function createShareAudienceRepository(db: Database) {
      * friendship has since dissolved — or whose account was disabled — grants
      * nothing, so naming it here would tell the owner, and tick it in the
      * picker, as though someone can see the item when they cannot.
+     *
+     * `friendIds` comes back ascending by id — a stable order, not a meaningful
+     * one (the picker reads it into a Set).
      */
     async getOwnedState(kind: ShareKind, subjectId: string): Promise<OwnedAudienceState> {
       const [row] = await db
@@ -1068,7 +1071,16 @@ export function createShareAudienceRepository(db: Database) {
             eq(shareAudienceMembers.audienceId, row.id),
             activeFriendOf(row.ownerId, shareAudienceMembers.friendId),
           ),
-        );
+        )
+        // Ordered because this leaves the process as a JSON array: an unordered
+        // read is free to hand back the same members in a different sequence on
+        // the next identical request, and it did — swapping the `friendships`
+        // join for the `exists` predicate above changed the plan, and with it
+        // the order Postgres happened to emit. The stored set has no ordinal
+        // (the PK is `(audience_id, friend_id)`), so selection order is not
+        // recoverable and id-ascending is the honest stable choice — it is the
+        // PK's own order, so it costs nothing.
+        .orderBy(asc(shareAudienceMembers.friendId));
 
       const [link] = await db
         .select({ createdAt: shareAudienceLinks.createdAt })
