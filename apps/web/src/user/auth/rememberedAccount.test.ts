@@ -7,6 +7,7 @@ import {
   markAskedToRemember,
   readLastLoginIdentifier,
   readRememberedAccount,
+  refreshRememberedAccount,
   writeLastLoginIdentifier,
   writeRememberedAccount,
 } from './rememberedAccount';
@@ -122,6 +123,60 @@ describe('rememberedAccount — the client-side chooser record', () => {
     writeRememberedAccount(rememberedAccount);
     clearRememberedAccount();
     expect(readRememberedAccount()).toBeNull();
+  });
+
+  // ── Refreshing an existing record (§13.5 V5-P0 (c)) ──────────────────────
+  // The record is written once, at the opt-in; a rename or a later icon choice
+  // must reach it, and nothing else may.
+
+  it('refreshes an existing record\u2019s username and icon for the same user', () => {
+    writeRememberedAccount(rememberedAccount);
+    refreshRememberedAccount({ ...rememberedAccount, username: 'jane.doe', profileIcon: 'panda' });
+    expect(readRememberedAccount()).toEqual({
+      ...rememberedAccount,
+      username: 'jane.doe',
+      profileIcon: 'panda',
+    });
+  });
+
+  it('writes only the three allowed fields when refreshing', () => {
+    writeRememberedAccount(rememberedAccount);
+    refreshRememberedAccount({
+      ...rememberedAccount,
+      profileIcon: 'panda',
+      // @ts-expect-error — a refresh is no more a door for secrets than a write.
+      token: 'super-secret',
+    });
+    const raw = localStorage.getItem(REMEMBERED_KEY) ?? '{}';
+    expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['profileIcon', 'userId', 'username']);
+    expect(raw).not.toContain('super-secret');
+  });
+
+  it('never creates a record for a device that remembers nobody', () => {
+    refreshRememberedAccount({ ...rememberedAccount, profileIcon: 'panda' });
+    expect(readRememberedAccount()).toBeNull();
+    expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+  });
+
+  it('leaves a record belonging to a different user untouched', () => {
+    writeRememberedAccount(rememberedAccount);
+    refreshRememberedAccount({
+      userId: '2a2f9b4e-2f4d-4d4b-9a6a-2f5f4f0a1c77',
+      username: 'bob',
+      profileIcon: 'panda',
+    });
+    expect(readRememberedAccount()).toEqual(rememberedAccount);
+  });
+
+  it('does not touch the one-shot remember-me prompt gate', () => {
+    writeRememberedAccount(rememberedAccount);
+    refreshRememberedAccount({ ...rememberedAccount, profileIcon: 'panda' });
+    // Never asked ⇒ still never asked: a refresh must not stand in for the
+    // prompt, nor re-open it for someone who already declined.
+    expect(hasBeenAskedToRemember(rememberedAccount.userId)).toBe(false);
+    markAskedToRemember(rememberedAccount.userId);
+    refreshRememberedAccount({ ...rememberedAccount, profileIcon: 'fox' });
+    expect(hasBeenAskedToRemember(rememberedAccount.userId)).toBe(true);
   });
 
   it('tracks the one-time "asked to remember" flag per user', () => {

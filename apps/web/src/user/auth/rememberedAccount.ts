@@ -102,6 +102,32 @@ export function writeRememberedAccount(account: RememberedAccount): void {
   safeSet(REMEMBERED_KEY, JSON.stringify(record));
 }
 
+/**
+ * Bring an ALREADY remembered record's display fields up to date from a fresh
+ * `MeResponse` (§13.5 V5-P0 (c)). The record is written once, at the remember-me
+ * opt-in, so a user who renames or picks a curated icon afterwards would keep
+ * seeing the stale face — or the lettered tile — in the chooser forever.
+ *
+ * Refresh-only, deliberately:
+ *  - nothing is written unless this device already remembers exactly this
+ *    `userId`, so a user who declined the one-shot prompt is never silently
+ *    remembered and the asked-once prompt gate is never touched;
+ *  - it goes through {@link writeRememberedAccount}, so only the three allowed
+ *    fields can ever reach storage — never a token or scope.
+ */
+export function refreshRememberedAccount(identity: RememberedAccount): void {
+  const current = readRememberedAccount();
+  if (current == null || current.userId !== identity.userId) return;
+  if (current.username === identity.username && current.profileIcon === identity.profileIcon) {
+    return;
+  }
+  writeRememberedAccount({
+    userId: current.userId,
+    username: identity.username,
+    profileIcon: identity.profileIcon,
+  });
+}
+
 /** Forget the remembered identity — "Another account" / explicit forget. */
 export function clearRememberedAccount(): void {
   safeRemove(REMEMBERED_KEY);

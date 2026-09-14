@@ -39,6 +39,7 @@ import {
 } from '../../lib/socialApi';
 import { ApiError } from '../../lib/apiClient';
 import { listMirrorInvites } from '../../lib/mirrorApi';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { setViewportWidth } from '../../test/viewport';
 import { FriendsPage } from './FriendsPage';
 
@@ -544,6 +545,71 @@ describe('FriendsPage', () => {
     // The idea appears as a read-only deep link into the shared-idea view.
     const link = screen.getByRole('link', { name: /momentum basket/i });
     expect(link).toHaveAttribute('href', `/people/shared/ideas/${SHARED_IDEA_ID}`);
+  });
+
+  // ── Group-portfolio invites wear the other party's face (§13.5 V5-P0 (c)) ──
+  // An invite is exactly the case the viewer's own graph cannot resolve: the
+  // inviter is not yet a co-member and need not be a friend, so the icon comes
+  // off the payload or nowhere.
+
+  const INVITE = {
+    id: '11111111-1111-4111-8111-111111111111',
+    chainId: '22222222-2222-4222-8222-222222222222',
+    chainName: 'Family portfolio',
+    fromUsername: 'alice',
+    toUsername: 'bob',
+    direction: 'incoming' as const,
+    createdAt: '2026-05-01T10:00:00.000Z',
+    profileIcon: 'fox' as string | null,
+  };
+
+  /** The curated icon a row actually painted (inert `data-icon-id`). */
+  function rowIcon(row: HTMLElement): string | undefined {
+    return (
+      row.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id') ?? undefined
+    );
+  }
+
+  test('renders the inviter\u2019s and the invitee\u2019s curated icon on the invite rows', async () => {
+    vi.mocked(listMirrorInvites).mockResolvedValue({
+      incoming: [INVITE],
+      outgoing: [
+        {
+          ...INVITE,
+          id: '33333333-3333-4333-8333-333333333333',
+          direction: 'outgoing' as const,
+          profileIcon: 'crown',
+        },
+      ],
+    });
+    renderPage();
+
+    const incoming = (await screen.findByText(/alice invited you to/i)).closest('li')!;
+    expect(rowIcon(incoming)).toBe('fox');
+    const outgoing = screen.getByText(/bob — invited to/i).closest('li')!;
+    expect(rowIcon(outgoing)).toBe('crown');
+  });
+
+  test('an invite without a usable icon degrades to the deterministic avatar', async () => {
+    vi.mocked(listMirrorInvites).mockResolvedValue({
+      // The inviter's account is gone (no username, no icon) …
+      incoming: [{ ...INVITE, fromUsername: null, profileIcon: null }],
+      // … and this one carries an id retired from the curated picker.
+      outgoing: [
+        {
+          ...INVITE,
+          id: '33333333-3333-4333-8333-333333333333',
+          direction: 'outgoing' as const,
+          profileIcon: 'unicorn-that-never-shipped',
+        },
+      ],
+    });
+    renderPage();
+
+    const incoming = (await screen.findByText(/Unknown invited you to/i)).closest('li')!;
+    expect(rowIcon(incoming)).toBe(defaultProfileIconIdFor('Unknown'));
+    const outgoing = screen.getByText(/bob — invited to/i).closest('li')!;
+    expect(rowIcon(outgoing)).toBe(defaultProfileIconIdFor('bob'));
   });
 
   // The aggregated "Followed items" collection was removed from Social (#532):
