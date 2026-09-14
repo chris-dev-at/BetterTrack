@@ -42,6 +42,12 @@ export default defineConfig({
       // green. The delete-per-status matrix lives here so the engine that broke
       // is the engine that proves it.
       'src/__tests__/feedbackDeleteMatrix.test.ts',
+      // #1456: the admin inbox suite builds a second, rate-limited harness
+      // mid-file and used to quit the worker-shared Redis client on its way
+      // out — invisible on the PGlite/ioredis-mock path, fatal to every later
+      // login on real Redis. It runs here so that class of harness abuse takes
+      // the slice down instead of hiding until someone else moves a case over.
+      'src/__tests__/adminFeedback.test.ts',
       // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).
