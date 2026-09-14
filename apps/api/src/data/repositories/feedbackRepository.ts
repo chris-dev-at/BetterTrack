@@ -18,6 +18,7 @@ import { alias } from 'drizzle-orm/pg-core';
 
 import {
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
+  FEEDBACK_STATUSES,
   FEEDBACK_TERMINAL_STATUSES,
   type AdminFeedbackListQuery,
   type CreateFeedbackRequest,
@@ -557,6 +558,21 @@ export function createFeedbackRepository(
       end`;
 
       /**
+       * Lifecycle grouping (#1341): the queue in `FEEDBACK_STATUSES` order, so
+       * the open states arrive as one block and the settled outcomes sink to
+       * the bottom. The CASE is BUILT from the shared enum rather than written
+       * out as a literal list, because a seventh status added in contracts must
+       * take its declared place here instead of silently sorting last — the
+       * same reason the open/terminal partition is a contract and not SQL.
+       */
+      const lifecycleOrder = sql<number>`case ${feedback.status} ${sql.join(
+        FEEDBACK_STATUSES.map(
+          (status, index) => sql`when ${status} then ${sql.raw(String(index))}`,
+        ),
+        sql` `,
+      )} else ${sql.raw(String(FEEDBACK_STATUSES.length))} end`;
+
+      /**
        * Every ordering ends on the `id` tiebreak. Without it two rows sharing
        * the leading key can swap between page 1 and page 2 under a stable
        * filter, and one of them is then never shown to the operator at all.
@@ -568,7 +584,11 @@ export function createFeedbackRepository(
             ? // Longest-untouched first: the aging clock is the last lifecycle
               // move, not the filing date.
               [asc(feedback.lastStatusChangeAt), asc(feedback.id)]
-            : [desc(feedback.createdAt), desc(feedback.id)];
+            : params.sort === 'status'
+              ? // Newest first inside a lifecycle group, matching what the
+                // unsorted queue does within one status.
+                [lifecycleOrder, desc(feedback.createdAt), desc(feedback.id)]
+              : [desc(feedback.createdAt), desc(feedback.id)];
 
       const rows = await db
         .select(adminSelection)

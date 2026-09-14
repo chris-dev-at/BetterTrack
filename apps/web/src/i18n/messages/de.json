@@ -5134,7 +5134,8 @@
       "sort": {
         "category": "Priorität: Funktionen zuerst",
         "newest": "Neueste zuerst",
-        "aging": "Am längsten unberührt zuerst"
+        "aging": "Am längsten unberührt zuerst",
+        "status": "Status: offene Vorgänge zuerst"
       },
       "category": {
         "feature": "Funktionsidee",

@@ -216,8 +216,15 @@ function refineFeedbackStatusDetails(
  * `lastStatusChangeAt` rather than `createdAt`: a submission that was answered
  * yesterday is not aging just because it was filed a month ago. Appended, never
  * inserted — this enum is a wire value.
+ *
+ * `status` (#1341) groups the queue by lifecycle position, in
+ * {@link FEEDBACK_STATUSES} order — the open states first, the settled outcomes
+ * (`declined`, `shipped`) last — with the newest submission first inside each
+ * group. It is the ordering that answers "what is still on me" without reading
+ * a colour off every row, and it pairs with the `status` filter rather than
+ * replacing it: the filter shows one state, this shows all of them in order.
  */
-export const FEEDBACK_SORTS = ['category', 'newest', 'aging'] as const;
+export const FEEDBACK_SORTS = ['category', 'newest', 'aging', 'status'] as const;
 export const feedbackSortSchema = z.enum(FEEDBACK_SORTS);
 export type FeedbackSort = z.infer<typeof feedbackSortSchema>;
 

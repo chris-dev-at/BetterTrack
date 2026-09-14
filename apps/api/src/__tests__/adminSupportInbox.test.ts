@@ -344,6 +344,32 @@ describe('admin support inbox — W3 filters and thread state', () => {
     expect(newest.submissions.at(-1)?.subject).toBe('Watchlist sort order');
   });
 
+  it('groups by lifecycle status, open work first and newest inside a group', async () => {
+    await seedInbox();
+
+    const grouped = await list({ sort: 'status' });
+    expect(grouped.submissions.map((row) => row.subject)).toEqual([
+      // new, then triaged — the open states in their declared order.
+      'Can I merge two custom assets?',
+      'Dividend total is off by one payout',
+      // The settled outcomes sink to the bottom, declined before shipped.
+      'Allocation shows 100% twice',
+      // Two shipped rows: the newer submission leads inside the group.
+      'Forecast should honour paused orders',
+      'Watchlist sort order',
+    ]);
+
+    // Grouping is an ordering, not a filter: the whole queue is still returned.
+    expect(grouped.pagination.total).toBe(5);
+
+    // And it pairs with the status filter rather than replacing it.
+    const shippedOnly = await list({ sort: 'status', status: 'shipped' });
+    expect(shippedOnly.submissions.map((row) => row.subject)).toEqual([
+      'Forecast should honour paused orders',
+      'Watchlist sort order',
+    ]);
+  });
+
   it('composes filters and keeps the total consistent with the page', async () => {
     await seedInbox();
 

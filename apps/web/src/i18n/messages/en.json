@@ -5134,7 +5134,8 @@
       "sort": {
         "category": "Priority: features first",
         "newest": "Newest first",
-        "aging": "Longest untouched first"
+        "aging": "Longest untouched first",
+        "status": "Status: open work first"
       },
       "category": {
         "feature": "Feature idea",
