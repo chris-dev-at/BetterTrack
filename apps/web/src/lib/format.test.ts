@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from 'vitest';
 
 import {
+  displayZoneDay,
+  displayZoneMonth,
   DISCREET_MASK,
   EM_DASH,
   formatDate,
   formatDateTime,
   formatDateTimeSeconds,
+  formatCompactMoney,
   formatMoney,
   formatPercent,
   formatQuantity,
@@ -394,5 +397,78 @@ describe('discreet mode (§13.5 V5-P13 arc (a))', () => {
     expect(formatMoney(1234.56)).toBe('1.234,56 €');
     expect(formatUnitPrice(0.000012)).toBe('0,000012 €');
     expect(formatSignedDelta(1.25)).toBe('+1,25');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatCompactMoney (#1741)
+//
+// The Forecast's axis used to hardcode `€` and an English `M`/`k` pair, so it
+// labelled the curve with a currency it never checked. These pin both halves:
+// the symbol comes from the ACTIVE base currency, the magnitude wording from the
+// ACTIVE locale (CLDR's own short-compact forms), and discreet mode still masks.
+
+describe('formatCompactMoney (#1741)', () => {
+  afterEach(() => {
+    setFormatLocale('de-AT');
+    setMoneyCurrency('EUR');
+    setDiscreetMode(false);
+  });
+
+  test('abbreviates with the German short-compact forms, symbol-last', () => {
+    expect(formatCompactMoney(1_200_000)).toBe('1,2 Mio. €');
+    expect(formatCompactMoney(-2_500_000)).toBe('-2,5 Mio. €');
+    // CLDR German short-compact does NOT abbreviate thousands; the locale's own
+    // answer wins over an invented "Tsd." so the axis never disagrees with the
+    // rest of the app's number formatting.
+    expect(formatCompactMoney(12_345)).toBe('12.345 €');
+    expect(formatCompactMoney(999)).toBe('999 €');
+    expect(formatCompactMoney(0)).toBe('0 €');
+  });
+
+  test('switches to the English forms with the locale', () => {
+    setFormatLocale('en-GB');
+    expect(formatCompactMoney(1_200_000)).toBe('1.2m €');
+    expect(formatCompactMoney(12_345)).toBe('12.3k €');
+  });
+
+  test('renders the active BASE currency’s symbol, not a hardcoded euro', () => {
+    setMoneyCurrency('USD');
+    expect(formatCompactMoney(1_200_000)).toBe('1,2 Mio. $');
+    setMoneyCurrency('CHF');
+    expect(formatCompactMoney(1_200_000)).toBe('1,2 Mio. CHF');
+    // An explicit currency still wins, like formatMoney's second argument.
+    expect(formatCompactMoney(1_200_000, 'GBP')).toBe('1,2 Mio. £');
+  });
+
+  test('masks in discreet mode and em-dashes a missing value', () => {
+    setDiscreetMode(true);
+    expect(formatCompactMoney(1_200_000)).toBe(DISCREET_MASK);
+    expect(formatCompactMoney(0)).toBe(DISCREET_MASK);
+    expect(formatCompactMoney(null)).toBe(EM_DASH);
+    expect(formatCompactMoney(Number.NaN)).toBe(EM_DASH);
+  });
+});
+
+describe('the display zone day (#1792)', () => {
+  test('answers the day the ledger renders, not the UTC day', () => {
+    // 01:15 on 1 October 2026 in Vienna (CEST, UTC+2): formatDate already prints
+    // "1 Oct", so a date input pre-filled from the UTC day offered 30 September.
+    const firstHour = new Date('2026-09-30T23:15:00.000Z');
+    expect(displayZoneDay(firstHour)).toBe('2026-10-01');
+    expect(displayZoneMonth(firstHour)).toBe('2026-10');
+    expect(formatDate(firstHour.toISOString())).toContain('2026');
+
+    // Noon UTC — where every day the app writes is anchored — is the same
+    // calendar day in both clocks, which is what makes the anchor safe.
+    expect(displayZoneDay(new Date('2026-09-30T12:00:00.000Z'))).toBe('2026-09-30');
+    expect(displayZoneMonth(new Date('2026-09-30T12:00:00.000Z'))).toBe('2026-09');
+  });
+
+  test('is independent of the host timezone and of the active locale', () => {
+    setFormatLocale('en-US');
+    expect(displayZoneDay(new Date('2026-01-31T23:30:00.000Z'))).toBe('2026-02-01');
+    setFormatLocale('de-AT');
+    expect(displayZoneDay(new Date('2026-01-31T23:30:00.000Z'))).toBe('2026-02-01');
   });
 });

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { registrationTokens, type RegistrationTokenRow } from '../schema';
@@ -50,8 +50,24 @@ export function createRegistrationTokenRepository(db: Database) {
       return row;
     },
 
-    async listAll(): Promise<RegistrationTokenRow[]> {
-      return db.select().from(registrationTokens).orderBy(desc(registrationTokens.createdAt));
+    /**
+     * One bounded page of registration access tokens, newest first (V5-P2,
+     * #1814 — this used to return every token ever minted; exhausted and
+     * revoked ones are never pruned). The `id` tiebreak keeps the window stable
+     * across pages.
+     */
+    async listPage(params: {
+      limit: number;
+      offset: number;
+    }): Promise<{ rows: RegistrationTokenRow[]; total: number }> {
+      const rows = await db
+        .select()
+        .from(registrationTokens)
+        .orderBy(desc(registrationTokens.createdAt), desc(registrationTokens.id))
+        .limit(params.limit)
+        .offset(params.offset);
+      const [totalRow] = await db.select({ value: count() }).from(registrationTokens);
+      return { rows, total: totalRow?.value ?? 0 };
     },
 
     async revoke(id: string, when: Date): Promise<void> {

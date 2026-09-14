@@ -57,14 +57,26 @@ export function createProfileRepository(db: Database) {
         : undefined;
     },
 
-    /** Update the caller's profile opt-in + bio. */
+    /**
+     * Patch the caller's profile opt-in + bio. Only the supplied fields are
+     * written: an omitted `isPublic` leaves `profile_public` out of the `SET`
+     * list entirely (NOT re-written with its current value), so a write that
+     * does not carry the opt-in cannot republish a profile a concurrent
+     * transition just took private — the §15 lock only wraps writes that
+     * actually carry `isPublic`. With neither field supplied there is nothing
+     * to write and no statement is issued at all.
+     */
     async updateProfileSettings(
       ownerId: string,
-      input: { isPublic: boolean; bio: string | null },
+      input: { isPublic?: boolean; bio?: string | null },
     ): Promise<void> {
+      const patch: { profilePublic?: boolean; profileBio?: string | null } = {};
+      if (input.isPublic !== undefined) patch.profilePublic = input.isPublic;
+      if (input.bio !== undefined) patch.profileBio = input.bio;
+      if (Object.keys(patch).length === 0) return;
       await db
         .update(users)
-        .set({ profilePublic: input.isPublic, profileBio: input.bio, updatedAt: new Date() })
+        .set({ ...patch, updatedAt: new Date() })
         .where(eq(users.id, ownerId));
     },
 

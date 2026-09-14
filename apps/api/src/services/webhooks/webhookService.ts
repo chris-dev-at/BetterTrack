@@ -4,6 +4,7 @@ import {
   WEBHOOK_MAX_SUBSCRIPTIONS,
   WEBHOOK_SECRET_PREFIX,
   WEBHOOK_URL_BLOCKED_CODE,
+  normalizeWebhookDeliveryError,
   type CreateWebhookSubscriptionResponse,
   type WebhookDelivery,
   type WebhookDisabledReason,
@@ -93,7 +94,11 @@ const toDelivery = (row: WebhookDeliveryRow): WebhookDelivery => ({
   status: row.status,
   responseStatus: row.responseStatus,
   attempts: row.attempts,
-  error: row.error,
+  // Closed set on the way out (§13.5 V5-P10): the dispatcher only writes
+  // canonical reasons, and a row from before that rule still holds a raw socket
+  // message — it reads back as the structural "delivery failed" like every other
+  // transport failure, so the log never confirms what answered where.
+  error: normalizeWebhookDeliveryError(row.error),
   createdAt: row.createdAt.toISOString(),
 });
 
@@ -107,9 +112,9 @@ export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
 
   /**
    * SSRF guard on a user-supplied destination (§8 "Outbound safety"). Refuses
-   * loopback/link-local/metadata/unspecified/broadcast and every other
-   * non-routable range while keeping plain http and RFC1918 LAN receivers —
-   * the owner-recorded webhook contract.
+   * loopback/link-local/metadata/unspecified/broadcast, every other
+   * non-routable range and the deployment's OWN service network, while keeping
+   * plain http and RFC1918 LAN receivers — the owner-recorded webhook contract.
    *
    * A hostname that does not resolve right now is NOT a refusal: a self-hosted
    * receiver may get its DNS record later, and the dispatcher re-runs this same
@@ -121,7 +126,7 @@ export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
     } catch (err) {
       if (!isOutboundPolicyRefusal(err)) return;
       throw badRequest(
-        'That webhook URL is not allowed: it points at a loopback, link-local or otherwise non-routable address. Use a publicly reachable or private LAN receiver.',
+        'That webhook URL is not allowed: it points at a loopback, link-local, non-routable address or at this deployment’s own services. Use a publicly reachable or private LAN receiver.',
         WEBHOOK_URL_BLOCKED_CODE,
       );
     }

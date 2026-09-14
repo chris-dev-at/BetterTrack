@@ -21,7 +21,7 @@ cd "$REPO_DIR"
 # Owner directive: commits carry ONLY the owner's identity — no bot author, no
 # Co-Authored-By trailers (GitHub squash-merge harvests every distinct PR commit
 # author into the squash body, which is where stray avatars come from).
-git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
+git config user.name "Christian Wiesinger"; git config user.email "chris.dev.at@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 notify "factory started"

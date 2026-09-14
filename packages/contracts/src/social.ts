@@ -444,6 +444,26 @@ const mySharedAudienceFields = {
   audience: shareAudienceSchema,
   /** Number of named friends — non-zero only for `specific_friends`. */
   friendCount: z.number().int(),
+  /**
+   * The named circle a `group` share currently reaches (§13.5 V5-P8), with its
+   * LIVE roster size — re-read per request, so editing the group changes the
+   * reported reach on the very next read (nothing is cached).
+   *
+   * `null` for every non-`group` audience AND for a `group` share whose group
+   * was deleted (`group_id` nulls out, and the share then resolves to nobody).
+   * That pairing is deliberate: with the audience beside it, the owner surface
+   * can tell "not a group share" from "a group share that reaches nobody", and
+   * a populated circle from an empty one, without a second request.
+   */
+  group: z
+    .object({
+      id: z.string().uuid(),
+      name: z.string(),
+      /** Current roster size — `0` is a share nobody can see. */
+      memberCount: z.number().int(),
+    })
+    .strict()
+    .nullable(),
 };
 
 /** One of the caller's shared portfolios in **My Shared Items**, with its audience. */
@@ -600,11 +620,39 @@ export const FRIEND_GROUP_NAME_MAX = 60;
 export const friendGroupNameSchema = z.string().trim().min(1).max(FRIEND_GROUP_NAME_MAX);
 
 /**
+ * How many circles ONE user may own, and how many members ONE circle may hold
+ * (§13.5 V5-P8). Both are contract constants because they bound a READ every
+ * `AudiencePicker` open performs: `GET /social/groups` hydrates every group of
+ * the caller together with every group's roster, so without a ceiling the cost
+ * of that one request is chosen by the caller (#1780). The server refuses the
+ * write that would cross either line, the repository reads carry the matching
+ * `LIMIT`, and the SPA reads the same numbers so it can say WHICH ceiling was
+ * hit before the request is made.
+ *
+ * The numbers are product ceilings, not storage limits: a named circle is a
+ * hand-curated audience ("Family", "Work"), so dozens is generous and hundreds
+ * is a different feature. 30 × 200 bounds the worst-case picker read at 6 000
+ * roster rows.
+ */
+export const FRIEND_GROUPS_MAX = 30;
+export const FRIEND_GROUP_MEMBERS_MAX = 200;
+
+/**
+ * The typed refusal `POST /social/groups/:groupId/members` answers with when the
+ * circle is genuinely full (§8 error envelope). Shared so the SPA can name that
+ * ceiling — the one refusal the owner can act on, by removing a member they can
+ * see — instead of folding it into the generic "could not update the group"
+ * (#1830).
+ */
+export const FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE = 'FRIEND_GROUP_MEMBER_LIMIT_REACHED';
+
+/**
  * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
  * one user, its members are a subset of the owner's accepted friends, and it is
  * private to the owner — nobody else can see or use it. `members` is the current
- * roster (the same live set a `group` audience resolves against); `memberCount`
- * is a convenience for the picker's preview.
+ * roster (the same live set a `group` audience resolves against, so a disabled
+ * account is absent from both); `memberCount` is a convenience for the picker's
+ * preview.
  */
 export const friendGroupSchema = z
   .object({
@@ -612,6 +660,13 @@ export const friendGroupSchema = z
     name: z.string(),
     memberCount: z.number().int().nonnegative(),
     members: z.array(friendUserSchema),
+    /**
+     * How many of the owner's shares currently point at this circle — exactly
+     * what goes dark if it is deleted (a deleted group nulls `group_id` and its
+     * shares resolve to nobody, §6.9). Drives the delete-warning copy, so the
+     * owner is never asked to confirm a blind "shares will stop working".
+     */
+    shareCount: z.number().int().nonnegative(),
   })
   .strict();
 export type FriendGroup = z.infer<typeof friendGroupSchema>;
@@ -723,7 +778,13 @@ export const PROFILE_BIO_MAX = 280;
  */
 export const updateProfileSettingsRequestSchema = z
   .object({
-    isPublic: z.boolean(),
+    /**
+     * The public-profile opt-in. OMITTING it leaves the current opt-in exactly
+     * as it is — an icon-only write (the paranoid Account row) must not carry a
+     * profile-visibility write it never meant to make. Enabling still requires
+     * an explicit `true` plus `acknowledgePublic: true`.
+     */
+    isPublic: z.boolean().optional(),
     bio: z.string().max(PROFILE_BIO_MAX).nullable().optional(),
     acknowledgePublic: z.boolean().optional(),
     /**
@@ -856,13 +917,42 @@ export const itemCommentSchema = z
   .strict();
 export type ItemComment = z.infer<typeof itemCommentSchema>;
 
+/** How many comments one thread page carries — a thread is never served whole. */
+export const COMMENT_PAGE_SIZE = 50;
+
 /**
- * A shared item's full comment thread plus its item-level reaction aggregate.
- * Returned ONLY to a viewer the item's current audience admits (a friend the
- * owner shares with) or the owner — the exact same audience the read view uses,
- * fail-closed. A public link stays read-only and never reaches this (§16). The
- * SPA keeps the comment list collapsed to `commentCount` until expanded
- * (anti-bloat), while the reaction chips stay compactly visible.
+ * An opaque thread cursor: the id of the oldest comment of the page just read,
+ * so the next request returns the page strictly older than it. The ordering key
+ * itself (`created_at`, then `id`) is never carried in the cursor — the server
+ * resolves it from the named row, so no timestamp precision is lost in transit
+ * and a page boundary can never skip a comment that shares a millisecond with
+ * the boundary row.
+ */
+export const commentCursorSchema = z.string().uuid();
+
+/** `GET …/thread` query — page backwards through an older slice of the thread. */
+export const commentThreadQuerySchema = z
+  .object({ cursor: commentCursorSchema.optional() })
+  .strict();
+export type CommentThreadQuery = z.infer<typeof commentThreadQuerySchema>;
+
+/**
+ * ONE page of a shared item's comment thread plus its item-level reaction
+ * aggregate. Returned ONLY to a viewer the item's current audience admits (a
+ * friend the owner shares with) or the owner — the exact same audience the read
+ * view uses, fail-closed. A public link stays read-only and never reaches this
+ * (§16).
+ *
+ * The default page is the NEWEST {@link COMMENT_PAGE_SIZE} comments, ascending
+ * within the page; `nextCursor` (null at the start of the thread) loads the next
+ * older page. `commentCount` is the whole thread's live count — the collapsed
+ * count the SPA renders without ever fetching a page (anti-bloat), which the
+ * cheaper {@link commentThreadSummaryResponseSchema} serves on its own.
+ *
+ * The count is always the exact live total, but it is not always a separate
+ * query: a first page that did not fill IS the whole live thread, so the server
+ * takes the count from the page it already read and never issues a `count(*)`
+ * (#1725). A page that filled, and every cursor page, still counts.
  */
 export const commentThreadResponseSchema = z
   .object({
@@ -870,10 +960,33 @@ export const commentThreadResponseSchema = z
     subjectId: z.string().uuid(),
     commentCount: z.number().int().nonnegative(),
     comments: z.array(itemCommentSchema),
+    nextCursor: commentCursorSchema.nullable(),
     reactions: z.array(reactionSummarySchema),
   })
   .strict();
 export type CommentThreadResponse = z.infer<typeof commentThreadResponseSchema>;
+
+/**
+ * The collapsed thread head: the live comment count + the item-level reactions,
+ * with no comment bodies at all. Same audience rule as the thread itself. The
+ * SPA reads THIS while the section is collapsed, so a 20 000-comment thread
+ * costs one count and one aggregate instead of the whole conversation — and
+ * since #1725 that is true of the *work* as well as the response: the count is
+ * served by `item_comments_thread_idx`, which is partial on the tombstone, and
+ * it loads no row body at all. (An audience-narrowed thread additionally
+ * filters by author, a column that index does not carry, so that variant still
+ * checks the heap per candidate row — bounded to the thread's live entries
+ * either way.)
+ */
+export const commentThreadSummaryResponseSchema = z
+  .object({
+    kind: shareKindSchema,
+    subjectId: z.string().uuid(),
+    commentCount: z.number().int().nonnegative(),
+    reactions: z.array(reactionSummarySchema),
+  })
+  .strict();
+export type CommentThreadSummaryResponse = z.infer<typeof commentThreadSummaryResponseSchema>;
 
 /** `POST …/comments` body — post one comment. Trimmed, non-empty, length-bounded. */
 export const createCommentRequestSchema = z

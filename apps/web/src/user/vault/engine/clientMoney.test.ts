@@ -5,6 +5,7 @@ import {
   settleAtYear,
   settleCustomYear,
   settleDeYear,
+  settleFiYear,
 } from '@bettertrack/domain/tax';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -453,41 +454,137 @@ describe('paranoid client money engine', () => {
     expect(market.calls.fx).toEqual([]);
   });
 
-  it.each(['transaction', 'dividend'] as const)(
-    'rejects a current-year frozen FI %s before any authoritative output or market read',
-    async (kind) => {
+  describe('frozen FI rows (#1512): classified through the shared row-engine oracle', () => {
+    /** The fixture with a second EUR lot before the sell, so FIFO (37) ≠ moving average (3.83). */
+    function twoLotDocument(
+      base: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document'],
+      frozenCountry: 'AT' | 'FI',
+      freezeDividend: boolean,
+    ) {
+      const document = withAdditionalTransaction(base, '018f0000-0000-7000-8000-000000000119', {
+        side: 'buy',
+        quantity: '2',
+        price: '200',
+        fee: '0',
+        executedAt: '2026-07-22T15:00:00.000Z',
+      });
+      const sell = document.entities.transaction?.find(
+        (candidate) => candidate.data.side === 'sell',
+      );
+      if (sell === undefined) throw new Error('Fixture sell is missing.');
+      sell.data.taxMode = 'country_specific';
+      sell.data.taxCountry = frozenCountry;
+      sell.data.taxParams = null;
+      if (freezeDividend) {
+        const dividend = document.entities.dividend?.[0];
+        if (dividend === undefined) throw new Error('Fixture dividend is missing.');
+        dividend.data.taxMode = 'country_specific';
+        dividend.data.taxCountry = frozenCountry;
+        dividend.data.taxParams = null;
+      }
+      return document;
+    }
+
+    it('re-derives a frozen FI sell under the living AT regime exactly like an AT-frozen row (no whole-view throw)', async () => {
+      const fixture = await decryptClientMoneyFixture();
+      const market = createClientMoneyMarket();
+      const reportFor = (country: 'FI' | 'AT') =>
+        createVaultMoneyEngine(
+          createMutableTestSync(
+            withTaxSettings(
+              twoLotDocument(fixture.document, country, false),
+              'country_specific',
+              'AT',
+              null,
+            ),
+            fixture.header,
+          ),
+          market.market,
+          { now: () => NOW },
+        ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+      const fi = await reportFor('FI');
+      const at = await reportFor('AT');
+      expect(fi.ok).toBe(true);
+      expect(at.ok).toBe(true);
+      if (!fi.ok || !at.ok) return;
+      // Same money: the living regime owns every derivable row on both sides.
+      expect(fi.value.computedTaxTargetEur).toBe(at.value.computedTaxTargetEur);
+      expect(fi.value.report.summary).toEqual(at.value.report.summary);
+      expect(fi.value.report.positions[0]?.realizedPnlEur).toBeCloseTo(3.833333333333343);
+      // The frozen fact itself is preserved on the row, exactly as the server reports it.
+      expect(fi.value.report.positions[0]?.sells[0]).toMatchObject({
+        taxMode: 'country_specific',
+        taxCountry: 'FI',
+      });
+      const portfolio = await createVaultMoneyEngine(
+        createMutableTestSync(twoLotDocument(fixture.document, 'FI', true), fixture.header),
+        market.market,
+        { now: () => NOW },
+      ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+      expect(portfolio.ok).toBe(true);
+    });
+
+    it('renders frozen FI rows under the manual regime at their FIFO basis and pools them under the FI engine', async () => {
+      const fixture = await decryptClientMoneyFixture();
+      const market = createClientMoneyMarket();
+      const manual = await createVaultMoneyEngine(
+        createMutableTestSync(
+          withTaxSettings(
+            twoLotDocument(fixture.document, 'FI', true),
+            'manual_per_trade',
+            null,
+            null,
+          ),
+          fixture.header,
+        ),
+        market.market,
+        { now: () => NOW },
+      ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+      expect(manual.ok).toBe(true);
+      if (!manual.ok) return;
+      const sell = manual.value.report.positions[0]?.sells[0];
+      // FIFO: the sell consumes the first lot (100), not the 116.67 average.
+      expect(sell?.realizedPnlEur).toBeCloseTo(37);
+      expect(sell).toMatchObject({ taxMode: 'country_specific', taxCountry: 'FI' });
+      expect(manual.value.report.positions[0]?.realizedPnlEur).toBeCloseTo(37);
+      // The FI pool target is the shipped domain settlement over the frozen
+      // rows — parity with `settleFiYear`, no arithmetic of its own.
+      const expectedFi = settleFiYear({
+        existingGainsEur: [37],
+        existingDividendsEur: [30],
+        heldEur: 0,
+        newEvents: [],
+      });
+      expect(manual.value.computedTaxTargetEur).toBe(expectedFi.heldAfterEur);
+      // Manual regime: the year's net tax is the recorded movement net, never a derivation.
+      expect(manual.value.report.summary).toMatchObject({
+        taxNetEur: 10,
+        taxWithheldEur: 10,
+        taxRefundedEur: 0,
+      });
+      expect(manual.value.report.summary.de).toBeUndefined();
+    });
+
+    it('still refuses an unwired frozen country loudly at the snapshot boundary, before any market read', async () => {
       const fixture = await decryptClientMoneyFixture();
       const document = structuredClone(fixture.document);
-      const entity =
-        kind === 'transaction'
-          ? document.entities.transaction?.find((candidate) => candidate.data.side === 'sell')
-          : document.entities.dividend?.[0];
-      if (entity === undefined) throw new Error(`Fixture ${kind} is missing.`);
-      entity.data.taxMode = 'country_specific';
-      entity.data.taxCountry = 'FI';
-      entity.data.taxParams = null;
+      const sell = document.entities.transaction?.find(
+        (candidate) => candidate.data.side === 'sell',
+      );
+      if (sell === undefined) throw new Error('Fixture sell is missing.');
+      sell.data.taxMode = 'country_specific';
+      (sell.data as { taxCountry: unknown }).taxCountry = 'US';
+      sell.data.taxParams = null;
       const market = createClientMoneyMarket();
-      const engine = createVaultMoneyEngine(
+      const outcome = await createVaultMoneyEngine(
         createMutableTestSync(document, fixture.header),
         market.market,
         { now: () => NOW },
-      );
-
-      const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
-      const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
-
-      for (const outcome of [portfolio, tax]) {
-        expect(outcome).toMatchObject({
-          ok: false,
-          error: { code: 'TAX_MODE_UNSUPPORTED', retryable: false },
-        });
-        expect(outcome).not.toHaveProperty('value');
-      }
-      expect(market.calls.quote).toEqual([]);
-      expect(market.calls.history).toEqual([]);
+      ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+      expect(outcome.ok).toBe(false);
       expect(market.calls.fx).toEqual([]);
-    },
-  );
+    });
+  });
 
   it('preserves reachable negative automatic-tax refund deltas', async () => {
     const fixture = await decryptClientMoneyFixture();

@@ -1,7 +1,9 @@
-import type {
-  NotificationMessage,
-  NotificationMessageKey,
-  NotificationMessageParams,
+import {
+  NOTIFICATION_MESSAGE_MONEY_PARAMS,
+  type ChannelSetupMessageKey,
+  type NotificationMessage,
+  type NotificationMessageKey,
+  type NotificationMessageParams,
 } from '@bettertrack/contracts';
 
 import { resolveEmailLocale, type EmailLocale } from '../email/emailI18n';
@@ -287,6 +289,10 @@ export const NOTIFICATION_COPY: Record<
       title: 'New feedback reply',
       body: 'There is a new reply to your feedback submission.',
     },
+    commentCreated: {
+      title: 'New comment',
+      body: '{{actor}} commented on “{{item}}”.',
+    },
   },
   de: {
     friendRequest: {
@@ -541,18 +547,81 @@ export const NOTIFICATION_COPY: Record<
       title: 'Neue Antwort auf dein Feedback',
       body: 'Es gibt eine neue Antwort auf dein Feedback.',
     },
+    commentCreated: {
+      title: 'Neuer Kommentar',
+      body: '{{actor}} hat „{{item}}“ kommentiert.',
+    },
   },
 };
 
-/** Build the wire descriptor attached to a notification payload. */
+/**
+ * Chat-channel setup copy (#1723) — the three texts a channel writes into the
+ * chat itself: the Telegram link confirmation, the Discord save probe and the
+ * Discord test send. They used to be hardcoded English inside the services, so
+ * a German user linking Telegram got an English greeting from an app they had
+ * set to German.
+ *
+ * Single strings, not title/body pairs: a chat message has no title, and the
+ * channels render these verbatim. `Record<EmailLocale, Record<key, string>>`
+ * makes a missing locale or a missing key a compile error.
+ */
+export const CHANNEL_SETUP_COPY: Record<EmailLocale, Record<ChannelSetupMessageKey, string>> = {
+  en: {
+    telegramLinked: 'BetterTrack — Telegram linked. You will receive your notifications here.',
+    discordConfigured: 'BetterTrack — Discord webhook configured. This channel is now armed.',
+    discordTest: 'BetterTrack test message — your notifications are wired up.',
+  },
+  de: {
+    telegramLinked:
+      'BetterTrack — Telegram verbunden. Deine Benachrichtigungen kommen ab jetzt hier an.',
+    discordConfigured:
+      'BetterTrack — Discord-Webhook eingerichtet. Dieser Kanal ist jetzt scharfgeschaltet.',
+    discordTest: 'BetterTrack-Testnachricht — deine Benachrichtigungen sind richtig verdrahtet.',
+  },
+};
+
+/** Render one chat-channel setup text in the recipient's stored locale. */
+export function channelSetupText(
+  key: ChannelSetupMessageKey,
+  locale: string | null | undefined,
+): string {
+  return CHANNEL_SETUP_COPY[resolveEmailLocale(locale)][key];
+}
+
+/**
+ * Build the wire descriptor attached to a notification payload.
+ *
+ * The money markers (§6.16) are attached here from the shared table rather than
+ * at each call site: a new money-bearing message key cannot ship half-marked,
+ * and no emitter has to remember the rule. Only params the descriptor actually
+ * carries are marked, so an optional amount that was omitted leaves no marker
+ * pointing at nothing.
+ */
 export function notificationMessage(
   key: NotificationMessageKey,
   params: NotificationMessageParams = {},
 ): NotificationMessage {
-  return { key, params };
+  const declared = NOTIFICATION_MESSAGE_MONEY_PARAMS[key];
+  if (!declared) return { key, params };
+  const money: Record<string, string> = {};
+  for (const [amountParam, currencyParam] of Object.entries(declared)) {
+    if (params[amountParam] !== undefined) money[amountParam] = currencyParam;
+  }
+  return Object.keys(money).length > 0 ? { key, params, money } : { key, params };
 }
 
-/** Render one descriptor for persisted fallback strings and outbound channels. */
+/**
+ * Render one descriptor for persisted fallback strings and outbound channels.
+ *
+ * **Deliberately unmasked, and this is the boundary.** Discreet mode (§6.16) is
+ * a render-layer rule for the app's OWN surfaces — the surfaces a bystander
+ * looking over the user's shoulder can see. E-mail, push, Telegram and Discord
+ * are the user's own channels, they predate the toggle, and a "•••" delivered
+ * there would destroy the message rather than protect it (the recipient cannot
+ * toggle it back). So `message.money` is metadata this renderer ignores;
+ * masking happens only in the SPA, in `apps/web/src/lib/notificationText.ts`.
+ * `__tests__/notificationLocalization.test.ts` pins that boundary.
+ */
 export function renderNotificationMessage(
   message: NotificationMessage,
   locale: string | null | undefined,

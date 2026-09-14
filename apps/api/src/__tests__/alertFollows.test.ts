@@ -3,13 +3,15 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { Quote } from '@bettertrack/contracts';
+import type { ParanoidKilledCapability, Quote } from '@bettertrack/contracts';
 
 import { withExclusiveParanoidTransitionTestLock } from '../data/repositories/paranoidEnforcementRepository';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
+import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import { runAlertsEvaluation } from '../services/alerts/alertEvaluator';
+import type { AlertFollowerFanoutDeps } from '../services/alerts/alertFollowerFanout';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -160,22 +162,117 @@ function quoteResult(price: number): { value: Quote; stale: boolean; asOf: numbe
   };
 }
 
+/** The fan-out deps the job wires: follows repo, sharing flag, privacy guard. */
+function fanoutDeps(): AlertFollowerFanoutDeps {
+  return {
+    follows: createUserFollowsRepository(harness.db),
+    users: createUserRepository(harness.db),
+    paranoid: harness.ctx.paranoidGuard,
+  };
+}
+
+/**
+ * The same deps, counting what a fire costs: `resolutions` = recipient-set
+ * resolutions, `lockScopes` = privacy-lock transactions opened by the fan-out
+ * (two per resolution — the id discovery and the enriching scope).
+ */
+function countingFanoutDeps(): { deps: AlertFollowerFanoutDeps; counts: FanoutCounts } {
+  const base = fanoutDeps();
+  const guard = harness.ctx.paranoidGuard;
+  const counts: FanoutCounts = { resolutions: 0, lockScopes: 0 };
+  return {
+    counts,
+    deps: {
+      users: base.users,
+      follows: {
+        listAlertFollowRecipientIds(followedId, trigger) {
+          counts.resolutions += 1;
+          return base.follows.listAlertFollowRecipientIds(followedId, trigger);
+        },
+        listAlertFollowRecipients(followedId, trigger, followerIds) {
+          return base.follows.listAlertFollowRecipients(followedId, trigger, followerIds);
+        },
+      },
+      paranoid: {
+        async runAllowed<T>(
+          userId: string,
+          capability: ParanoidKilledCapability,
+          action: () => Promise<T>,
+        ): Promise<T> {
+          counts.lockScopes += 1;
+          return guard.runAllowed(userId, capability, action);
+        },
+        async runAllowedWithOptional<T>(
+          requiredUserIds: readonly string[],
+          optionalUserIds: readonly string[],
+          capability: ParanoidKilledCapability,
+          action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+        ): Promise<T> {
+          counts.lockScopes += 1;
+          return guard.runAllowedWithOptional(requiredUserIds, optionalUserIds, capability, action);
+        },
+      },
+    },
+  };
+}
+
+interface FanoutCounts {
+  resolutions: number;
+  lockScopes: number;
+}
+
 /** One evaluator tick with the follower fan-out wired exactly like the job. */
-async function evaluate(now: number, price = 500) {
-  const followsRepo = createUserFollowsRepository(harness.db);
+async function evaluate(
+  now: number,
+  price = 500,
+  followFanout: AlertFollowerFanoutDeps = fanoutDeps(),
+) {
   return runAlertsEvaluation({
     alertRepo: createAlertRepository(harness.db),
     marketData: createStubMarketData({ quote: () => quoteResult(price) }),
     redis: harness.ctx.redis,
     notify: harness.ctx.notify,
     paranoid: harness.ctx.paranoidGuard,
-    followFanout: {
-      follows: followsRepo,
-      paranoid: harness.ctx.paranoidGuard,
-    },
+    followFanout,
     logger: harness.ctx.logger,
     now: () => now,
   });
+}
+
+/**
+ * A STALLED evaluator run: it loads the active-alert snapshot, parks in the
+ * quote read (`loadedSnapshot` resolves once parked) and finishes — stamped
+ * with the minute `at` — only after `release()`. Models BullMQ re-delivering a
+ * run that outlived its 30 s lock: two runs then hold the same pre-fire
+ * snapshot in DIFFERENT minute windows, so their (alert, window) Redis keys
+ * differ and only the atomic claim keeps the fire exactly-once.
+ */
+function staleRun(at: number, price = 500) {
+  let parked!: () => void;
+  let open!: () => void;
+  const loadedSnapshot = new Promise<void>((resolve) => {
+    parked = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const result = runAlertsEvaluation({
+    alertRepo: createAlertRepository(harness.db),
+    marketData: createStubMarketData({
+      quote: async () => {
+        parked();
+        await gate;
+        return quoteResult(price);
+      },
+    }),
+    redis: harness.ctx.redis,
+    notify: harness.ctx.notify,
+    paranoid: harness.ctx.paranoidGuard,
+    followFanout: fanoutDeps(),
+    logger: harness.ctx.logger,
+    now: () => at,
+  });
+  return { loadedSnapshot, release: () => open(), result };
 }
 
 describe('alert-follow prefs — settable at follow time and via PATCH, per person', () => {
@@ -519,6 +616,89 @@ describe('visibility — the owner controls whether followers get anything', () 
       .send();
     await createAlert(ownerAgent, assetId, 300);
     expect(await notifs(follower.id, 'follow.alert.created')).toHaveLength(1);
+  });
+
+  it('resolves the fire audience once per (owner, run), and not at all for a non-publishing owner', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const follower = await harness.seedUser({ email: 'fan@bt.test', username: 'fan' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
+    await follow(followerAgent, owner.id, { notifyOnAlertFire: true });
+
+    const assetId = await seedAsset();
+    const created: { id: string }[] = [];
+    for (const threshold of [100, 200, 300]) {
+      created.push(await createAlert(ownerAgent, assetId, threshold));
+    }
+
+    // Sharing OFF (the default): three fires, and NOT ONE privacy-lock
+    // transaction — the owner's opt-in is read before any lock is taken.
+    const quiet = countingFanoutDeps();
+    expect(await evaluate(Date.parse('2026-07-14T12:00:00.000Z'), 500, quiet.deps)).toEqual({
+      evaluated: 3,
+      fired: 3,
+    });
+    expect(quiet.counts).toEqual({ resolutions: 0, lockScopes: 0 });
+    expect(await notifs(follower.id, 'follow.alert.fired')).toHaveLength(0);
+    expect(await notifs(owner.id, 'alert.triggered')).toHaveLength(3);
+
+    // Sharing ON: the three one-shots are re-armed and fire again — one
+    // audience resolution for the whole run (two lock scopes), not one per fire.
+    await shareAlerts(ownerAgent);
+    for (const alert of created) {
+      const rearm = await ownerAgent
+        .post(`/api/v1/alerts/${alert.id}/rearm`)
+        .set(...XRW)
+        .send();
+      expect(rearm.status).toBe(200);
+    }
+    const shared = countingFanoutDeps();
+    expect(await evaluate(Date.parse('2026-07-14T12:01:00.000Z'), 500, shared.deps)).toEqual({
+      evaluated: 3,
+      fired: 3,
+    });
+    expect(shared.counts).toEqual({ resolutions: 1, lockScopes: 2 });
+    expect(await notifs(follower.id, 'follow.alert.fired')).toHaveLength(3);
+  });
+
+  it('a run re-delivered a minute later adds no second inbox row and no second follower notification', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const follower = await harness.seedUser({ email: 'fan@bt.test', username: 'fan' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
+    await shareAlerts(ownerAgent);
+    await follow(followerAgent, owner.id, { notifyOnAlertFire: true });
+
+    const assetId = await seedAsset();
+    const alert = await createAlert(ownerAgent, assetId, 100);
+    // A repeat alert: its persisted status alone would not stop a second fire.
+    expect(
+      (
+        await ownerAgent
+          .patch(`/api/v1/alerts/${alert.id}`)
+          .set(...XRW)
+          .send({ repeat: true })
+      ).status,
+    ).toBe(200);
+
+    // The stalled run loads the pre-fire snapshot, then parks.
+    const stale = staleRun(Date.parse('2026-07-14T12:00:00.000Z'));
+    await stale.loadedSnapshot;
+
+    // A run in the NEXT minute fires it (different (alert, window) key).
+    expect(await evaluate(Date.parse('2026-07-14T12:01:00.000Z'))).toEqual({
+      evaluated: 1,
+      fired: 1,
+    });
+
+    // The re-delivered run finishes against its stale snapshot and loses.
+    stale.release();
+    expect((await stale.result).fired).toBe(0);
+
+    expect(await notifs(owner.id, 'alert.triggered')).toHaveLength(1);
+    expect(await notifs(follower.id, 'follow.alert.fired')).toHaveLength(1);
   });
 
   it("the following entry mirrors the owner's alert-sharing (gates the row switches, V4-P0b)", async () => {

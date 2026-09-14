@@ -757,6 +757,25 @@ function DriveVaultSection({
     return true;
   }
 
+  /**
+   * Drive here is the paranoid VAULT's storage medium (§6.16), so NOTHING
+   * Drive-titled may render for an account that cannot own one — not the
+   * skeleton and not the load-error card. Both used to render their titled
+   * group before the mode was known, so on any Drive-configured deployment
+   * every normal account saw a "Google Drive vault storage" section flash in,
+   * and saw it permanently when the read failed (`retry: false`) — a Retry
+   * button for an integration the account can never have (#1859).
+   *
+   * Two account-level proofs, either sufficient and neither derived from this
+   * render's query state: the resolved read itself, and the vault runtime
+   * behind these props, which `VaultAccountRoot` mounts only after the account
+   * resolved to paranoid. In production the account gate has already filled
+   * this very query key before Connections opens, so the paranoid account
+   * keeps its skeleton, its error card and its Retry exactly as before.
+   */
+  const vaultSession = connection != null || unlock != null || prepareDrive != null;
+  if (query.data?.privacyMode !== 'paranoid' && !vaultSession) return null;
+
   if (!configured && (query.isError || query.isPending)) return null;
 
   if (query.isError) {

@@ -20,6 +20,7 @@ import type {
   PasswordResetComplete,
   PinQuickAuthRequest,
   PinVerifyRequest,
+  ProfileIconId,
   RegisterRequest,
   TwoFactorChallengeResponse,
   TwoFactorEmailCodeRequest,
@@ -27,11 +28,20 @@ import type {
 } from '@bettertrack/contracts';
 import { DEFAULT_PIN_WINDOW_MINUTES } from '@bettertrack/contracts';
 
-import { ApiError, isConfirmedUnauthorized, setAuthResponsePolicy } from '../lib/apiClient';
+import {
+  ApiError,
+  backoffDelayMs,
+  isConfirmedUnauthorized,
+  setAuthResponsePolicy,
+} from '../lib/apiClient';
 import { setDiscreetMode, setMoneyCurrency } from '../lib/format';
 import { updateAccountSettings } from '../lib/settingsApi';
 import * as api from '../lib/userApi';
-import { clearRememberedAccount, writeRememberedAccount } from './auth/rememberedAccount';
+import {
+  clearRememberedAccount,
+  refreshRememberedAccount,
+  writeRememberedAccount,
+} from './auth/rememberedAccount';
 import { requestVaultLock } from './vault/lockSignal';
 
 /**
@@ -94,6 +104,14 @@ const ACTIVITY_PERSIST_THROTTLE_MS = 10_000;
 
 /** DOM events that count as the user actively using the app. */
 const ACTIVITY_EVENTS = ['pointermove', 'pointerdown', 'keydown', 'scroll', 'touchstart'] as const;
+
+/**
+ * How many times the session bootstrap re-attempts `/auth/me` after a 429 before
+ * it stops on its own and hands the user the retryable gate. Three attempts
+ * cover the first (20 s) rung of §10's escalation ladder comfortably; past that,
+ * something is wrong that another automatic request will not fix.
+ */
+const BOOTSTRAP_RATE_LIMIT_RETRIES = 3;
 
 interface StoredActivity {
   /** User id the timestamp belongs to — a different account never inherits it. */
@@ -210,6 +228,14 @@ interface AuthContextValue {
    * app to authenticated and opens a fresh PIN window (V4-P2b).
    */
   adoptUser: (me: MeResponse) => void;
+  /**
+   * Mirror a just-saved curated profile icon (§6.9, §13.5 V5-P0 (c)) onto the
+   * session user, so the account rail/topbar avatar — which reads the icon off
+   * `user`, not off the social-profile query — agrees with the public profile
+   * without a reload or re-login. `null` clears the choice, falling back to the
+   * deterministic id-derived avatar. A no-op while anonymous.
+   */
+  applyProfileIcon: (profileIcon: ProfileIconId | null) => void;
   /**
    * Promote the current session to persistent — the OAuth-login "stay signed in
    * — your PIN protects this" choice (V4-P2b, §399 §A). PIN-gated server-side.
@@ -337,6 +363,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // renders masked whenever the account has discreet mode on. `undefined`
     // (pre-V5-P13 fixture) is treated as OFF.
     setDiscreetMode(me.discreetMode === true);
+    // Keep this device's remembered-account record current (§16, #399 §B): the
+    // chooser is written once at the opt-in, so a later rename or curated-icon
+    // choice (§13.5 V5-P0 (c)) would otherwise leave it showing a stale face —
+    // or the lettered tile — on every cold visit. Refresh-only: it never creates
+    // a record and never touches the one-shot remember-me prompt gate.
+    refreshRememberedAccount({
+      userId: me.id,
+      username: me.username,
+      profileIcon: me.profileIcon ?? null,
+    });
     if (me.mustChangePassword) {
       setStatus('password-change-required');
     } else if (isPinLocked(me)) {
@@ -409,6 +445,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let rateLimitRetries = 0;
     const tryBootstrap = async () => {
       try {
         const me = await api.getMe(controller.signal);
@@ -432,7 +469,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               ? ` Please wait ${seconds} second${seconds === 1 ? '' : 's'} and try again.`
               : ' Please slow down.';
           setRateLimitBanner(`You're doing that too fast.${wait}`);
-          const delayMs = Math.max(1_000, (seconds ?? 1) * 1_000);
+          // BOUNDED, jittered, and it honours the server's own Retry-After.
+          //
+          // This used to be an uncapped recursive timer with a 1 s floor, which
+          // meant that whenever `Retry-After` was unreadable the splash screen
+          // sat there polling `/auth/me` once a second, forever — the single
+          // worst thing the client could do to a limiter that is refusing it.
+          // `backoffDelayMs` waits the interval the server asked for (falling
+          // back to exponential), spread with jitter so every open tab does not
+          // return in lockstep. After BOOTSTRAP_RATE_LIMIT_RETRIES the splash
+          // gives up into the retryable `session-unavailable` gate, which asks
+          // the user to retry — a human-paced request instead of a machine one.
+          if (rateLimitRetries >= BOOTSTRAP_RATE_LIMIT_RETRIES) {
+            setStatus('session-unavailable');
+            return;
+          }
+          const delayMs = backoffDelayMs(rateLimitRetries, err);
+          rateLimitRetries += 1;
           retryTimer = setTimeout(() => {
             void tryBootstrap();
           }, delayMs);
@@ -534,6 +587,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyUser(me);
     },
     [applyUser],
+  );
+
+  // A saved curated icon reaches the rail/topbar avatar through the SAME door a
+  // login does — `adoptUser` — so there is exactly one path into the session
+  // user rather than a second, quietly diverging one. Re-applying the current
+  // MeResponse with the new icon keeps every other session-derived seam
+  // (currency, discreet mode, the PIN window) on the values it already had.
+  const applyProfileIcon = useCallback(
+    (profileIcon: ProfileIconId | null) => {
+      if (user == null) return;
+      if ((user.profileIcon ?? null) === profileIcon) return;
+      adoptUser({ ...user, profileIcon });
+    },
+    [adoptUser, user],
   );
 
   const login = useCallback(
@@ -785,6 +852,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       verifyTwoFactor,
       adoptUser,
+      applyProfileIcon,
       persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
@@ -810,6 +878,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       verifyTwoFactor,
       adoptUser,
+      applyProfileIcon,
       persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,

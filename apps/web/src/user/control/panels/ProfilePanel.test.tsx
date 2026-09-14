@@ -3,17 +3,43 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import type { ReactNode } from 'react';
 
-import type { ProfileSettingsResponse } from '@bettertrack/contracts';
+import {
+  PROFILE_ICON_IDS,
+  type MeResponse,
+  type ProfileSettingsResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../../lib/socialApi', () => ({
   getProfileSettings: vi.fn(),
   updateProfileSettings: vi.fn(),
 }));
+vi.mock('../../../lib/userApi');
 
 import { I18nProvider } from '../../../i18n';
 import { getProfileSettings, updateProfileSettings } from '../../../lib/socialApi';
+import * as userApi from '../../../lib/userApi';
+import { AuthProvider } from '../../AuthContext';
+import { AccountMenu } from '../../components/OriginShell';
+import { defaultProfileIconIdFor } from '../../components/profileIcons';
 import { ProfilePanel } from './ProfilePanel';
+
+const me: MeResponse = {
+  id: '8d7cf3d6-e8b8-4fa4-98a4-8712cddc05bf',
+  email: 'ada@bettertrack.test',
+  username: 'ada',
+  role: 'user',
+  status: 'active',
+  mustChangePassword: false,
+  pinEnabled: false,
+  pinLockIdleMinutes: null,
+  baseCurrency: 'EUR',
+  locale: 'en',
+  lastLoginAt: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  profileIcon: null,
+};
 
 function makeProfile(overrides: Partial<ProfileSettingsResponse> = {}): ProfileSettingsResponse {
   return {
@@ -26,21 +52,50 @@ function makeProfile(overrides: Partial<ProfileSettingsResponse> = {}): ProfileS
   };
 }
 
-function renderPanel() {
+function renderTree(children: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter initialEntries={['/control/profile']}>
       <I18nProvider>
         <QueryClientProvider client={client}>
-          <ProfilePanel />
+          <AuthProvider>{children}</AuthProvider>
         </QueryClientProvider>
       </I18nProvider>
     </MemoryRouter>,
   );
 }
 
+function renderPanel() {
+  return renderTree(<ProfilePanel />);
+}
+
+/**
+ * The panel beside the surface that must agree with it: the rail's account menu
+ * renders its avatar off the SESSION user, not off the social-profile query, so
+ * a save only reaches it through the auth seam.
+ */
+function renderPanelWithRail() {
+  return renderTree(
+    <>
+      <AccountMenu collapsed={false} />
+      <ProfilePanel />
+    </>,
+  );
+}
+
+/** The curated icon the rail's avatar actually painted (inert `data-icon-id`). */
+function railIcon(container: HTMLElement): string | undefined {
+  return (
+    container
+      .querySelector('.bt-rail__account .bt-avatar svg[data-icon-id]')
+      ?.getAttribute('data-icon-id') ?? undefined
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  vi.mocked(userApi.getMe).mockResolvedValue(me);
   vi.mocked(getProfileSettings).mockResolvedValue(makeProfile());
   vi.mocked(updateProfileSettings).mockImplementation(async (body) =>
     makeProfile({
@@ -161,7 +216,7 @@ describe('ProfilePanel', () => {
     );
   });
 
-  // ─── Icon picker (§13.5 V5-P0c) ─────────────────────────────────────────────
+  // ─── Icon picker (§13.5 V5-P0 (c)) ─────────────────────────────────────────────
 
   test('the icon grid stays collapsed until opened, then picks a curated icon', async () => {
     const user = userEvent.setup();
@@ -175,6 +230,11 @@ describe('ProfilePanel', () => {
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
 
     await user.click(toggle);
+    // One shared picker component: the general grid offers exactly the curated
+    // set, in the same order the paranoid row in AccountPanel asserts.
+    expect(screen.getAllByRole('radio').map((el) => el.getAttribute('data-icon-id'))).toEqual([
+      ...PROFILE_ICON_IDS,
+    ]);
     const fox = screen.getByRole('radio', { name: 'Fox' });
     await user.click(fox);
     expect(fox).toHaveAttribute('aria-checked', 'true');
@@ -185,6 +245,38 @@ describe('ProfilePanel', () => {
         expect.objectContaining({ profileIcon: 'fox' }),
       ),
     );
+  });
+
+  // The rail/topbar avatar and the public profile must never disagree after a
+  // save — the OriginShell comment says so, and this is what makes it true.
+  test('a saved icon reaches the account rail without a reload', async () => {
+    const user = userEvent.setup();
+    const { container } = renderPanelWithRail();
+
+    // Nothing picked yet: the rail shows the deterministic id-derived avatar.
+    await waitFor(() => expect(railIcon(container)).toBe(defaultProfileIconIdFor('ada')));
+
+    await user.click(await screen.findByRole('button', { name: /^Profile icon/ }));
+    await user.click(screen.getByRole('radio', { name: 'Fox' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+
+    await waitFor(() => expect(railIcon(container)).toBe('fox'));
+  });
+
+  test('clearing the icon falls the rail back to the deterministic avatar', async () => {
+    vi.mocked(getProfileSettings).mockResolvedValue(makeProfile({ profileIcon: 'fox' }));
+    vi.mocked(userApi.getMe).mockResolvedValue({ ...me, profileIcon: 'fox' });
+    const user = userEvent.setup();
+    const { container } = renderPanelWithRail();
+
+    await waitFor(() => expect(railIcon(container)).toBe('fox'));
+
+    await user.click(await screen.findByRole('button', { name: /^Profile icon/ }));
+    await user.click(screen.getByRole('button', { name: 'Use the default avatar' }));
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+
+    // A cleared choice must not leave the old face standing anywhere.
+    await waitFor(() => expect(railIcon(container)).toBe(defaultProfileIconIdFor('ada')));
   });
 
   test('Save stays disabled while nothing changed', async () => {

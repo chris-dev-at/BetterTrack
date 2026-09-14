@@ -7,8 +7,10 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { TelegramLinkRepository } from '../../data/repositories/telegramLinkRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type { Logger } from '../../logger';
 
+import { channelSetupText } from './notificationI18n';
 import type { TelegramChannel } from './telegramChannel';
 
 /**
@@ -55,11 +57,28 @@ export interface TelegramSetupService {
 }
 
 export interface TelegramSetupServiceDeps {
-  /** From `config.telegram`; disabled ⇒ every write is a `not_available`. */
+  /**
+   * From `config.telegram.offered` — the V5-P0 kill-switch ALONE. False ⇒ this
+   * build does not expose Telegram at all and EVERY operation refuses at the
+   * service level, `unlink` included (#1795): the directive is "deactivate, not
+   * delete", and the router guard must not be the only thing standing between a
+   * deactivated deployment and the permanent loss of a link row.
+   */
+  offered: boolean;
+  /**
+   * From `config.telegram.enabled` (`offered` AND a bot token). False ⇒ the
+   * channel cannot deliver: `get` returns the documented `available: false`
+   * body and every write is a `not_available`.
+   */
   enabled: boolean;
   /** From `config.telegram.botToken`; used to call the Bot API's getUpdates. */
   botToken: string | undefined;
   links: TelegramLinkRepository;
+  /**
+   * Recipient lookup for the stored locale (#1723) — the link confirmation is
+   * written into the user's chat, so it renders in their language, not English.
+   */
+  users: Pick<UserRepository, 'findById'>;
   /** Null when the deployment has no bot token. */
   channel: TelegramChannel | null;
   logger: Logger;
@@ -70,7 +89,7 @@ export interface TelegramSetupServiceDeps {
 }
 
 export function createTelegramSetupService(deps: TelegramSetupServiceDeps): TelegramSetupService {
-  const { enabled, botToken, links, channel, logger } = deps;
+  const { offered, enabled, botToken, links, users, channel, logger } = deps;
   const fetchFn = deps.fetchFn ?? fetch;
   const nowFn = deps.now ?? (() => new Date());
   const generateCode = deps.generateCode ?? defaultGenerateCode;
@@ -168,15 +187,22 @@ export function createTelegramSetupService(deps: TelegramSetupServiceDeps): Tele
       // Fire-and-forget welcome, so the user sees confirmation in the chat.
       if (channel) {
         // Never propagates — the confirm response should still succeed even
-        // if the welcome ping flakes.
-        void channel
-          .send(chatId, 'BetterTrack — Telegram linked. You will receive your notifications here.')
-          .catch(() => undefined);
+        // if the welcome ping (or the locale read behind it) flakes.
+        const welcome = users
+          .findById(userId)
+          .then((user) => channel.send(chatId, channelSetupText('telegramLinked', user?.locale)));
+        void welcome.catch(() => undefined);
       }
       return { linked: true, settings: await toResponse(userId) };
     },
 
     async unlink(userId): Promise<TelegramSettingsResponse> {
+      // Kill-switch OFF ⇒ refuse before touching the row (#1795). Deleting a
+      // link the deployment promised to preserve is exactly the destruction the
+      // V5-P0 directive forbids, and the router guard is not a place to keep
+      // that guarantee. A missing bot token is deliberately NOT a refusal here:
+      // the channel is offered, so the user may still drop a stale link.
+      if (!offered) throw new TelegramSetupError('not_available');
       await links.deleteForUser(userId);
       return toResponse(userId);
     },

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  FRIEND_GROUPS_MAX,
   SHARE_AUDIENCES,
   audienceTransitionRequiresConfirmation,
   type ShareAudience,
@@ -50,6 +51,9 @@ export interface AudiencePickerProps {
    */
   mirrorSyncedCopy?: boolean;
 }
+
+/** Cache window for the friend-circle list — the same one `/people` uses. */
+const GROUPS_STALE_MS = 30_000;
 
 // ── Tier iconography (inline SVG, dependency-free — matches the app house style) ─
 function TierIcon({ audience, className }: { audience: ShareAudience; className?: string }) {
@@ -164,6 +168,13 @@ export function AudiencePicker({
   const groupsQuery = useQuery({
     queryKey: ['social', 'groups'],
     queryFn: ({ signal }) => listGroups(signal),
+    // The circle list is the ONE read here that is neither the item's audience
+    // nor the friend roster the audience is checked against — it only names the
+    // circles to choose from, and it is the read every picker open used to
+    // re-issue (#1780). Sharing the /people cache window keeps opening five
+    // share sheets in a minute from costing five group+roster fan-outs. The
+    // privacy-critical reads beside it stay uncached.
+    staleTime: GROUPS_STALE_MS,
   });
 
   const [selected, setSelected] = useState<ShareAudience | null>(null);
@@ -192,12 +203,17 @@ export function AudiencePicker({
     const loaded = audienceQuery.data;
     if (!authoritativeKey || snapshotKey === authoritativeKey || !loaded) return;
     setSelected(loaded.audience);
-    setFriendIds(new Set(loaded.friendIds));
+    // Seed ONLY ids the friends list can render. The server no longer names a
+    // recipient whose friendship has dissolved (#1710), but an id with no row to
+    // tick would otherwise sit invisibly in state and be re-submitted on Save —
+    // an unticked checkbox silently standing for a named recipient.
+    const selectable = new Set((friendsQuery.data?.friends ?? []).map((f) => f.user.id));
+    setFriendIds(new Set(loaded.friendIds.filter((id) => selectable.has(id))));
     setGroupId(loaded.groupId);
     setAcknowledged(false);
     setWidenConfirmed(false);
     setSnapshotKey(authoritativeKey);
-  }, [audienceQuery.data, authoritativeKey, snapshotKey]);
+  }, [audienceQuery.data, authoritativeKey, friendsQuery.data, snapshotKey]);
 
   const snapshotReady = authoritativeKey !== null && snapshotKey === authoritativeKey;
   const audience: ShareAudience = selected ?? 'private';
@@ -373,6 +389,23 @@ export function AudiencePicker({
 
   const selectedCount = friendIds.size;
 
+  // Both slots of the widening confirmation name the reach they mean. Rendering
+  // the bare tier badge flattened a `group → group` swap into "from Friend group
+  // to Friend group" — an owner asked to acknowledge a widening (three people to
+  // eighteen) whose recipients the dialog refused to name, although the circle's
+  // name and live size are already loaded here.
+  function reachLabel(a: ShareAudience, gid: string | null): string {
+    if (a !== 'group') return t(`sharing.badge.${a}`);
+    const circle = gid ? groups.find((g) => g.id === gid) : undefined;
+    // A circle deleted since the share was made resolves to nobody server-side
+    // (`ON DELETE SET NULL`), so there is no name to give: keep the plain badge.
+    if (!circle) return t('sharing.badge.group');
+    return t(`sharing.audienceGroupNamed.${circle.memberCount === 1 ? 'one' : 'other'}`, {
+      name: circle.name,
+      count: circle.memberCount,
+    });
+  }
+
   return (
     <Dialog
       phoneSheet
@@ -510,7 +543,12 @@ export function AudiencePicker({
                           />
                           <span className="bt-soft flex-1 truncate">{g.name}</span>
                           <span className="bt-meta shrink-0">
-                            {t('sharing.groupMemberCount', { count: g.memberCount })}
+                            {t(
+                              `sharing.groupMemberCount.${g.memberCount === 1 ? 'one' : 'other'}`,
+                              {
+                                count: g.memberCount,
+                              },
+                            )}
                           </span>
                           <CheckMark active={checked} />
                         </label>
@@ -518,6 +556,15 @@ export function AudiencePicker({
                     );
                   })}
                 </ul>
+                {groups.length >= FRIEND_GROUPS_MAX ? (
+                  // One line, only at the ceiling: the list is the caller's
+                  // whole set of circles, and the bounded read cannot serve more
+                  // than the cap (#1780). Silently showing a truncated list would
+                  // let an owner share to the wrong circle.
+                  <p className="bt-meta">
+                    {t('sharing.groupsAtLimit', { count: FRIEND_GROUPS_MAX })}
+                  </p>
+                ) : null}
                 <Alert tone="info">{t('sharing.groupConfirm')}</Alert>
               </>
             )}
@@ -529,8 +576,8 @@ export function AudiencePicker({
             <div className="flex flex-col gap-2">
               <p>
                 {t('sharing.audienceChangeConfirm', {
-                  from: t(`sharing.badge.${initialAudience}`),
-                  to: t(`sharing.badge.${audience}`),
+                  from: reachLabel(initialAudience, audienceQuery.data?.groupId ?? null),
+                  to: reachLabel(audience, groupId),
                 })}
               </p>
               <label className="bt-soft flex cursor-pointer items-start gap-2">

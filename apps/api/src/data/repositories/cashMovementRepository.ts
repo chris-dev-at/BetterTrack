@@ -54,6 +54,13 @@ export interface CashMovementRecord {
    * a magnitude that was carried over 1:1 and still needs an FX pass.
    */
   originalCurrency: string | null;
+  /**
+   * Statement-import idempotency key (V5 cash fusion), `UNIQUE(portfolio,
+   * dedup_hash)`; NULL on every hand-entered row. Carried on the record because
+   * the owner's ledger read is what the paranoid capture drains, and enable
+   * hard-deletes the cleartext this key otherwise only lives in.
+   */
+  dedupHash: string | null;
   createdAt: Date;
 }
 
@@ -89,6 +96,7 @@ function toRecord(row: CashMovementRow): CashMovementRecord {
     note: row.note ?? null,
     source: row.source,
     originalCurrency: row.originalCurrency ?? null,
+    dedupHash: row.dedupHash ?? null,
     createdAt: row.createdAt,
   };
 }

@@ -41,6 +41,18 @@ export type ConglomerateVisibility = z.infer<typeof conglomerateVisibilitySchema
  */
 export const MAX_NESTING_DEPTH = 3;
 
+/**
+ * Maximum number of DISTINCT assets a conglomerate may resolve to once its
+ * nesting is flattened (§13.5 V5-P6). The per-basket cap of 50 positions bounds
+ * one basket, but nesting multiplies: at {@link MAX_NESTING_DEPTH} levels a tree
+ * of full baskets would resolve to tens of thousands of assets, and every
+ * consumer of the flatten (the resolved view, the invest calculator, each
+ * comparison series) does one quote/history lookup per resolved asset. This is
+ * the effective per-request bound those consumers were missing; past it the
+ * request is refused instead of tying a worker up for minutes.
+ */
+export const MAX_FLATTENED_POSITIONS = 250;
+
 // --- Positions -------------------------------------------------------------
 
 /**
@@ -174,6 +186,15 @@ export const conglomerateResolvedResponseSchema = z
     conglomerateId: z.string().uuid(),
     nested: z.boolean(),
     positions: z.array(resolvedConglomeratePositionSchema),
+    /**
+     * The share of the basket, in percent, that resolved to NO asset — a nested
+     * constituent that is empty, directly or through its own empty children
+     * (#1755). `positions` is normalized to 100 over what *did* resolve, so
+     * without this field the view would silently redistribute that slice onto
+     * the survivors while the Invest Calculator on the same screen correctly
+     * withholds it. `0` for every fully-resolving basket.
+     */
+    unresolvedPct: z.number(),
   })
   .strict();
 export type ConglomerateResolvedResponse = z.infer<typeof conglomerateResolvedResponseSchema>;

@@ -54,14 +54,32 @@ export const STALE_TTL_SECONDS = 7 * 24 * 60 * 60;
 /**
  * Market-intelligence freshness windows (§13.5 V5-P5). Corporate-actions and
  * scheduled events move slowly, so dividends/earnings/splits cache for hours
- * (one fetch serves every viewer of the asset for a working session); news is
- * the volatile family and refreshes in minutes. Same serve-stale + coalescing
- * machinery as the quote/history paths.
+ * (one fetch serves every viewer of the asset for a working session). Same
+ * serve-stale + coalescing machinery as the quote/history paths.
  */
 export const DIVIDENDS_TTL_SECONDS = 12 * 60 * 60;
 export const EARNINGS_TTL_SECONDS = 6 * 60 * 60;
 export const SPLITS_TTL_SECONDS = 12 * 60 * 60;
-export const NEWS_TTL_SECONDS = 10 * 60;
+
+/**
+ * News is the volatile family, but its freshness window must be STRICTLY LONGER
+ * than the client stale windows that drive it, or every client refetch lands on
+ * an already-expired entry and the news digest re-fans-out over the whole book
+ * on essentially every load — the §5.3 politeness keystone paying for a TTL
+ * mismatch. Equal windows are the same failure, not the boundary case: both
+ * clocks start at the SAME instant (the client's fetch is what populates the
+ * Redis entry), so a stale window equal to the TTL expires exactly when the
+ * cache entry does and every refetch is a guaranteed miss (#1758). The drivers
+ * today, both hitting `/assets/portfolio/news-digest`:
+ *
+ *   - `apps/web/src/user/home/widgets/NewsWidget.tsx`  `NEWS_STALE_MS = 45 min`
+ *   - `apps/web/src/user/assets/NewsDigestPage.tsx`    `NEWS_DIGEST_STALE_MS = 15 min`
+ *
+ * One hour is longer than either, so a client refetch is a cache hit. The
+ * relationship is pinned by `services/marketIntel/__tests__/newsTtl.test.ts`,
+ * which reads those two files — it fails if either window reaches this TTL.
+ */
+export const NEWS_TTL_SECONDS = 60 * 60;
 
 /**
  * Fundamentals (arc f / INTEL1) are quarterly filings that barely move within a

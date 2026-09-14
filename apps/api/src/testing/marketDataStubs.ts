@@ -40,7 +40,13 @@ export interface StubMarketDataControls {
     range: HistoryRange,
     interval?: HistoryInterval,
   ) => Promise<CachedResult<PricePoint[]>> | CachedResult<PricePoint[]>;
-  /** Meta behaviour (unused by the read API, which sources meta from the DB row). */
+  /**
+   * Meta behaviour. The read API sources an asset's descriptive fields from the
+   * DB row, but NOT its denomination: `assetService` labels a price series with
+   * the provider's own currency and the catalog enrichment resolves a defaulted
+   * one through here (#1875). Left unset it throws, which both callers treat as
+   * "unknown" and degrade from.
+   */
   meta?: (ref: AssetRef) => Promise<CachedResult<AssetMeta>> | CachedResult<AssetMeta>;
   // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
   /**
@@ -177,6 +183,7 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     async settled() {},
     // No upstream providers behind the stub, so no breakers to report.
     breakerStates: () => [],
+    breakerSnapshots: () => [],
     // No failover chain behind the stub — empty attribution/switches.
     failoverStatus: () => ({ chains: [], switches: [], attribution: [] }),
   };
@@ -225,9 +232,14 @@ export function cachedIntel<T>(
   return { value, stale: false, asOf: INTEL_FETCHED_AT, ...overrides };
 }
 
-/** A canned {@link DividendEvents} payload, overridable per field. */
+/**
+ * A canned {@link DividendEvents} payload, overridable per field. The
+ * `trailingAmountBasis` is derived from the resulting amount unless the caller
+ * names one, so a fixture that only sets `trailingAmount` still satisfies the
+ * contract invariant "the basis is null exactly when the amount is".
+ */
 export function sampleDividendEvents(overrides: Partial<DividendEvents> = {}): DividendEvents {
-  return {
+  const merged = {
     currency: 'USD',
     history: [
       { exDate: '2026-02-07T00:00:00.000Z', payDate: null, amount: 0.24, currency: 'USD' },
@@ -243,7 +255,14 @@ export function sampleDividendEvents(overrides: Partial<DividendEvents> = {}): D
     ],
     forwardYield: 0.0044,
     trailingAmount: 0.98,
+    trailingAmountBasis: 'trailing-12m',
     ...overrides,
+  } satisfies DividendEvents;
+  return {
+    ...merged,
+    trailingAmountBasis:
+      overrides.trailingAmountBasis ??
+      (merged.trailingAmount == null ? null : merged.trailingAmountBasis),
   };
 }
 
@@ -260,13 +279,17 @@ export function sampleEarningsEvents(overrides: Partial<EarningsEvents> = {}): E
   return {
     next: {
       date: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      periodEnd: null,
       epsEstimate: 1.42,
       epsActual: null,
       estimated: true,
     },
     recent: [
       {
-        date: '2026-04-30T00:00:00.000Z',
+        // A reported quarter carries its fiscal PERIOD END, not an announcement
+        // date — the two are separate contract fields since #1790.
+        date: null,
+        periodEnd: '2026-04-30T00:00:00.000Z',
         epsEstimate: 1.5,
         epsActual: 1.53,
         estimated: false,

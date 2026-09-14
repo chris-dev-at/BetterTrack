@@ -12,6 +12,7 @@ export {
   type MarketDataService,
   type MarketDataServiceOptions,
   type CreateMarketDataServiceDeps,
+  type ProviderBreakerSnapshots,
 } from './marketDataService';
 export {
   createFailoverResolver,
@@ -37,6 +38,7 @@ export {
   CircuitOpenError,
   type CircuitState,
   type CircuitBreakerOptions,
+  type CircuitBreakerSnapshot,
 } from './circuitBreaker';
 export { TimeoutError, withTimeout, retryOnce, DEFAULT_TIMEOUT_MS } from './resilience';
 export { rangeStartMs } from './historyWindow';

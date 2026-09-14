@@ -139,6 +139,42 @@ ledger_record(){
              ($res.api_equivalent_pricing // "openai-standard-base"),
            api_equivalent_coverage:
              ($res.api_equivalent_coverage // "missing-telemetry")}
+         elif $provider == "opencode" then
+          # opencode/OpenRouter is API-KEY billed, not a subscription, so an
+          # honest zero has to be distinguishable from an unmeasured one:
+          # opencode_cost_source says whether the provider reported the cost
+          # ("provider-reported"), whether we assumed the free preview
+          # ("assumed-free-preview"), or whether no telemetry arrived at all
+          # ("absent" — in which case there is no usage object either and the
+          # token columns are structural zeros, not measurements).
+          {provider:"opencode",
+           provider_family:($res.provider_family // "openrouter"),
+           harness:($res.harness // "opencode-cli"),
+           billing:($res.billing // "free-preview"),
+           opencode_usage_schema:
+             (if ($res.opencode_usage_schema|type)=="number"
+              then $res.opencode_usage_schema else null end),
+           opencode_usage_reported:
+             (if ($res.opencode_usage_reported|type)=="boolean"
+              then $res.opencode_usage_reported else null end),
+           opencode_telemetry_complete:
+             (if ($res.opencode_telemetry_complete|type)=="boolean"
+              then $res.opencode_telemetry_complete else null end),
+           opencode_cost_source:
+             (if ($res.opencode_cost_source|type)=="string"
+              then $res.opencode_cost_source else null end),
+           cached_input_tokens:$crt,
+           cache_write_input_tokens:$cwt,
+           reasoning_output_tokens:$rot,
+           input_tokens_semantics:($res.input_tokens_semantics // "exclusive"),
+           output_tokens_semantics:($res.output_tokens_semantics // "unverified"),
+           api_equivalent_usd:
+             (if ($res.api_equivalent_usd|type)=="number"
+              then (($res.api_equivalent_usd*1000000|round)/1000000)
+              else null end),
+           api_equivalent_pricing:($res.api_equivalent_pricing // null),
+           api_equivalent_coverage:
+             ($res.api_equivalent_coverage // "not-applicable-free-preview")}
          elif $provider != "" then {provider:$provider}
          else {} end)
       + (if $factory != "" then {factory:$factory} else {} end)
@@ -229,9 +265,14 @@ cc(){ local model=$1; shift; local prompt="$*"
   while true; do
     local out rc res err start dur
     start=$(date +%s)
-    # CC_EFFORT (optional, multi-factory difficulty routing): adds --effort; when
-    # unset the command line is byte-identical to the original single-factory call.
-    out=$(claude -p "$prompt" --model "$model" ${CC_EFFORT:+--effort "$CC_EFFORT"} \
+    # CC_EFFORT (optional, multi-factory difficulty routing): adds --effort.
+    # CC_MAX_TURNS / CC_TIMEOUT (optional, multi-factory role caps): bound a run
+    # that would otherwise churn turns or hang forever — the composer sets both.
+    # With all three unset the command line is byte-identical to the original
+    # single-factory call.
+    out=$(${CC_TIMEOUT:+timeout "$CC_TIMEOUT"} \
+          claude -p "$prompt" --model "$model" ${CC_EFFORT:+--effort "$CC_EFFORT"} \
+          ${CC_MAX_TURNS:+--max-turns "$CC_MAX_TURNS"} \
           --output-format stream-json --verbose \
           --dangerously-skip-permissions 2>&1 | tee -a "$LOG"); rc=${PIPESTATUS[0]}
     dur=$(( $(date +%s) - start ))

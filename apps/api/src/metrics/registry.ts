@@ -85,6 +85,36 @@ export const cacheEventsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Problem captures the rate cap refused, by kind and reason (§13.5 V5-P2 arc
+ * (d)). The admin Problems list publishes the same counter — this is the
+ * scrape-side view of it, so a drop storm is alertable and not only readable.
+ */
+export const problemCapturesDroppedTotal = new Counter({
+  name: 'bettertrack_problem_captures_dropped_total',
+  help: 'Problem captures refused by the capture rate cap, by kind and reason.',
+  labelNames: ['kind', 'reason'] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Notification fan-outs the dispatcher could not perform because the channel is
+ * not built in this deployment (§13.5 V5-P0 kill-switch, #1795).
+ *
+ * `channel` is `telegram`/`discord`; `outcome` is `dropped` (the event reached
+ * at least one live channel, this one was skipped) or `deferred` (the channel
+ * was the event's ONLY destination — nothing was delivered, no dedupe row was
+ * written, and the event stays deliverable after an env flip). Without this
+ * series a deployment running with the switch off has no signal at all that N
+ * notifications a day are going nowhere.
+ */
+export const notificationChannelSkippedTotal = new Counter({
+  name: 'bettertrack_notification_channel_skipped_total',
+  help: 'Notification fan-outs skipped because the channel is deactivated in this deployment.',
+  labelNames: ['channel', 'outcome'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Currently connected realtime websockets (sampled on scrape). */
 export const websocketConnections = new Gauge({
   name: 'bettertrack_websocket_connections',
@@ -111,6 +141,34 @@ export function startDefaultMetrics(): void {
 /** Prometheus text exposition of the whole registry. */
 export function renderMetrics(): Promise<string> {
   return metricsRegistry.metrics();
+}
+
+/** One labelled sample of a counter, as {@link readCounter} returns it. */
+export interface CounterSample {
+  labels: Readonly<Record<string, string | number>>;
+  value: number;
+}
+
+/**
+ * Read a counter's current labelled values (#1406 W4).
+ *
+ * The admin operations cockpit reports cache hit rate and provider call
+ * outcomes as JSON, and these counters are already the place those are counted
+ * — re-counting them in a second, parallel accumulator is how two numbers that
+ * are supposed to agree stop agreeing.
+ *
+ * The values are **process-local**: prom-client counters live in the process
+ * that increments them and reset when it restarts, so an API process reports
+ * its own calls and not the worker's. The cockpit's payload says so
+ * (`sampledSince`) rather than implying a deployment-wide total. Reading is
+ * pure — nothing here scrapes, resets or mutates the registry.
+ */
+export async function readCounter(counter: Counter<string>): Promise<CounterSample[]> {
+  const metric = await counter.get();
+  return metric.values.map((entry) => ({
+    labels: entry.labels as Readonly<Record<string, string | number>>,
+    value: entry.value,
+  }));
 }
 
 /** The `Content-Type` Prometheus expects for the exposition above. */

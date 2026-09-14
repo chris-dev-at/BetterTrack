@@ -1,0 +1,25 @@
+-- V5-P8, #1829 — the index that lets a comment thread ASK whether it needs the
+-- paranoid treatment instead of paying for it unconditionally (§6.9).
+--
+-- Until now every `getThread` / `getThreadSummary` enumerated the thread's
+-- distinct comment authors and reaction actors, took a `FOR KEY SHARE` lock on
+-- one `users` row per participant, and then filtered every aggregate by that id
+-- list — on a surface the SPA polls every 30 s. That whole dance exists for ONE
+-- reason: a participant whose account is in a non-normal privacy mode must
+-- disappear from the thread. On a deployment where no such account exists it
+-- bought nothing at all.
+--
+-- The service now probes first:
+--
+--   SELECT 1 FROM users u
+--    WHERE u.privacy_mode <> 'normal'
+--      AND EXISTS (… this thread's live comments / reactions by u.id …)
+--    LIMIT 1
+--
+-- and only enumerates + locks when the probe answers yes. This index is what
+-- makes the probe cheap: PARTIAL on the same predicate, so it contains exactly
+-- the paranoid accounts — usually none — and the probe becomes an empty index
+-- scan whose cost is independent of both the thread's length and the size of
+-- the `users` table. Without it the probe would be a sequential scan of `users`
+-- twice per thread read.
+CREATE INDEX IF NOT EXISTS "users_privacy_mode_restricted_idx" ON "users" USING btree ("id") WHERE "privacy_mode" <> 'normal';

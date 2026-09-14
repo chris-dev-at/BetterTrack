@@ -33,6 +33,10 @@
     "./vaultVectors": {
       "types": "./src/vaultVectors/index.ts",
       "default": "./src/vaultVectors/index.ts"
+    },
+    "./taxVectors": {
+      "types": "./src/taxVectors/index.ts",
+      "default": "./src/taxVectors/index.ts"
     }
   },
   "scripts": {

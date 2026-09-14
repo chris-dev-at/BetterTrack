@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import type { AssetType, SearchResultItem } from '@bettertrack/contracts';
+import type { SearchResultItem } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { Icon, type IconName } from '../../ui/origin';
 import { useOverlayEscape } from '../../ui/overlayStack';
@@ -11,12 +11,15 @@ import {
   SUGGESTED_COMMANDS,
   commandPath,
   filterCommands,
+  isCommandConfigured,
   sectionLabelKeyFor,
   withPortfolioScope,
   type CommandEntry,
   type CommandGroup,
 } from './commands';
 import { ACTIVE_PORTFOLIO_PARAM } from '../routeParams';
+import { assetTypeLabelKey } from '../../lib/assetTypeLabel';
+import { useDeployCapabilities } from '../../lib/featureFlags';
 import { useAssetSearch } from './useAssetSearch';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
@@ -40,8 +43,11 @@ const PER_GROUP_LIMIT = 6;
 const ASSET_LIMIT = 8;
 
 /**
- * Asset glyphs. Market assets only — search never returns a caller's own custom
- * asset, so there is deliberately no `custom` entry here (V3-P2, issue #325).
+ * Asset glyphs. `custom` has no glyph of its own and falls back to the generic
+ * assets icon in {@link assetRow} — search DOES return a caller's own custom
+ * assets (`assetRepository.visibleTo` includes `owner_id = $user`); they simply
+ * get no dedicated symbol (V3-P2, issue #325). Their LABEL comes from the shared
+ * {@link assetTypeLabelKey} helper, like every other type's.
  */
 const ASSET_ICON: Record<string, IconName> = {
   stock: 'trending-up',
@@ -51,14 +57,6 @@ const ASSET_ICON: Record<string, IconName> = {
   commodity: 'globe',
   crypto: 'bolt',
 };
-
-/** Market types with a translated singular badge label; anything else reads "Other". */
-const BADGED_TYPES = new Set<string>(['stock', 'etf', 'index', 'fx', 'commodity', 'crypto']);
-
-/** Translated singular type label for the row badge (`stock` → "Stock"). */
-function assetTypeLabelKey(type: AssetType): string {
-  return BADGED_TYPES.has(type) ? `palette.assetType.${type}` : 'palette.assetType.other';
-}
 
 /** One navigable palette row. Commands and assets share this exact grammar. */
 interface PaletteRow {
@@ -104,6 +102,9 @@ interface PaletteSection {
 export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const t = useT();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
+  // Deploy-time capabilities (§13.5 V5-P5): an unconfigured arc's destination is
+  // absent from the palette, exactly as it is from the section nav.
+  const capabilities = useDeployCapabilities();
   const navigate = useNavigate();
   // The portfolio the palette was opened over, carried into the create rows
   // that write into one portfolio (`withPortfolioScope`).
@@ -140,9 +141,11 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const commands = useMemo(
     () =>
       filterCommands(trimmed, t).filter(
-        (command) => !paranoid || !isParanoidKilledPath(commandPath(command.to)),
+        (command) =>
+          isCommandConfigured(command, capabilities) &&
+          (!paranoid || !isParanoidKilledPath(commandPath(command.to))),
       ),
-    [paranoid, trimmed, t],
+    [capabilities, paranoid, trimmed, t],
   );
 
   const sections = useMemo<PaletteSection[]>(() => {
@@ -152,7 +155,9 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
           key: 'suggested',
           labelKey: 'palette.group.suggested',
           rows: SUGGESTED_COMMANDS.filter(
-            (entry) => !paranoid || !isParanoidKilledPath(commandPath(entry.to)),
+            (entry) =>
+              isCommandConfigured(entry, capabilities) &&
+              (!paranoid || !isParanoidKilledPath(commandPath(entry.to))),
           ).map((entry, i) => commandRow(entry, `s${i}`, t, activePortfolioId)),
         },
       ];
@@ -201,6 +206,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
     assets.isError,
     assets.isFetching,
     assets.results,
+    capabilities,
     commands,
     paranoid,
     t,

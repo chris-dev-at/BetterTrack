@@ -10,6 +10,7 @@ import {
 import type { Time } from 'lightweight-charts';
 
 import type {
+  DividendProjectionBasis,
   Holding,
   PortfolioHistoryRange,
   PortfolioTotals,
@@ -23,20 +24,24 @@ import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
 } from '../../lib/marketIntelApi';
-import { useT } from '../../i18n';
+import { type TranslateFn, useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
+import { useDeployCapability } from '../../lib/featureFlags';
 import { assetTypeLabels } from './assetTypeLabels';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
+import { upcomingDividendDate } from '../../lib/dividendDates';
 import {
+  displayZoneDay,
   EM_DASH,
   formatDate,
   formatMoney,
   formatPercent,
   formatQuantity,
   formatSignedPercent,
+  formatUnitPrice,
 } from '../../lib/format';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
@@ -1380,95 +1385,183 @@ function RecategorizeBanner() {
 
 /**
  * Projected dividend income (monthly/yearly EUR) + the upcoming ex/pay calendar
- * across held + watchlist assets. Both read the same `MARKET_INTEL_ENABLED`
- * gate: gate off (or nothing to show) ⇒ the whole block renders NOTHING, so the
- * portfolio page is byte-identical when unconfigured (anti-bloat "invisible when
- * unconfigured"). Compact: one income line with a monthly/yearly toggle and a
+ * across held + watchlist assets.
+ *
+ * Two different absences (#1681). The deployment's `MARKET_INTEL_ENABLED`
+ * capability decides whether this block exists at all: off ⇒ NOTHING renders,
+ * so the portfolio page is byte-identical when unconfigured (§6.3 "blocks
+ * simply disappear"). With it on, the two reads stand on their own feet: the
+ * projection answers all-or-nothing (#1616 — one unresolvable holding makes the
+ * whole total `available: false`), and that must not take a calendar that
+ * computed perfectly down with it. So an unresolved projection renders the
+ * calendar plus a short reason, and an empty calendar still renders the
+ * projection. Only when neither has anything to say does the block stay hidden
+ * (anti-bloat). Compact: one income line with a monthly/yearly toggle and a
  * calendar truncated to three rows with an expand toggle.
  */
+/**
+ * The one line naming what a projected dividend total is made of. Null when the
+ * projection carries no basis (nothing contributed), because then there is
+ * nothing to caveat.
+ */
+function dividendBasisNote(basis: DividendProjectionBasis | null, t: TranslateFn): string | null {
+  switch (basis) {
+    case 'trailing-12m':
+      return t('portfolio.dividends.basis.trailing12m');
+    case 'forward-annualized':
+      return t('portfolio.dividends.basis.forwardAnnualized');
+    case 'mixed':
+      return t('portfolio.dividends.basis.mixed');
+    default:
+      return null;
+  }
+}
+
 function DividendIntelSection() {
   const t = useT();
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
   const [showAll, setShowAll] = useState(false);
+  const marketIntel = useDeployCapability('marketIntel');
 
   const projection = useQuery({
     queryKey: PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
     queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
   const calendar = useQuery({
     queryKey: PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
     queryFn: ({ signal }) => getPortfolioDividendCalendar(signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
 
-  // Invisible when unconfigured: nothing rendered until we know the gate is on.
-  if (!projection.data?.available) return null;
+  // Invisible when unconfigured: no heading, no empty state, no explanation.
+  if (!marketIntel) return null;
 
   const proj = projection.data;
   const entries = calendar.data?.available ? calendar.data.entries : [];
-  const hasProjection = proj.holdings.length > 0;
-  // Nothing at all to surface → stay hidden (anti-bloat).
+  const hasProjection = proj?.available === true && proj.holdings.length > 0;
+  // A definite "could not compute" — distinct from a read still in flight or
+  // failed, which says nothing about this portfolio and draws nothing.
+  const projectionUnresolved = proj?.available === false;
+  // …and distinct again from "the book is past the per-request fan-out budget"
+  // (§5.3): the projection refuses BEFORE spending provider budget, so it is
+  // unavailable for a reason that has nothing to do with an unresolvable
+  // holding and must not borrow that copy.
+  const projectionTruncated = proj?.truncated === true;
+  // The calendar, unlike the projection, still publishes what it covered — so it
+  // says on one line that it covered only part of the book.
+  const calendarTruncated = calendar.data?.available === true && calendar.data.truncated === true;
+  // Nothing at all to surface → stay hidden (anti-bloat). An unresolved
+  // projection is only worth explaining beside a calendar that did resolve.
   if (!hasProjection && entries.length === 0) return null;
 
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
-  const total = view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
+  // One "today" for the whole list so every row is labelled against the same
+  // day boundary the API used when it built and ordered the calendar.
+  const calendarToday = displayZoneDay();
+  const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
+  const basisNote = hasProjection ? dividendBasisNote(proj.basis, t) : null;
 
   return (
     <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.dividends.title')}</h2>
-        <Seg
-          ariaLabel={t('portfolio.dividends.viewGroupLabel')}
-          onChange={setView}
-          options={[
-            { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
-            { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
-          ]}
-          value={view}
-        />
+        {/* The period toggle switches a projected total; without one it would
+            control nothing, so a calendar-only block does not carry it. */}
+        {hasProjection ? (
+          <Seg
+            ariaLabel={t('portfolio.dividends.viewGroupLabel')}
+            onChange={setView}
+            options={[
+              { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
+              { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
+            ]}
+            value={view}
+          />
+        ) : null}
       </div>
 
       {hasProjection ? (
-        <p className="flex items-baseline gap-2">
-          <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
-            {formatMoney(total, 'EUR')}
-          </span>
-          <span className="bt-meta">
-            {view === 'monthly'
-              ? t('portfolio.dividends.perMonth')
-              : t('portfolio.dividends.perYear')}
-          </span>
-        </p>
+        <>
+          <p className="flex items-baseline gap-2">
+            <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
+              {/* The projection declares its own denomination (the caller's base,
+                  §5.4) — rendering a hard 'EUR' beside a base-denominated net
+                  worth labelled a currency the arithmetic never used. */}
+              {formatMoney(total, proj?.currency)}
+            </span>
+            <span className="bt-meta">
+              {view === 'monthly'
+                ? t('portfolio.dividends.perMonth')
+                : t('portfolio.dividends.perYear')}
+            </span>
+          </p>
+          {/* …and what that number is MADE of. A `trailing-12m` estimate is the
+              last twelve months' realized payouts, so a special dividend is in
+              it and the figure reads well above true forward income for a year;
+              a book can also legitimately mix the two bases. The contract has
+              carried the basis since #1741 and no surface rendered it (#1790). */}
+          {basisNote ? <p className="bt-meta">{basisNote}</p> : null}
+        </>
+      ) : projectionTruncated ? (
+        <p className="bt-meta">{t('portfolio.dividends.projectionTruncated')}</p>
+      ) : projectionUnresolved ? (
+        <p className="bt-meta">{t('portfolio.dividends.projectionUnresolved')}</p>
       ) : null}
 
       {entries.length > 0 ? (
         <div className="flex flex-col gap-1.5" style={{ marginTop: 12 }}>
           <h3 className="bt-label">{t('portfolio.dividends.calendarTitle')}</h3>
+          {calendarTruncated ? (
+            <p className="bt-meta">{t('portfolio.dividends.calendarTruncated')}</p>
+          ) : null}
           <ul className="bt-band flex flex-col">
-            {visibleEntries.map((entry) => (
-              <li
-                key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
-                className="flex items-center justify-between gap-3 py-2 text-sm"
-              >
-                <Link
-                  className="bt-row-title"
-                  style={{ textDecoration: 'none' }}
-                  title={entry.name}
-                  to={`/assets/${entry.assetId}`}
+            {visibleEntries.map((entry) => {
+              // The date this event is still upcoming on — the earliest of its
+              // ex/pay dates that has not passed, which is also the date the API
+              // ordered the list on. An event already gone ex but not yet paid
+              // shows its PAY date: printing the ex-date behind us under
+              // "upcoming" was #1758, and "ex —" for a pay-only row was #1681.
+              const upcoming = upcomingDividendDate(entry, calendarToday);
+              const isEx = upcoming?.isEx ?? false;
+              const date = upcoming?.iso ?? null;
+              return (
+                <li
+                  key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
+                  className="flex items-center justify-between gap-3 py-2 text-sm"
                 >
-                  {entry.symbol}
-                </Link>
-                <span className="bt-meta flex items-center gap-2">
-                  {entry.amount != null ? (
-                    <span className="bt-soft bt-num">
-                      {formatMoney(entry.amount, entry.currency ?? undefined)}
-                    </span>
-                  ) : null}
-                  <span>{t('portfolio.dividends.exOn', { date: formatDate(entry.exDate) })}</span>
-                </span>
-              </li>
-            ))}
+                  <Link
+                    className="bt-row-title"
+                    style={{ textDecoration: 'none' }}
+                    title={entry.name}
+                    to={`/assets/${entry.assetId}`}
+                  >
+                    {entry.symbol}
+                  </Link>
+                  <span className="bt-meta flex items-center gap-2">
+                    {/* A per-SHARE distribution, not a total: the unit-price
+                        rule (§7.1 rule 4) is what keeps a sub-cent monthly-ETF
+                        payout from printing as 0,00 — the Home widget already
+                        renders this exact field that way, and the two surfaces
+                        must not disagree about the same number. */}
+                    {entry.amount != null ? (
+                      <span className="bt-soft bt-num">
+                        {formatUnitPrice(entry.amount, entry.currency ?? undefined)}
+                      </span>
+                    ) : null}
+                    {date !== null ? (
+                      <span>
+                        {t(isEx ? 'portfolio.dividends.exOn' : 'portfolio.dividends.payOn', {
+                          date: formatDate(date),
+                        })}
+                      </span>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
           {entries.length > 3 ? (
             <button

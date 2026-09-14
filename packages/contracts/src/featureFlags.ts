@@ -39,8 +39,46 @@ export const featureFlagsPublicSchema = z
 
 export type FeatureFlagsPublic = z.infer<typeof featureFlagsPublicSchema>;
 
-/** `GET /feature-flags` — the SPA-facing effective flags envelope. */
-export const featureFlagsResponseSchema = z.object({ flags: featureFlagsPublicSchema }).strict();
+/**
+ * Deploy-time capabilities the SPA has to know about (§13.5 V5-P5). These are
+ * NOT admin-toggled kill-switches — they are set once per deployment by env and
+ * cannot change while the app runs, exactly like the per-deploy Telegram/Discord
+ * switch reported by `channelsConfigurable` on the notification settings
+ * response. They ride the same bootstrap read as {@link FEATURE_FLAG_KEYS} only
+ * so the SPA needs one fetch, and they are deliberately kept OUT of that array:
+ * adding one there would put it in the admin runtime registry, which is the
+ * wrong mechanism for a deploy-level gate.
+ *
+ * `marketIntel` is the `MARKET_INTEL_ENABLED` gate (§13.5 V5-P5). False ⇒ every
+ * intel read already reports `available: false`; advertising it here is what
+ * lets the *destinations* (the Assets → News tab, its ⌘K entry) disappear too,
+ * instead of leading to a page that misreports a kill-switch as "no headlines
+ * yet" — "invisible when unconfigured".
+ */
+export const DEPLOY_CAPABILITY_KEYS = ['marketIntel'] as const;
+
+export type DeployCapabilityKey = (typeof DEPLOY_CAPABILITY_KEYS)[number];
+
+export const deployCapabilityKeySchema = z.enum(DEPLOY_CAPABILITY_KEYS);
+
+export const deployCapabilitiesSchema = z
+  .object(
+    Object.fromEntries(DEPLOY_CAPABILITY_KEYS.map((key) => [key, z.boolean()])) as Record<
+      DeployCapabilityKey,
+      z.ZodBoolean
+    >,
+  )
+  .strict();
+
+export type DeployCapabilities = z.infer<typeof deployCapabilitiesSchema>;
+
+/**
+ * `GET /feature-flags` — the SPA-facing bootstrap envelope: the admin-toggled
+ * effective flags plus this deployment's fixed capabilities.
+ */
+export const featureFlagsResponseSchema = z
+  .object({ flags: featureFlagsPublicSchema, capabilities: deployCapabilitiesSchema })
+  .strict();
 
 export type FeatureFlagsResponse = z.infer<typeof featureFlagsResponseSchema>;
 

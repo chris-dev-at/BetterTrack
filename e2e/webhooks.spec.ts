@@ -30,8 +30,8 @@ import { provisionUser } from './support/users';
  * Production delivery is the BullMQ `webhooks.deliver` job (bridge → queue →
  * dispatcher, with exponential backoff), which a browser can't observe without
  * arbitrary sleeps. Per the E1/E2 precedent, `support/e3.ts` builds the REAL
- * dispatcher + production `fetch` transport against the same Playwright database
- * and drives `deliver()` with explicit attempt contexts, POSTing to an in-process
+ * dispatcher + production address-pinned transport against the same Playwright
+ * database and drives `deliver()` with explicit attempt contexts, POSTing to an in-process
  * loopback receiver — so signatures, the retry boundary and the auto-disable
  * streak are exercised deterministically, network-free, with no product change.
  *

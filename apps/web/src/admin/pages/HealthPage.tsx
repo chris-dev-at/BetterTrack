@@ -1,49 +1,83 @@
+import { useCallback } from 'react';
 import type { ReactNode } from 'react';
 
 import type {
   AdminBackupStatusLevel,
   AdminHealthComponent,
   AdminHealthResponse,
+  AdminOpsJobsResponse,
+  AdminOpsQueue,
+  AdminOpsSchedule,
   HealthStatus,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatBackupAge, formatDuration } from '../formatDuration';
+import { useLiveRefresh } from '../useLiveRefresh';
 import { useResource } from '../useResource';
-import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
+import { LiveRefreshControl } from '../components/LiveRefreshControl';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
+import {
+  EDGE_BOTTOM,
+  SURFACE_HEADER,
+  TEXT_MICRO,
+  TEXT_MONO,
+  TEXT_MUTED,
+  TEXT_NUM,
+} from '../components/tokens';
+import type { Tone } from '../components/tokens';
+import {
+  Alert,
+  AsyncReadState,
+  Badge,
+  Button,
+  DataTable,
+  EmptyState,
+  KeyValueList,
+  PageHeader,
+  Panel,
+  PanelHeader,
+  Spinner,
+  StatTile,
+  Td,
+  Th,
+  cx,
+} from '../components/ui';
 
-const STATUS_TONE: Record<HealthStatus, 'green' | 'amber' | 'red'> = {
+/**
+ * Operations → Health & queues (#1406 W4): the cockpit landing.
+ *
+ * W1 shipped this as a component-status list. W4 makes it the workspace's
+ * landing and adds the three signals an operator actually opens the console
+ * for at 3 a.m.: what is piling up in the queues, whether the scheduled work
+ * ran (and what the sweeps deleted), and what has failed permanently.
+ *
+ * Every number here is a READING. There is no retry, no discard, no
+ * enqueue — the #1406 DECISION rejected a generic queue button because per-job
+ * idempotency and privacy differ too much for one control to be safe, and the
+ * page says so where the failures are listed rather than leaving the absence
+ * looking like an oversight.
+ */
+
+const STATUS_TONE: Record<HealthStatus, Tone> = {
   ok: 'green',
   degraded: 'amber',
   down: 'red',
+};
+
+const BACKUP_LEVEL_TONE: Record<AdminBackupStatusLevel, Tone> = {
+  ok: 'green',
+  warn: 'amber',
+  critical: 'red',
+  unknown: 'neutral',
 };
 
 /** A status pill localized through `admin.health.status.*`. */
 function StatusBadge({ status }: { status: HealthStatus }) {
   const t = useT();
   return <Badge tone={STATUS_TONE[status]}>{t(`admin.health.status.${status}`)}</Badge>;
-}
-
-/** One labelled component row: name, its status pill, and optional detail slot. */
-function ComponentRow({
-  label,
-  status,
-  children,
-}: {
-  label: string;
-  status: HealthStatus;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2 border-b border-neutral-800 py-3 last:border-b-0 sm:flex-row sm:items-start sm:justify-between">
-      <div className="flex items-center gap-3">
-        <span className="text-sm font-medium text-neutral-200">{label}</span>
-        <StatusBadge status={status} />
-      </div>
-      {children ? <div className="text-xs text-neutral-400 sm:text-right">{children}</div> : null}
-    </div>
-  );
 }
 
 function pingDetail(component: AdminHealthComponent): string | null {
@@ -53,307 +87,522 @@ function pingDetail(component: AdminHealthComponent): string | null {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+/** Absolute clock time, or an em dash — never an invented value. */
+function at(value: string | null): string {
+  return value === null ? '—' : new Date(value).toLocaleString();
+}
+
 /**
- * Admin health page (PROJECTPLAN.md §13.4 V4-P5a): the operator diagnostics
- * surface for `GET /admin/health`. Renders every component's status (DB, Redis,
- * market-data providers, the job system, the realtime gateway) plus app version
- * and uptime, with loading and error states, and a manual refresh. The public
- * `/health` liveness probe stays separate; this is admin-only and richer.
+ * How far in the future/past a timestamp is, phrased for a schedule column.
+ * A scheduled run whose `next` has already passed is OVERDUE, and that is the
+ * single most useful thing this table can say.
  */
+function relativeRun(t: TranslateFn, iso: string | null, now: number): ReactNode {
+  if (iso === null) return <span className={TEXT_MUTED}>—</span>;
+  const target = Date.parse(iso);
+  if (!Number.isFinite(target)) return <span className={TEXT_MUTED}>—</span>;
+  const deltaSeconds = Math.round((target - now) / 1000);
+  if (deltaSeconds < 0) {
+    return (
+      <span className="text-amber-400">
+        {t('admin.ops.schedules.overdue', { age: formatDuration(t, -deltaSeconds) })}
+      </span>
+    );
+  }
+  return <span>{t('admin.ops.schedules.in', { age: formatDuration(t, deltaSeconds) })}</span>;
+}
+
 export function HealthPage() {
   const t = useT();
+
   const health = useResource((signal) => api.getAdminHealth(signal), []);
-  const { data, loading, error, reload } = health;
+  const jobs = useResource((signal) => api.getOpsJobs(signal), []);
+  const backup = useResource((signal) => api.getBackupStatus(signal), []);
+  const version = useResource((signal) => api.getVersion(signal), []);
+
+  // One fan-out so the whole cockpit is read as of one moment; four panels
+  // refreshing on four timers would show four different instants side by side.
+  const reloadAll = useCallback(() => {
+    health.reload();
+    jobs.reload();
+    backup.reload();
+    version.reload();
+  }, [health, jobs, backup, version]);
+
+  const live = useLiveRefresh(reloadAll);
+  const busy = health.loading || jobs.loading || backup.loading || version.loading;
+
+  // Tab counts are decorative: while a read is loading or failed, pass nothing
+  // rather than a confident zero (the W2 rule). Only a non-zero dead-letter
+  // count is worth a chip — a "0" badge is chrome, not information.
+  const failureTotal = jobs.loading || jobs.error !== null ? undefined : jobs.data?.failureTotal;
+  const counts = failureTotal ? { '/admin/health': failureTotal } : undefined;
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <PageHeader title={t('admin.health.title')} description={t('admin.health.subtitle')} />
-        <Button variant="secondary" onClick={reload} disabled={loading}>
-          {t('admin.health.refresh')}
-        </Button>
-      </div>
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        actions={<LiveRefreshControl busy={busy} live={live} />}
+        description={t('admin.ops.health.subtitle')}
+        eyebrow={t('admin.nav.sections.operations')}
+        title={t('admin.ops.health.title')}
+      />
+      <WorkspaceTabs {...(counts ? { counts } : {})} />
 
-      {loading && data ? (
-        <span className="sr-only" role="status" aria-label={t('common.loading')}>
-          {t('common.loading')}
-        </span>
-      ) : null}
+      <section aria-busy={health.loading} aria-label={t('admin.ops.system.title')}>
+        {health.loading || health.error ? (
+          <AsyncReadState
+            error={health.error}
+            loading={health.loading && health.data === null}
+            onRetry={health.reload}
+            retryable={health.retryable}
+          />
+        ) : null}
+        {health.data ? (
+          <SystemPanel
+            data={health.data}
+            shortCommit={version.data?.shortCommit ?? null}
+            // Held back until the deploy marker has answered: falling straight
+            // through to the API version would flash a value that is not the
+            // commit and then swap it, which is exactly the wrong answer to
+            // "is my merge live?". And when the marker cannot be read at all,
+            // the tile says the commit is unavailable instead of showing the
+            // API version as though it were one.
+            versionError={version.error !== null}
+            versionLoading={version.loading}
+          />
+        ) : null}
+      </section>
 
-      <section aria-busy={loading} aria-label={t('admin.health.title')}>
-        {loading && !data ? <Spinner label={t('common.loading')} /> : null}
-        {error ? <Alert tone="error">{t('admin.health.loadError')}</Alert> : null}
-
-        {data ? <HealthBody data={data} /> : null}
+      <section aria-busy={jobs.loading} aria-label={t('admin.ops.queues.title')}>
+        {jobs.loading || jobs.error ? (
+          <AsyncReadState
+            error={jobs.error}
+            loading={jobs.loading && jobs.data === null}
+            onRetry={jobs.reload}
+            retryable={jobs.retryable}
+          />
+        ) : null}
+        {jobs.data ? <JobsBody data={jobs.data} /> : null}
       </section>
 
       {/* The Overview's backup attention row points here, so the evidence behind
           it has to live here too (#1406 W1). Read-only and fail-soft: the panel
           is a projection of the scheduler's own status file, and this page never
           starts a dump, a drill, or an upload. */}
-      <BackupReadinessPanel />
-    </div>
-  );
-}
-
-const BACKUP_LEVEL_TONE: Record<AdminBackupStatusLevel, 'green' | 'amber' | 'red' | 'neutral'> = {
-  ok: 'green',
-  warn: 'amber',
-  critical: 'red',
-  unknown: 'neutral',
-};
-
-/**
- * Backup / restore-drill readiness (docs/ops.md: 26 h dump, 35 d drill). Green
- * means a recent dump AND a recent drill; amber means the recovery point exists
- * but is unproven; red means there is no trustworthy recovery point.
- */
-function BackupReadinessPanel() {
-  const t = useT();
-  const backup = useResource((signal) => api.getBackupStatus(signal), []);
-  const { data, loading, error, reload } = backup;
-
-  return (
-    <section
-      aria-label={t('admin.backup.title')}
-      className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-medium text-neutral-300">{t('admin.backup.title')}</h2>
-        {data ? (
-          <Badge tone={BACKUP_LEVEL_TONE[data.level]}>
-            {t(`admin.backup.level.${data.level}`)}
-          </Badge>
-        ) : null}
-      </div>
-
-      {loading && !data ? <Spinner label={t('common.loading')} /> : null}
-      {error ? (
-        <Alert tone="info">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{t('admin.backup.loadError')}</span>
-            <Button variant="secondary" onClick={reload}>
-              {t('common.retry')}
-            </Button>
+      <section aria-busy={backup.loading} aria-label={t('admin.backup.title')}>
+        <Panel padded={false}>
+          <PanelHeader
+            actions={
+              backup.data ? (
+                <Badge tone={BACKUP_LEVEL_TONE[backup.data.level]}>
+                  {t(`admin.backup.level.${backup.data.level}`)}
+                </Badge>
+              ) : undefined
+            }
+            title={t('admin.backup.title')}
+          />
+          <div className="p-4">
+            {backup.loading && backup.data === null ? <Spinner /> : null}
+            {/* Keeps W1's specific wording rather than the generic read banner: an
+              unreadable backup status is the one failure on this page an
+              operator must be able to name without opening the network tab. */}
+            {backup.error ? (
+              <Alert tone="info">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{t('admin.backup.loadError')}</span>
+                  <Button onClick={backup.reload} size="sm" variant="secondary">
+                    {t('common.retry')}
+                  </Button>
+                </div>
+              </Alert>
+            ) : null}
+            {backup.data ? (
+              <>
+                <p className={cx(TEXT_MUTED, 'mb-2')}>
+                  {t(`admin.backup.reason.${backup.data.reason}`)}
+                </p>
+                {backup.data.configured ? (
+                  <KeyValueList
+                    rows={[
+                      {
+                        label: t('admin.backup.lastDump'),
+                        value: formatBackupAge(t, backup.data.backup.ageSeconds),
+                      },
+                      {
+                        label: t('admin.backup.lastDrill'),
+                        value: formatBackupAge(t, backup.data.restore.ageSeconds),
+                      },
+                      {
+                        label: t('admin.backup.dumpBudget'),
+                        value: formatDuration(t, backup.data.backup.maxAgeSeconds),
+                      },
+                      {
+                        label: t('admin.backup.drillBudget'),
+                        value: formatDuration(t, backup.data.restore.maxAgeSeconds),
+                      },
+                    ]}
+                  />
+                ) : null}
+              </>
+            ) : null}
           </div>
-        </Alert>
-      ) : null}
-
-      {data ? (
-        <>
-          <p className="text-xs text-neutral-400">{t(`admin.backup.reason.${data.reason}`)}</p>
-          {data.configured ? (
-            <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-              <BackupFact
-                label={t('admin.backup.lastDump')}
-                value={formatBackupAge(t, data.backup.ageSeconds)}
-              />
-              <BackupFact
-                label={t('admin.backup.lastDrill')}
-                value={formatBackupAge(t, data.restore.ageSeconds)}
-              />
-              <BackupFact
-                label={t('admin.backup.dumpBudget')}
-                value={formatDuration(t, data.backup.maxAgeSeconds)}
-              />
-              <BackupFact
-                label={t('admin.backup.drillBudget')}
-                value={formatDuration(t, data.restore.maxAgeSeconds)}
-              />
-            </dl>
-          ) : null}
-        </>
-      ) : null}
-    </section>
-  );
-}
-
-function BackupFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col">
-      <dt className="uppercase tracking-wide text-neutral-400">{label}</dt>
-      <dd className="text-neutral-200">{value}</dd>
+        </Panel>
+      </section>
     </div>
   );
 }
 
-function HealthBody({ data }: { data: AdminHealthResponse }) {
+/** Build identity, uptime and every dependency's live status. */
+function SystemPanel({
+  data,
+  shortCommit,
+  versionError,
+  versionLoading,
+}: {
+  data: AdminHealthResponse;
+  shortCommit: string | null;
+  versionError: boolean;
+  versionLoading: boolean;
+}) {
   const t = useT();
   const { components } = data;
 
+  const componentRows: Array<{ label: string; status: HealthStatus; detail: ReactNode }> = [
+    {
+      label: t('admin.health.components.database'),
+      status: components.database.status,
+      detail: pingDetail(components.database),
+    },
+    {
+      label: t('admin.health.components.redis'),
+      status: components.redis.status,
+      detail: pingDetail(components.redis),
+    },
+    {
+      label: t('admin.health.components.providers'),
+      status: components.providers.status,
+      detail:
+        components.providers.breakers.length === 0
+          ? t('admin.health.providers.none')
+          : components.providers.breakers
+              .map((b) => `${b.providerId}: ${t(`admin.health.circuit.${b.state}`)}`)
+              .join(' · '),
+    },
+    {
+      label: t('admin.health.components.queues'),
+      status: components.queues.status,
+      detail:
+        components.queues.heartbeat.ageSeconds === null
+          ? t('admin.health.queues.heartbeatUnknown')
+          : t('admin.health.queues.heartbeatAge', {
+              seconds: components.queues.heartbeat.ageSeconds,
+            }),
+    },
+    {
+      label: t('admin.health.components.gateway'),
+      status: components.gateway.status,
+      detail: components.gateway.enabled
+        ? t('admin.health.gateway.connections', { count: components.gateway.connections })
+        : t('admin.health.gateway.disabled'),
+    },
+  ];
+
   return (
-    <div className="flex flex-col gap-6">
-      {/* Overall verdict + build/uptime meta */}
-      <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-neutral-300">{t('admin.health.overall')}</span>
-          <StatusBadge status={data.status} />
-        </div>
-        <dl className="grid grid-cols-2 gap-3 text-xs text-neutral-400 sm:grid-cols-3">
-          <div className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-400">
-              {t('admin.health.version')}
-            </dt>
-            <dd className="font-mono text-neutral-200">{data.version}</dd>
-          </div>
-          <div className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-400">{t('admin.health.uptime')}</dt>
-            <dd className="text-neutral-200">{formatDuration(t, data.uptimeSeconds)}</dd>
-          </div>
-          <div className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-400">
-              {t('admin.health.checkedAt')}
-            </dt>
-            <dd className="text-neutral-200">{new Date(data.checkedAt).toLocaleTimeString()}</dd>
-          </div>
-        </dl>
-      </div>
-
-      {/* Per-component status list */}
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900 px-4">
-        <ComponentRow
-          label={t('admin.health.components.database')}
-          status={components.database.status}
-        >
-          {pingDetail(components.database)}
-        </ComponentRow>
-        <ComponentRow label={t('admin.health.components.redis')} status={components.redis.status}>
-          {pingDetail(components.redis)}
-        </ComponentRow>
-
-        <ComponentRow
-          label={t('admin.health.components.providers')}
-          status={components.providers.status}
-        >
-          {components.providers.breakers.length === 0
-            ? t('admin.health.providers.none')
-            : components.providers.breakers.map((b) => (
-                <span key={b.providerId} className="ml-2 inline-block">
-                  {b.providerId}: {t(`admin.health.circuit.${b.state}`)}
-                </span>
-              ))}
-        </ComponentRow>
-
-        <ComponentRow label={t('admin.health.components.queues')} status={components.queues.status}>
-          <div className="flex flex-col items-start gap-1 sm:items-end">
-            <span>
-              {components.queues.heartbeat.ageSeconds === null
-                ? t('admin.health.queues.heartbeatUnknown')
-                : t('admin.health.queues.heartbeatAge', {
-                    seconds: components.queues.heartbeat.ageSeconds,
-                  })}
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatTile
+          label={t('admin.health.overall')}
+          tone={STATUS_TONE[data.status]}
+          value={t(`admin.health.status.${data.status}`)}
+        />
+        <StatTile label={t('admin.health.uptime')} value={formatDuration(t, data.uptimeSeconds)} />
+        <StatTile
+          detail={
+            versionError
+              ? t('admin.ops.system.versionUnavailable')
+              : t('admin.ops.system.versionDetail')
+          }
+          label={t('admin.ops.system.build')}
+          tone={versionError ? 'amber' : 'neutral'}
+          // The deployed commit is the answer to "is my merge live?"; the API
+          // version alone cannot answer it, because it never changes.
+          value={
+            <span className={TEXT_MONO}>
+              {versionLoading ? '…' : versionError ? '—' : (shortCommit ?? data.version)}
             </span>
-            {!components.queues.available ? (
-              <span>{t('admin.health.queues.unavailable')}</span>
-            ) : components.queues.depths.length === 0 ? (
-              <span>{t('admin.health.queues.empty')}</span>
-            ) : (
-              <span>
-                {t('admin.health.queues.summary', {
-                  queues: components.queues.depths.length,
-                  waiting: components.queues.depths.reduce((sum, q) => sum + q.waiting, 0),
-                  failed: components.queues.depths.reduce((sum, q) => sum + q.failed, 0),
-                })}
-              </span>
-            )}
-          </div>
-        </ComponentRow>
-
-        <ComponentRow
-          label={t('admin.health.components.gateway')}
-          status={components.gateway.status}
-        >
-          {components.gateway.enabled
-            ? t('admin.health.gateway.connections', {
-                count: components.gateway.connections,
-              })
-            : t('admin.health.gateway.disabled')}
-        </ComponentRow>
+          }
+        />
+        <StatTile
+          label={t('admin.health.checkedAt')}
+          value={new Date(data.checkedAt).toLocaleTimeString()}
+        />
       </div>
 
-      <FailoverPanel providers={components.providers} />
+      <Panel padded={false}>
+        <PanelHeader title={t('admin.ops.system.components')} />
+        <ul className="divide-y divide-neutral-800">
+          {componentRows.map((row) => (
+            <li
+              className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5"
+              key={row.label}
+            >
+              <span className="flex items-center gap-3">
+                <span className="text-[13px] font-medium text-neutral-100">{row.label}</span>
+                <StatusBadge status={row.status} />
+              </span>
+              {row.detail ? (
+                <span className={cx(TEXT_MUTED, TEXT_NUM, 'text-right')}>{row.detail}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </Panel>
     </div>
   );
 }
 
-/**
- * Provider failover attribution (§13.5 V5-P1c): which source is serving each
- * chain, per-provider serve counts and the recent switch events. A niche panel
- * that stays folded away — it renders nothing until a secondary is configured and
- * has served traffic, so a single-provider deploy sees no extra chrome.
- */
-function FailoverPanel({
-  providers,
-}: {
-  providers: AdminHealthResponse['components']['providers'];
-}) {
+/** Queue depths, schedules and permanent failures. */
+function JobsBody({ data }: { data: AdminOpsJobsResponse }) {
   const t = useT();
-  const { chains, switches, attribution } = providers;
-  if (chains.length === 0 && switches.length === 0 && attribution.length === 0) return null;
+  const now = Date.parse(data.checkedAt);
+
+  if (!data.available) {
+    return (
+      <Alert tone="info">
+        {/* "No jobs waiting" and "I cannot see the jobs" are different facts. */}
+        {t('admin.ops.queues.unavailable')}
+      </Alert>
+    );
+  }
+
+  // An operator scanning for trouble wants the busy and broken queues first;
+  // the two dozen idle ones are noise until they are not.
+  const busyFirst = [...data.queues].sort(
+    (a, b) => weightOf(b) - weightOf(a) || a.name.localeCompare(b.name),
+  );
+  const active = busyFirst.filter((queue) => weightOf(queue) > 0);
+  const idleCount = data.queues.length - active.length;
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <span className="text-sm font-medium text-neutral-300">
-        {t('admin.health.failover.title')}
-      </span>
-
-      {chains.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-xs text-neutral-400">
-          {chains.map((c) => {
-            const failedOver = c.serving !== null && c.serving !== c.primaryId;
-            return (
-              // A primary can report more than one chain when its asset classes
-              // route differently (equities → a secondary, FX/crypto → itself),
-              // so the candidate list is what makes the row unique.
-              <li
-                key={`${c.primaryId}:${c.providerIds.join('>')}`}
-                className="flex flex-wrap items-center gap-2"
-              >
-                <span className="font-mono text-neutral-200">{c.providerIds.join(' → ')}</span>
-                {c.serving ? (
-                  <Badge tone={failedOver ? 'amber' : 'green'}>{c.serving}</Badge>
-                ) : null}
-                {failedOver ? <span>{t('admin.health.failover.viaFailover')}</span> : null}
-                {c.since ? (
-                  <span>
-                    {t('admin.health.failover.since', {
-                      time: new Date(c.since).toLocaleTimeString(),
-                    })}
-                  </span>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-
-      {attribution.length > 0 ? (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-400">
-          {attribution.map((a) => (
-            <span key={a.providerId}>
-              <span className="text-neutral-200">{a.providerId}</span>:{' '}
-              <span>{t('admin.health.failover.served', { count: a.serves })}</span>
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="flex flex-col gap-1 text-xs text-neutral-400">
-        <span className="uppercase tracking-wide text-neutral-400">
-          {t('admin.health.failover.switchesTitle')}
-        </span>
-        {switches.length === 0 ? (
-          <span>{t('admin.health.failover.noSwitches')}</span>
-        ) : (
-          <ul className="flex flex-col gap-1">
-            {switches.slice(0, 5).map((s, i) => (
-              <li key={`${s.at}-${i}`} className="font-mono text-neutral-300">
-                {s.from ?? '—'} → {s.to} · {new Date(s.at).toLocaleTimeString()}
-              </li>
-            ))}
-          </ul>
-        )}
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatTile
+          label={t('admin.ops.queues.waiting')}
+          tone={sum(data.queues, 'waiting') > 25 ? 'amber' : 'neutral'}
+          value={sum(data.queues, 'waiting')}
+        />
+        <StatTile label={t('admin.ops.queues.active')} value={sum(data.queues, 'active')} />
+        <StatTile
+          label={t('admin.ops.queues.failed')}
+          tone={sum(data.queues, 'failed') > 0 ? 'red' : 'neutral'}
+          value={sum(data.queues, 'failed')}
+        />
+        <StatTile
+          detail={
+            data.heartbeatAgeSeconds === null
+              ? t('admin.health.queues.heartbeatUnknown')
+              : t('admin.ops.queues.heartbeatBudget', { seconds: data.heartbeatIntervalSeconds })
+          }
+          label={t('admin.ops.queues.heartbeat')}
+          tone={heartbeatTone(data)}
+          value={
+            data.heartbeatAgeSeconds === null
+              ? '—'
+              : t('admin.health.queues.heartbeatAge', { seconds: data.heartbeatAgeSeconds })
+          }
+        />
       </div>
+
+      <Panel padded={false}>
+        <PanelHeader
+          description={
+            idleCount > 0 ? t('admin.ops.queues.idleHidden', { count: idleCount }) : undefined
+          }
+          title={t('admin.ops.queues.title')}
+        />
+        {active.length === 0 ? (
+          <div className="p-4">
+            <EmptyState>{t('admin.ops.queues.allIdle')}</EmptyState>
+          </div>
+        ) : (
+          <DataTable minWidth="40rem">
+            <thead className={cx(SURFACE_HEADER, EDGE_BOTTOM)}>
+              <tr>
+                <Th>{t('admin.ops.queues.queue')}</Th>
+                <Th className="text-right">{t('admin.ops.queues.waiting')}</Th>
+                <Th className="text-right">{t('admin.ops.queues.active')}</Th>
+                <Th className="text-right">{t('admin.ops.queues.delayed')}</Th>
+                <Th className="text-right">{t('admin.ops.queues.failed')}</Th>
+                <Th className="text-right">{t('admin.ops.queues.paused')}</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-800">
+              {active.map((queue) => (
+                <tr key={queue.name}>
+                  <Td className="font-medium text-neutral-100">
+                    <span className={TEXT_MONO}>{queue.name}</span>
+                  </Td>
+                  <Td className={cx('text-right', TEXT_NUM)}>{queue.waiting}</Td>
+                  <Td className={cx('text-right', TEXT_NUM)}>{queue.active}</Td>
+                  <Td className={cx('text-right', TEXT_NUM)}>{queue.delayed}</Td>
+                  <Td
+                    className={cx('text-right', TEXT_NUM, queue.failed > 0 ? 'text-red-400' : null)}
+                  >
+                    {queue.failed}
+                  </Td>
+                  <Td className={cx('text-right', TEXT_NUM)}>{queue.paused}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+      </Panel>
+
+      <Panel padded={false}>
+        <PanelHeader
+          description={t('admin.ops.schedules.subtitle')}
+          title={t('admin.ops.schedules.title')}
+        />
+        {data.schedules.length === 0 ? (
+          <div className="p-4">
+            <EmptyState>{t('admin.ops.schedules.empty')}</EmptyState>
+          </div>
+        ) : (
+          <DataTable minWidth="52rem">
+            <thead className={cx(SURFACE_HEADER, EDGE_BOTTOM)}>
+              <tr>
+                <Th>{t('admin.ops.schedules.job')}</Th>
+                <Th>{t('admin.ops.schedules.cadence')}</Th>
+                <Th>{t('admin.ops.schedules.lastRun')}</Th>
+                <Th className="text-right">{t('admin.ops.schedules.duration')}</Th>
+                <Th>{t('admin.ops.schedules.next')}</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-800">
+              {data.schedules.map((schedule) => (
+                <ScheduleRow
+                  key={`${schedule.queue}:${schedule.id}`}
+                  now={now}
+                  schedule={schedule}
+                />
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+      </Panel>
+
+      <Panel padded={false}>
+        <PanelHeader
+          description={t('admin.ops.failures.subtitle', { total: data.failureTotal })}
+          title={t('admin.ops.failures.title')}
+        />
+        {/* A shorter list that looks complete is the failure mode worth naming:
+            say how many rows could not be read rather than quietly omitting
+            them. */}
+        {data.malformed > 0 ? (
+          <div className="px-4 pt-4">
+            <Alert tone="info">
+              {t('admin.ops.failures.malformed', { count: data.malformed })}
+            </Alert>
+          </div>
+        ) : null}
+        {data.failures.length === 0 ? (
+          <div className="p-4">
+            <EmptyState>{t('admin.ops.failures.empty')}</EmptyState>
+          </div>
+        ) : (
+          <DataTable minWidth="52rem">
+            <thead className={cx(SURFACE_HEADER, EDGE_BOTTOM)}>
+              <tr>
+                <Th>{t('admin.ops.failures.when')}</Th>
+                <Th>{t('admin.ops.failures.queue')}</Th>
+                <Th>{t('admin.ops.failures.reason')}</Th>
+                <Th className="text-right">{t('admin.ops.failures.attempts')}</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-800">
+              {data.failures.map((failure, index) => (
+                <tr key={`${failure.at}-${failure.jobId ?? index}`}>
+                  <Td className={cx('whitespace-nowrap', TEXT_NUM)}>{at(failure.at)}</Td>
+                  <Td>
+                    <span className={TEXT_MONO}>{failure.queue}</span>
+                  </Td>
+                  <Td className="text-neutral-200">{failure.failedReason}</Td>
+                  <Td className={cx('text-right', TEXT_NUM)}>{failure.attemptsMade}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+        <div className={cx('border-t border-neutral-800 px-4 py-2.5', TEXT_MUTED)}>
+          {/* Stated where the failures are, so the absence of a retry button
+              reads as a decision rather than as something not built yet. */}
+          {t('admin.ops.failures.readOnlyNote')}
+        </div>
+      </Panel>
     </div>
   );
+}
+
+function ScheduleRow({ schedule, now }: { schedule: AdminOpsSchedule; now: number }) {
+  const t = useT();
+  const cadence =
+    schedule.pattern ??
+    (schedule.everyMs === null
+      ? '—'
+      : t('admin.ops.schedules.every', { age: formatDuration(t, schedule.everyMs / 1000) }));
+
+  return (
+    <tr>
+      <Td className="font-medium text-neutral-100">
+        <span className={TEXT_MONO}>{schedule.id}</span>
+      </Td>
+      <Td>
+        <span className={TEXT_MONO}>{cadence}</span>
+        {schedule.tz ? <span className={cx(TEXT_MUTED, 'ml-2')}>{schedule.tz}</span> : null}
+      </Td>
+      <Td className={cx('whitespace-nowrap', TEXT_NUM)}>
+        {schedule.lastRun === null ? (
+          <span className={TEXT_MUTED}>{t('admin.ops.schedules.neverRun')}</span>
+        ) : (
+          <>
+            {at(schedule.lastRun.finishedAt)}
+            {schedule.lastRun.counts ? (
+              <div className={cx(TEXT_MICRO, 'mt-0.5 normal-case tracking-normal')}>
+                {/* The sweep's own counts, carried out of its BullMQ return
+                    value. Numbers only — never a row, never an id. */}
+                {Object.entries(schedule.lastRun.counts)
+                  .map(([key, value]) => `${key}: ${value}`)
+                  .join(' · ')}
+              </div>
+            ) : null}
+          </>
+        )}
+      </Td>
+      <Td className={cx('text-right', TEXT_NUM)}>
+        {schedule.lastRun === null
+          ? '—'
+          : t('admin.ops.schedules.milliseconds', { ms: schedule.lastRun.durationMs })}
+      </Td>
+      <Td className={cx('whitespace-nowrap', TEXT_NUM)}>
+        {relativeRun(t, schedule.nextRunAt, now)}
+      </Td>
+    </tr>
+  );
+}
+
+/** Waiting + active + delayed + failed: how much this queue currently matters. */
+function weightOf(queue: AdminOpsQueue): number {
+  return queue.waiting + queue.active + queue.delayed + queue.failed + queue.paused;
+}
+
+function sum(queues: readonly AdminOpsQueue[], key: 'waiting' | 'active' | 'failed'): number {
+  return queues.reduce((total, queue) => total + queue[key], 0);
+}
+
+function heartbeatTone(data: AdminOpsJobsResponse): Tone {
+  if (data.heartbeatAgeSeconds === null) return 'amber';
+  // The health service treats three missed intervals as stale; match it rather
+  // than inventing a second, quietly different threshold.
+  return data.heartbeatAgeSeconds > data.heartbeatIntervalSeconds * 3 ? 'amber' : 'green';
 }

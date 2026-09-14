@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { NavLink, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
+import {
+  applyDisplayModeAttribute,
+  canNavigateBack,
+  useStandaloneDisplay,
+} from '../../lib/pwaDisplayMode';
 import { ErrorBoundary } from '../../ui';
 import { useBodyScrollLock } from '../../ui/useBodyScrollLock';
 import { useOverlayEscape } from '../../ui/overlayStack';
@@ -11,7 +16,7 @@ import { useAuth } from '../AuthContext';
 import { ADMIN_WORKSPACES, adminWorkspaceOwnsPath, isWideAdminPath } from '../adminWorkspaces';
 import { AdminCommandPalette } from './AdminCommandPalette';
 import { Button, Spinner, cx } from './ui';
-import { EDGE_BOTTOM, FOCUS, SURFACE_WELL, TEXT_MICRO } from './tokens';
+import { EDGE_BOTTOM, FOCUS, SURFACE_WELL, TAP_TARGET, TEXT_MICRO } from './tokens';
 
 // Tailwind's default `md` breakpoint. The drawer is `md:hidden`, so its state
 // must retire at the exact same handoff or it can keep the desktop shell inert
@@ -28,6 +33,10 @@ const ADMIN_DESKTOP_MIN_WIDTH_PX = 768;
  */
 const NAV_LINK_BASE = cx(
   'flex min-h-[34px] items-center rounded-none border-l-2 px-3 py-1 text-[13px] transition-colors',
+  // Below 768px (`md`) the desktop sidebar is hidden and these rows only render
+  // inside the drawer, which is the ONLY way to navigate the console there —
+  // hence the 44px floor, declared for the same width in `styles/origin.css`.
+  TAP_TARGET,
   FOCUS,
 );
 
@@ -38,6 +47,62 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
     isActive
       ? 'border-l-sky-500 bg-neutral-800 text-white'
       : 'border-l-transparent text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200',
+  );
+}
+
+/**
+ * The console's own back affordance (§7.1, V5-P13b, #1891).
+ *
+ * `index.html` is served to BOTH origins, so the console inherits
+ * `apple-mobile-web-app-capable` and is installable from an iPhone with no
+ * manifest at all — and an installed window has no address bar and, on iOS, no
+ * back button whatsoever. Below 768px the burger is the console's only
+ * navigation, so a drill-down (`/admin/users/:userId`, a palette jump) would
+ * otherwise be a one-way trip.
+ *
+ * Same rule as the user shell's `StandaloneBack`: nothing at history index 0,
+ * where `navigate(-1)` either does nothing or walks the operator out of the app
+ * entirely. Rendered in the mobile top bar only — at `md` and up the persistent
+ * sidebar is on screen, so every destination is one tap away and a standalone
+ * desktop window is not a dead end. Exported for its test; the topbar is the
+ * only caller.
+ */
+export function AdminStandaloneBack() {
+  const t = useT();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const standalone = useStandaloneDisplay();
+  // Re-read per location: the router writes the new index into
+  // `window.history.state` before it renders the location that produced it.
+  const canGoBack = useMemo(() => canNavigateBack(), [location.key]);
+  if (!standalone || !canGoBack) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => navigate(-1)}
+      aria-label={t('nav.back')}
+      data-testid="admin-standalone-back"
+      className={cx(
+        'inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
+        'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+        TAP_TARGET,
+        FOCUS,
+      )}
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        className="h-5 w-5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="square"
+        strokeLinejoin="miter"
+      >
+        <line x1="20" y1="12" x2="5" y2="12" />
+        <polyline points="11 18 5 12 11 6" />
+      </svg>
+    </button>
   );
 }
 
@@ -67,6 +132,7 @@ export function AdminLayout() {
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const standalone = useStandaloneDisplay();
   const burgerRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const drawerRestoreFocusRef = useRef<HTMLElement>(null);
@@ -97,6 +163,17 @@ export function AdminLayout() {
 
   useOverlayEscape(drawerOpen, closeDrawer, drawerRootRef);
   useBodyScrollLock(drawerOpen);
+
+  // Publish the display mode to CSS on the ADMIN origin too (§7.1, V5-P13b,
+  // #1891). `UserApp` does this for the user origin, and the console is a
+  // separate SPA on a separate origin that never mounts it — so without this
+  // the `:root[data-bt-display-mode='standalone']` rules in `styles/origin.css`
+  // (the only signal iOS below 16.4 gives us, and this row is the iOS app) never
+  // stamped here and the translucent status bar sat on top of `#admin-topbar`,
+  // whose burger is the console's only way into navigation below 768px.
+  useEffect(() => {
+    applyDisplayModeAttribute(standalone);
+  }, [standalone]);
 
   // ⌘K / Ctrl-K anywhere in the console. Registered on the window so it works
   // from any page without every page knowing the palette exists.
@@ -181,6 +258,7 @@ export function AdminLayout() {
             className={cx(
               'inline-flex h-8 w-8 items-center justify-center rounded-none border border-transparent text-neutral-300',
               'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+              TAP_TARGET,
               FOCUS,
             )}
           >
@@ -207,6 +285,7 @@ export function AdminLayout() {
           'flex min-h-[32px] shrink-0 items-center justify-between gap-2 rounded-none border border-neutral-700 px-2.5 py-1',
           'text-[12px] text-neutral-500 transition-colors hover:border-neutral-600 hover:text-neutral-200',
           SURFACE_WELL,
+          TAP_TARGET,
           FOCUS,
         )}
       >
@@ -275,6 +354,9 @@ export function AdminLayout() {
           className={cx(
             'h-8 rounded-none border border-neutral-700 px-2 text-[12px] text-neutral-200',
             SURFACE_WELL,
+            // `min-height` wins over the `h-8`, so the drawer's language switch
+            // is a real target on a phone without moving the desktop sidebar.
+            TAP_TARGET,
             FOCUS,
           )}
           onChange={(event) => setLocale(event.target.value)}
@@ -306,11 +388,17 @@ export function AdminLayout() {
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
           is persistent. */}
       <header
+        // Named, because a page's own `PageHeader` is a `<header>` too: the
+        // phone gate measures this bar's controls by id, so "the only way into
+        // the console's navigation" cannot be confused with a page title block.
+        id="admin-topbar"
         className={cx(
           'sticky top-0 z-30 flex items-center gap-3 bg-neutral-900 px-3 py-2 md:hidden',
           EDGE_BOTTOM,
         )}
       >
+        {/* The leading slot, where the browser's own back button used to be. */}
+        <AdminStandaloneBack />
         <button
           ref={burgerRef}
           type="button"
@@ -321,6 +409,7 @@ export function AdminLayout() {
           className={cx(
             'inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
             'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+            TAP_TARGET,
             FOCUS,
           )}
         >
@@ -347,6 +436,7 @@ export function AdminLayout() {
           className={cx(
             'ml-auto inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
             'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+            TAP_TARGET,
             FOCUS,
           )}
         >

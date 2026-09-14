@@ -19,6 +19,7 @@ import { Button, Icon, Input, PageHead, Seg, Stat, StatStrip } from '../../ui/or
 import { PriceChart, type ChartPoint } from '../../ui/charts';
 import { useDebounce } from '../hooks/useDebounce';
 import { NestedBadge } from '../workboard/ConglomeratesListPage';
+import { Avatar } from '../components/Avatar';
 import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -101,6 +102,7 @@ export function SharedConglomeratePage() {
       <BackLink />
       <PageHead
         actions={<ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />}
+        media={<Avatar iconId={data.owner.profileIcon} name={data.owner.username} size="lg" />}
         sub={t('social.shared.sharedByStatus', {
           username: data.owner.username,
           status:

@@ -1,3 +1,4 @@
+import { ANALYTICS_MAX_RANGE_DAYS } from '@bettertrack/contracts';
 import type {
   AnalyticsContributionRow,
   AnalyticsInflationPreset,
@@ -6,6 +7,7 @@ import type {
   AnalyticsSeriesPoint,
   AnalyticsSeriesQuery,
   AnalyticsSeriesResponse,
+  AnalyticsTwr,
   PortfolioAsset,
 } from '@bettertrack/contracts';
 
@@ -13,6 +15,7 @@ import type { AssetRepository } from '../../data/repositories/assetRepository';
 import {
   computeContributions,
   computeSeriesStats,
+  computeTwrStats,
   deflateSeries,
   indexAveragePctPerYear,
   toPerformanceSeries,
@@ -66,6 +69,12 @@ const INFLATION_PRESETS: AnalyticsInflationPreset[] = Object.freeze(
  * anchored to the span the visible set actually held value (leading/trailing
  * zero-value days are trimmed), so hiding the earliest-held asset can't zero the
  * stats via the `first.value <= 0` guard.
+ *
+ * Because those stats are flow-inclusive, the response ALSO carries a `twr`
+ * block (#1759): the whole portfolio's time-weighted return over the same
+ * window, reused from the §6.9 overview curve. Consumers that need a rate of
+ * return — the Forecast's "average return" factor and its calculator prefill —
+ * read that; the deep-dive page keeps reading the value curve's own stats.
  */
 export interface AnalyticsServiceDeps {
   portfolio: PortfolioService;
@@ -81,6 +90,21 @@ export interface AnalyticsService {
     portfolioId: string,
     query: AnalyticsSeriesQuery,
   ): Promise<AnalyticsSeriesResponse>;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Whole days between two ISO `YYYY-MM-DD` days, or `null` when either side is
+ * not a real calendar date (the query schema pins the SHAPE, not the validity,
+ * so `2026-13-45` reaches here). An unparseable pair simply skips the range
+ * bound below — it is a robustness guard, not a validity check.
+ */
+function daysBetweenIso(from: string, to: string): number | null {
+  const a = Date.parse(`${from}T00:00:00.000Z`);
+  const b = Date.parse(`${to}T00:00:00.000Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / DAY_MS);
 }
 
 /** ISO `YYYY-MM-DD` ascending comparator (lexicographic is correct for this format). */
@@ -160,6 +184,44 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
   ): AnalyticsSeries {
     const value = deflator ? deflateSeries(nominal, deflator) : nominal.map((p) => ({ ...p }));
     return { kind, label, points: applyMode(value, mode), stats: computeSeriesStats(value) };
+  }
+
+  /**
+   * The portfolio's TIME-WEIGHTED return over the resolved window (#1759).
+   *
+   * The stats above annualise the VALUE curve, which every contribution lifts:
+   * a saver who buys monthly reads their own deposits back as "return". The
+   * honest statistic already exists one layer down — {@link
+   * PortfolioService.getHistory} derives the §6.9 TWR curve from the same
+   * snapshot series — so this reuses it rather than inventing a second measure
+   * of return. MAX is requested because it is the only range served
+   * un-rebased (since inception); the domain rebases onto the window's own
+   * first point, so the figure describes exactly the `from`..`to` the response
+   * echoes.
+   *
+   * It is the WHOLE portfolio's return (net worth: holdings + cash), not the
+   * visibility-masked `primary` curve's — the contract says so, because a TWR
+   * needs the flows that belong to the curve it measures and the per-asset
+   * value pipeline carries none. Deflated with the same deflator as `primary`,
+   * so a real-terms request never mixes a real curve with a nominal rate.
+   * `null` when the window holds no performance points at all.
+   *
+   * Cost: one more read of the same snapshot rows this handler already loads
+   * twice (the per-asset series and the holdings snapshot). The alternative —
+   * deriving a second TWR here from a value pipeline that carries no flows —
+   * would be a second definition of "return" in the money layer, which is the
+   * thing this issue exists to remove.
+   */
+  async function resolveTwr(
+    userId: string,
+    portfolioId: string,
+    from: string,
+    to: string,
+    deflator: Deflator | null,
+  ): Promise<AnalyticsTwr | null> {
+    const history = await portfolio.getHistory(userId, portfolioId, 'MAX');
+    const windowed = history.performance.filter((p) => p.date >= from && p.date <= to);
+    return computeTwrStats(windowed, deflator);
   }
 
   /**
@@ -287,6 +349,30 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       if (query.from && query.to && query.from > query.to) {
         throw badRequest('`from` must be on or before `to`.', 'VALIDATION_ERROR');
       }
+      // Request-sanity bound on the asked-for window (#1643): a `from`/`to`
+      // spanning millennia is a fat-fingered custom range, so say so instead of
+      // quietly answering a different question. Rejected, not clamped, so the
+      // echoed window always describes the window that was requested; see
+      // ANALYTICS_MAX_RANGE_DAYS for the reasoning behind the size.
+      //
+      // This is NOT a work bound, and nothing below should be sized against it:
+      // the reads underneath are bounded by the portfolio's own data (the value
+      // series takes no window; the compare resolvers fetch a full history and
+      // post-filter), so a wide window costs no more than a narrow one. Only an
+      // explicit `from` is checked, so `?to=9999-12-31` on its own is still
+      // accepted — harmless for the same reason, and the echoed window is then
+      // whatever the data spans (or `src.today`, for a portfolio with no value
+      // history at all) rather than the caller's absurd end.
+      if (query.from) {
+        const end = query.to ?? new Date().toISOString().slice(0, 10);
+        const span = daysBetweenIso(query.from, end);
+        if (span !== null && span > ANALYTICS_MAX_RANGE_DAYS) {
+          throw badRequest(
+            `The requested range is too long (maximum ${ANALYTICS_MAX_RANGE_DAYS} days).`,
+            'VALIDATION_ERROR',
+          );
+        }
+      }
       const deflator = resolveDeflator(query);
 
       // Per-asset EUR value series (smoothing-aware). Ownership 404s here.
@@ -379,6 +465,7 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       });
 
       const compare = await resolveCompare(userId, query, from, to, deflator);
+      const twr = await resolveTwr(userId, portfolioId, from, to, deflator);
 
       return {
         portfolioId,
@@ -395,6 +482,7 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
         inflationPresets: INFLATION_PRESETS,
         primary,
         compare,
+        twr,
         contributions,
       };
     },

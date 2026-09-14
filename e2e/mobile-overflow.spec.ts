@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
@@ -12,9 +12,21 @@ import {
 } from '@playwright/test';
 import ts from 'typescript';
 
-import { newAdminRequestContext } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
+import { newAdminBrowserContext, newAdminRequestContext } from './support/adminApi';
+import { ADMIN_BASE_URL, API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
+import {
+  ADMIN_OVERLAY_PRIMITIVE_SOURCES,
+  ADMIN_REQUIRED_OVERLAY_PRIMITIVES,
+  adminOverlaySurfaceSources,
+  overlayPrimitiveExports,
+  overlayPrimitiveRegistryProblems,
+  overlayRegistrationProblems,
+  overlaySurfaceSources,
+  rendersOverlay,
+  repoOverlayDetection,
+  virtualOverlayDetection,
+} from './support/overlayInventory';
 import { provisionUser, provisionUserInContext } from './support/users';
 
 type GateLocale = 'en' | 'de';
@@ -30,6 +42,17 @@ const VIEWPORT_PROFILES = [
     label: 'DE phone 390px',
     locale: 'de',
     viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  },
+  {
+    // The narrow half of the acceptance pair (§13.5 V5-P13b names 390×844 AND
+    // 360×800). DE at 360 is the worst case of the two axes this matrix varies
+    // — the narrowest viewport carrying the longest strings — so the single
+    // extra profile the PR-CI budget affords is spent there rather than on an
+    // EN twin whose layout failures the DE run would also surface.
+    label: 'DE phone 360px',
+    locale: 'de',
+    viewport: { width: 360, height: 800 },
     deviceScaleFactor: 3,
   },
   {
@@ -53,11 +76,22 @@ const VIEWPORT_PROFILES = [
 }[];
 
 const LOCALE_STORAGE_KEY = 'bettertrack.locale';
+/** AuthContext's idle-activity record; clearing it re-raises the PIN gate. */
+const PIN_ACTIVITY_STORAGE_KEY = 'bettertrack.pinActivity';
+/** The PIN this gate sets on its own throwaway account to reach `PinGate`. */
+const GATE_PIN = '4913';
 const USER_APP_SOURCE = 'apps/web/src/user/UserApp.tsx';
-const USER_OVERLAY_SOURCE_ROOT = 'apps/web/src/user';
 const CONTROL_CENTER_SOURCE = 'apps/web/src/user/control/ControlCenterOverlay.tsx';
 const CONTROL_PANEL_MATCHER_SOURCE = 'apps/web/src/user/control/matchControlPanel.ts';
-const OVERLAY_PRIMITIVE_SOURCES = new Set(['apps/web/src/user/components/Dialog.tsx']);
+const APP_SOURCE = 'apps/web/src/App.tsx';
+const ADMIN_APP_SOURCE = 'apps/web/src/admin/AdminApp.tsx';
+/**
+ * `AdminApp` declares its routes relative to the `/admin/*` mount `App.tsx`
+ * gives it, so its parsed tree needs that prefix to become real URLs. The mount
+ * itself is asserted from `App.tsx` rather than trusted — see
+ * {@link assertCompleteAdminRouteInventory}.
+ */
+const ADMIN_ROUTE_PREFIX = '/admin';
 
 const LONG_TRANSACTION_NOTE =
   'Populated mobile overflow holding row with a deliberately long transaction annotation';
@@ -184,10 +218,75 @@ const CONTROL_CORE_ROUTES = [
   '/control/taxes',
 ] as const;
 
+/**
+ * The admin console's signed-out front door. Measured anonymously because an
+ * authenticated admin is redirected off it (`pages/LoginPage.tsx` sends an
+ * authenticated session to `/admin/users`), and a redirect is not a measurement.
+ */
+const ADMIN_ANONYMOUS_ROUTES = ['/admin/login'] as const;
+
+/**
+ * Every authenticated console destination (§6.12 workspaces). `:userId` is
+ * resolved to a real user below; every other entry is its own concrete URL.
+ */
+const ADMIN_CORE_ROUTES = [
+  '/admin',
+  '/admin/support',
+  '/admin/users',
+  '/admin/users/:userId',
+  '/admin/registration',
+  '/admin/invites',
+  '/admin/test-accounts',
+  '/admin/oauth-apps',
+  '/admin/api-keys',
+  '/admin/email',
+  '/admin/audit',
+  '/admin/health',
+  '/admin/problems',
+  '/admin/providers',
+  '/admin/market-data',
+  '/admin/monitoring',
+  '/admin/usage-analytics',
+  '/admin/settings',
+  '/admin/ai',
+  '/admin/feature-flags',
+  '/admin/account-defaults',
+  '/admin/announcements',
+  '/admin/security',
+] as const;
+
 interface RouteExclusion {
   path: string;
   justification: string;
 }
+
+const ADMIN_ROUTE_EXCLUSIONS: readonly RouteExclusion[] = [
+  {
+    path: '/admin/feedback',
+    justification: 'Legacy redirect to /admin/support (#1406), which this gate measures.',
+  },
+  {
+    path: '/admin/*',
+    justification: 'Wildcard not-found handling is not a product destination.',
+  },
+];
+
+/**
+ * The console palette's result rows (#1891).
+ *
+ * Structural, like `#admin-topbar button` in {@link ADMIN_TAP_TARGET_SELECTORS}
+ * and for the same reason: on a phone these rows ARE the console's destinations,
+ * so a row that drops the `admin-tap-target` marker has to FAIL this measurement
+ * rather than disappear from it. Before this they were `<li>` elements with no
+ * marker class, which also put them outside the dialog clause's `:is(a, button,
+ * select)` — 42px, and measured by nothing.
+ *
+ * `aria-disabled` rows are excluded on purpose: the palette's "Searching…" /
+ * "No users" notes are row-shaped STATUS text with no destination behind them,
+ * the same reasoning that exempts `.sr-only` from the user list.
+ */
+const ADMIN_PALETTE_ROW_SELECTOR =
+  '#admin-palette-list [role="option"]:not([aria-disabled="true"])';
 
 const LEGACY_REDIRECTS = [
   '/portfolio/custom-assets',
@@ -298,67 +397,6 @@ function parseTsx(relativePath: string): ts.SourceFile {
   );
 }
 
-function sourceFilesUnder(relativeDirectory: string): string[] {
-  return readdirSync(resolve(process.cwd(), relativeDirectory), { withFileTypes: true }).flatMap(
-    (entry) => {
-      const path = `${relativeDirectory}/${entry.name}`;
-      if (entry.isDirectory()) return sourceFilesUnder(path);
-      return entry.isFile() && path.endsWith('.tsx') && !path.endsWith('.test.tsx') ? [path] : [];
-    },
-  );
-}
-
-/**
- * Find user components that render an overlay primitive or a content-owned
- * popover. Shared `Dialog`/`ODialog` implementations are infrastructure; every
- * user component that invokes one is discovered separately. This turns the
- * explicit scenario/exclusion table below into a completeness gate instead of
- * a list that can silently become stale when a new overlay component lands.
- */
-function registeredOverlaySurfaceSources(): string[] {
-  return sourceFilesUnder(USER_OVERLAY_SOURCE_ROOT)
-    .filter((relativePath) => {
-      if (OVERLAY_PRIMITIVE_SOURCES.has(relativePath)) return false;
-      const sourceFile = parseTsx(relativePath);
-      let rendersOverlay = false;
-      const visit = (node: ts.Node) => {
-        if (rendersOverlay) return;
-        if (
-          ts.isCallExpression(node) &&
-          ts.isIdentifier(node.expression) &&
-          node.expression.text === 'createPortal'
-        ) {
-          rendersOverlay = true;
-          return;
-        }
-        const opening = ts.isJsxElement(node)
-          ? node.openingElement
-          : ts.isJsxSelfClosingElement(node)
-            ? node
-            : undefined;
-        if (opening) {
-          const tag = opening.tagName.getText(sourceFile);
-          if (tag === 'Dialog' || tag === 'ODialog' || tag === 'Drawer') {
-            rendersOverlay = true;
-            return;
-          }
-          const className = opening.attributes.properties.find(
-            (property): property is ts.JsxAttribute =>
-              ts.isJsxAttribute(property) && property.name.getText(sourceFile) === 'className',
-          );
-          if (className?.getText(sourceFile).includes('bt-popover')) {
-            rendersOverlay = true;
-            return;
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
-      return rendersOverlay;
-    })
-    .sort();
-}
-
 /** Find a top-level `const <name> = …` initializer in a parsed source file. */
 function findRegistry(sourceFile: ts.SourceFile, name: string): ts.Expression | undefined {
   let found: ts.Expression | undefined;
@@ -376,9 +414,13 @@ function findRegistry(sourceFile: ts.SourceFile, name: string): ts.Expression | 
  * Derive full route paths from nested React Router declarations. This mirrors
  * the V5 surface-inventory gate: layouts contribute a prefix, index routes use
  * their parent, and a source addition is discovered without editing this test.
+ *
+ * `prefix` is the mount point of the parsed source inside the whole route tree
+ * — empty for the user app, `/admin` for the console, whose own `<Route>` paths
+ * are declared relative to the `/admin/*` mount in `App.tsx`.
  */
-function registeredUserRoutes(): RegisteredRoute[] {
-  const sourceFile = parseTsx(USER_APP_SOURCE);
+function registeredRoutes(relativePath: string, prefix = ''): RegisteredRoute[] {
+  const sourceFile = parseTsx(relativePath);
   const routes: RegisteredRoute[] = [];
 
   const openingOf = (node: ts.Node) =>
@@ -414,8 +456,12 @@ function registeredUserRoutes(): RegisteredRoute[] {
     ts.forEachChild(node, (child) => visit(child, childPrefix));
   };
 
-  visit(sourceFile, '');
+  visit(sourceFile, prefix);
   return routes;
+}
+
+function registeredUserRoutes(): RegisteredRoute[] {
+  return registeredRoutes(USER_APP_SOURCE);
 }
 
 /**
@@ -559,7 +605,17 @@ function assertCompleteRouteInventory(): void {
     'Every omitted overlay surface must name sources, covered routes and a one-line state-specific justification.',
   ).toEqual([]);
 
-  const registeredOverlaySources = registeredOverlaySurfaceSources();
+  // The overlay half of this inventory is only as good as its discovery step:
+  // an overlay the detector misses is absent from BOTH sides of the equality
+  // below, so a stale classification list would still read green. Assert the
+  // primitive registry the detector resolves against before trusting it.
+  const detection = repoOverlayDetection();
+  expect(
+    overlayPrimitiveRegistryProblems(detection),
+    'The overlay-primitive registry must name every file that owns a shared overlay primitive.',
+  ).toEqual([]);
+
+  const registeredOverlaySources = overlaySurfaceSources(detection);
   const classifiedOverlaySources = unique([
     ...OVERLAY_SCENARIOS.flatMap(({ sources }) => sources),
     ...OVERLAY_EXCLUSIONS.flatMap(({ sources }) => sources),
@@ -568,6 +624,201 @@ function assertCompleteRouteInventory(): void {
     classifiedOverlaySources,
     'Every source-derived user overlay component must have a measured scenario or a component-and-route exclusion; stale classifications must also be removed.',
   ).toEqual(registeredOverlaySources);
+
+  // …and per OVERLAY, not merely per file (#1834). The equality above matches
+  // file paths, so a second overlay added to an already-classified file — a
+  // moderation dialog next to a confirmation dialog — satisfied both sides
+  // without ever being opened at 390px or given an exclusion. An entry that
+  // covers a whole family of dialogs declares how many with `overlays`.
+  expect(
+    overlayRegistrationProblems(detection, [
+      ...OVERLAY_SCENARIOS.map(({ label, sources, overlays }) => ({ label, sources, overlays })),
+      ...OVERLAY_EXCLUSIONS.map(({ surface, sources, overlays }) => ({
+        label: surface,
+        sources,
+        overlays,
+      })),
+    ]),
+    'Every overlay a classified file renders must be accounted for by a scenario or an exclusion.',
+  ).toEqual([]);
+
+  // A row contract is only worth anything while the sweep actually looks at
+  // that selector; naming one the measurement ignores would assert nothing.
+  expect(
+    OVERLAY_SCENARIOS.filter(
+      ({ rows }) =>
+        rows !== undefined &&
+        (rows.minimum < 1 || !(TAP_TARGET_SELECTORS as readonly string[]).includes(rows.selector)),
+    ).map(({ label }) => label),
+    'Every overlay row contract must name a measured tap-target selector and a positive floor.',
+  ).toEqual([]);
+}
+
+/**
+ * The admin half of the anti-shrinkage guarantee (#1756).
+ *
+ * Same shape as the user assertion above and for the same reason: the console
+ * has 20-odd routes and was, until this gate, measured at a phone width by no
+ * spec at all — silently, without even an exclusion entry to read. Registering a
+ * new page in `AdminApp.tsx` now turns this red until the page is either swept
+ * by the admin matrix below or excluded here with a stated reason.
+ */
+function assertCompleteAdminRouteInventory(): void {
+  // The prefix is derived, not assumed: if the admin world ever moves off
+  // `/admin/*`, every URL this gate visits would 404 into the user app's
+  // not-found and "measure" the wrong document.
+  expect(
+    registeredRoutes(APP_SOURCE).map(({ path }) => path),
+    `${APP_SOURCE} must still mount the admin world at ${ADMIN_ROUTE_PREFIX}/*.`,
+  ).toContain(`${ADMIN_ROUTE_PREFIX}/*`);
+
+  const registered = registeredRoutes(ADMIN_APP_SOURCE, ADMIN_ROUTE_PREFIX);
+  const registeredPaths = unique(registered.map((route) => route.path));
+  const coveredPaths = unique([...ADMIN_ANONYMOUS_ROUTES, ...ADMIN_CORE_ROUTES]);
+  const excludedPaths = ADMIN_ROUTE_EXCLUSIONS.map((exclusion) => exclusion.path);
+  const covered = new Set(coveredPaths);
+  const excluded = new Set(excludedPaths);
+
+  // Parser anti-shrinkage: an empty or truncated parse must not read as
+  // "no admin routes to classify".
+  expect(
+    registeredPaths.length,
+    `${ADMIN_APP_SOURCE} must keep parsing into the full console route tree.`,
+  ).toBeGreaterThan(20);
+  expect(coveredPaths).toHaveLength(ADMIN_ANONYMOUS_ROUTES.length + ADMIN_CORE_ROUTES.length);
+  expect(excluded.size).toBe(excludedPaths.length);
+
+  const invalidJustifications = ADMIN_ROUTE_EXCLUSIONS.filter(
+    ({ justification }) => justification.trim() === '' || /[\r\n]/.test(justification),
+  ).map(({ path }) => path);
+  expect(
+    invalidJustifications,
+    'Every admin route exclusion needs a one-line justification.',
+  ).toEqual([]);
+
+  const unclassified = registered
+    .filter(({ path }) => !covered.has(path) && !excluded.has(path))
+    .map(({ path, line }) => `${ADMIN_APP_SOURCE}:${line} ${path}`);
+  expect(
+    unique(unclassified),
+    'New AdminApp routes must be covered by the admin phone matrix or explicitly excluded with a justification.',
+  ).toEqual([]);
+
+  const registeredSet = new Set(registeredPaths);
+  expect(
+    [...coveredPaths, ...excludedPaths].filter((path) => !registeredSet.has(path)),
+    'Stale admin route classifications no longer exist in AdminApp.',
+  ).toEqual([]);
+  expect(
+    coveredPaths.filter((path) => excluded.has(path)),
+    'An admin route cannot be both covered and excluded.',
+  ).toEqual([]);
+}
+
+/**
+ * The overlay half of that same guarantee, which until #1891 did not exist.
+ *
+ * The route half above honours "every user AND admin surface"; the overlay half
+ * discovered nothing outside `apps/web/src/user` and `apps/web/src/ui`, so the
+ * console's palette, its navigation drawer and every one of the fifteen
+ * `admin/components/Modal.tsx` call sites were unmeasured — and a NEW console
+ * overlay could not turn CI red. This is the mirror of the user assertion in
+ * {@link assertCompleteRouteInventory}: discovery from source on one side, the
+ * scenario and exclusion tables on the other, and set equality between them, so
+ * an unclassified console overlay fails BY PATH NAME.
+ */
+function assertCompleteAdminOverlayInventory(): void {
+  const coreRoutes = new Set<string>([...ADMIN_ANONYMOUS_ROUTES, ...ADMIN_CORE_ROUTES]);
+
+  expect(
+    ADMIN_OVERLAY_SCENARIOS.filter(
+      ({ route, sources, justification }) =>
+        !coreRoutes.has(route) ||
+        sources.length === 0 ||
+        justification.trim() === '' ||
+        /[\r\n]/.test(justification),
+    ).map(({ label }) => label),
+    'Every admin overlay scenario must name sources, a covered console route and a one-line content-specific justification.',
+  ).toEqual([]);
+  expect(new Set(ADMIN_OVERLAY_SCENARIOS.map(({ label }) => label)).size).toBe(
+    ADMIN_OVERLAY_SCENARIOS.length,
+  );
+  expect(new Set(ADMIN_OVERLAY_EXCLUSIONS.map(({ surface }) => surface)).size).toBe(
+    ADMIN_OVERLAY_EXCLUSIONS.length,
+  );
+  expect(
+    ADMIN_OVERLAY_EXCLUSIONS.filter(
+      ({ surface, sources, routes, justification }) =>
+        surface.trim() === '' ||
+        sources.length === 0 ||
+        routes.length === 0 ||
+        routes.some((route) => !coreRoutes.has(route)) ||
+        justification.trim() === '' ||
+        /[\r\n]/.test(justification),
+    ).map(({ surface }) => surface),
+    'Every omitted console overlay must name sources, covered routes and a one-line state-specific justification.',
+  ).toEqual([]);
+
+  // Same order of business as the user half: the primitive registry the
+  // detector resolves `<Modal>` against is asserted BEFORE the equality that
+  // trusts it, or a primitive that moved would shrink discovery to nothing
+  // while both sides of the equality stayed green.
+  const detection = repoOverlayDetection();
+  expect(
+    overlayPrimitiveRegistryProblems(detection),
+    'The overlay-primitive registry must name every file that owns a shared overlay primitive.',
+  ).toEqual([]);
+
+  const discovered = adminOverlaySurfaceSources(detection);
+  // Discovery anti-shrinkage: a console that suddenly renders no overlays at
+  // all is a broken detector, not a simplified console.
+  expect(
+    discovered.length,
+    `${ADMIN_APP_SOURCE}'s world must still parse into the console's overlay surfaces.`,
+  ).toBeGreaterThan(5);
+
+  const classified = unique([
+    ...ADMIN_OVERLAY_SCENARIOS.flatMap(({ sources }) => sources),
+    ...ADMIN_OVERLAY_EXCLUSIONS.flatMap(({ sources }) => sources),
+  ]).sort();
+  expect(
+    classified,
+    'Every source-derived admin overlay component must have a measured scenario or a component-and-route exclusion; stale classifications must also be removed.',
+  ).toEqual(discovered);
+
+  // …and per OVERLAY, not merely per file (#1834's lesson, applied to the
+  // console): `UserDetailPage` alone opens four distinct dialogs.
+  expect(
+    overlayRegistrationProblems(
+      detection,
+      [
+        ...ADMIN_OVERLAY_SCENARIOS.map(({ label, sources, overlays }) => ({
+          label,
+          sources,
+          overlays,
+        })),
+        ...ADMIN_OVERLAY_EXCLUSIONS.map(({ surface, sources, overlays }) => ({
+          label: surface,
+          sources,
+          overlays,
+        })),
+      ],
+      discovered,
+    ),
+    'Every overlay a classified console file renders must be accounted for by a scenario or an exclusion.',
+  ).toEqual([]);
+
+  // A row contract is only worth anything while the sweep looks at that
+  // selector; naming one the admin measurement ignores would assert nothing.
+  expect(
+    ADMIN_OVERLAY_SCENARIOS.filter(
+      ({ rows }) =>
+        rows !== undefined &&
+        (rows.minimum < 1 ||
+          !(ADMIN_TAP_TARGET_SELECTORS as readonly string[]).includes(rows.selector)),
+    ).map(({ label }) => label),
+    'Every console overlay row contract must name a measured tap-target selector and a positive floor.',
+  ).toEqual([]);
 }
 
 interface RouteFixtures {
@@ -577,6 +828,219 @@ interface RouteFixtures {
   ideaId: string;
   portfolioId: string;
   watchlistId: string;
+}
+
+// ─── The Home board this gate paints (#1878) ─────────────────────────────────
+//
+// `/` is the one route whose content is entirely user-chosen, and an account
+// that never opens the builder gets `DEFAULT_LAYOUT`: 5 of the 21 declared
+// widget types and not one of the 6 alternate display forms. The widest board
+// this gate had ever measured was therefore the zero-setup one, and a widget
+// that overflows or renders an undersized control could only be found by hand.
+//
+// The seed below is a literal table rather than something derived from the
+// source, for the same reason the overlay scenarios are: derivation would make
+// a widget the derivation missed absent from BOTH the seed and its check —
+// a silent green. {@link assertCompleteHomeBoardSeed} holds this table to
+// `config.ts`'s own lists instead, so a new widget type (or a new variant of
+// one) fails that test until it is given a seat here.
+
+const HOME_CONFIG_SOURCE = 'apps/web/src/user/home/config.ts';
+
+/**
+ * One seeded widget. `variant` is the stored display form; a type that declares
+ * variants gets one entry per form, since the two forms are different markup
+ * (a donut vs. a ranked bar list, cards vs. a table) and only the stored one is
+ * ever painted. Size is not a field here: every entry is stored at
+ * {@link HOME_BOARD_SEED_SIZE}, so the seed never restates
+ * `WIDGET_SIZE_RULES`.
+ */
+interface HomeBoardSeedEntry {
+  type: string;
+  variant?: string;
+}
+
+const HOME_BOARD_SEED: readonly HomeBoardSeedEntry[] = [
+  { type: 'net-worth' },
+  { type: 'today-change' },
+  { type: 'liquidity', variant: 'ring' },
+  { type: 'liquidity', variant: 'bar' },
+  { type: 'concentration' },
+  { type: 'performance-chart', variant: 'value' },
+  { type: 'performance-chart', variant: 'return' },
+  { type: 'net-worth-history' },
+  { type: 'cashflow-chart', variant: 'net' },
+  { type: 'cashflow-chart', variant: 'columns' },
+  { type: 'allocation', variant: 'donut' },
+  { type: 'allocation', variant: 'bars' },
+  { type: 'asset-spotlight' },
+  { type: 'top-movers', variant: 'list' },
+  { type: 'top-movers', variant: 'chips' },
+  { type: 'portfolio-cards', variant: 'cards' },
+  // The table form is the one that had no scroll container of its own (#1878);
+  // it is on the board precisely so the overflow half of this gate measures it.
+  { type: 'portfolio-cards', variant: 'table' },
+  { type: 'news' },
+  { type: 'attention' },
+  { type: 'upcoming' },
+  { type: 'recent-transactions' },
+  { type: 'cash-balances' },
+  { type: 'quick-cash' },
+  { type: 'watchlist' },
+  { type: 'dividends' },
+  { type: 'alerts' },
+  { type: 'shortcuts' },
+];
+
+/** Unwrap `[...] as const` / `<const>[...]` back to the literal it asserts. */
+function unwrapAssertion(expression: ts.Expression | undefined): ts.Expression | undefined {
+  let current = expression;
+  while (
+    current !== undefined &&
+    (ts.isAsExpression(current) || ts.isTypeAssertionExpression(current))
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function homeConfigRegistry(name: string): ts.Expression {
+  const initializer = unwrapAssertion(findRegistry(parseTsx(HOME_CONFIG_SOURCE), name));
+  expect(initializer, `${HOME_CONFIG_SOURCE} must declare ${name}`).toBeTruthy();
+  return initializer!;
+}
+
+function stringLiterals(node: ts.Expression, name: string): string[] {
+  expect(
+    ts.isArrayLiteralExpression(node),
+    `${HOME_CONFIG_SOURCE}: ${name} must stay an array literal for the seed check to read it`,
+  ).toBe(true);
+  return (node as ts.ArrayLiteralExpression).elements.map((element) => {
+    expect(
+      ts.isStringLiteral(element),
+      `${HOME_CONFIG_SOURCE}: ${name} must hold string literals`,
+    ).toBe(true);
+    return (element as ts.StringLiteral).text;
+  });
+}
+
+/** The widget types `config.ts` declares, read from its own `WIDGET_TYPES`. */
+function declaredWidgetTypes(): string[] {
+  return stringLiterals(homeConfigRegistry('WIDGET_TYPES'), 'WIDGET_TYPES');
+}
+
+/** Every declared display form, keyed by the type that offers it. */
+function declaredWidgetVariants(): Map<string, string[]> {
+  const rules = homeConfigRegistry('WIDGET_VARIANT_RULES');
+  expect(
+    ts.isObjectLiteralExpression(rules),
+    `${HOME_CONFIG_SOURCE}: WIDGET_VARIANT_RULES must stay an object literal`,
+  ).toBe(true);
+  const variants = new Map<string, string[]>();
+  for (const property of (rules as ts.ObjectLiteralExpression).properties) {
+    expect(
+      ts.isPropertyAssignment(property),
+      `${HOME_CONFIG_SOURCE}: every WIDGET_VARIANT_RULES entry must be a plain property`,
+    ).toBe(true);
+    const assignment = property as ts.PropertyAssignment;
+    const name = assignment.name;
+    const type = ts.isStringLiteral(name) ? name.text : name.getText();
+    const value = unwrapAssertion(assignment.initializer);
+    expect(
+      value !== undefined && ts.isObjectLiteralExpression(value),
+      `${HOME_CONFIG_SOURCE}: ${type} must declare its variants as an object literal`,
+    ).toBe(true);
+    const allowed = (value as ts.ObjectLiteralExpression).properties.find(
+      (entry): entry is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(entry) && entry.name.getText() === 'allowed',
+    );
+    expect(allowed, `${HOME_CONFIG_SOURCE}: ${type} must declare an \`allowed\` list`).toBeTruthy();
+    variants.set(type, stringLiterals(unwrapAssertion(allowed!.initializer)!, `${type}.allowed`));
+  }
+  return variants;
+}
+
+/** The schema version the SPA reads; a seed stored under any other is ignored. */
+function declaredHomeConfigVersion(): number {
+  const version = homeConfigRegistry('HOME_CONFIG_VERSION');
+  expect(
+    ts.isNumericLiteral(version),
+    `${HOME_CONFIG_SOURCE}: HOME_CONFIG_VERSION must stay a numeric literal`,
+  ).toBe(true);
+  return Number((version as ts.NumericLiteral).text);
+}
+
+/**
+ * Set equality between the seeded board and the source lists, in both
+ * directions — the same contract the overlay inventory holds its scenarios to.
+ * A widget type (or one type's second display form) that `config.ts` gains
+ * without a seat on this board fails here rather than going unmeasured, and a
+ * seeded type the source has dropped fails instead of being silently discarded
+ * by `parseHomeLayout`.
+ */
+function assertCompleteHomeBoardSeed(): void {
+  const declaredTypes = declaredWidgetTypes();
+  expect(declaredTypes.length, 'WIDGET_TYPES must not read as empty').toBeGreaterThan(0);
+  const seededTypes = new Set(HOME_BOARD_SEED.map(({ type }) => type));
+
+  expect(
+    declaredTypes.filter((type) => !seededTypes.has(type)),
+    'Every declared widget type must sit on the board the gate paints, or it is never measured at a phone width.',
+  ).toEqual([]);
+  expect(
+    [...seededTypes].filter((type) => !declaredTypes.includes(type)),
+    'A seeded widget type that config.ts no longer declares is dropped on read — remove it from the seed.',
+  ).toEqual([]);
+
+  const declaredVariants = declaredWidgetVariants();
+  expect(declaredVariants.size, 'WIDGET_VARIANT_RULES must not read as empty').toBeGreaterThan(0);
+  const seededVariants = new Set(
+    HOME_BOARD_SEED.filter((entry) => entry.variant !== undefined).map(
+      (entry) => `${entry.type}:${entry.variant}`,
+    ),
+  );
+  const declaredPairs = [...declaredVariants].flatMap(([type, allowed]) =>
+    allowed.map((variant) => `${type}:${variant}`),
+  );
+
+  expect(
+    declaredPairs.filter((pair) => !seededVariants.has(pair)),
+    'Every declared display form must be on the board; only the stored one is ever painted.',
+  ).toEqual([]);
+  expect(
+    [...seededVariants].filter((pair) => !declaredPairs.includes(pair)),
+    'A seeded variant config.ts does not declare degrades to the type default on read — the form it claims is never painted.',
+  ).toEqual([]);
+}
+
+/**
+ * The size every seeded widget is stored at. `size` is REQUIRED by
+ * `homeLayoutWidgetSchema` (`packages/contracts/src/settings.ts`) — the frame is
+ * `.strict()` and a document missing it is a 400, not a clamp — so the seed has
+ * to name one. It names the widest, which is also what the overflow half of this
+ * gate wants to measure: `clampSize` drops `l` back to the type's own default
+ * for the types that do not allow it, so this still restates nothing from
+ * `WIDGET_SIZE_RULES`.
+ */
+const HOME_BOARD_SEED_SIZE = 'l';
+
+/** The board document this gate stores on its fixture account. */
+function homeBoardSeedLayout(assetId: string, watchlistId: string): unknown {
+  return {
+    version: declaredHomeConfigVersion(),
+    widgets: HOME_BOARD_SEED.map((entry, index) => ({
+      id: `mobile-gate-${index}`,
+      type: entry.type,
+      size: HOME_BOARD_SEED_SIZE,
+      settings: {
+        ...(entry.variant === undefined ? {} : { variant: entry.variant }),
+        // The two types whose empty state is "pick one first": pointed at the
+        // fixtures so they paint real rows instead of an invitation.
+        ...(entry.type === 'asset-spotlight' ? { assetId, assetLabel: 'AAPL' } : {}),
+        ...(entry.type === 'watchlist' ? { watchlistId } : {}),
+      },
+    })),
+  };
 }
 
 async function responseJson<T>(response: APIResponse, context: string): Promise<T> {
@@ -755,37 +1219,69 @@ async function createRouteFixtures(
     'creating the mobile route idea',
   );
 
+  // The Home board: every declared widget type and every declared display form,
+  // so the `/` sweep measures the widest board the product can compose instead
+  // of the five-widget zero-setup one (#1878).
+  await responseJson<Record<string, unknown>>(
+    await api.put(`${API_BASE_URL}/api/v1/settings/home`, {
+      headers,
+      data: { layout: homeBoardSeedLayout(apple!.id, watchlist.id) },
+    }),
+    'seeding the full-catalog home board',
+  );
+
   // Test-integrity assertions: this fixture is intentionally not a fresh/empty
   // account. These API reads fail before the viewport sweep if any seed seam
   // drifts, instead of silently turning the route assertions into empty states.
-  const [portfolio, cash, cashSources, tags, webhooks, notifications] = await Promise.all([
-    responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}`),
-      'checking the populated holding state',
-    ),
-    responseJson<{ movements: unknown[] }>(
-      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash`),
-      'checking the populated cash state',
-    ),
-    responseJson<{ sources: Array<{ name: string }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash/sources`),
-      'checking the populated cash-source state',
-    ),
-    responseJson<{ tags: Array<{ name: string }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/cash/tags`),
-      'checking the populated tag state',
-    ),
-    responseJson<{ subscriptions: Array<{ url: string }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/settings/webhooks`),
-      'checking the populated webhook state',
-    ),
-    responseJson<{ items: unknown[] }>(
-      await api.get(`${API_BASE_URL}/api/v1/notifications`, {
-        params: { view: 'active', limit: 50 },
-      }),
-      'checking the populated notification state',
-    ),
-  ]);
+  const [portfolio, cash, cashSources, tags, webhooks, notifications, homeBoard] =
+    await Promise.all([
+      responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}`),
+        'checking the populated holding state',
+      ),
+      responseJson<{ movements: unknown[] }>(
+        await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash`),
+        'checking the populated cash state',
+      ),
+      responseJson<{ sources: Array<{ name: string }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash/sources`),
+        'checking the populated cash-source state',
+      ),
+      responseJson<{ tags: Array<{ name: string }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/cash/tags`),
+        'checking the populated tag state',
+      ),
+      responseJson<{ subscriptions: Array<{ url: string }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/settings/webhooks`),
+        'checking the populated webhook state',
+      ),
+      responseJson<{ items: unknown[] }>(
+        await api.get(`${API_BASE_URL}/api/v1/notifications`, {
+          params: { view: 'active', limit: 50 },
+        }),
+        'checking the populated notification state',
+      ),
+      responseJson<{ layout: { widgets: Array<{ type: string; size: string }> } | null }>(
+        await api.get(`${API_BASE_URL}/api/v1/settings/home`),
+        'checking the seeded home board',
+      ),
+    ]);
+  // Read back field-for-field, not just counted: the board is stored through a
+  // `.strict()` contract that can gain a required key, and a seed the server
+  // rejects (or silently narrows) would otherwise surface only as `/` quietly
+  // measuring the five-widget default.
+  expect(
+    homeBoard.layout?.widgets.length,
+    'The account must hold the full-catalog board, or `/` falls back to the five-widget default.',
+  ).toBe(HOME_BOARD_SEED.length);
+  expect(
+    homeBoard.layout?.widgets.map((widget) => widget.type),
+    'The stored board must round-trip the seeded types in order.',
+  ).toEqual(HOME_BOARD_SEED.map((entry) => entry.type));
+  expect(
+    homeBoard.layout?.widgets.every((widget) => widget.size === HOME_BOARD_SEED_SIZE),
+    'Every seeded widget must round-trip the size it was stored at.',
+  ).toBe(true);
   expect(portfolio.holdings.some((holding) => holding.asset.id === apple!.id)).toBe(true);
   expect(cash.movements.length).toBeGreaterThanOrEqual(2);
   expect(cashSources.sources.some((source) => source.name === LONG_CASH_SOURCE_NAME)).toBe(true);
@@ -892,20 +1388,46 @@ type OverlayAction =
   | { kind: 'click'; selector: string; position?: 'first' | 'last' }
   | { kind: 'click-sequence'; selectors: readonly string[] };
 
+/**
+ * The contracted rows an opened overlay is MADE of.
+ *
+ * The tap-target sweep reports "no undersized controls" just as happily for a
+ * surface whose rows match none of its selectors, so an overlay whose content
+ * is a list of destinations (the palette) or menu items says how many of them
+ * had to be measured. Both fields are checked against
+ * {@link TAP_TARGET_SELECTORS} by the inventory assertion: a scenario cannot
+ * claim rows through a selector the measurement does not look at.
+ */
+interface OverlayRowContract {
+  selector: string;
+  minimum: number;
+}
+
 interface OverlayScenario {
   label: string;
   sources: readonly string[];
+  /**
+   * Overlay sites in EACH named source this entry accounts for; one when
+   * unstated. Several entries may still classify state variants of a single
+   * overlay — the count only has to REACH what the file renders — but a file
+   * that grows a genuinely new overlay must gain a classification rather than
+   * inherit this one. See {@link assertCompleteRouteInventory}.
+   */
+  overlays?: number;
   route: string;
   query?: string;
   action: OverlayAction;
   expectedSelector: string;
   sentinel?: (fixtures: RouteFixtures) => string;
+  rows?: OverlayRowContract;
   justification: string;
 }
 
 interface OverlayExclusion {
   surface: string;
   sources: readonly string[];
+  /** As {@link OverlayScenario.overlays}: sites accounted for per source. */
+  overlays?: number;
   routes: readonly string[];
   justification: string;
 }
@@ -923,6 +1445,9 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     route: '/',
     action: { kind: 'keyboard', shortcut: 'Control+k' },
     expectedSelector: '.bt-palette',
+    // Six suggested commands render on an empty query; three is the floor that
+    // still fails loudly if the rows stop matching the measured selector.
+    rows: { selector: '.bt-palette__row', minimum: 3 },
     justification: 'Covers the custom command-palette dialog rather than the shared Dialog shell.',
   },
   {
@@ -937,6 +1462,11 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
       ],
     },
     expectedSelector: '.bt-drawer',
+    // The catalog is what the drawer IS. Eight is a floor well under the 21
+    // declared types (some are capability-gated and absent on a deployment
+    // without market intelligence) that still fails loudly if the rows stop
+    // matching the measured selector.
+    rows: { selector: '.bt-home-catalog__item', minimum: 8 },
     justification: 'Covers the fixed Home drawer and its independently scrolling catalog body.',
   },
   {
@@ -991,6 +1521,8 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
   {
     label: 'cash-transfer sheet',
     sources: ['apps/web/src/user/portfolio/TransferDialog.tsx'],
+    // One dialog, rendered from the loading branch as well as the loaded one.
+    overlays: 2,
     route: '/portfolio/cash/accounts',
     query: '?create=transfer',
     action: { kind: 'preopened' },
@@ -1033,6 +1565,8 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
   {
     label: 'feedback composer sheet',
     sources: ['apps/web/src/user/components/FeedbackDialog.tsx'],
+    // One composer, rendered from the submitted branch as well as the form one.
+    overlays: 2,
     route: '/control/feedback',
     action: { kind: 'click', selector: '.bt-cc__content .bt-btn--primary' },
     expectedSelector: '.bt-dialog__panel--phone-sheet',
@@ -1080,6 +1614,9 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
       position: 'first',
     },
     expectedSelector: '#main-content [role="menu"]',
+    // The seeded watchlist is one row; the contract is that the menu's rows —
+    // not only its box — were measured against the 44px floor.
+    rows: { selector: '.bt-popover [role="menuitem"]', minimum: 1 },
     justification: 'Covers a content-owned menu rather than only repeated shell chrome.',
   },
 ];
@@ -1096,6 +1633,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'AssetSearchBox result action popovers',
     sources: ['apps/web/src/user/components/AssetSearchBox.tsx'],
+    overlays: 2,
     routes: [
       '/',
       '/portfolio',
@@ -1114,6 +1652,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'AudiencePicker share, widening-confirmation and friend-group dialogs',
     sources: ['apps/web/src/user/components/AudiencePicker.tsx'],
+    overlays: 4,
     routes: [
       '/workbench',
       '/workbench/blueprints/:id',
@@ -1160,18 +1699,33 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'Opening it requires a locally stored live seed-phrase session and deliberately reveals the master secret; the E10 mocked-camera transfer flow owns that secret lifecycle.',
   },
   {
+    surface: 'VaultProvidePhraseDialog recovery-words prompt',
+    sources: ['apps/web/src/user/vault/ui/VaultProvidePhraseDialog.tsx'],
+    routes: ['/portfolio'],
+    justification:
+      'It renders only for a vaulted portfolio whose vault is not stored on this endpoint, which needs a second device (or a wiped keystore) after the six-step creation ceremony; the E10 transfer arc owns that state and drives the same verified-before-write seam through the manager. The dialog is an ODialog with two fields and the shared footer, the shape the unlock prompt above already measures.',
+  },
+  {
+    surface: 'VaultUnlockDialog device-password prompt',
+    sources: ['apps/web/src/user/vault/ui/VaultUnlockDialog.tsx'],
+    routes: ['/portfolio', '/control/privacy'],
+    justification:
+      'It renders only for a vault that is stored+wrapped and locked on this endpoint, which needs the six-step creation ceremony first; the vault session-sharing and E10 gate arcs own that state and open this dialog for real.',
+  },
+  {
     surface: 'VaultSyncChip status dialog',
     sources: ['apps/web/src/user/vault/ui/VaultSyncChip.tsx'],
+    overlays: 2,
     routes: ['/'],
     justification:
       'The chip exists only after entering and unlocking paranoid mode with a configured data home; paranoid Drive round-trip e2e owns that state.',
   },
   {
-    surface: 'VaultUnlockDialog in-place unlock prompt',
+    surface: 'in-place vault unlock prompt',
     sources: ['apps/web/src/user/vault/ui/VaultUnlockDialog.tsx'],
     routes: ['/', '/portfolio'],
     justification:
-      'It mounts only on a paranoid endpoint whose vault is locked and whose device password is still unentered; the E10 paranoid and vault-session-sharing e2e flows own that custody state.',
+      'It mounts only on a paranoid vault that is locked yet unlockable — wrapped custody already on this device and K_dev absent — and its failure ladder writes §12 lockout state; the paranoid unlock e2e owns that keystore lifecycle.',
   },
   {
     surface: 'portfolio-switcher selection popover',
@@ -1246,6 +1800,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'MIRRORCHAIN create, convert, invite, member, rename and succession dialogs',
     sources: ['apps/web/src/user/portfolio/MirrorchainPanel.tsx'],
+    overlays: 11,
     routes: ['/portfolio', '/portfolio/settings', '/portfolio/cash/accounts'],
     justification:
       'Every variant requires multi-user chain ownership state and can change privacy or membership; mirrorchain lifecycle e2e owns those flows.',
@@ -1253,6 +1808,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'portfolio archive and delete dialogs',
     sources: ['apps/web/src/user/portfolio/PortfolioSettingsPage.tsx'],
+    overlays: 2,
     routes: ['/portfolio/settings'],
     justification:
       'Both are destructive lifecycle confirmations against the populated default portfolio; portfolio lifecycle e2e owns them.',
@@ -1314,6 +1870,13 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'It requires a shared item with alert-sharing state and changes notification recipients; sharing e2e owns that mutation.',
   },
   {
+    surface: 'owner comment-moderation thread dialog',
+    sources: ['apps/web/src/user/social/MySharedItemsPage.tsx'],
+    routes: ['/people/shared'],
+    justification:
+      'Its trigger is a shared row, so opening it needs an item shared to a real audience — the privacy-widening write this matrix leaves to sharing e2e — and the thread inside it is the audience-side CommentThread the social comment e2e already drives.',
+  },
+  {
     surface: 'blueprint delete dialog',
     sources: ['apps/web/src/user/workboard/ConglomerateDetailPage.tsx'],
     routes: ['/workbench/blueprints/:id'],
@@ -1337,6 +1900,8 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'save-as-idea dialog',
     sources: ['apps/web/src/user/workboard/SaveIdeaDialog.tsx'],
+    // One dialog, rendered from the pending branch as well as the ready one.
+    overlays: 2,
     routes: ['/workbench/blueprints/new', '/workbench/blueprints/:id/edit', '/workbench/backtests'],
     justification:
       'It requires a valid 100%-weighted draft or completed backtest result; builder and backtest e2e own those prerequisite states.',
@@ -1347,6 +1912,146 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
     routes: ['/assets/watchlists'],
     justification:
       'It mutates the seeded non-default watchlist used by the detail-route sweep; watchlist e2e owns rename and delete lifecycle.',
+  },
+];
+
+// ─── The console's own overlay inventory (#1891) ─────────────────────────────
+//
+// Same two tables, same contract, a separate world: the console lives on its own
+// origin with its own session and shell, its overlays carry none of the `.bt-*`
+// language, and `assertCompleteAdminOverlayInventory` holds these two against
+// what `adminOverlaySurfaceSources` finds in `apps/web/src/admin`.
+//
+// `admin/components/Modal.tsx` is registered as overlay INFRASTRUCTURE rather
+// than measured as a surface, so what these entries classify is its fifteen call
+// sites' real content — which is what a phone actually has to fit.
+
+type AdminOverlayAction =
+  | { kind: 'keyboard'; shortcut: string }
+  | { kind: 'click'; selector: string };
+
+interface AdminOverlayScenario {
+  label: string;
+  sources: readonly string[];
+  /** As {@link OverlayScenario.overlays}: sites accounted for per source. */
+  overlays?: number;
+  route: string;
+  action: AdminOverlayAction;
+  expectedSelector: string;
+  /**
+   * Anti-shrinkage floor for the tap-target sweep on THIS overlay: a selector
+   * list that stopped matching the opened panel reports zero undersized
+   * controls, which reads exactly like a compliant one.
+   */
+  minimumMeasured: number;
+  rows?: OverlayRowContract;
+  justification: string;
+}
+
+interface AdminOverlayExclusion {
+  surface: string;
+  sources: readonly string[];
+  overlays?: number;
+  routes: readonly string[];
+  justification: string;
+}
+
+const ADMIN_OVERLAY_SCENARIOS: readonly AdminOverlayScenario[] = [
+  {
+    label: 'console command palette',
+    sources: ['apps/web/src/admin/components/AdminCommandPalette.tsx'],
+    route: '/admin',
+    action: { kind: 'keyboard', shortcut: 'Control+k' },
+    expectedSelector: '#admin-palette-list',
+    // Six destination rows render on an empty query; three is a floor that
+    // still fails loudly if the rows stop matching the measured selector.
+    rows: { selector: ADMIN_PALETTE_ROW_SELECTOR, minimum: 3 },
+    minimumMeasured: 3,
+    justification:
+      'Its rows are the console navigation a phone reaches fastest, and they shipped 2px under the floor (#1891) with nothing measuring them.',
+  },
+  {
+    label: 'console navigation drawer',
+    sources: ['apps/web/src/admin/components/AdminLayout.tsx'],
+    route: '/admin',
+    action: { kind: 'click', selector: '#admin-topbar button[aria-controls="admin-sidebar"]' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    // Close, the language switch, sign out, the palette trigger and one row per
+    // console page — an order of magnitude above this floor.
+    minimumMeasured: 10,
+    justification:
+      'The drawer IS the console navigation below 768px and exists only while open, so no swept route ever renders it.',
+  },
+  {
+    label: 'user reset-password confirmation',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    route: '/admin/users/:userId',
+    action: { kind: 'click', selector: '#main-content button:text-is("Reset password")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    minimumMeasured: 2,
+    justification:
+      'A destructive confirmation in the shared console Modal, carrying a real account email that has to wrap at 360px.',
+  },
+  {
+    label: 'user delete confirmation',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    route: '/admin/users/:userId',
+    action: { kind: 'click', selector: '#main-content button:text-is("Delete")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    minimumMeasured: 2,
+    justification:
+      "The console's most destructive dialog: a typed-username confirmation form in the Modal shell, opened on a real non-self account.",
+  },
+];
+
+const ADMIN_OVERLAY_EXCLUSIONS: readonly AdminOverlayExclusion[] = [
+  {
+    surface: 'user support snapshot and post-reset temporary password',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    overlays: 2,
+    routes: ['/admin/users/:userId'],
+    justification:
+      'Both paint the same Modal panel the two measured flows on this page open, and the temporary password only exists once a live account password has actually been reset.',
+  },
+  {
+    surface: 'users bulk-disable, temporary password and create-user form',
+    sources: ['apps/web/src/admin/pages/UsersPage.tsx'],
+    overlays: 3,
+    routes: ['/admin/users'],
+    justification:
+      'Same Modal panel as the measured user-detail flows; reaching these means disabling real accounts in bulk or minting one, which the admin-users e2e owns.',
+  },
+  {
+    surface: 'OAuth one-time client secret, delete confirmation and edit form',
+    sources: ['apps/web/src/admin/pages/OAuthAppsPage.tsx'],
+    overlays: 3,
+    routes: ['/admin/oauth-apps'],
+    justification:
+      'Same Modal panel; each requires a real OAuth client to be minted, edited or destroyed on the deployment, which oauth-consent e2e owns.',
+  },
+  {
+    surface: 'invite one-time credential',
+    sources: ['apps/web/src/admin/pages/InvitesPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/invites'],
+    justification:
+      'Same Modal panel, shown once after a real invite is minted; every other spec that mints one drives the invite flow rather than this dialog.',
+  },
+  {
+    surface: 'API key audit trail',
+    sources: ['apps/web/src/admin/pages/ApiKeysPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/api-keys'],
+    justification:
+      'Same Modal panel over a bounded request log that only exists after a provisioned personal key has actually been used.',
+  },
+  {
+    surface: 'announcement delete confirmation',
+    sources: ['apps/web/src/admin/pages/AnnouncementsPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/announcements'],
+    justification:
+      'Same Modal panel; reaching it means publishing an announcement to every account on the deployment and then destroying it.',
   },
 ];
 
@@ -1383,6 +2088,68 @@ async function settleRoute(page: Page, declaredRoute: string, target: string): P
     new URL(page.url()).pathname,
     `${declaredRoute} redirected instead of being measured`,
   ).toBe(expectedPath);
+}
+
+function concreteAdminRoute(route: string, userId: string): string {
+  return route.replace(':userId', userId);
+}
+
+/**
+ * Settle an admin console route. The console is a different shell from the user
+ * app — no `AppShell`, no bottom bar — so it gets its own settle rather than
+ * bending {@link settleRoute}: the signed-out login page renders no
+ * `#main-content` at all, and every authenticated page paints its data behind
+ * the console `Spinner` rather than a `.bt-skeleton`.
+ */
+async function settleAdminRoute(page: Page, route: string, target: string): Promise<void> {
+  await page.goto(target);
+
+  if (ADMIN_ANONYMOUS_ROUTES.includes(route as (typeof ADMIN_ANONYMOUS_ROUTES)[number])) {
+    // "`#root` is not empty" is NOT enough here, and measuring it is how this
+    // spec's first CI run reported a signed-out page with zero controls on it:
+    // `/admin/*` is a lazy chunk behind `App.tsx`'s Suspense fallback, that
+    // fallback is the USER app's `Splash`, and it fills `#root` on its own. The
+    // signed-out console is a form (sign-in is the only way in), so waiting for
+    // one waits past both the chunk and `LoginPage`'s own session probe — which
+    // renders a bare `Spinner` while `status === 'loading'`.
+    await expect(
+      page.locator('#root form'),
+      `${route} rendered no signed-out console form — still the Suspense splash?`,
+    ).toBeVisible({ timeout: 30_000 });
+    // Belt and braces, and a named failure if a future anonymous route settles
+    // differently: the console imports none of the `.bt-*` language
+    // (`admin/components/tokens.ts`), so the splash's own class is the exact
+    // signal that what is on screen is the fallback rather than the console.
+    await expect(
+      page.locator('#root .bt-app'),
+      `${route} still showed the Suspense splash instead of the console`,
+    ).toHaveCount(0);
+    await expect(page.locator('#root [role="status"]:has(.animate-spin)')).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  } else {
+    await expect(
+      page.locator('#admin-topbar'),
+      `${route} did not render the admin shell`,
+    ).toBeVisible({ timeout: 20_000 });
+    // The console's own spinner (`admin/components/ui.tsx`), not the user app's
+    // skeleton: measuring a page mid-load measures a layout no operator sees.
+    // `:has(.animate-spin)` is what keeps `LiveRefreshControl`'s permanent
+    // polite `role="status"` cadence line from reading as a pending load — that
+    // control renders INSIDE `#main-content` and has no spinner in it. The
+    // `#main-content` scope is the second half: it keeps the wait off any
+    // status region the shell paints around the page.
+    await expect(page.locator('#main-content [role="status"]:has(.animate-spin)')).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
+  await waitForSettledPaint(page);
+
+  const expectedPath = new URL(target, page.url()).pathname;
+  expect(new URL(page.url()).pathname, `${route} redirected instead of being measured`).toBe(
+    expectedPath,
+  );
 }
 
 /** Measure resolved content rather than initial placeholders or font fallback. */
@@ -1422,6 +2189,18 @@ async function expectPopulatedRouteState(
   declaredRoute: string,
   fixtures: RouteFixtures,
 ): Promise<void> {
+  if (declaredRoute === '/') {
+    // The seeded board actually painted. Without this the sweep would report a
+    // clean `/` just as happily for the five-widget default the account falls
+    // back to whenever the stored document cannot be read (#1878).
+    await expect
+      .poll(() => page.locator('.bt-home-w').count(), {
+        message: `/ must render all ${HOME_BOARD_SEED.length} seeded widgets — a board that fell back to the default measures almost none of the catalog`,
+        timeout: 30_000,
+      })
+      .toBe(HOME_BOARD_SEED.length);
+  }
+
   if (declaredRoute === '/portfolio') {
     const holdingToggle = page.getByTestId(`holding-transactions-toggle-${fixtures.assetId}`);
     await expect(holdingToggle).toBeVisible({ timeout: 20_000 });
@@ -1450,11 +2229,22 @@ const OVERLAY_REGION_SELECTOR = [
   '[role="listbox"]',
 ].join(', ');
 
+/**
+ * The same measurement for the console (#1891), whose overlays wear none of the
+ * `.bt-*` classes above: the shared `Modal` panel, the drawer's dialog and the
+ * palette's own scrolling result list.
+ */
+const ADMIN_OVERLAY_REGION_SELECTOR = [
+  '[role="dialog"][aria-modal="true"]',
+  '#admin-palette-list',
+].join(', ');
+
 async function expectNoPageOverflow(
   page: Page,
   declaredRoute: string,
   viewportWidth: number,
   requireOverlay = isControlPanelRoute(declaredRoute),
+  regionSelector = OVERLAY_REGION_SELECTOR,
 ): Promise<void> {
   const layout = await page.evaluate((configuredViewportWidth) => {
     // window.innerWidth and the configured emulation width can diverge from
@@ -1534,7 +2324,7 @@ async function expectNoPageOverflow(
   // document.scrollWidth. Measure every visible panel/menu plus its horizontal
   // content scrollers against its OWN clientWidth. This is what catches an
   // unwrapped 600px child inside a 390px dialog.
-  const overlayLayout = await page.locator(OVERLAY_REGION_SELECTOR).evaluateAll((elements) => {
+  const overlayLayout = await page.locator(regionSelector).evaluateAll((elements) => {
     const visible = (element: HTMLElement) => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
@@ -1620,6 +2410,347 @@ async function expectNoPageOverflow(
   }
 }
 
+/**
+ * Phone breakpoint where origin.css declares the 44px minimum for the USER app
+ * (`@media (max-width: 480px)`, mirrored by the shell's PHONE_SHELL_MAX_WIDTH).
+ * The mid-band 600px profiles sit deliberately above it: no 44px rule applies
+ * there, so measuring them would assert a contract the design never made.
+ *
+ * The console's own floor reaches further — up to its `md` drawer handoff at
+ * 767.98px — but both admin profiles below are phones (390/360), so this one
+ * ceiling covers every measured surface. Widening it would start measuring
+ * user-app surfaces that were never given the rule.
+ */
+const TAP_TARGET_MAX_VIEWPORT_WIDTH = 480;
+const MIN_TAP_TARGET_PX = 44;
+/** Sub-pixel tolerance: a 43.98px rendered box satisfies a 44px minimum. */
+const TAP_TARGET_EPSILON_PX = 0.5;
+
+/**
+ * The measured tap-target subset, stated out loud rather than sampled silently
+ * (#1663). `apps/web/src/styles/origin.test.ts` greps origin.css for these same
+ * rules; that text assertion proves the rule is DECLARED, and this one proves it
+ * SURVIVES layout — a control that carries the rule but is squeezed by a flex
+ * parent, or one whose selector stopped matching, is only visible here.
+ *
+ * Scope is deliberately the CSS-contracted controls plus the bottom bar's
+ * destinations, not every interactive element on the page: the wider sweep
+ * would assert a 44px promise the design has not made for inline links, table
+ * affordances and dense money rows, and would turn this gate into a redesign
+ * ticket rather than a regression gate. Every profile logs what it measured and
+ * what it did not — see {@link announceTapTargetScope}.
+ */
+const TAP_TARGET_SELECTORS = [
+  '.bt-btn--icon',
+  '.bt-iconbtn',
+  '.bt-tab',
+  '.bt-topbar .bt-rail__brand',
+  '.bt-topbar .bt-btn',
+  '.bt-topbar__actions button',
+  '.bt-topbar .bt-portfolio-trigger',
+  '.bt-topbar .bt-popover :is(a, button, input, select, textarea)',
+  '.bt-bottombar a',
+  // The rows INSIDE the overlays this gate already opens (#1834). The four
+  // above stop at `.bt-topbar`, so a menu the page owns rather than the header
+  // kept `.bt-menu-item`'s 32px row, and the command palette's destinations —
+  // primary navigation on a phone — sat at 38px, both measured by nothing.
+  '.bt-menu-item',
+  '.bt-popover [role="menuitem"]',
+  '.bt-popover [role="menuitemcheckbox"]',
+  '.bt-popover [role="menuitemradio"]',
+  '.bt-palette__row',
+  // The Home drawer's catalog rows — the same shape as the palette rows above,
+  // and the only way to put a widget on the board. Compliant when this was
+  // added (`origin.css` gives them 48px), so this is the contract that keeps
+  // them so rather than a fix (#1878).
+  '.bt-home-catalog__item',
+  // The install card's own actions (#1878). Both are `size="sm"`; the dismiss X
+  // cleared the floor only because it is also `.bt-btn--icon`, while INSTALL —
+  // the only install path left once `beforeinstallprompt` is preventDefault-ed
+  // — rendered 58×28. Measured on every swept surface, and deliberately
+  // RENDERED by the install-affordance step, since the card appears on no
+  // surface by itself.
+  '.bt-install-prompt .bt-btn',
+] as const;
+
+/**
+ * The admin console's measured subset (#1756).
+ *
+ * The console shares none of the `.bt-*` classes above — it is Tailwind-only by
+ * design (`admin/components/tokens.ts`) — so it needs its own list, and the list
+ * is deliberately half structural and half contract:
+ *
+ *  - the shell chrome is selected STRUCTURALLY (`#admin-topbar`, the drawer's
+ *    dialog). The burger is the only way into console navigation below 768px,
+ *    so its measurement must not depend on the component still opting into the
+ *    44px class — a control that drops the class has to fail here, not vanish
+ *    from the sweep.
+ *  - everything the control kit owns (`Button` at both sizes, both tab strips)
+ *    is selected by the `admin-tap-target` marker `tokens.ts` composes, which is
+ *    the same class `styles/origin.css` declares the floor for. That keeps one
+ *    list instead of a growing pile of Tailwind class selectors.
+ *
+ * NOT measured, exactly as in the user list above: every other interactive
+ * control in the console — dense table affordances, inline links, the
+ * `SegmentedControl` cells and page-local inputs. A page-local control joins
+ * the measurement by wearing the marker, which is how the API-keys tier picker
+ * (`pages/ApiKeysPage.tsx`) is in it; one that never wears it is invisible
+ * here, so do not read a green sweep as "every console control was measured".
+ * Announced per profile by {@link announceTapTargetScope} rather than left to a
+ * reader's assumption.
+ */
+const ADMIN_TAP_TARGET_SELECTORS = [
+  '#admin-topbar button',
+  '[role="dialog"][aria-modal="true"] :is(a, button, select)',
+  '.admin-tap-target',
+  // The palette's result rows (#1891). They are `<li role="option">`, so the
+  // dialog clause above — `:is(a, button, select)` — never reached them, and
+  // they carried no marker class either: 42px, measured by nothing. Selected
+  // structurally for the same reason the burger is. See
+  // {@link ADMIN_PALETTE_ROW_SELECTOR}.
+  ADMIN_PALETTE_ROW_SELECTOR,
+] as const;
+
+interface TapTargetScope {
+  label: string;
+  selectors: readonly string[];
+}
+
+const USER_TAP_TARGET_SCOPE: TapTargetScope = {
+  label: 'user app',
+  selectors: TAP_TARGET_SELECTORS,
+};
+const ADMIN_TAP_TARGET_SCOPE: TapTargetScope = {
+  label: 'admin console',
+  selectors: ADMIN_TAP_TARGET_SELECTORS,
+};
+
+interface TapTargetAllowance {
+  selector: string;
+  justification: string;
+}
+
+/** Controls exempted from the measurement, one justification per entry. */
+const TAP_TARGET_ALLOWANCES: readonly TapTargetAllowance[] = [
+  {
+    selector: '.sr-only',
+    justification:
+      'Visually-hidden assistive markup (1×1px by definition) is never a rendered touch target.',
+  },
+  {
+    // The value is part of the selector on purpose: the day that row stops
+    // pinning 40px inline, this stops matching and the row is measured like
+    // every other `.bt-menu-item`. It cannot widen to cover anything else —
+    // the sibling attachable row in the same file already pins 44px and stays
+    // measured.
+    selector:
+      '.bt-dialog__panel--phone-sheet ul > li > button.bt-menu-item[style*="min-height: 40px"]',
+    justification:
+      "The new-chat friend row (chatSurface.tsx:571) pins min-height:40px inline, which beats origin.css's 44px phone floor; #1834 puts apps/web/src/user/social/** out of scope, so the owning issue removes the inline style (its sibling row at :729 already uses 44) rather than this gate editing the component.",
+  },
+];
+
+/**
+ * Measure every control in the contracted subset against 44×44 CSS px.
+ *
+ * A hidden control is skipped via `checkVisibility` (display/visibility/opacity/
+ * content-visibility), and a zero-box control is treated as not rendered — a
+ * collapsed layout is the overflow half of this gate's job, not this one's.
+ */
+async function expectTapTargets(
+  page: Page,
+  declaredRoute: string,
+  viewportWidth: number,
+  options: { scope?: TapTargetScope; minimumMeasured?: number } = {},
+): Promise<void> {
+  if (viewportWidth > TAP_TARGET_MAX_VIEWPORT_WIDTH) return;
+  const scope = options.scope ?? USER_TAP_TARGET_SCOPE;
+
+  const { measured, undersized } = await page.evaluate(
+    ({ selectors, allowances, minimum, epsilon }) => {
+      const candidates = new Set<HTMLElement>();
+      for (const selector of selectors) {
+        for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+          candidates.add(element);
+        }
+      }
+      const describe = (element: HTMLElement) => {
+        const label = element.getAttribute('aria-label');
+        return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}${
+          element.classList.length > 0 ? `.${[...element.classList].slice(0, 3).join('.')}` : ''
+        }${label ? `[aria-label=${label.slice(0, 40)}]` : ''}`;
+      };
+      const rendered = [...candidates].filter((element) => {
+        if (allowances.some((selector) => element.closest(selector) !== null)) return false;
+        if (
+          !element.checkVisibility({
+            contentVisibilityAuto: true,
+            opacityProperty: true,
+            visibilityProperty: true,
+          })
+        ) {
+          return false;
+        }
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+
+      return {
+        measured: rendered.length,
+        undersized: rendered
+          .filter((element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.width < minimum - epsilon || rect.height < minimum - epsilon;
+          })
+          .slice(0, 8)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              element: describe(element),
+              width: Math.round(rect.width * 10) / 10,
+              height: Math.round(rect.height * 10) / 10,
+              text: (element.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40),
+            };
+          }),
+      };
+    },
+    {
+      selectors: [...scope.selectors],
+      allowances: TAP_TARGET_ALLOWANCES.map(({ selector }) => selector),
+      minimum: MIN_TAP_TARGET_PX,
+      epsilon: TAP_TARGET_EPSILON_PX,
+    },
+  );
+
+  expect(
+    undersized,
+    `${declaredRoute} renders contracted controls below ${MIN_TAP_TARGET_PX}×${MIN_TAP_TARGET_PX} CSS px at ${viewportWidth}px`,
+  ).toEqual([]);
+
+  // Measurement anti-shrinkage: a selector list that stops matching anything
+  // reports zero undersized controls, which is indistinguishable from a
+  // compliant page. Callers that know a surface always renders chrome say so.
+  if (options.minimumMeasured !== undefined) {
+    expect(
+      measured,
+      `${declaredRoute} matched no ${scope.label} tap target at ${viewportWidth}px — the measured selector list has gone stale`,
+    ).toBeGreaterThanOrEqual(options.minimumMeasured);
+  }
+}
+
+/**
+ * Log the measured tap-target subset once per profile, so a reader of a green
+ * run can see what this gate did NOT assert instead of inferring coverage.
+ */
+function announceTapTargetScope(
+  viewportWidth: number,
+  scope: TapTargetScope = USER_TAP_TARGET_SCOPE,
+): void {
+  const description =
+    viewportWidth <= TAP_TARGET_MAX_VIEWPORT_WIDTH
+      ? `${scope.label}: measured in-browser at ${MIN_TAP_TARGET_PX}px on every swept surface: ${scope.selectors.join(', ')}; NOT measured: every other interactive control, and any control inside ${TAP_TARGET_ALLOWANCES.map(({ selector }) => selector).join(', ')}`
+      : `${scope.label}: not measured — ${viewportWidth}px is above the ${TAP_TARGET_MAX_VIEWPORT_WIDTH}px breakpoint where origin.css declares the ${MIN_TAP_TARGET_PX}px minimum`;
+  test.info().annotations.push({ type: 'tap-target-scope', description });
+  // Logged as well as annotated: the exclusion has to be readable in the CI log
+  // of a green run, not only in the HTML report nobody opens when it passes.
+  console.log(`[mobile gate] tap targets — ${description}`);
+}
+
+/**
+ * Render and measure the install affordance (§7.1, V5-P13b).
+ *
+ * The card is the one phone surface no route can reach: it appears only where
+ * the browser fires `beforeinstallprompt`, which Chromium decides on its own
+ * installability heuristics and never in a headless run. So the gate dispatches
+ * that event with the shape `InstallPrompt.tsx` reads — the same simulation
+ * `e2e/pwa-install.spec.ts` documents, which is honest because capturing the
+ * event IS the contract under test.
+ *
+ * Measured here rather than assumed: before #1878 its primary action was 58×28
+ * at every phone profile, and it was invisible to BOTH halves of the gate — the
+ * overflow sweep never rendered the card, and `pwa-install.spec.ts` renders it
+ * only at the default desktop viewport. On Android the mini-infobar is
+ * suppressed (`event.preventDefault()`), so that button is the only install
+ * path the user has left.
+ *
+ * Runs on the anonymous `/login` page, where `UserApp` mounts the card outside
+ * the session gate and where a first-time visitor on a phone actually meets it.
+ */
+async function sweepInstallAffordance(
+  page: Page,
+  declaredRoute: string,
+  viewportWidth: number,
+): Promise<void> {
+  // A fresh load of the route the card is measured on: the event is captured by
+  // a listener registered on mount, and the sweep above left the page on
+  // whichever anonymous route it swept last.
+  await settleRoute(page, declaredRoute, declaredRoute);
+  await page.evaluate(() => {
+    const event = new Event('beforeinstallprompt', { cancelable: true }) as Event & {
+      prompt?: () => Promise<void>;
+    };
+    // Never actually called here: the card is measured, not accepted.
+    event.prompt = () => Promise.resolve();
+    window.dispatchEvent(event);
+  });
+
+  const card = page.getByTestId('pwa-install-prompt');
+  await expect(card, 'the install card must render when the browser offers an install').toBeVisible(
+    { timeout: 20_000 },
+  );
+  // Both actions, named out loud: a card that rendered its dismiss X alone
+  // would satisfy an undersized-control assertion while leaving the install
+  // button — the one this floor exists for — unmeasured.
+  await expect(
+    card.locator('.bt-btn'),
+    'the install card must render both its actions for the tap-target sweep to measure them',
+  ).toHaveCount(2);
+
+  await expectNoPageOverflow(page, `${declaredRoute} — install affordance`, viewportWidth);
+  await expectTapTargets(page, `${declaredRoute} — install affordance`, viewportWidth);
+}
+
+/**
+ * Raise and measure the PIN gate (§6.1) at phone width.
+ *
+ * `PinGate` renders from `UserApp.tsx` BEFORE the router, so it owns no
+ * `<Route>` and the route-derived inventory can never reach it — it is the one
+ * authenticated surface this gate has to name explicitly. The lock itself is
+ * idle-driven and local (AuthContext `isPinLocked`): with the PIN on, a load
+ * with no recorded activity gates, so dropping the activity record and
+ * reloading is exactly what a returning phone user's cold open does.
+ *
+ * Runs LAST in a profile: the account it locks is that profile's own throwaway
+ * fixture, and every other surface has already been measured against it.
+ */
+async function sweepPinGate(
+  api: APIRequestContext,
+  page: Page,
+  viewportWidth: number,
+  locale: GateLocale,
+): Promise<void> {
+  await responseJson<Record<string, unknown>>(
+    await api.put(`${API_BASE_URL}/api/v1/auth/pin`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: { pin: GATE_PIN },
+    }),
+    'enabling the PIN on the mobile gate account',
+  );
+  await page.evaluate((key) => localStorage.removeItem(key), PIN_ACTIVITY_STORAGE_KEY);
+  await page.reload();
+
+  // `.bt-gate__card` is worn by the delete-account and consent gates too; the
+  // segmented PIN input is what makes this *the PIN gate*, so assert on that.
+  const gate = page.locator('[data-pin-input="true"] input').first();
+  await expect(gate, 'a PIN-enabled account must open into the PIN gate').toBeVisible({
+    timeout: 20_000,
+  });
+  expect(await page.locator('html').getAttribute('lang')).toBe(locale);
+  await waitForSettledPaint(page);
+  await expectNoPageOverflow(page, 'PIN gate', viewportWidth, false);
+  await expectTapTargets(page, 'PIN gate', viewportWidth);
+}
+
 async function setStoredLocale(page: Page, locale: GateLocale): Promise<void> {
   if (!page.url().startsWith('http')) await page.goto('/login');
   await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
@@ -1688,14 +2819,690 @@ async function exerciseOverlayScenario(
   await waitForSettledOverlay(overlay);
   await waitForSettledPaint(page);
   await expectNoPageOverflow(page, `${scenario.route} — ${scenario.label}`, viewportWidth, true);
+
+  // The rows the overlay is made of, before the sweep below reports on them: a
+  // palette or menu whose rows stopped matching the contracted selector is
+  // indistinguishable from a compliant one in the undersized-control result.
+  if (scenario.rows && viewportWidth <= TAP_TARGET_MAX_VIEWPORT_WIDTH) {
+    const { minimum, selector } = scenario.rows;
+    // Polled, not sampled once: a menu whose rows arrive with their query would
+    // otherwise be measured — and counted — while it is still empty.
+    await expect
+      .poll(() => page.locator(`${selector}:visible`).count(), {
+        message: `${scenario.label} must render at least ${minimum} rows matching ${selector} for the tap-target sweep to measure them`,
+        timeout: 20_000,
+      })
+      .toBeGreaterThanOrEqual(minimum);
+  }
+  await expectTapTargets(page, `${scenario.route} — ${scenario.label}`, viewportWidth);
   await page.keyboard.press('Escape');
   await expect(overlay, `${scenario.label} did not close with Escape`).toBeHidden({
     timeout: 10_000,
   });
 }
 
+/**
+ * Open, measure and close one console overlay (#1891).
+ *
+ * The console counterpart of {@link exerciseOverlayScenario}: same order —
+ * settle, open, wait out the entrance motion, measure overflow, hold the row
+ * contract, sweep tap targets, close with Escape — against the console's own
+ * region and tap-target selectors.
+ */
+async function exerciseAdminOverlayScenario(
+  page: Page,
+  scenario: AdminOverlayScenario,
+  userId: string,
+  viewportWidth: number,
+): Promise<void> {
+  await settleAdminRoute(page, scenario.route, concreteAdminRoute(scenario.route, userId));
+
+  if (scenario.action.kind === 'keyboard') {
+    await page.keyboard.press(scenario.action.shortcut);
+  } else {
+    const trigger = page.locator(scenario.action.selector).first();
+    await expect(
+      trigger,
+      `${scenario.label} trigger not found: ${scenario.action.selector}`,
+    ).toBeVisible({ timeout: 20_000 });
+    await trigger.click();
+  }
+
+  const overlay = page.locator(scenario.expectedSelector).last();
+  await expect(overlay, `${scenario.label} did not open`).toBeVisible({ timeout: 20_000 });
+  await waitForSettledOverlay(overlay);
+  await waitForSettledPaint(page);
+
+  const declared = `${scenario.route} — ${scenario.label}`;
+  await expectNoPageOverflow(page, declared, viewportWidth, true, ADMIN_OVERLAY_REGION_SELECTOR);
+
+  // The rows the overlay is MADE of, before the sweep reports on them: a
+  // palette whose rows stopped matching the contracted selector is
+  // indistinguishable from a compliant one in the undersized-control result.
+  if (scenario.rows && viewportWidth <= TAP_TARGET_MAX_VIEWPORT_WIDTH) {
+    const { minimum, selector } = scenario.rows;
+    await expect
+      .poll(() => page.locator(`${selector}:visible`).count(), {
+        message: `${scenario.label} must render at least ${minimum} rows matching ${selector} for the tap-target sweep to measure them`,
+        timeout: 20_000,
+      })
+      .toBeGreaterThanOrEqual(minimum);
+  }
+
+  await expectTapTargets(page, declared, viewportWidth, {
+    scope: ADMIN_TAP_TARGET_SCOPE,
+    minimumMeasured: scenario.minimumMeasured,
+  });
+  await page.keyboard.press('Escape');
+  await expect(overlay, `${scenario.label} did not close with Escape`).toBeHidden({
+    timeout: 10_000,
+  });
+}
+
+/** Monotonic disambiguator so two console fixtures never collide on a re-run. */
+let consoleFixtureSeq = 0;
+
+/**
+ * Mint a throwaway account for the console's destructive overlay scenarios.
+ *
+ * Deliberately NOT {@link firstAdminUserId}: the delete action is disabled on
+ * the operator's own row (`admin.userDetail.actions.notYourself`), so measuring
+ * the console's most destructive dialog needs an account the signed-in admin is
+ * not. Nothing is submitted — every scenario opens the dialog and leaves with
+ * Escape — so the account survives the run untouched.
+ */
+async function createConsoleFixtureUserId(api: APIRequestContext): Promise<string> {
+  const uid = `${Date.now().toString(36)}${(consoleFixtureSeq++).toString(36)}`;
+  const body = await responseJson<{ user: { id: string } }>(
+    await api.post(`${API_BASE_URL}/api/v1/admin/users`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: {
+        email: `e2e-console-overlay-${uid}@bettertrack.local`,
+        username: `e2econsole${uid}`,
+      },
+    }),
+    'minting the console overlay fixture account',
+  );
+  expect(body.user.id, 'The console overlay fixture account must have an id.').toBeTruthy();
+  return body.user.id;
+}
+
 test('mobile route inventory classifies every UserApp destination', () => {
   assertCompleteRouteInventory();
+});
+
+test('the seeded home board covers every declared widget type and display form', () => {
+  assertCompleteHomeBoardSeed();
+});
+
+test('mobile route inventory classifies every AdminApp destination', () => {
+  assertCompleteAdminRouteInventory();
+});
+
+test('mobile overlay inventory classifies every admin console overlay', () => {
+  assertCompleteAdminOverlayInventory();
+});
+
+/**
+ * Fixture proof for #1891: the admin set-equality names the file it is missing.
+ *
+ * The console's overlays were invisible to this gate not because a
+ * classification was wrong but because NOTHING scanned `apps/web/src/admin` —
+ * an unregistered console overlay was absent from both sides of an equality that
+ * therefore stayed green. The throwaway fixture below is exactly that shape: two
+ * console pages opening the shared `Modal`, one classified, one not.
+ */
+test('admin overlay registration fails by name when a console overlay is unregistered', () => {
+  const classified = 'apps/web/src/admin/pages/ClassifiedDialogPage.tsx';
+  const throwaway = 'apps/web/src/admin/pages/ThrowawayDialogPage.tsx';
+  const consumer = (name: string) => `
+      import { Modal } from '../components/Modal';
+      export function ${name}() {
+        return <Modal title="${name}" onClose={() => {}}>body</Modal>;
+      }
+    `;
+  const detection = virtualOverlayDetection(
+    {
+      'apps/web/src/admin/components/Modal.tsx': `
+        import { createPortal } from 'react-dom';
+        export function Modal({ children }) {
+          return createPortal(
+            <div aria-modal="true" role="dialog">{children}</div>,
+            document.body,
+          );
+        }
+      `,
+      [classified]: consumer('ClassifiedDialogPage'),
+      [throwaway]: consumer('ThrowawayDialogPage'),
+    },
+    {
+      primitiveSources: new Set(ADMIN_OVERLAY_PRIMITIVE_SOURCES),
+      requiredPrimitives: ADMIN_REQUIRED_OVERLAY_PRIMITIVES,
+    },
+  );
+
+  // The shell itself is infrastructure, so what is discovered is its consumers.
+  expect(adminOverlaySurfaceSources(detection)).toEqual([classified, throwaway]);
+  // …and an admin overlay never satisfies — or disturbs — the user half.
+  expect(overlaySurfaceSources(detection)).toEqual([]);
+
+  // The gate's own equality, run against a table that classifies only one of
+  // them: it must fail, and the failure must NAME the unclassified file.
+  let failure = '';
+  try {
+    expect([classified]).toEqual(adminOverlaySurfaceSources(detection));
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+  }
+  expect(
+    failure,
+    'an unregistered console overlay must fail the admin set-equality assertion',
+  ).not.toBe('');
+  expect(failure, 'and the failure must name the offending file by path').toContain(throwaway);
+
+  // The count half is live for the console too: one entry cannot cover two
+  // dialogs in one console page without saying so.
+  const twoInOne = 'apps/web/src/admin/pages/TwoDialogPage.tsx';
+  const pair = virtualOverlayDetection(
+    {
+      'apps/web/src/admin/components/Modal.tsx': `
+        import { createPortal } from 'react-dom';
+        export function Modal({ children }) {
+          return createPortal(
+            <div aria-modal="true" role="dialog">{children}</div>,
+            document.body,
+          );
+        }
+      `,
+      [twoInOne]: `
+        import { Modal } from '../components/Modal';
+        export function TwoDialogPage({ confirming, editing }) {
+          return (
+            <div>
+              {confirming ? <Modal title="confirm">confirmation</Modal> : null}
+              {editing ? <Modal title="edit">edit form</Modal> : null}
+            </div>
+          );
+        }
+      `,
+    },
+    {
+      primitiveSources: new Set(ADMIN_OVERLAY_PRIMITIVE_SOURCES),
+      requiredPrimitives: ADMIN_REQUIRED_OVERLAY_PRIMITIVES,
+    },
+  );
+  const problems = overlayRegistrationProblems(
+    pair,
+    [{ label: 'confirmation dialog', sources: [twoInOne] }],
+    adminOverlaySurfaceSources(pair),
+  );
+  expect(problems).toHaveLength(1);
+  expect(problems[0]).toContain(`${twoInOne} renders 2 overlays`);
+  expect(problems[0]).toContain('"confirmation dialog" accounts for 1');
+});
+
+/**
+ * Fixture proof for #1663 blind spot (1): before this, discovery matched the
+ * literal tag names `Dialog`/`ODialog`/`Drawer`, so an overlay rendered through
+ * an aliased import or a newly named primitive was missing from BOTH sides of
+ * the set-equality assertion above — the gate stayed green and never measured
+ * it. These fixtures render no literally-named primitive at all; the resolver
+ * has to reach them through the barrel and the alias.
+ */
+test('overlay discovery survives aliased imports and renamed primitives', () => {
+  const primitiveSource = `
+    import { createPortal } from 'react-dom';
+    export function ODialog({ children }) {
+      return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+    }
+    export function BottomSheet({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    // Published under a name it is not declared with …
+    function InnerPopover({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    export { InnerPopover as RenamedExport };
+    // … and one reachable only as \`default\`.
+    export default function DeclaredButDefault({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    export function Button(props) {
+      return <button {...props} />;
+    }
+  `;
+  const files = {
+    'apps/web/src/ui/origin/components.tsx': primitiveSource,
+    'apps/web/src/ui/origin/index.ts':
+      `export { BottomSheet, Button, ODialog, RenamedExport } from './components';\n` +
+      `export { default as DefaultSheet } from './components';`,
+    'apps/web/src/user/fixtures/AliasedSheet.tsx': `
+      import { ODialog as Sheet } from '../../ui/origin';
+      export function AliasedSheet() {
+        return <Sheet open>aliased</Sheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/RenamedPrimitive.tsx': `
+      import { BottomSheet } from '../../ui/origin';
+      export function RenamedPrimitive() {
+        return <BottomSheet open>renamed primitive</BottomSheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/NamespacedSheet.tsx': `
+      import * as origin from '../../ui/origin';
+      export function NamespacedSheet() {
+        return <origin.ODialog open>namespaced</origin.ODialog>;
+      }
+    `,
+    // The primitive is published under a name it is not declared with, through
+    // a barrel that renames it again on the way out.
+    'apps/web/src/user/fixtures/RenamedExportSheet.tsx': `
+      import { RenamedExport } from '../../ui/origin';
+      export function RenamedExportSheet() {
+        return <RenamedExport open>renamed export</RenamedExport>;
+      }
+    `,
+    // A default-exported primitive: named through the barrel's
+    // \`export { default as … }\`, and imported directly as a default elsewhere.
+    'apps/web/src/user/fixtures/DefaultSheet.tsx': `
+      import { DefaultSheet } from '../../ui/origin';
+      export function DefaultSheetSurface() {
+        return <DefaultSheet open>default via barrel</DefaultSheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/DirectDefaultSheet.tsx': `
+      import AnyLocalName from '../../ui/origin/components';
+      export function DirectDefaultSheet() {
+        return <AnyLocalName open>default imported directly</AnyLocalName>;
+      }
+    `,
+    'apps/web/src/user/fixtures/PlainPage.tsx': `
+      import { Button } from '../../ui/origin';
+      export function PlainPage() {
+        return <Button>no overlay here</Button>;
+      }
+    `,
+  };
+
+  // The fixtures deliberately contain none of the identifiers the pre-#1663
+  // detector matched, so a regression back to literal matching fails here.
+  for (const [path, source] of Object.entries(files)) {
+    if (!path.startsWith('apps/web/src/user/')) continue;
+    expect(source, `${path} must not name a primitive literally`).not.toMatch(
+      /<\/?(?:Dialog|ODialog|Drawer)[\s/>]/,
+    );
+  }
+
+  const detection = virtualOverlayDetection(files);
+  expect(overlaySurfaceSources(detection)).toEqual([
+    'apps/web/src/user/fixtures/AliasedSheet.tsx',
+    'apps/web/src/user/fixtures/DefaultSheet.tsx',
+    'apps/web/src/user/fixtures/DirectDefaultSheet.tsx',
+    'apps/web/src/user/fixtures/NamespacedSheet.tsx',
+    'apps/web/src/user/fixtures/RenamedExportSheet.tsx',
+    'apps/web/src/user/fixtures/RenamedPrimitive.tsx',
+  ]);
+  expect(rendersOverlay('apps/web/src/user/fixtures/PlainPage.tsx', detection)).toBe(false);
+
+  // Primitives are recorded under the names the module PUBLISHES, not the ones
+  // it declares: `InnerPopover` is only importable as `RenamedExport`, and
+  // `DeclaredButDefault` only as the default export. Recording the declared
+  // name instead would leave the two fixtures above unrecognised.
+  expect(overlayPrimitiveExports('apps/web/src/ui/origin/components.tsx', detection)).toEqual([
+    'BottomSheet',
+    'ODialog',
+    'RenamedExport',
+    'default',
+  ]);
+});
+
+/**
+ * Fixture proof for #1663 blind spot (2): the primitive source set is asserted,
+ * not assumed. `ODialog`/`Drawer` live outside the scanned user tree, so if they
+ * move the gate must say so by name instead of discovering nothing and passing.
+ */
+test('overlay primitive registry fails by name when a primitive moves or appears unregistered', () => {
+  const problems = overlayPrimitiveRegistryProblems(
+    virtualOverlayDetection({
+      'apps/web/src/user/components/Dialog.tsx': `
+        import { createPortal } from 'react-dom';
+        export function Dialog({ children }) {
+          return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+        }
+      `,
+      // ODialog/Drawer moved out of the registered file …
+      'apps/web/src/ui/origin/components.tsx': `
+        export function Button(props) {
+          return <button {...props} />;
+        }
+      `,
+      // … into an unregistered shared-UI module.
+      'apps/web/src/ui/origin/Sheet.tsx': `
+        import { createPortal } from 'react-dom';
+        export function ODialog({ children }) {
+          return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+        }
+        export function Drawer({ children }) {
+          return <aside aria-modal="true" className="bt-drawer" role="dialog">{children}</aside>;
+        }
+      `,
+    }),
+  );
+
+  const report = problems.join('\n');
+  expect(problems).toHaveLength(4);
+  expect(report).toContain('exports no overlay-building component');
+  expect(report).toContain('apps/web/src/ui/origin/components.tsx');
+  expect(report).toContain('<ODialog>');
+  expect(report).toContain('<Drawer>');
+  expect(report).toContain('apps/web/src/ui/origin/Sheet.tsx');
+  expect(report).toContain('OVERLAY_PRIMITIVE_SOURCES');
+});
+
+/**
+ * Fixture proof for #1834: overlay identity is per OVERLAY, not per file.
+ *
+ * `overlaySurfaceSources` answers in file paths, so the set-equality assertion
+ * above is satisfied by one classification no matter how many overlays a file
+ * opens — which is how a moderation dialog landed next to an already-excluded
+ * confirmation dialog and was never opened at 390px. The fixture below is that
+ * exact shape: two distinct dialogs in one file, registered once.
+ */
+test('overlay registration fails by name when one entry hides a second overlay in a file', () => {
+  const surface = 'apps/web/src/user/fixtures/TwoOverlays.tsx';
+  const detection = virtualOverlayDetection({
+    'apps/web/src/user/components/Dialog.tsx': `
+      import { createPortal } from 'react-dom';
+      export function Dialog({ children }) {
+        return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+      }
+    `,
+    [surface]: `
+      import { Dialog } from '../components/Dialog';
+      export function TwoOverlays({ confirming, thread }) {
+        return (
+          <div>
+            {confirming ? <Dialog title="confirm">confirmation</Dialog> : null}
+            {thread ? <Dialog title="comments">moderation thread</Dialog> : null}
+          </div>
+        );
+      }
+    `,
+  });
+
+  // The file-level half stays green — one file, one classification …
+  expect(overlaySurfaceSources(detection)).toEqual([surface]);
+
+  // … while the count half names the file, both overlay sites and the entry
+  // that was silently covering them.
+  const registered = [{ label: 'confirmation dialog', sources: [surface] }];
+  const problems = overlayRegistrationProblems(detection, registered);
+  expect(problems).toHaveLength(1);
+  expect(problems[0]).toContain(`${surface} renders 2 overlays`);
+  expect(problems[0]).toContain('"confirmation dialog" accounts for 1');
+  expect(problems[0]).toMatch(/line \d+: <Dialog>; line \d+: <Dialog>/);
+
+  // Green again once the second overlay is classified in its own right …
+  expect(
+    overlayRegistrationProblems(detection, [
+      ...registered,
+      { label: 'moderation dialog', sources: [surface] },
+    ]),
+  ).toEqual([]);
+  // … or by an entry that states out loud that it covers both.
+  expect(overlayRegistrationProblems(detection, [{ ...registered[0]!, overlays: 2 }])).toEqual([]);
+  // Anti-shrinkage in the other direction: a family count that outlives its
+  // dialogs is named too, so a deleted overlay cannot leave a claim standing
+  // that would silently absorb the next one added.
+  expect(overlayRegistrationProblems(detection, [{ ...registered[0]!, overlays: 3 }])[0]).toContain(
+    '"confirmation dialog" claims to cover 3',
+  );
+});
+
+/**
+ * Planted-regression proof for #1663 blind spots (2) and (3): a gate nobody has
+ * seen fail is a gate nobody knows works. These run the REAL measurement
+ * functions against synthetic pages, so the proof lives in CI permanently
+ * instead of in a PR description.
+ */
+test('mobile gate self-check: planted regressions turn the measurements red', async ({ page }) => {
+  // The viewport meta is load-bearing, not decoration: under mobile emulation a
+  // document without it lays out at Chrome's 980px fallback width, and every
+  // planted overflow would then "fit". index.html carries the same directive.
+  const fixture = (body: string) =>
+    `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" />` +
+    `<style>body { margin: 0 }</style></head><body>${body}</body></html>`;
+
+  for (const width of [360, 390] as const) {
+    await page.setViewportSize({ width, height: 800 });
+
+    await page.setContent(
+      fixture(
+        '<main id="main-content"><div style="width:600px;height:40px">unwrapped</div></main>',
+      ),
+    );
+    await expect(
+      expectNoPageOverflow(page, `self-check ${width}px`, width),
+      `a 600px unwrapped element must fail the overflow measurement at ${width}px`,
+    ).rejects.toThrow(/scrolls horizontally/);
+
+    await page.setContent(
+      fixture('<main id="main-content"><div style="width:100%;height:40px">wrapped</div></main>'),
+    );
+    await expectNoPageOverflow(page, `self-check ${width}px`, width);
+
+    await page.setContent(
+      fixture('<button class="bt-btn--icon" style="width:44px;height:20px">x</button>'),
+    );
+    await expect(
+      expectTapTargets(page, `self-check ${width}px`, width),
+      `a 20px-tall icon button must fail the tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    // The rows inside the overlays the gate opens (#1834): main's geometry —
+    // a 38px palette row and a 32px content-owned menu row — must fail here.
+    await page.setContent(
+      fixture(
+        '<ul class="bt-palette__rows"><li class="bt-palette__row" style="width:300px;height:20px">Portfolio</li></ul>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `self-check ${width}px`, width),
+      `a 20px palette row must fail the tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    await page.setContent(
+      fixture(
+        '<div class="bt-popover"><div role="menu">' +
+          '<button role="menuitem" style="width:180px;height:32px">Watchlist</button>' +
+          '</div></div>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `self-check ${width}px`, width),
+      `a 32px content-owned menu row must fail the tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    await page.setContent(
+      fixture(
+        '<button class="bt-btn--icon" style="width:44px;height:44px">x</button>' +
+          '<button class="bt-btn--icon sr-only" style="width:1px;height:1px">hidden</button>' +
+          '<li class="bt-palette__row" style="width:300px;height:44px">Portfolio</li>' +
+          '<div class="bt-popover"><div role="menu">' +
+          '<button role="menuitem" style="width:180px;height:44px">Watchlist</button>' +
+          '</div></div>',
+      ),
+    );
+    await expectTapTargets(page, `self-check ${width}px`, width);
+  }
+
+  // Above the phone breakpoint the 44px contract does not exist, so the same
+  // planted 20px control must NOT be reported there.
+  await page.setViewportSize({ width: 600, height: 900 });
+  await page.setContent(
+    fixture('<button class="bt-btn--icon" style="width:44px;height:20px">x</button>'),
+  );
+  await expectTapTargets(page, 'self-check 600px', 600);
+});
+
+/**
+ * The same planted-regression proof for the admin half (#1756), run against the
+ * REAL measurement with the console's selector list. The burger fixture is
+ * `origin/main`'s exact geometry — `h-9 w-9`, i.e. 36×36 — so this test is what
+ * demonstrates the gate turns red on the console's pre-fix chrome, permanently
+ * and in CI, rather than in a PR description nobody can re-run.
+ */
+test('admin gate self-check: the pre-fix console chrome turns the measurement red', async ({
+  page,
+}) => {
+  const fixture = (body: string) =>
+    `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" />` +
+    `<style>body { margin: 0 }</style></head><body>${body}</body></html>`;
+  const options = { scope: ADMIN_TAP_TARGET_SCOPE, minimumMeasured: 1 };
+
+  for (const width of [360, 390] as const) {
+    await page.setViewportSize({ width, height: 800 });
+
+    // main's burger: 36×36 in the mobile top bar, the only route into console
+    // navigation below 768px.
+    await page.setContent(
+      fixture(
+        '<header id="admin-topbar"><button style="width:36px;height:36px">menu</button></header>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `admin self-check ${width}px`, width, options),
+      `a 36px burger must fail the admin tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    // main's drawer close (32×32) and nav rows (34px tall), measured through the
+    // drawer's dialog rather than through any class the components opt into.
+    await page.setContent(
+      fixture(
+        '<div role="dialog" aria-modal="true">' +
+          '<button style="width:32px;height:32px">close</button>' +
+          '<a href="#" style="display:block;width:200px;height:34px">Users</a>' +
+          '</div>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `admin self-check ${width}px`, width, options),
+      `a 32px drawer close must fail the admin tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    // main's command palette: a 42px `<li role="option">` row, 2px under the
+    // console's own declared floor, with no marker class on it (#1891). Both
+    // halves of that are planted here — the geometry AND the missing class —
+    // because the row is matched structurally, so this is what proves a future
+    // regression fails the gate instead of dropping out of it.
+    await page.setContent(
+      fixture(
+        '<ul id="admin-palette-list" role="listbox">' +
+          '<li role="option" style="width:300px;height:42px">Users</li>' +
+          '</ul>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `admin self-check ${width}px`, width, options),
+      `a 42px palette row must fail the admin tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    // main's control kit: `Button` size="sm" is 30px tall, the tab strip 38px.
+    await page.setContent(
+      fixture(
+        '<button class="admin-tap-target" style="width:60px;height:30px">Save</button>' +
+          '<button class="admin-tap-target" style="width:80px;height:38px">Users</button>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `admin self-check ${width}px`, width, options),
+      `a 30px console button must fail the admin tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    // The fixed geometry passes …
+    await page.setContent(
+      fixture(
+        '<header id="admin-topbar"><button style="width:44px;height:44px">menu</button></header>' +
+          '<div role="dialog" aria-modal="true">' +
+          '<button style="width:44px;height:44px">close</button>' +
+          '<a href="#" style="display:block;width:200px;height:44px">Users</a>' +
+          '<select style="width:80px;height:44px"><option>EN</option></select>' +
+          '</div>' +
+          '<button class="admin-tap-target" style="width:60px;height:44px">Save</button>' +
+          // The palette at its post-#1891 geometry, plus the row-shaped status
+          // note the selector deliberately does NOT measure: it carries no
+          // destination, so holding it to 44px would assert a promise the
+          // design never made.
+          '<ul id="admin-palette-list" role="listbox">' +
+          '<li role="option" style="width:300px;height:44px">Users</li>' +
+          '<li role="option" aria-disabled="true" style="width:300px;height:30px">Searching…</li>' +
+          '</ul>',
+      ),
+    );
+    await expectTapTargets(page, `admin self-check ${width}px`, width, options);
+
+    // … and a page that matches NO admin selector fails the measured-count
+    // floor instead of reading as compliant.
+    await page.setContent(
+      fixture('<main><button style="width:20px;height:20px">x</button></main>'),
+    );
+    await expect(
+      expectTapTargets(page, `admin self-check ${width}px`, width, options),
+      `an unmatched admin selector list must fail loudly at ${width}px`,
+    ).rejects.toThrow(/matched no admin console tap target/);
+  }
+});
+
+/**
+ * The mutation toast clears the phone bottom bar (§7.1, V5-P13b, #1891).
+ *
+ * Geometry, not text: `apps/web/src/styles/origin.test.ts` asserts the rule is
+ * DECLARED, and only a real layout can say whether the toast's lower edge still
+ * lands on the navigation destinations. Every mutation result in the app spends
+ * four seconds in this one slot (`user/hooks/useMutationFeedback.tsx`), and at
+ * its pre-fix `bottom: 22px` it covered the bottom bar's rows on a 390px iPhone
+ * while its own lower edge sat inside the home-indicator zone.
+ *
+ * Runs against the real stylesheet on a synthetic page rather than the app: the
+ * toast appears only for the four seconds after a mutation, so no swept route
+ * renders it, and the question here is the stylesheet's geometry, not any one
+ * surface's.
+ */
+test('the mutation toast clears the phone bottom bar at 390×844', async ({ page }) => {
+  const originCss = readFileSync(resolve(process.cwd(), 'apps/web/src/styles/origin.css'), 'utf8');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent(
+    `<!doctype html><html data-bt-theme="dark"><head>` +
+      `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />` +
+      `<style>body { margin: 0 }</style><style>${originCss}</style></head><body>` +
+      `<nav class="bt-bottombar"><a href="#">Home</a><a href="#">Portfolio</a><a href="#">Assets</a></nav>` +
+      `<div class="bt-toast">Saved</div>` +
+      `</body></html>`,
+  );
+  await waitForSettledOverlay(page.locator('.bt-toast'));
+
+  const geometry = await page.evaluate(() => {
+    const bar = document.querySelector('.bt-bottombar')!.getBoundingClientRect();
+    const toast = document.querySelector('.bt-toast')!.getBoundingClientRect();
+    return {
+      barHeight: bar.height,
+      barTop: bar.top,
+      toastBottom: toast.bottom,
+      toastHeight: toast.height,
+    };
+  });
+
+  // Anti-shrinkage: a bottom bar that did not lay out as the phone grid it is
+  // would put its "top edge" at the foot of the document and pass vacuously.
+  expect(
+    geometry.barHeight,
+    'the bottom bar must render as the fixed phone grid at 390px',
+  ).toBeGreaterThan(40);
+  expect(geometry.toastHeight, 'the toast must render').toBeGreaterThan(0);
+  expect(
+    geometry.toastBottom,
+    `the toast's lower edge (${geometry.toastBottom}px) must sit above the bottom bar's top edge (${geometry.barTop}px)`,
+  ).toBeLessThanOrEqual(geometry.barTop);
 });
 
 for (const profile of VIEWPORT_PROFILES) {
@@ -1713,6 +3520,8 @@ for (const profile of VIEWPORT_PROFILES) {
     }) => {
       test.setTimeout(900_000);
 
+      announceTapTargetScope(profile.viewport.width);
+
       const anonymousPage = await context.newPage();
       expect(anonymousPage.viewportSize()).toEqual(profile.viewport);
       await setStoredLocale(anonymousPage, profile.locale);
@@ -1721,8 +3530,16 @@ for (const profile of VIEWPORT_PROFILES) {
           await settleRoute(anonymousPage, route, route);
           expect(await anonymousPage.locator('html').getAttribute('lang')).toBe(profile.locale);
           await expectNoPageOverflow(anonymousPage, route, profile.viewport.width);
+          await expectTapTargets(anonymousPage, route, profile.viewport.width);
         });
       }
+      // The install card, in this profile's own locale: it floats over the page
+      // rather than living on one, so it is dispatched onto the last anonymous
+      // route instead of being reachable by navigation.
+      await test.step('install affordance', async () => {
+        await sweepInstallAffordance(anonymousPage, '/login', profile.viewport.width);
+      });
+
       // Invite acceptance uses stable English accessible names. Restore EN for
       // provisioning, then switch the authenticated app to this profile below.
       await setStoredLocale(anonymousPage, 'en');
@@ -1763,6 +3580,7 @@ for (const profile of VIEWPORT_PROFILES) {
           expect(await owner.page.locator('html').getAttribute('lang')).toBe(profile.locale);
           await expectPopulatedRouteState(owner.page, route, fixtures);
           await expectNoPageOverflow(owner.page, route, profile.viewport.width);
+          await expectTapTargets(owner.page, route, profile.viewport.width);
         });
       }
 
@@ -1772,6 +3590,131 @@ for (const profile of VIEWPORT_PROFILES) {
         await test.step(`open overlay: ${scenario.label}`, async () => {
           await exerciseOverlayScenario(owner.page, scenario, fixtures, profile.viewport.width);
         });
+      }
+
+      // Last: the PIN gate locks this profile's fixture account behind it.
+      await test.step('PIN gate', async () => {
+        await sweepPinGate(
+          owner.context.request,
+          owner.page,
+          profile.viewport.width,
+          profile.locale,
+        );
+      });
+    });
+  });
+}
+
+/**
+ * The admin console's phone matrix (#1756).
+ *
+ * Two widths, no locale axis: §13.5 V5-P13b names 390 AND 360, and the console
+ * is dark-only operator chrome whose strings are short workspace labels — the
+ * DE profiles above exist because the USER app's copy is where a translated
+ * string doubles in length. The console's own DE pass rides with the P14 sweep.
+ * A separate test rather than a fifth entry in VIEWPORT_PROFILES: the console
+ * lives on its own origin with its own session and shell, so it shares the
+ * measurement helpers, not the user sweep's fixture chain.
+ */
+const ADMIN_VIEWPORT_PROFILES = [
+  { label: 'admin phone 390px', viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 },
+  { label: 'admin phone 360px', viewport: { width: 360, height: 800 }, deviceScaleFactor: 3 },
+] as const satisfies readonly {
+  label: string;
+  viewport: { width: number; height: number };
+  deviceScaleFactor: number;
+}[];
+
+/** A real user id for `/admin/users/:userId` — the seeded admin is one. */
+async function firstAdminUserId(api: APIRequestContext): Promise<string> {
+  const body = await responseJson<{ users: Array<{ id: string }> }>(
+    await api.get(`${API_BASE_URL}/api/v1/admin/users`),
+    'reading a user for the admin detail route',
+  );
+  const id = body.users[0]?.id;
+  expect(id, 'The stack must hold at least one user for /admin/users/:userId.').toBeTruthy();
+  return id!;
+}
+
+for (const profile of ADMIN_VIEWPORT_PROFILES) {
+  test.describe(profile.label, () => {
+    test('admin console fits every registered route and stays tappable', async ({ browser }) => {
+      test.setTimeout(900_000);
+
+      announceTapTargetScope(profile.viewport.width, ADMIN_TAP_TARGET_SCOPE);
+
+      const contextOptions = {
+        viewport: profile.viewport,
+        deviceScaleFactor: profile.deviceScaleFactor,
+        hasTouch: true,
+        isMobile: true,
+      };
+
+      const anonymousContext = await browser.newContext({
+        ...contextOptions,
+        baseURL: ADMIN_BASE_URL,
+      });
+      try {
+        const anonymousPage = await anonymousContext.newPage();
+        expect(anonymousPage.viewportSize()).toEqual(profile.viewport);
+        for (const route of ADMIN_ANONYMOUS_ROUTES) {
+          await test.step(`anonymous ${route}`, async () => {
+            await settleAdminRoute(anonymousPage, route, route);
+            await expectNoPageOverflow(anonymousPage, route, profile.viewport.width);
+            await expectTapTargets(anonymousPage, route, profile.viewport.width, {
+              scope: ADMIN_TAP_TARGET_SCOPE,
+              // The sign-in submit is a console `Button`, so the signed-out
+              // page is never legitimately empty of measurable controls.
+              minimumMeasured: 1,
+            });
+          });
+        }
+      } finally {
+        await anonymousContext.close();
+      }
+
+      const apiRequest = await newAdminRequestContext(newRequestContext);
+      const adminContext = await newAdminBrowserContext(browser, apiRequest, contextOptions);
+      try {
+        const userId = await firstAdminUserId(apiRequest);
+        let page = await adminContext.newPage();
+        expect(page.viewportSize()).toEqual(profile.viewport);
+
+        for (const [routeIndex, route] of ADMIN_CORE_ROUTES.entries()) {
+          if (routeIndex > 0 && routeIndex % ROUTE_PAGE_BATCH_SIZE === 0) {
+            await page.close();
+            page = await adminContext.newPage();
+          }
+          await test.step(`admin ${route}`, async () => {
+            await settleAdminRoute(page, route, concreteAdminRoute(route, userId));
+            await expectNoPageOverflow(page, route, profile.viewport.width);
+            await expectTapTargets(page, route, profile.viewport.width, {
+              scope: ADMIN_TAP_TARGET_SCOPE,
+              // The mobile top bar's burger and search trigger render on every
+              // authenticated console page, whatever the page itself paints.
+              minimumMeasured: 2,
+            });
+          });
+        }
+
+        // The console's overlays (#1891). None of them is reachable from the
+        // route sweep above: the drawer IS the navigation below 768px and
+        // exists only while open, the palette is a ⌘K portal, and the Modal
+        // panel only appears once an operator commits to an action.
+        const overlayUserId = await createConsoleFixtureUserId(apiRequest);
+        for (const scenario of ADMIN_OVERLAY_SCENARIOS) {
+          await test.step(`admin overlay: ${scenario.label}`, async () => {
+            await exerciseAdminOverlayScenario(
+              page,
+              scenario,
+              overlayUserId,
+              profile.viewport.width,
+            );
+          });
+        }
+      } finally {
+        await adminContext.close();
+        await apiRequest.dispose();
       }
     });
   });

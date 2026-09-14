@@ -45,7 +45,21 @@ const EXPECTED_DIRECTION: Record<ImportRowKind, 1 | -1> = {
   withdrawal: -1,
 };
 
-export type KindDerivation = { ok: true; row: NormalizedImportRow } | { ok: false; error: string };
+/**
+ * WHY a kind could not be derived — the difference between "this row is not
+ * that" and "this row's units are not ones the cash ledger holds".
+ *
+ * `currency` is separated because it is not a statement about the KIND at all:
+ * the same row may still be derivable as a trade, which keeps its native
+ * currency exactly as the broker mappers do. Staging therefore keeps such a row
+ * confirmable instead of ending it, so a person can still say what it is —
+ * see `genericStaging`.
+ */
+export type KindDerivationRefusal = 'currency' | 'fields';
+
+export type KindDerivation =
+  | { ok: true; row: NormalizedImportRow }
+  | { ok: false; error: string; refusal: KindDerivationRefusal };
 
 /**
  * What the FILE the row came from is known to do, as opposed to what the row
@@ -64,7 +78,11 @@ export interface DerivationContext {
   amountsSigned: boolean;
 }
 
-const fail = (error: string): KindDerivation => ({ ok: false, error });
+const fail = (error: string, refusal: KindDerivationRefusal = 'fields'): KindDerivation => ({
+  ok: false,
+  error,
+  refusal,
+});
 
 /** Any evidence of WHICH instrument a row is about. */
 function namesInstrument(fields: PendingKindFields): boolean {
@@ -168,6 +186,7 @@ export function deriveRowForKind(
     return fail(
       `This row is stated in ${fields.currency}, and cash and dividends are recorded in EUR — ` +
         'convert the export, or import this file through its broker mapper.',
+      'currency',
     );
   }
   if (kind === 'dividend' && !namesInstrument(fields)) {
@@ -177,10 +196,15 @@ export function deriveRowForKind(
     ok: true,
     row: {
       kind,
-      // A cash movement is not about an instrument, and dedupe depends on that:
-      // `contentHash` keys cash on a null instrument, so a memo left in `name`
-      // would hash differently from the identical hand-recorded movement and
-      // defeat the duplicate check.
+      // A cash movement is not about an instrument: `contentHash` keys cash on
+      // a null instrument, so a memo parked in `name` would hash differently
+      // from the same movement recorded by hand and defeat the duplicate check.
+      //
+      // The memo is not discarded, though — it stays in `note` below, which is
+      // the field the booking carries into the ledger and therefore the only
+      // one both sides of a dedupe can read. `contentHash` takes it from there
+      // as the cash key's discriminator, which is what keeps two same-day
+      // €500 deposits with different memos two movements rather than one.
       isin: kind === 'dividend' ? fields.isin : null,
       symbol: kind === 'dividend' ? fields.symbol : null,
       name: kind === 'dividend' ? fields.name : null,

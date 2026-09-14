@@ -228,6 +228,9 @@ const componentSchemas = {
   // Per-portfolio move pipeline (paranoid E4 #1414, E6 residual #1525)
   PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
   PortfolioVaultLifecycleResponse: contracts.portfolioVaultLifecycleResponseSchema,
+  // Lossless capture reads (#1529)
+  PortfolioVaultImportCaptureResponse: contracts.portfolioVaultImportCaptureResponseSchema,
+  CustomAssetVaultSnapshotsResponse: contracts.customAssetVaultSnapshotsResponseSchema,
   PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
   PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
   PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
@@ -314,6 +317,10 @@ const componentSchemas = {
   AdminStats: contracts.adminStatsSchema,
   AdminHealthResponse: contracts.adminHealthResponseSchema,
   AdminBackupStatusResponse: contracts.adminBackupStatusResponseSchema,
+  // Operations cockpit (#1406 W4) — read-only projections of counters the
+  // process already keeps. Neither has a request body: there is no write here.
+  AdminOpsJobsResponse: contracts.adminOpsJobsResponseSchema,
+  AdminOpsProvidersResponse: contracts.adminOpsProvidersResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -595,6 +602,7 @@ const componentSchemas = {
 
   // Comments + reactions on shared items (§13.5 V5-P8)
   CommentThreadResponse: contracts.commentThreadResponseSchema,
+  CommentThreadSummaryResponse: contracts.commentThreadSummaryResponseSchema,
   CreateCommentRequest: contracts.createCommentRequestSchema,
   CreateCommentResponse: contracts.createCommentResponseSchema,
   ToggleReactionRequest: contracts.toggleReactionRequestSchema,
@@ -875,7 +883,7 @@ const endpoints: EndpointDef[] = [
     path: '/feature-flags',
     tag: 'Meta',
     summary:
-      'Effective runtime feature flags advertised to the SPA (killed features hide client-side).',
+      'Effective runtime feature flags plus deploy-time capabilities advertised to the SPA (killed or unconfigured features hide client-side).',
     status: 200,
     response: R.FeatureFlagsResponse,
   },
@@ -1615,7 +1623,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/invites',
     tag: 'Admin',
-    summary: 'List invites.',
+    summary: 'List invites (bounded page).',
+    query: contracts.adminListQuerySchema,
     status: 200,
     response: R.AdminInviteListResponse,
   },
@@ -1641,7 +1650,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/registration-tokens',
     tag: 'Admin',
-    summary: 'List registration access tokens (invite-token mode).',
+    summary: 'List registration access tokens (invite-token mode, bounded page).',
+    query: contracts.adminListQuerySchema,
     status: 200,
     response: R.RegistrationTokenListResponse,
   },
@@ -1667,7 +1677,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/registration-requests',
     tag: 'Admin',
-    summary: 'List pending approval-queue registration applications.',
+    summary: 'List pending approval-queue registration applications (bounded page).',
+    query: contracts.adminListQuerySchema,
     status: 200,
     response: R.RegistrationRequestListResponse,
   },
@@ -1789,6 +1800,30 @@ const endpoints: EndpointDef[] = [
       'Backup and restore-drill readiness, projected read-only from the scheduler status file.',
     status: 200,
     response: R.AdminBackupStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/jobs',
+    tag: 'Admin',
+    summary: 'Queue depths, repeatable schedules with next/last run, and the dead-letter list.',
+    description:
+      'Read-only operations cockpit projection (#1406 W4). Job payloads are never included; ' +
+      'a scheduled run reports its own counts only as numbers. `available: false` means this ' +
+      'process holds no queue registry — not that the queues are empty.',
+    status: 200,
+    response: R.AdminOpsJobsResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/providers',
+    tag: 'Admin',
+    summary: 'Per-capability circuit-breaker state, provider call outcomes and market-cache rates.',
+    description:
+      'Read-only (#1406 W4). Counters are process-local and reset on restart — `sampledSince` ' +
+      'is their epoch. There is no upstream quota gauge: the provider is keyless and no ' +
+      'authoritative quota exists to report.',
+    status: 200,
+    response: R.AdminOpsProvidersResponse,
   },
   {
     method: 'get',
@@ -2196,7 +2231,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/api-keys',
     tag: 'Admin',
-    summary: 'List every user’s API keys with their assigned tier (governance surface).',
+    summary: 'List a bounded page of API keys with their assigned tier (governance surface).',
+    query: contracts.adminApiKeyListQuerySchema,
     status: 200,
     response: R.AdminApiKeyListResponse,
   },
@@ -2456,7 +2492,9 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/assets/portfolio/dividend-projection',
     tag: 'Assets',
-    summary: 'Projected dividend income for the whole portfolio (monthly + yearly, EUR).',
+    summary:
+      'Projected dividend income (monthly + yearly, in the caller’s base currency) — every active portfolio, or one via portfolioId.',
+    query: contracts.projectedDividendIncomeQuerySchema,
     status: 200,
     response: R.ProjectedDividendIncomeResponse,
   },
@@ -2868,6 +2906,18 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete a custom asset (cascades).',
     params: contracts.customAssetIdParamSchema,
     status: 204,
+  },
+  {
+    method: 'get',
+    path: '/custom-assets/vault-snapshots',
+    tag: 'Custom Assets',
+    summary: 'Read the exact current state of the caller’s own manual assets (vault-entity rows).',
+    description:
+      'The lossless seam the per-portfolio vault move needs on both paths (#1529): each present asset in vault-entity row shape (decimal strings, verbatim meta) with every current value point; ids that are not the caller’s manual assets — unknown, catalog, another account’s — are simply absent (no oracle). `ids` is one comma-separated list of 1..200 UUIDs. Responses are no-store.',
+    query: contracts.customAssetVaultSnapshotsQuerySchema,
+    status: 200,
+    response: R.CustomAssetVaultSnapshotsResponse,
+    noStore: true,
   },
   {
     method: 'get',
@@ -3977,10 +4027,21 @@ const endpoints: EndpointDef[] = [
     path: '/social/items/{kind}/{subjectId}/thread',
     tag: 'Social',
     summary:
-      'A shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
+      'One bounded page of a shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
     params: contracts.audienceParamSchema,
+    query: contracts.commentThreadQuerySchema,
     status: 200,
     response: R.CommentThreadResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/items/{kind}/{subjectId}/thread/summary',
+    tag: 'Social',
+    summary:
+      'The collapsed thread head — live comment count + item reactions, no bodies (audience-scoped).',
+    params: contracts.audienceParamSchema,
+    status: 200,
+    response: R.CommentThreadSummaryResponse,
   },
   {
     method: 'post',
@@ -5054,6 +5115,23 @@ const endpoints: EndpointDef[] = [
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
       409: 'The portfolio is not stored in a vault, or its transition state is inconsistent.',
       429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/import-batches',
+    tag: 'Vault',
+    summary: 'Read a plain portfolio’s historical import batches and staging rows losslessly.',
+    description:
+      'The lossless capture read that lets the §9 move-in carry historical import batches into the encrypted portfolio document instead of refusing (#1529, lifting the #1528 fail-closed ruling). Owner-scoped; every batch keyed to the portfolio rides on every page, staging rows page by an opaque cursor, and every column is served exactly as stored (decimals as strings). Session-only by the vault-namespace fence (bearer admission deferred: raw staging rows and memos must not reach third-party keys) — NOT a transition carve-out: a vaulted portfolio is refused at the enforcement boundary. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    query: contracts.portfolioVaultImportCaptureQuerySchema,
+    status: 200,
+    response: R.PortfolioVaultImportCaptureResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is already stored in a vault, the cursor does not belong to this read, or a stored staging row cannot be served losslessly (PORTFOLIO_VAULT_CAPTURE_UNSERVABLE).',
     },
   },
   {

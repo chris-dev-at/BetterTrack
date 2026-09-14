@@ -3,16 +3,19 @@ import { Router } from 'express';
 import {
   createCustomAssetRequestSchema,
   customAssetIdParamSchema,
+  customAssetVaultSnapshotsQuerySchema,
+  parseCustomAssetVaultSnapshotIds,
   putValuePointsRequestSchema,
   updateCustomAssetRequestSchema,
   type CreateCustomAssetRequest,
+  type CustomAssetVaultSnapshotsQuery,
   type PutValuePointsRequest,
   type UpdateCustomAssetRequest,
 } from '@bettertrack/contracts';
 
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
-import { validateBody, validateParams } from '../middleware/validate';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /** Custom-investment endpoints (PROJECTPLAN.md §6.9, §8). Controllers stay thin. */
@@ -39,6 +42,26 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
     await ctx.customAssets.dismissRecategorization(req.authUser!.id);
     res.status(204).send();
   });
+
+  // GET /custom-assets/vault-snapshots?ids= — #1529: the exact current state of
+  // the caller's own manual assets in vault-entity row shape (decimal strings,
+  // verbatim meta), the lossless seam the per-portfolio vault move needs on
+  // both paths. Declared before `/:id` so the literal path is matched first.
+  // No-store: capture-protocol reads are never cache material.
+  router.get(
+    '/vault-snapshots',
+    validateQuery(customAssetVaultSnapshotsQuerySchema),
+    async (req, res) => {
+      const { ids } = req.valid?.query as CustomAssetVaultSnapshotsQuery;
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(
+        await ctx.customAssets.vaultSnapshots(
+          req.authUser!.id,
+          parseCustomAssetVaultSnapshotIds(ids),
+        ),
+      );
+    },
+  );
 
   // GET /custom-assets — every custom asset the user owns, including ones with no
   // holdings, each with its latest value point (mobile list surface).

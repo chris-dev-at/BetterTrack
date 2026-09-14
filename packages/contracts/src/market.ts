@@ -78,6 +78,19 @@ export const assetSearchResultSchema = z
     exchange: z.string().nullable().optional(),
     type: assetTypeSchema,
     currency: currencyCodeSchema,
+    /**
+     * True when the provider could not state a currency and `currency` is the
+     * projection's own DEFAULT rather than something read off the hit (#1875).
+     * A search hit is a picker payload, not a description of an instrument: a
+     * provider whose search endpoint carries no currency field infers one from
+     * the symbol shape and falls back to a house default. That placeholder is
+     * fine for a badge and never acceptable as a stored denomination —
+     * `assets.currency` is money — so the catalog resolves a flagged currency
+     * through the authoritative `getMeta` path before writing it
+     * (`services/search/catalogEnrichment.ts`). Absent/false means the value
+     * was derived from the hit itself.
+     */
+    currencyGuessed: z.boolean().optional(),
   })
   .strict();
 export type AssetSearchResult = z.infer<typeof assetSearchResultSchema>;

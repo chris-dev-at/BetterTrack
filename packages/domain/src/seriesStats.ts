@@ -1,8 +1,9 @@
 /**
  * Series statistics for the Analytics deep-dive page (PROJECTPLAN.md §13.3,
  * V3-P9): side-by-side compare stats (total %, CAGR, max drawdown, best/worst
- * day), the performance-% display mode, real-terms (inflation) deflation, and
- * the per-asset contribution table.
+ * day), the performance-% display mode, real-terms (inflation) deflation, the
+ * time-weighted window statistics a forecast samples as its return factor
+ * (§13.5 V5-P6b), and the per-asset contribution table.
  *
  * Like the rest of `domain/**` this is money-critical T1 code and a **pure**
  * module: it imports nothing, reads no clock (`dateToMs` is a deterministic
@@ -300,6 +301,69 @@ export function indexAveragePctPerYear(
   if (months <= 0) return null;
   const years = months / 12;
   return (Math.pow(last.value / first.value, 1 / years) - 1) * 100;
+}
+
+// ---------------------------------------------------------------------------
+// Time-weighted return statistics
+// ---------------------------------------------------------------------------
+
+/**
+ * The window statistics of a **time-weighted** return series (#1759): the
+ * flow-neutral counterpart of {@link SeriesStats}'s `totalReturnPct`/`cagrPct`.
+ */
+export interface TwrStats {
+  /** TWR over the window, percent, rebased so the first point is 0 %. */
+  readonly totalReturnPct: number;
+  /** Annualised TWR (ACT/365.25); `null` when no calendar time elapsed. */
+  readonly cagrPct: number | null;
+}
+
+/**
+ * Window statistics of a cumulative **time-weighted** return series — the
+ * annualised figure a forecast may sample as "the return this portfolio has
+ * historically earned" (§13.5 V5-P6b, #1759).
+ *
+ * The CAGR of a portfolio's *value* series is not a rate of return: every
+ * deposit raises the value, so a saver who contributes monthly reads their own
+ * contributions back as performance. A TWR series carries no such inflation —
+ * {@link https://en.wikipedia.org/wiki/Time-weighted_return} links each period's
+ * return across the flows — so annualising IT answers the question the value
+ * CAGR only appeared to.
+ *
+ * The input is the cumulative-percent curve the portfolio already computes
+ * (`holdings.timeWeightedReturn`, §6.9): `pct` is the compounded return since
+ * the curve's own anchor. It is rebased here onto the FIRST point of whatever
+ * window is passed in (compounding, never subtraction — percentages don't add
+ * across time), so slicing a since-inception curve to a 1Y/3Y/5Y window and
+ * handing it over states that window's return. An optional {@link Deflator}
+ * expresses the result in real terms, exactly as {@link deflateSeries} does for
+ * a value series.
+ *
+ * The rebased index is then measured by {@link computeSeriesStats} itself, so
+ * the total-return and ACT/365.25 CAGR formulas have ONE definition in this
+ * module: for a portfolio with no external flows the TWR index is `V/V₀` point
+ * for point, and this function therefore returns exactly the value series'
+ * `totalReturnPct`/`cagrPct` — the no-flows case cannot diverge between the two
+ * statistics.
+ *
+ * `null` when the window cannot state a return at all: an empty series, or a
+ * base point at or below −100 % (a non-positive index, which a well-formed TWR
+ * curve never reaches).
+ */
+export function computeTwrStats(
+  performance: ReadonlyArray<PerfPoint>,
+  deflator: Deflator | null = null,
+): TwrStats | null {
+  const first = performance[0];
+  if (first === undefined) return null;
+  const base = 1 + first.pct / 100;
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const index: StatSeriesPoint[] = performance.map((pt) => ({
+    date: pt.date,
+    value: (1 + pt.pct / 100) / base,
+  }));
+  const stats = computeSeriesStats(deflator ? deflateSeries(index, deflator) : index);
+  return { totalReturnPct: stats.totalReturnPct, cagrPct: stats.cagrPct };
 }
 
 // ---------------------------------------------------------------------------

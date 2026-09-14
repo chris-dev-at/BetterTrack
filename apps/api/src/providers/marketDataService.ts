@@ -18,7 +18,12 @@ import type { Redis } from 'ioredis';
 
 import type { AssetProvider, ProviderCapability } from './AssetProvider';
 import { cacheKey, createMarketCache, type MarketCache } from './cache';
-import { CircuitBreaker, type CircuitBreakerOptions, type CircuitState } from './circuitBreaker';
+import {
+  CircuitBreaker,
+  type CircuitBreakerOptions,
+  type CircuitBreakerSnapshot,
+  type CircuitState,
+} from './circuitBreaker';
 import { CapabilityUnavailableError, isNotFoundError, isRateLimitError } from './errors';
 import {
   createFailoverResolver,
@@ -124,11 +129,33 @@ export interface MarketDataService {
    */
   breakerStates(): Array<{ providerId: string; state: CircuitState }>;
   /**
+   * The per-capability breaker detail the admin operations cockpit reads
+   * (#1406 W4). {@link breakerStates} deliberately collapses a provider to its
+   * WORST capability so the health payload stays one-dimensional — which hides
+   * exactly the distinction per-capability isolation was built for ("with
+   * `fundamentals` dead, quotes keep flowing"). This is that dimension, and it
+   * is the only place it is published.
+   *
+   * Reports a provider's LIVE breakers only: a capability that has never been
+   * called has no breaker and is therefore absent rather than listed as
+   * `closed`, because "never exercised" and "exercised and healthy" are
+   * different operational facts. Read-only — never creates or trips a breaker.
+   */
+  breakerSnapshots(): ProviderBreakerSnapshots[];
+  /**
    * Failover attribution for the admin health surface (§13.5 V5-P1c): which
    * provider is currently serving each chain, the recent switch events, and
    * per-provider serve counts. Empty arrays when no secondary is configured.
    */
   failoverStatus(): FailoverStatus;
+}
+
+/** One provider's live capability breakers, worst-first at the provider level. */
+export interface ProviderBreakerSnapshots {
+  providerId: string;
+  /** Worst state across this provider's live capability breakers. */
+  state: CircuitState;
+  capabilities: Array<{ capability: ProviderCapability } & CircuitBreakerSnapshot>;
 }
 
 export interface MarketDataServiceOptions {
@@ -182,6 +209,51 @@ export function defaultIntervalForRange(range: HistoryRange): HistoryInterval {
 /** One canonical form per query so ranking and coalescing share cache entries (§5.3). */
 export function normalizeSearchQuery(raw: string): string {
   return raw.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Payload **shape version** per intel capability — the §5.3 cache's migration
+ * lever, and the reason a payload change is safe to deploy.
+ *
+ * An intel entry is stored as serialized JSON and read back verbatim: a fresh
+ * hit is returned with no schema parse and no revalidation, and the
+ * last-known-good stale copy is retained for `STALE_TTL_SECONDS` (7 days) —
+ * served, and never refreshed, for as long as the upstream is failing. So the
+ * entries a *previous* release wrote outlive the deploy by hours to days, and a
+ * release that changes what a payload MEANS cannot simply read them back: they
+ * arrive missing the new field and the new consumer misreads them.
+ *
+ * Bumping a capability's number changes its cache key, so those entries are
+ * never read again and expire on their own TTL — the new code only ever sees
+ * payloads its own release produced. A capability absent from this map is at
+ * version 1 and keeps the bare `capability` variant it has always used: a shape
+ * change to one payload must not evict the other five.
+ */
+const INTEL_PAYLOAD_VERSIONS: Partial<Record<ProviderCapability, number>> = {
+  // v2 (#1741): `trailingAmountBasis` now travels beside `trailingAmount`, and
+  // the portfolio projection treats a per-share amount carrying no basis as an
+  // unresolved holding (the two bases differ by a large factor after a special
+  // dividend). Without this bump every v1 entry would blank the whole
+  // projection until it expired.
+  dividends: 2,
+  // v2 (#1790): an earnings row now carries `periodEnd` — the end of the fiscal
+  // period reported on — BESIDE `date`, the announcement date the two used to
+  // share. `earningsEventSchema` requires the field (nullable, and the object is
+  // strict), so the client's response parse throws on a row a v1 release wrote
+  // and the asset page's whole earnings block disappears with no error surfaced.
+  // Without this bump every v1 entry would blank that block until it expired
+  // (6 h fresh, and a stale copy served for up to 7 days while upstream fails).
+  earnings: 2,
+};
+
+/**
+ * The §5.3 cache-key variant for one intel capability, carrying its payload
+ * shape version (see {@link INTEL_PAYLOAD_VERSIONS}). Version 1 is the bare
+ * capability name, so only a payload that actually changed gets a new key.
+ */
+export function intelCacheVariant(capability: ProviderCapability): string {
+  const version = INTEL_PAYLOAD_VERSIONS[capability];
+  return version === undefined ? capability : `${capability}@v${version}`;
 }
 
 export function createMarketDataService(deps: CreateMarketDataServiceDeps): MarketDataService {
@@ -315,6 +387,10 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
    * provider (§13.5 V5-P5). Rejects with {@link CapabilityUnavailableError} when
    * the provider does not implement the capability — the read layer treats that
    * exactly like a provider error and degrades to the "unconfigured" shape.
+   *
+   * The key carries the payload's shape version ({@link intelCacheVariant}), so
+   * a release that changes what a payload means never reads back an entry the
+   * previous release wrote.
    */
   const loadIntel = <T>(
     ref: AssetRef,
@@ -327,7 +403,7 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
       return Promise.reject(new CapabilityUnavailableError(provider.id, capability));
     }
     return cache.getOrLoad<T>({
-      key: cacheKey(ref.providerId, ref.providerRef, 'intel', capability),
+      key: cacheKey(ref.providerId, ref.providerRef, 'intel', intelCacheVariant(capability)),
       ttlSeconds,
       staleTtlSeconds,
       negativeTtlSeconds,
@@ -513,6 +589,24 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
           providerId: provider.id,
           state: providerBreakerState(provider.id),
         })),
+
+    breakerSnapshots: () =>
+      registry
+        .all()
+        .filter((provider) => provider.local !== true)
+        .map((provider) => {
+          const live = breakers.get(provider.id);
+          const capabilities = [...(live?.entries() ?? [])]
+            .map(([capability, breaker]) => ({ capability, ...breaker.snapshot() }))
+            // Worst first: an operator scanning the list should meet the open
+            // breaker before the nine healthy ones.
+            .sort((a, b) => STATE_SEVERITY[b.state] - STATE_SEVERITY[a.state]);
+          return {
+            providerId: provider.id,
+            state: providerBreakerState(provider.id),
+            capabilities,
+          };
+        }),
 
     failoverStatus: () => resolver.status(),
   };

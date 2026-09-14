@@ -15,7 +15,7 @@
  *    receiver). Waiting on that cron/backoff loop would mean arbitrary sleeps.
  *    Instead {@link createWebhookHarness} builds the REAL {@link
  *    createWebhookDispatcher} from the production repositories + the production
- *    `fetch` transport, and drives `deliver()` with explicit attempt contexts —
+ *    address-pinned transport, and drives `deliver()` with explicit attempt contexts —
  *    so the retry boundary (`attempt < max ⇒ retry`, terminal ⇒ log + streak) and
  *    the auto-disable threshold are exercised deterministically, in-process,
  *    against a {@link createCaptureReceiver} listening on an ephemeral localhost
@@ -67,7 +67,7 @@ import { createLogger } from '../../apps/api/src/logger';
 import { createAuditService } from '../../apps/api/src/services/audit/auditService';
 import { decryptSecret } from '../../apps/api/src/services/crypto/secretBox';
 import {
-  createFetchWebhookTransport,
+  createPinnedWebhookTransport,
   createWebhookDispatcher,
   type WebhookDeliveryResult,
 } from '../../apps/api/src/services/webhooks';
@@ -207,9 +207,11 @@ export interface WebhookHarness {
 
 /**
  * Build the webhook harness against the running Playwright Postgres. It wires the
- * production dispatcher to the production `fetch` transport, so a `deliver()` call
- * signs with the subscription's real secret and POSTs to whatever URL the
- * subscription carries (the {@link CaptureReceiver}). Every side-effect — the
+ * production dispatcher to the production {@link createPinnedWebhookTransport},
+ * so a `deliver()` call signs with the subscription's real secret and POSTs to
+ * whatever URL the subscription carries — over a socket pinned to the address the
+ * dispatcher's own per-attempt guard vetted, exactly as production does (the
+ * {@link CaptureReceiver}). Every side-effect — the
  * delivery-log row, the consecutive-failure streak, the audit row on auto-disable
  * — lands in the real tables exactly as production writes them.
  */
@@ -230,7 +232,7 @@ export function createWebhookHarness(): WebhookHarness {
   const dispatcher = createWebhookDispatcher({
     subscriptions,
     deliveries,
-    transport: createFetchWebhookTransport(),
+    transport: createPinnedWebhookTransport(),
     encryptionKey,
     audit: createAuditService(createAuditRepository(db)),
     logger,

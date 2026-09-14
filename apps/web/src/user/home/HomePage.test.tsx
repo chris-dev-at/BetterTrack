@@ -71,6 +71,15 @@ vi.mock('../AuthContext', () => ({
 // The board now lives on the account (`homeSync.ts`); these tests are about the
 // builder, so the transport is stubbed and the assertions stay on the cache.
 vi.mock('../../lib/settingsApi');
+// This board describes a deployment that HAS market intelligence. The
+// `/feature-flags` bootstrap is not stubbed in this harness, and an unresolved
+// capability now reads as absent rather than present (§13.5 V5-P5), so the
+// deployment's answer is stated here instead of inherited from a fallback.
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapabilities: () => ({ marketIntel: true }),
+  useDeployCapability: () => true,
+}));
 
 // Canvas-backed chart lib — jsdom cannot draw it (mirrors the portfolio/asset
 // page tests). `setData` is captured so the summed net-worth curve can be
@@ -124,6 +133,7 @@ import {
   type WidgetType,
 } from './config';
 import { homeCacheKey } from './homeSync';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { setViewportWidth } from '../../test/viewport';
 import { HomePage } from './HomePage';
 
@@ -230,14 +240,21 @@ function cashSource(overrides: Partial<CashSource> = {}): CashSource {
   };
 }
 
+/**
+ * Relative to the real clock: the widget now renders the earliest date that has
+ * NOT passed (#1758), so dates pinned to a fixed day would stop being upcoming.
+ */
+const dividendIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
 const DIVIDEND: DividendCalendarEntry = {
   assetId: APPLE.id,
   symbol: 'AAPL',
   name: 'Apple Inc.',
   source: 'holding',
-  // The ex-date is the earlier of the two, so it is the one the row must show.
-  exDate: '2026-08-05T00:00:00.000Z',
-  payDate: '2026-08-19T00:00:00.000Z',
+  // Both dates are still ahead and the ex-date is the earlier of the two, so it
+  // is the one the row must show.
+  exDate: dividendIso(5),
+  payDate: dividendIso(19),
   amount: 0.24,
   currency: 'USD',
 };
@@ -1092,7 +1109,7 @@ test('dividends show the earlier of ex/pay date, labelled', async () => {
   const widget = await screen.findByRole('region', { name: 'Dividends' });
 
   expect(await within(widget).findByRole('link', { name: 'AAPL' })).toBeInTheDocument();
-  // 05.08. is before 19.08., so the row is an ex-date row.
+  // The ex-date is the earlier of the two upcoming dates ⇒ an ex-date row.
   expect(within(widget).getByText(/Ex-date/)).toBeInTheDocument();
   expect(within(widget).queryByText(/Pay date/)).not.toBeInTheDocument();
 });
@@ -2086,4 +2103,85 @@ test('at 390 px the home builder opens its catalog and keeps widget settings usa
 
   expect(screen.getByLabelText('Portfolio')).toBeInTheDocument();
   expect(container.querySelector('.bt-home-page')).toBeInTheDocument();
+});
+
+// ─── The sync gate (#1878) ────────────────────────────────────────────────────
+
+/**
+ * The board belongs to the account, and whether it syncs is decided by the mode
+ * the account gate already RESOLVED and published on its context — never by a
+ * second read of the board's own.
+ *
+ * `HomeBoard` used to call `usePrivacyMode()`, which is not the context reader
+ * but a query: with its default `accountId = null` it opened
+ * `['vault','media']`, unshared with the gate's `['vault','media', userId]`,
+ * never seeded by the offline cache and never invalidated by a mode change. Its
+ * `privacyMode` is null on any error — including the 429 that endpoint's retry
+ * policy is hardened for — so a rate-limited duplicate silently demoted the
+ * board to device-local: no fetch on mount, `push` returning early, and nothing
+ * on screen to say the board had stopped following the account.
+ *
+ * Nothing here stubs `getParanoidMediaState`, so the assertion on the cache is
+ * the direct proof: an account-unscoped entry cannot exist, because nobody asks
+ * for one any more.
+ */
+test('the board syncs from the resolved mode, with no account-unscoped vault-media query', async () => {
+  const user = editMode();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderHome(client);
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  // The mount reconcile ran: this board follows the account.
+  await vi.waitFor(() => expect(getHomeLayout).toHaveBeenCalled());
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Remove Upcoming' }));
+
+  // …and so does the edit, once the push debounce fires.
+  await vi.waitFor(
+    () => {
+      expect(putHomeLayout).toHaveBeenCalled();
+    },
+    { timeout: 5_000 },
+  );
+  expect(
+    (vi.mocked(putHomeLayout).mock.calls[0]?.[0] as HomeConfig).widgets.map(
+      (widget) => widget.type,
+    ),
+  ).not.toContain('upcoming');
+
+  expect(
+    client.getQueryCache().findAll({ queryKey: ['vault', 'media'] }),
+    'Home must read the resolved mode from context, never open its own media query',
+  ).toEqual([]);
+});
+
+/**
+ * The other half of the same gate (owner decision, §16): a paranoid account's
+ * board stays on the device, because the layout names portfolio ids and tickers
+ * — the inference the mode is bought to prevent. `HomePage` renders the
+ * portfolio page for that account, so the board never mounts and no layout
+ * traffic leaves the device in either direction.
+ */
+test('a paranoid account keeps its board on the device — no layout read, no layout write', async () => {
+  render(
+    <I18nProvider initialLocale="en">
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <MemoryRouter>
+          <ResolvedPrivacyModeProvider accountId={ACCOUNT} mode="paranoid">
+            <HomePage />
+          </ResolvedPrivacyModeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </I18nProvider>,
+  );
+
+  // The portfolio page, not the board: no greeting, no builder, no widgets.
+  await vi.waitFor(() => expect(listPortfolios).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'Customize' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('region', { name: 'Net worth' })).not.toBeInTheDocument();
+  expect(getHomeLayout).not.toHaveBeenCalled();
+  expect(putHomeLayout).not.toHaveBeenCalled();
 });

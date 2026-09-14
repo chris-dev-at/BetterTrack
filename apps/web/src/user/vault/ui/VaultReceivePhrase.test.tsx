@@ -14,6 +14,7 @@ import { EndpointVaultKeystore, type OpenedVault, type StorePlainPhraseInput } f
 import { consumePlainCustodyAcknowledgment } from '../keystore/acknowledgment';
 import type { DevicePasswordArgon2 } from '../keystore/deviceCrypto';
 import { EndpointKeystoreError } from '../keystore/errors';
+import { NO_ENDPOINT_SESSION_PERSISTENCE } from '../keystore/sessionPersistence';
 import { createIndexedDbEndpointKeystoreStorage } from '../keystore/storage';
 import {
   serializeVaultTransferPayload,
@@ -450,6 +451,7 @@ function realKeystore(): EndpointVaultKeystore {
     }),
     argon2: fastArgon2,
     randomBytes: deterministicRandom(),
+    sessionPersistence: NO_ENDPOINT_SESSION_PERSISTENCE,
   });
 }
 

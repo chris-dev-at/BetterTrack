@@ -2,9 +2,48 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+const ADMIN_PREFIX = '/api/v1/admin';
+
+/**
+ * §6.12 kill list, the two prohibitions that had no server-side assertion: "no
+ * impersonation" and "no admin-triggered export download". The web test that
+ * used to stand in for them matched `/impersonat/i` against rendered labels,
+ * which the admin SPA itself already documents as insufficient — a working
+ * "Terminate all sessions" button passed a `/revoke/i` check happily.
+ */
+const IMPERSONATION =
+  /impersonat|masquerad|log[-_]?in[-_]?as|sign[-_]?in[-_]?as|act[-_]?as|on[-_]?behalf|sudo|become/i;
+const EXPORT_DOWNLOAD = /export|download|archive|bundle|dump|takeout/i;
+
+/**
+ * Every mounted per-account admin surface. Frozen deliberately: the vocabulary
+ * checks cannot catch a route that avoids those words, so a new `/admin/users*`
+ * route — `POST /admin/users/{id}/data-archive` labelled "Fetch account bundle"
+ * being the exact case — has to be added here, where it gets weighed against the
+ * kill list instead of shipping green.
+ */
+const ADMIN_USER_SURFACES = [
+  'DELETE /api/v1/admin/users/{id}',
+  'DELETE /api/v1/admin/users/{id}/notes/{noteId}',
+  'GET /api/v1/admin/users',
+  'GET /api/v1/admin/users/{id}',
+  'GET /api/v1/admin/users/{id}/access',
+  'GET /api/v1/admin/users/{id}/audit',
+  'GET /api/v1/admin/users/{id}/emails',
+  'GET /api/v1/admin/users/{id}/notes',
+  'GET /api/v1/admin/users/{id}/sharing',
+  'GET /api/v1/admin/users/{id}/support',
+  'PATCH /api/v1/admin/users/{id}',
+  'POST /api/v1/admin/users',
+  'POST /api/v1/admin/users/bulk',
+  'POST /api/v1/admin/users/{id}/notes',
+  'POST /api/v1/admin/users/{id}/reset-password',
+] as const;
 
 let harness: TestHarness;
 
@@ -89,6 +128,33 @@ describe('admin/user system separation — mutual endpoint rejection (§3, §6.1
       // A 403 would confirm the route exists; the guard disguises it entirely.
       expect(res.body.error.code, path).not.toBe('ADMIN_ACCOUNT_KIND');
     }
+  });
+
+  it('does not offer impersonation or an admin-triggered export download (§6.12 kill list)', () => {
+    const adminSurfaces = buildRouteTable().filter((surface) =>
+      surface.path.startsWith(ADMIN_PREFIX),
+    );
+    expect(adminSurfaces.length).toBeGreaterThan(0);
+
+    // Structural, not label-coupled: this reads the real Express mount table, so
+    // a route exists here whether or not any SPA renders a button for it.
+    for (const surface of adminSurfaces) {
+      expect(surface.path, surface.path).not.toMatch(IMPERSONATION);
+    }
+
+    const userSurfaces = adminSurfaces
+      .filter((surface) => surface.path.startsWith(`${ADMIN_PREFIX}/users`))
+      .map((surface) =>
+        surface.kind === 'route' ? `${surface.method} ${surface.path}` : surface.path,
+      );
+    for (const surface of userSurfaces) {
+      expect(surface, surface).not.toMatch(EXPORT_DOWNLOAD);
+    }
+
+    // The vocabulary checks above cannot catch a route that simply avoids those
+    // words, so the per-account surface is enumerated in full: adding one means
+    // adding it here, which is the moment to weigh it against the kill list.
+    expect(userSurfaces.sort()).toEqual([...ADMIN_USER_SURFACES].sort());
   });
 
   it('anonymous callers get 401 on user endpoints and 404 on admin endpoints', async () => {

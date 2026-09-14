@@ -1614,3 +1614,65 @@ describe('first-party app editing (#341) — consent-safe', () => {
     expect(badScope.status).toBe(400);
   });
 });
+
+/**
+ * #1730 — "Authorized apps" is a credential-review surface: it must show the
+ * same effective access the consent screen showed. `scopeSatisfies` lets a
+ * granted `:write` satisfy its `:read` at request time, so a grant stored as
+ * `['portfolio:write']` really can call the read-only routes.
+ */
+describe('#1730 authorized-apps grants report the effective (implied-read) scopes', () => {
+  it('shows the implied read the token can actually use, without touching storage', async () => {
+    const { client } = await adminAndFirstPartyClient({
+      scopes: ['portfolio:read', 'portfolio:write'],
+    });
+    const user = await harness.seedUser();
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    const { access } = await consentAndToken(userAgent, client.clientId, 'portfolio:write');
+
+    // The token really does reach the read-only route (this is what the list
+    // must not understate).
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/portfolios')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(200);
+
+    const grants = oauthGrantListResponseSchema.parse(
+      (await userAgent.get('/api/v1/settings/oauth-grants')).body,
+    );
+    expect(grants.grants[0]!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
+
+    // Display-time expansion only: the stored grant is unchanged.
+    const rows = await harness.db
+      .select({ scopes: schema.oauthGrants.scopes })
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.userId, user.id));
+    expect(rows[0]!.scopes).toEqual(['portfolio:write']);
+  });
+
+  it('still clamps to the app’s current ceiling before expanding', async () => {
+    const { adminAgent, client } = await adminAndFirstPartyClient({
+      scopes: ['portfolio:read', 'portfolio:write', 'workboard:write'],
+    });
+    const user = await harness.seedUser();
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    await consentAndToken(userAgent, client.clientId, 'portfolio:write workboard:write');
+
+    // An admin narrows the app: the workboard pair must disappear from the
+    // review surface entirely — clamp first, expand second.
+    const patch = await editFirstPartyClient(adminAgent, client.id, {
+      name: client.name,
+      redirectUris: client.redirectUris,
+      scopes: ['portfolio:read', 'portfolio:write'],
+    });
+    expect(patch.status).toBe(200);
+
+    const grants = oauthGrantListResponseSchema.parse(
+      (await userAgent.get('/api/v1/settings/oauth-grants')).body,
+    );
+    expect(grants.grants[0]!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
+  });
+});

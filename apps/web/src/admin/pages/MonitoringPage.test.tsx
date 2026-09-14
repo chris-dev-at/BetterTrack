@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -57,7 +58,11 @@ const exposed: MonitoringStatusResponse = {
 function renderPage() {
   return render(
     <AuthProvider>
-      <MonitoringPage />
+      {/* W4 folded Operations: the page renders the workspace tab strip, which
+          needs a router. */}
+      <MemoryRouter initialEntries={['/admin/monitoring']}>
+        <MonitoringPage />
+      </MemoryRouter>
     </AuthProvider>,
   );
 }

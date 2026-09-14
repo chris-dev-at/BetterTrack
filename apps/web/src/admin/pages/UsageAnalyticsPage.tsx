@@ -3,6 +3,7 @@ import type { UsageFunnelStage } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
 /**
@@ -22,6 +23,7 @@ export function UsageAnalyticsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <PageHeader
+          eyebrow={t('admin.nav.sections.operations')}
           title={t('admin.usageAnalytics.title')}
           description={t('admin.usageAnalytics.subtitle')}
         />
@@ -29,6 +31,9 @@ export function UsageAnalyticsPage() {
           {t('admin.usageAnalytics.refresh')}
         </Button>
       </div>
+
+      {/* W4 folds Operations into one tab strip; this page is a tab of it. */}
+      <WorkspaceTabs />
 
       {loading && !data ? <Spinner label={t('common.loading')} /> : null}
       {error ? <Alert tone="error">{t('admin.usageAnalytics.loadError')}</Alert> : null}

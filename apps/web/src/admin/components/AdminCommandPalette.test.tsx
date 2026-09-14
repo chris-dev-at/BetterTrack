@@ -10,6 +10,7 @@ import * as api from '../../lib/adminApi';
 import { I18nProvider } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { AdminCommandPalette } from './AdminCommandPalette';
+import { TAP_TARGET } from './tokens';
 
 const admin: MeResponse = {
   id: 'admin-1',
@@ -75,7 +76,14 @@ beforeEach(() => {
     users: [],
     page: { total: 0, limit: 6, offset: 0 },
   });
-  vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 0 });
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [],
+    openCount: 0,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
+    total: 0,
+    hasMore: false,
+  });
 });
 
 test('opens focused on the input and offers destinations before anything is typed', async () => {
@@ -143,6 +151,10 @@ test('debounces the user search so one word is one request', async () => {
 test('matches open problems client-side and points at the Problems page', async () => {
   vi.mocked(api.listProblems).mockResolvedValue({
     openCount: 1,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
+    total: 1,
+    hasMore: false,
     problems: [
       {
         id: '00000000-0000-7000-8000-000000000001',
@@ -157,6 +169,7 @@ test('matches open problems client-side and points at the Problems page', async 
         lastSeenAt: '2026-08-20T09:00:00.000Z',
         resolvedAt: null,
         resolvedBy: null,
+        regressed: false,
       },
     ],
   });
@@ -201,4 +214,32 @@ test('renders the palette chrome in German', async () => {
     'Seiten, Nutzer, Probleme suchen…',
   );
   expect(within(palette).getByText('Seiten')).toBeInTheDocument();
+});
+
+/**
+ * The phone floor on the rows that ARE the console's destinations (§13.5
+ * V5-P13b, #1891). They shipped at `min-h-[42px]` — two pixels under the
+ * console's own declared floor — and, being `<li role="option">` elements with
+ * no marker class, they were outside the phone gate's admin selectors as well:
+ * undersized AND unmeasured.
+ *
+ * jsdom applies no CSS, so what a component test can prove is the OPT-IN: the
+ * row wears the class `styles/origin.css` declares `min-height: 44px` for below
+ * the console's 768px drawer handoff. The rendered geometry is measured for real
+ * in `e2e/mobile-overflow.spec.ts`, which selects the row structurally so
+ * dropping this class fails the gate rather than leaving the sweep.
+ */
+test('gives every palette result row the console tap-target floor', async () => {
+  renderPalette();
+
+  const rows = screen.getAllByRole('option');
+  expect(rows.length).toBeGreaterThan(2);
+  for (const row of rows) {
+    expect(row.className, `${row.textContent} must carry the console 44px floor`).toContain(
+      TAP_TARGET,
+    );
+  }
+  // 42px stays as the console's deliberate DESKTOP density — the floor above it
+  // is what the phone gets — so the row must still declare one.
+  expect(rows[0]!.className).toContain('min-h-[42px]');
 });

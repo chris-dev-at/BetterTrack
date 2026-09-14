@@ -2,12 +2,15 @@ import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import type { Time } from 'lightweight-charts';
 
+import type { ProfileIconId } from '@bettertrack/contracts';
+
 import { resolveShareLink } from '../../lib/socialApi';
 import { formatMoney, formatPercent } from '../../lib/format';
 import { classifyApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
+import { Avatar } from '../components/Avatar';
 import { Button, Splash } from '../components/ui';
 
 /**
@@ -43,6 +46,31 @@ function Shell({ children }: { children: React.ReactNode }) {
       <main className="py-10" style={COLUMN}>
         {children}
       </main>
+    </div>
+  );
+}
+
+/**
+ * The item's title block, led by the owner's curated profile icon (§6.9: the
+ * icon renders wherever a user appears — logged-out visitors included). It reads
+ * `owner` straight off the resolved link payload, so the page still asks
+ * `GET /social/links/:token` for nothing beyond what it already returned.
+ */
+function OwnerHead({
+  name,
+  owner,
+}: {
+  name: string;
+  owner: { username: string; profileIcon?: ProfileIconId | null };
+}) {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-3">
+      <Avatar iconId={owner.profileIcon ?? null} name={owner.username} size="lg" />
+      <div className="min-w-0">
+        <h1 className="bt-page-title">{name}</h1>
+        <p className="bt-page-sub">{t('publicShare.ownerLabel', { username: owner.username })}</p>
+      </div>
     </div>
   );
 }
@@ -84,12 +112,7 @@ export function PublicSharePage() {
     return (
       <Shell>
         <div className="flex flex-col gap-6">
-          <div>
-            <h1 className="bt-page-title">{p.name}</h1>
-            <p className="bt-page-sub">
-              {t('publicShare.ownerLabel', { username: p.owner.username })}
-            </p>
-          </div>
+          <OwnerHead name={p.name} owner={p.owner} />
           {/* The headline value leads the canvas rather than sitting in a box. */}
           <div>
             <p className="bt-label">{t('publicShare.netWorth')}</p>
@@ -148,12 +171,7 @@ export function PublicSharePage() {
     return (
       <Shell>
         <div className="flex flex-col gap-6">
-          <div>
-            <h1 className="bt-page-title">{c.name}</h1>
-            <p className="bt-page-sub">
-              {t('publicShare.ownerLabel', { username: c.owner.username })}
-            </p>
-          </div>
+          <OwnerHead name={c.name} owner={c.owner} />
           <section>
             <h2 className="bt-h3" style={{ marginBottom: 6 }}>
               {t('publicShare.positions')}
@@ -189,12 +207,7 @@ export function PublicSharePage() {
   return (
     <Shell>
       <div className="flex flex-col gap-6">
-        <div>
-          <h1 className="bt-page-title">{w.name}</h1>
-          <p className="bt-page-sub">
-            {t('publicShare.ownerLabel', { username: w.owner.username })}
-          </p>
-        </div>
+        <OwnerHead name={w.name} owner={w.owner} />
         <section>
           <h2 className="bt-h3" style={{ marginBottom: 6 }}>
             {t('publicShare.watchedAssets')}

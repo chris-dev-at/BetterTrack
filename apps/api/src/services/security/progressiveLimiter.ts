@@ -58,8 +58,16 @@ export interface ProgressiveLimiter {
    * Count one event and decide. On steady-state traffic this just increments a
    * window counter; the event that overflows the window trips (or escalates) a
    * cooldown and returns `allowed: false` with the ladder duration.
+   *
+   * `cost` (default 1) is how many UNITS of the window's allowance this event
+   * spends — the cost-based dimension (§10): a request that fans out N database
+   * round trips, or blocks on a provider, may declare itself worth several
+   * cheap requests. A cost-N event is exactly equivalent to N cost-1 events for
+   * counting purposes; the escalation ladder, the decay and the `Retry-After`
+   * contract are untouched by it. Values below 1 are clamped to 1, and the cost
+   * is floored to an integer (the counter is a Redis integer).
    */
-  consume(id: string): Promise<ProgressiveDecision>;
+  consume(id: string, cost?: number): Promise<ProgressiveDecision>;
   /**
    * Read-only: seconds of cooldown remaining for `id` without counting anything.
    * Used to reject a caller that is already cooling down *before* doing expensive
@@ -85,6 +93,17 @@ if not level or level <= 0 then
   level = 0
 end
 
+local rungCount = tonumber(ARGV[4])
+-- Per-request COST (§10 cost-based limiting): one event may spend several units
+-- of the allowance. Appended AFTER the variable-length rung list so every
+-- existing ARGV index keeps its meaning. Absent/short ⇒ 1, i.e. the historical
+-- one-request-one-unit behaviour.
+local cost = tonumber(ARGV[6 + rungCount] or '1')
+if not cost or cost < 1 then
+  cost = 1
+end
+cost = math.floor(cost)
+
 -- PTTL's -2 is the only value that means the marker is gone. A live marker can
 -- have less than a whole second left, which TTL truncates to 0; keep it closed
 -- and round Retry-After up. A persistent marker (-1) is an invariant violation,
@@ -94,8 +113,11 @@ if cooldownMs ~= -2 then
   return { 0, retryAfterSec, level, 0 }
 end
 
-local count = redis.call('INCR', KEYS[2])
-if count == 1 then
+local count = redis.call('INCRBY', KEYS[2], cost)
+-- count == cost means the counter did not exist before this call: it is DELed
+-- or expired, never written as 0, so this event is the one that opens the
+-- window and owns its TTL.
+if count == cost then
   redis.call('EXPIRE', KEYS[2], ARGV[1])
 end
 
@@ -103,7 +125,6 @@ if count <= tonumber(ARGV[2]) then
   return { 1, 0, level, 0 }
 end
 
-local rungCount = tonumber(ARGV[4])
 local rungIndex = math.min(level + 1, rungCount)
 local retryAfterSec = tonumber(ARGV[4 + rungIndex])
 local nextLevel = math.min(level + 1, rungCount)
@@ -166,8 +187,9 @@ export function createProgressiveLimiter(
   const keys = (id: string) => progressiveKeys(namespace, id);
 
   return {
-    async consume(id) {
+    async consume(id, cost = 1) {
       const k = keys(id);
+      const units = Number.isFinite(cost) ? Math.max(1, Math.floor(cost)) : 1;
       const result = (await redis.eval(
         CONSUME_SCRIPT,
         3,
@@ -180,6 +202,7 @@ export function createProgressiveLimiter(
         schedule.cooldownsSec.length,
         ...schedule.cooldownsSec,
         schedule.retainCountOnViolation ? 1 : 0,
+        units,
       )) as [number, number, number, number];
       const [allowed, retryAfterSec, level, cooldownStarted] = result;
       return {

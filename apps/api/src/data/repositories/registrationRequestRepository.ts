@@ -1,4 +1,4 @@
-import { desc, eq, sql } from 'drizzle-orm';
+import { count, desc, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { registrationRequests, type RegistrationRequestRow } from '../schema';
@@ -65,12 +65,40 @@ export function createRegistrationRequestRepository(db: Database) {
       return row;
     },
 
-    async listAll(): Promise<RegistrationRequestRow[]> {
-      return db.select().from(registrationRequests).orderBy(desc(registrationRequests.createdAt));
+    /**
+     * One bounded page of pending applications, newest first (V5-P2, #1814 —
+     * this used to return the whole queue). The `id` tiebreak keeps the window
+     * stable across pages.
+     */
+    async listPage(params: {
+      limit: number;
+      offset: number;
+    }): Promise<{ rows: RegistrationRequestRow[]; total: number }> {
+      const rows = await db
+        .select()
+        .from(registrationRequests)
+        .orderBy(desc(registrationRequests.createdAt), desc(registrationRequests.id))
+        .limit(params.limit)
+        .offset(params.offset);
+      const [totalRow] = await db.select({ value: count() }).from(registrationRequests);
+      return { rows, total: totalRow?.value ?? 0 };
     },
 
-    async remove(id: string): Promise<void> {
-      await db.delete(registrationRequests).where(eq(registrationRequests.id, id));
+    /**
+     * Atomically CLAIM an application: the row is deleted and returned, so
+     * exactly one of any number of concurrent deciders can win. Deciding an
+     * application is `findById → claim → act`; a caller that acts first and
+     * deletes afterwards cannot tell that another operator already approved (or
+     * rejected) the same row, which is how one applicant ended up with both a
+     * live account and a rejection letter. Same shape as the invite/registration
+     * token claim in `authService`.
+     */
+    async claim(id: string): Promise<RegistrationRequestRow | undefined> {
+      const [row] = await db
+        .delete(registrationRequests)
+        .where(eq(registrationRequests.id, id))
+        .returning();
+      return row;
     },
 
     /**

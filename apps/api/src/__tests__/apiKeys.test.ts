@@ -283,3 +283,34 @@ describe('CSRF exemption', () => {
     expect(cookie.body.error.code).toBe('CSRF_HEADER_REQUIRED');
   });
 });
+
+/**
+ * #1730 — the key list is a credential-review surface, so it must not understate
+ * what a key can reach. `scopeSatisfies` lets a held `:write` satisfy its
+ * `:read` at request time; the summary now says so, exactly as the OAuth consent
+ * screen already does. Storage is untouched — this is display-time expansion.
+ */
+describe('the API-key summary reports the EFFECTIVE scope set', () => {
+  it('expands an implied read without rewriting the stored scopes', async () => {
+    const { agent, id } = await mintKey(['portfolio:write']);
+
+    const created = await agent.get('/api/v1/settings/api-keys');
+    const { keys } = apiKeyListResponseSchema.parse(created.body);
+    expect(keys.find((k) => k.id === id)!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
+
+    // The row itself still holds exactly what was granted (no backfill).
+    const [row] = await harness.db
+      .select({ scopes: schema.apiKeys.scopes })
+      .from(schema.apiKeys)
+      .where(eq(schema.apiKeys.id, id));
+    expect(row!.scopes).toEqual(['portfolio:write']);
+  });
+
+  it('leaves a scope set with no implied partner exactly as granted', async () => {
+    const { agent } = await mintKey(['market:read', 'account:security']);
+    const { keys } = apiKeyListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/api-keys')).body,
+    );
+    expect(keys[0]!.scopes).toEqual(['market:read', 'account:security']);
+  });
+});

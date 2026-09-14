@@ -3,15 +3,13 @@ import type { FormEvent } from 'react';
 
 import type { TestEmailResponse } from '@bettertrack/contracts';
 
-import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { useT } from '../../i18n';
 import { EmailLogTable } from '../components/EmailLogTable';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
-
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
-}
 
 /**
  * Email channel diagnostics (PROJECTPLAN.md §6.12, §6.11). Shows whether the
@@ -20,6 +18,8 @@ function errorMessage(err: unknown): string {
  * channel, so a green result here means those work too.
  */
 export function EmailPage() {
+  const t = useT();
+  const onFailure = useAdminCallFailure();
   const status = useResource((signal) => api.getEmailStatus(signal), []);
   const loadLog = useCallback(
     (params: { cursor?: string }, signal?: AbortSignal) => api.listEmails(params, signal),
@@ -39,7 +39,9 @@ export function EmailPage() {
       const res = await api.sendTestEmail({ to: to.trim() || undefined });
       setResult(res);
     } catch (err) {
-      setFormError(errorMessage(err));
+      // No row id on `POST /admin/email/test`, so a 404 is auth loss; and the
+      // banner is catalog copy — the server's envelope is English-only (#1814).
+      if (!onFailure(err, 'session')) setFormError(t('common.genericError'));
     } finally {
       setSubmitting(false);
     }
@@ -48,9 +50,15 @@ export function EmailPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
+        eyebrow={t('admin.nav.sections.operations')}
         title="Email"
         description="Check the SMTP channel and send a test message to confirm delivery."
       />
+
+      {/* W4 folds Operations into one tab strip; this page is a tab of it. Its
+          body keeps its pre-existing English copy — the i18n ratchet only ever
+          shrinks, and localizing it is not this package's job. */}
+      <WorkspaceTabs />
 
       <div className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <span className="text-sm text-neutral-400">Channel status</span>

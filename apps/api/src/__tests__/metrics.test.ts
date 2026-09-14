@@ -1,10 +1,13 @@
 import { get as httpGet, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../config/env';
+import { createErrorHandler } from '../http/errorHandler';
+import { createMetricsMiddleware } from '../http/middleware/metrics';
 import { createLogger } from '../logger';
 import {
   cacheEventsTotal,
@@ -105,6 +108,71 @@ describe('metrics on the public app', () => {
     await new Promise((resolve) => setImmediate(resolve));
     const after = metricValue(await renderMetrics(), 'bettertrack_http_requests_total', labels);
     expect(after).toBeGreaterThan(before);
+  });
+});
+
+/**
+ * The route LABEL on the error path (§13.5 V5-P2 arc (a)). `req.baseUrl` is
+ * rewound by the router on the `next(err)` unwind — before the response, and so
+ * before `finish` — which labelled every 500 with the bare matched pattern
+ * (`/:id`) while the same endpoint's 200s carried the full template. The two
+ * never shared a series, so error-rate-by-route was uncomputable on precisely
+ * the panel that exists to answer "which endpoint is 500-ing".
+ */
+describe('http request labels on the error path', () => {
+  const logger = createLogger(loadConfig(BASE_ENV));
+  const OK_ID = '018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f';
+  const BOOM_ID = '018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5eff';
+
+  it('labels a 500 from a mounted route with the full template, sharing it with the 200s', async () => {
+    // The app.ts wiring on a SUB-ROUTER — the shape whose prefix is rewound.
+    const app = express();
+    app.use(createMetricsMiddleware());
+    const router = express.Router();
+    router.get('/:id', (req, res) => {
+      if (req.params.id === BOOM_ID) throw new TypeError('Cannot read properties of undefined');
+      res.json({ ok: true });
+    });
+    app.use('/api/v1/portfolios', router);
+    app.use(createErrorHandler(logger));
+
+    const route = 'route="/api/v1/portfolios/:id"';
+    const okLabels = ['method="GET"', route, 'status="200"'];
+    const errorLabels = ['method="GET"', route, 'status="500"'];
+    const metric = 'bettertrack_http_requests_total';
+    const beforeText = await renderMetrics();
+    const okBefore = metricValue(beforeText, metric, okLabels);
+    const errorBefore = metricValue(beforeText, metric, errorLabels);
+
+    expect((await request(app).get(`/api/v1/portfolios/${OK_ID}`)).status).toBe(200);
+    expect((await request(app).get(`/api/v1/portfolios/${BOOM_ID}`)).status).toBe(500);
+
+    // The counter is bumped from `finish`; yield a macrotask before scraping.
+    await new Promise((resolve) => setImmediate(resolve));
+    const text = await renderMetrics();
+    expect(metricValue(text, metric, okLabels)).toBe(okBefore + 1);
+    expect(metricValue(text, metric, errorLabels)).toBe(errorBefore + 1);
+    // Nothing landed under the prefix-less pattern the rewind used to produce.
+    expect(text).not.toContain('route="/:id"');
+    // …and the concrete id never entered a label.
+    expect(text).not.toContain(OK_ID);
+  });
+
+  it('still collapses unmatched requests into one series rather than raw URLs', async () => {
+    const app = express();
+    app.use(createMetricsMiddleware());
+    app.use(createErrorHandler(logger));
+
+    const before = metricValue(await renderMetrics(), 'bettertrack_http_requests_total', [
+      'route="unmatched"',
+    ]);
+    await request(app).get('/no/such/path/018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f');
+    await new Promise((resolve) => setImmediate(resolve));
+    const text = await renderMetrics();
+    expect(metricValue(text, 'bettertrack_http_requests_total', ['route="unmatched"'])).toBe(
+      before + 1,
+    );
+    expect(text).not.toContain('/no/such/path');
   });
 });
 

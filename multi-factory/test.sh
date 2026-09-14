@@ -36,7 +36,22 @@ backdate(){ # $1=file $2=seconds-ago — portable mtime rewind (GNU + BSD/macOS 
 }
 
 # ---- environment + stubs --------------------------------------------------------
+# Hermetic environment. The suite also runs INSIDE a factory container (the
+# autorun.sh --self-test deploy hook), where compose exports MF_MODELS_FILE,
+# MF_REQUEUE_MAX, MF_LIMIT_NAPS_MAX, the composer caps and CC_* for the live
+# fleet. Every one of those silently overrides a fixture: an inherited
+# MF_MODELS_FILE alone reddened 42 checks here. Own the whole namespace.
+unset MF_MODELS_FILE MF_ROLE_TIMEOUT MF_REQUEUE_MAX MF_MERGE_LOOKAHEAD \
+  MF_LIMIT_NAPS_MAX MF_COMPOSER_COOLDOWN MF_COMPOSER_BACKOFF_MAX \
+  MF_COMPOSER_PROTOCOL_ATTEMPTS MF_COMPOSER_PROTOCOL_COOLDOWN \
+  MF_COMPOSER_PROTOCOL_BACKOFF_MAX MF_COMPOSER_MAX_TURNS MF_COMPOSER_TIMEOUT \
+  MF_SOL_COMPOSER_TIMEOUT MF_SOL_COMPOSER_MAX_TURNS COMPOSER_BATCH \
+  CC_ROLE CC_SLOT CC_EFFORT CC_ISSUE CC_MAX_TURNS CC_TIMEOUT 2>/dev/null || true
+# claudex-test.sh drives autorun.sh with a stubbed docker; without this the
+# start path would re-enter this very suite.
+export MF_SKIP_SELF_TEST=1
 export MFSTATE=$T/state
+export MF_MODELS_FILE=$MFSTATE/control/models.json
 mkdir -p "$MFSTATE/assignments" "$MFSTATE/status" "$MFSTATE/merge-queue" "$MFSTATE/control" "$MFSTATE/logs"
 export TICK_ISSUES=$T/issues.json
 export TICK_DEPS=$T/deps; mkdir -p "$TICK_DEPS"
@@ -100,8 +115,13 @@ check "worker 1 gets lowest runnable (#201)" "201" "$A1"
 check "worker 2 skips conflicting #202, gets #203" "203" "$A2"
 check "conflicting #202 stays unassigned" "" "$(grep -l '"issue":202' "$MFSTATE"/assignments/*.json 2>/dev/null || true)"
 
-echo "— scheduler: missing mf-meta serializes (runs alone)"
+echo "— scheduler: missing mf-meta is labeled mf:bad-meta and skipped"
+# Was "meta-less issue assigned first (alone)": a '**' claim conflicts with
+# EVERYTHING, so one issue with an absent/empty mf-meta block silently
+# serialized the whole fleet behind itself. master.sh now labels it and moves
+# on, and the label keeps it out of runnable_issues on every later tick.
 rm -f "$MFSTATE"/assignments/*.json
+: >"$GH_STUB_DIR/calls.log"
 cat >"$TICK_ISSUES" <<'JSON'
 [
  {"number":210,"title":"no meta","body":"no machine block here","labels":["autopilot","tier:sonnet"]},
@@ -111,8 +131,31 @@ JSON
 scheduler run
 A1=$(jq -r '.issue' "$MFSTATE/assignments/worker-1.json" 2>/dev/null || echo none)
 A2=$(jq -r '.issue' "$MFSTATE/assignments/worker-2.json" 2>/dev/null || echo none)
-check "meta-less issue assigned first (alone)" "210" "$A1"
-check "everything else waits behind wildcard claim" "none" "$A2"
+check "meta-less issue is NOT assigned" "" \
+  "$(grep -l '"issue":210' "$MFSTATE"/assignments/*.json 2>/dev/null || true)"
+# Exactly once per tick, not once per idle worker: the branch prunes the issue
+# from $runnable so later workers in the SAME tick never re-reach it. That also
+# bounds the failure path — the label edit is best-effort, and without the prune
+# a failing edit would repeat WORKERS calls every tick forever.
+check "meta-less issue is labeled mf:bad-meta exactly once" "1" \
+  "$(grep -c 'issue edit 210 --add-label mf:bad-meta' "$GH_STUB_DIR/calls.log")"
+check "the fleet is no longer serialized behind the wildcard claim" "211" "$A1"
+check "no second worker is starved by the skipped issue" "none" "$A2"
+
+# The label is durable: a later tick must not even consider the issue runnable,
+# so it is never re-labeled and never re-inspected.
+rm -f "$MFSTATE"/assignments/*.json
+: >"$GH_STUB_DIR/calls.log"
+cat >"$TICK_ISSUES" <<'JSON'
+[
+ {"number":210,"title":"no meta","body":"no machine block here","labels":["autopilot","tier:sonnet","mf:bad-meta"]},
+ {"number":211,"title":"disjoint","body":"x\n<!-- mf-meta\ntouches: apps/web/**\n-->","labels":["autopilot","tier:sonnet"]}
+]
+JSON
+check "an mf:bad-meta issue is dropped from runnable_issues" "211" "$(runnable_issues | tr '\n' ' ' | sed 's/ *$//')"
+scheduler run
+check "an already-labeled issue is not labeled twice" "0" \
+  "$(grep -c 'issue edit 210 --add-label mf:bad-meta' "$GH_STUB_DIR/calls.log")"
 
 echo "— dependency gating (direct REST reads)"
 rm -f "$MFSTATE"/assignments/*.json; rm -rf "$TICK_DEPS"; mkdir -p "$TICK_DEPS"
@@ -557,7 +600,7 @@ for ROUTE in \
   "claude claude-opus-4-8 extra" \
   "claudex gpt-5.6-terra" \
   "codex gpt-5.6-luna" \
-  "gemini Gemini-3.1-Pro"; do
+  "opencode openrouter/stealth/ox-alpha"; do
   ROUTE_PROVIDER=${ROUTE%% *}
   ROUTE_MODEL=${ROUTE#* }
   mf_composer_route_allowed "$ROUTE_PROVIDER" "$ROUTE_MODEL" \
@@ -596,14 +639,17 @@ printf '%s\n' \
   CC_MAX_TURNS=23
   cc(){
     printf '%s' "$2" >"$FABLE_CAPTURE"
-    printf '%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" >"$FABLE_LIMITS"
+    printf '%s|%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" "${CC_TIMEOUT:-none}" >"$FABLE_LIMITS"
   }
   mf_cc composer max "$FABLE_PROMPT"
 )
 check "Fable receives the shared composer prompt byte-identically" \
   "$FABLE_PROMPT" "$(<"$FABLE_CAPTURE")"
-check "Fable keeps its existing timeout/turn settings untouched" \
-  "777|23" "$(<"$FABLE_LIMITS")"
+# Sol's tighter 1200s/40-turn caps must not leak onto Fable, but since #1623
+# every composer is bounded: Fable runs under the MF_COMPOSER_* caps, and the
+# ambient MF_ROLE_TIMEOUT the claude branch never consulted stays untouched.
+check "Fable takes the composer caps, not Sol's and not an unbounded run" \
+  "777|60|1800" "$(<"$FABLE_LIMITS")"
 
 SOL_CAPTURE=$T/sol-composer-prompt
 SOL_LIMITS=$T/sol-composer-limits
@@ -653,12 +699,12 @@ unset BAD_MODEL BAD_CAPTURE BAD_MODELS
 echo "— difficulty → model config (state/control/models.json)"
 cat >"$MFSTATE/control/models.json" <<'JSON'
 {"difficulties":{
-  "easy":{"provider":"gemini","model":"Gemini 3.5 Flash (Low)"},
+  "easy":{"provider":"opencode","model":"openrouter/stealth/ox-alpha"},
   "hard":{"provider":"codex","model":"gpt-5.5","effort":"xhigh"},
   "max":{"provider":"pigeon","model":"carrier"}},
  "roles":{"composer":"intermediate","checker":"max","reviewFloor":"hard"}}
 JSON
-check "cfg: owner-set gemini entry (no effort)" "gemini|Gemini 3.5 Flash (Low)|" "$(diff_cfg easy)"
+check "cfg: owner-set opencode entry (no effort)" "opencode|openrouter/stealth/ox-alpha|" "$(diff_cfg easy)"
 check "cfg: owner-set codex entry with effort" "codex|gpt-5.5|xhigh" "$(diff_cfg hard)"
 check "cfg: invalid provider remains explicit/fail-closed" "invalid|pigeon|" "$(diff_cfg max)"
 check "cfg: unset difficulty uses builtin default" "claude|claude-opus-4-8|medium" "$(diff_cfg normal)"
@@ -669,7 +715,7 @@ mf_uses_claude && ok "mixed config still detects claude" || bad "mixed config sh
 cat >"$MFSTATE/control/models.json" <<'JSON'
 {"difficulties":{
   "easy":{"provider":"claudex","model":"gpt-5.6-luna","effort":"high"},
-  "normal":{"provider":"gemini","model":"g"},
+  "normal":{"provider":"opencode","model":"g"},
   "intermediate":{"provider":"codex","model":"c"},"hard":{"provider":"codex","model":"c"},
   "max":{"provider":"codex","model":"c","effort":"xhigh"}}}
 JSON
@@ -683,6 +729,35 @@ check "cfg: missing file → builtin default" "claude|claude-sonnet-5|high" "$(d
 check "cfg: missing file → builtin default for any slot" "claude|claude-sonnet-5|high" "$(diff_cfg easy reviewer1)"
 check "cfg: missing file → role default hard" "hard" "$(role_diff checker)"
 check "cfg: missing file → floor default intermediate" "intermediate" "$(review_floor)"
+
+echo "— opencode provider registration (flat entry, slot, role pin, fail-closed)"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"opencode","model":"openrouter/stealth/ox-alpha"},
+  "normal":{"provider":"claude","model":"claude-opus-4-8","effort":"high",
+    "writer":{"provider":"opencode","model":"openrouter/stealth/ox-alpha"}},
+  "hard":{"provider":"opencode","model":"bad|pipe"}},
+ "roles":{"writer":{"provider":"opencode","model":"openrouter/stealth/ox-alpha"},
+          "fixer":{"provider":"pigeon","model":"carrier"}}}
+JSON
+check "cfg: opencode flat entry accepted (slashed model, no effort)" \
+  "opencode|openrouter/stealth/ox-alpha|" "$(diff_cfg easy)"
+check "cfg: opencode writer slot accepted" \
+  "opencode|openrouter/stealth/ox-alpha|" "$(diff_cfg normal writer)"
+check "cfg: sibling slots of an opencode writer still fall back to the flat entry" \
+  "claude|claude-opus-4-8|high" "$(diff_cfg normal completion)"
+check "cfg: a pipe in an opencode model stays explicit/fail-closed" \
+  "invalid|opencode|" "$(diff_cfg hard)"
+check "cfg: opencode role pin resolves" \
+  "opencode|openrouter/stealth/ox-alpha|" "$(role_pin_cfg writer)"
+check "cfg: an UNKNOWN provider pin is still ignored, never bricking the run" \
+  "malformed||" "$(role_pin_cfg fixer)"
+mf_uses_claude \
+  && ok "a mixed opencode config still detects the claude routes it keeps" \
+  || bad "a mixed opencode config should still detect its claude routes"
+type cc_opencode >/dev/null 2>&1 \
+  && ok "cc_opencode runner is defined" || bad "cc_opencode runner should be defined"
+rm -f "$MFSTATE/control/models.json"
 
 echo "— per-role slot routing (writer/reviewer1/completion, models.json v2)"
 cat >"$MFSTATE/control/models.json" <<'JSON'
@@ -979,6 +1054,393 @@ check "issue-by-number single-parse projects labels" "diff:easy" "$(mf_issue_jso
 check "issue_json_read single-parse keeps shape" "9" "$(issue_json_read 9 | jq -r '.number')"
 gh(){ printf '[{"number":8,"title":"t","body":"b","labels":[],"created_at":"c","pull_request":{"url":"x"}},{"number":7,"title":"t","body":"b","labels":[],"created_at":"c"}]'; }
 check "recent-issues single-parse filters PRs" "7" "$(mf_recent_issues_json | jq -r '.[0].number')"
+
+echo "— merger: the review-requeue budget is bounded per issue (#1232: 140 reviewer runs)"
+# Runs against the REAL requeue_for_review — every later merger section stubs it
+# out, so this block must stay ahead of them.
+RQ_HUMAN=$T/requeue-human.log; : >"$RQ_HUMAN"
+RQ_LOG=$T/requeue.log; : >"$RQ_LOG"
+mark_human(){ printf '%s|%s\n' "$1" "$2" >>"$RQ_HUMAN"; }
+log(){ printf '%s\n' "$*" >>"$RQ_LOG"; }
+rm -rf "$CONTROL/requeue-count"
+MF_REQUEUE_MAX=3
+mkdir -p "$CIFIX"
+rq_record(){ # $1=path $2=issue $3=pr — a realistic queue record, not an empty file
+  jq -nc --argjson issue "$2" --argjson pr "$3" \
+    '{pr:$pr,issue:$issue,touches:["rq/**"],approved_head:"rqhead",
+      approval_kind:"reviewer",approval_comment_id:"1"}' >"$1"
+}
+for i in 1 2 3; do
+  rq_record "$MFSTATE/merge-queue/rq-$i.json" 1232 91
+  requeue_for_review "$MFSTATE/merge-queue/rq-$i.json" 1232 "attempt $i"
+done
+check "requeues within budget do not escalate" "0" "$(wc -l <"$RQ_HUMAN" | tr -d ' ')"
+check "the durable counter tracks the issue" "3" "$(cat "$CONTROL/requeue-count/1232")"
+check "each in-budget requeue logs its position" "1" "$(grep -c 'requeueing for fresh review (3/3)' "$RQ_LOG")"
+# An in-budget requeue must NOT clear the refusal budget — a PR that keeps
+# earning refusals across review cycles still has to reach the park bound.
+: >"$QUEUE/.mergefail-pr91"
+rq_record "$MFSTATE/merge-queue/rq-keep.json" 1232 91
+MF_REQUEUE_MAX=99 requeue_for_review "$MFSTATE/merge-queue/rq-keep.json" 1232 "in budget"
+[ -f "$QUEUE/.mergefail-pr91" ] \
+  && ok "an in-budget requeue preserves the refusal budget" \
+  || bad "an in-budget requeue must not clear the refusal budget"
+# The over-budget park retires the PR for good, so it owes the full cleanup.
+: >"$QUEUE/.mergefail-pr91-oldhead"
+CIFIX_STATE=$(ci_fix_state_file 1232 91); : >"$CIFIX_STATE"
+rq_record "$MFSTATE/merge-queue/rq-4.json" 1232 91
+requeue_for_review "$MFSTATE/merge-queue/rq-4.json" 1232 "attempt 4"
+check "the requeue past the budget parks with a human" "1" "$(grep -c '^1232|' "$RQ_HUMAN")"
+check "the park reason names the budget and the last cause" "1" \
+  "$(grep -c 'requeued 5 times (budget 3) — last: attempt 4' "$RQ_HUMAN")"
+[ -f "$MFSTATE/merge-queue/rq-4.json" ] \
+  && bad "the parked requeue must drop its queue record" \
+  || ok "the parked requeue dropped its queue record"
+[ -f "$QUEUE/.mergefail-pr91" ] \
+  && bad "the over-budget park must clear the refusal counter" \
+  || ok "the over-budget park cleared the refusal counter"
+[ -f "$QUEUE/.mergefail-pr91-oldhead" ] \
+  && bad "the over-budget park must sweep legacy refusal counters" \
+  || ok "the over-budget park swept legacy refusal counters"
+[ -f "$CIFIX_STATE" ] \
+  && bad "the over-budget park must clear the CI-fix state" \
+  || ok "the over-budget park cleared the CI-fix state"
+# A record with no readable PR still parks; it just has nothing to sweep.
+rm -rf "$CONTROL/requeue-count"; : >"$RQ_HUMAN"
+printf 'not json' >"$MFSTATE/merge-queue/rq-bad.json"
+MF_REQUEUE_MAX=0 requeue_for_review "$MFSTATE/merge-queue/rq-bad.json" 1235 "unreadable record"
+check "an unreadable queue record still parks with a human" "1" "$(grep -c '^1235|' "$RQ_HUMAN")"
+[ -f "$MFSTATE/merge-queue/rq-bad.json" ] \
+  && bad "an unreadable record must still leave the queue" \
+  || ok "an unreadable record left the queue"
+# The counter is per ISSUE, so an unrelated issue keeps its own full budget.
+rm -rf "$CONTROL/requeue-count"; : >"$RQ_HUMAN"
+rq_record "$MFSTATE/merge-queue/rq-other.json" 1233 92
+requeue_for_review "$MFSTATE/merge-queue/rq-other.json" 1233 "unrelated"
+check "the budget is keyed per issue, not globally" "1" "$(cat "$CONTROL/requeue-count/1233")"
+check "an unrelated issue is not parked by another issue's budget" "0" "$(grep -c '^1233|' "$RQ_HUMAN")"
+# A corrupt counter file must not abort the master under `set -e` arithmetic.
+printf 'garbage' >"$CONTROL/requeue-count/1234"
+rq_record "$MFSTATE/merge-queue/rq-x.json" 1234 93
+requeue_for_review "$MFSTATE/merge-queue/rq-x.json" 1234 "corrupt counter"
+check "a corrupt counter file restarts the budget instead of aborting" "1" "$(cat "$CONTROL/requeue-count/1234")"
+rm -rf "$CONTROL/requeue-count" "$MFSTATE"/merge-queue/rq-*.json "$QUEUE"/.mergefail-pr9*
+unset MF_REQUEUE_MAX
+log(){ :; }
+
+echo "— composer: defers to the merge lane while PRs are queued"
+# A successful composer run blocks the tick for ~45 min, which freezes MERGING
+# too. Reviewed PRs must always drain first.
+COMPOSER_RAN=$T/composer-ran.log; : >"$COMPOSER_RAN"
+CMP_LOG=$T/composer-defer.log; : >"$CMP_LOG"
+CMP_SAVED_RUNNABLE=$(declare -f runnable_issues)
+CMP_SAVED_READY=$(declare -f composer_protocol_ready)
+CMP_SAVED_PREPARE=$(declare -f composer_request_prepare)
+log(){ printf '%s\n' "$*" >>"$CMP_LOG"; }
+# Reaching the protocol gate is the observable "the composer was allowed to run".
+composer_protocol_ready(){ printf 'ready\n' >>"$COMPOSER_RAN"; return 1; }
+runnable_issues(){ :; }                 # 0 runnable → composition is otherwise due
+rm -f "$CONTROL/composer-discovery-fence"
+rm -f "$MFSTATE"/merge-queue/*.json
+# MF_DRY_RUN=1 with no retained request files drives composer_step's else branch,
+# which pins COMPOSER_REQUEST_LOADED=0 — the ordinary, non-owner-brief tick.
+MF_DRY_RUN=1
+composer_step run || true
+check "an empty merge queue lets the composer proceed to its protocol gate" "1" \
+  "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
+jq -nc '{pr:70,issue:700,touches:["z/**"],approved_head:"cccc3333",approval_kind:"reviewer",approval_comment_id:"70"}' \
+  >"$MFSTATE/merge-queue/1099-pr70.json"
+: >"$COMPOSER_RAN"; : >"$CMP_LOG"
+composer_step run || true
+check "a non-empty merge queue defers composition" "0" "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
+check "the deferral is logged" "1" "$(grep -c 'composer deferred: merge queue non-empty' "$CMP_LOG")"
+# A non-queue file in the queue dir must not be mistaken for a waiting PR.
+rm -f "$MFSTATE"/merge-queue/*.json; : >"$MFSTATE/merge-queue/.mergefail-pr70"
+: >"$COMPOSER_RAN"; : >"$CMP_LOG"
+composer_step run || true
+check "queue bookkeeping files alone do not defer composition" "1" \
+  "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
+rm -f "$MFSTATE/merge-queue/.mergefail-pr70"
+# An owner brief was explicitly asked for and is exempt from the deferral.
+# Case A: an ALREADY-CLAIMED request (.composer-request-active.json), which is
+# what sets COMPOSER_REQUEST_LOADED=1 above the mode gate.
+jq -nc '{pr:70,issue:700,touches:["z/**"],approved_head:"cccc3333",approval_kind:"reviewer",approval_comment_id:"70"}' \
+  >"$MFSTATE/merge-queue/1099-pr70.json"
+: >"$COMPOSER_RAN"; : >"$CMP_LOG"
+MF_DRY_RUN=0
+: >"$CONTROL/.composer-request-active.json"
+composer_request_prepare(){ COMPOSER_REQUEST_LOADED=1; return 0; }
+composer_step run || true
+check "a claimed owner request is exempt from the merge-lane deferral" "1" \
+  "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
+rm -f "$CONTROL/.composer-request-active.json"
+COMPOSER_REQUEST_LOADED=0
+eval "$CMP_SAVED_PREPARE"        # back to the REAL composer_request_prepare
+
+# Case B — the regression that mattered: a FRESH owner brief. composer-request.json
+# is not claimed until composer_request_prepare runs BELOW the deferral guard, so
+# COMPOSER_REQUEST_LOADED is still 0 here. Guarding on the flag alone let a stuck
+# queue record swallow every new brief while the docs promised exemption. This
+# runs the REAL prepare — stubbing it is exactly what hid the bug.
+rm -rf "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/.composer-request-active.json"
+jq -nc '{version:1,approved:true,id:"brief-1",exact_count:1,brief:"do the thing"}' \
+  >"$CONTROL/composer-request.json"
+: >"$COMPOSER_RAN"; : >"$CMP_LOG"
+composer_step run || true
+check "a FRESH owner brief is not swallowed by the merge-lane deferral" "1" \
+  "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
+check "a fresh brief does not log a deferral" "0" \
+  "$(grep -c 'composer deferred: merge queue non-empty' "$CMP_LOG")"
+# The claim itself sits BELOW the protocol gate (deliberately — a request is only
+# claimed once this tick could actually run it), so the stub above stops short of
+# it. Drive the real claim directly to prove the fresh file the guard now honours
+# is the same one composer_request_prepare goes on to consume.
+rm -rf "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/.composer-request-active.json"
+composer_request_prepare 1
+check "the real prepare claims a fresh brief" "0" "$?"
+[ -f "$CONTROL/.composer-request-active.json" ] \
+  && ok "the fresh brief is claimed into .composer-request-active.json" \
+  || bad "the fresh brief should have been claimed into .composer-request-active.json"
+[ -f "$CONTROL/composer-request.json" ] \
+  && bad "the ready request must be moved, not copied" \
+  || ok "the ready request was moved out of composer-request.json"
+check "the claimed brief is loaded for the run" "1" "$COMPOSER_REQUEST_LOADED"
+check "the claimed brief carries its id" "brief-1" "$COMPOSER_REQUEST_ID"
+check "the claimed brief carries its exact count" "1" "$COMPOSER_REQUEST_EXACT_COUNT"
+rm -rf "$CONTROL/.composer-request-claim" "$CONTROL/.composer-request-active.json" \
+       "$CONTROL/composer-request.json" "$MFSTATE"/merge-queue/*.json
+COMPOSER_REQUEST_LOADED=0
+MF_DRY_RUN=1
+eval "$CMP_SAVED_RUNNABLE"; eval "$CMP_SAVED_READY"; eval "$CMP_SAVED_PREPARE"
+log(){ :; }
+
+echo "— composer outcome model: created / idle / protocol-failure (#1202, #1623)"
+# The 2026-08-30 live log: a composer run that CREATED six issues was booked as a
+# protocol failure because they were quarantined as not-schedulable, and the
+# bounded retry then started a second ~20-minute claude-opus-5 (xhigh) run 31 s
+# later — inside the same tick. Three rules are pinned here: created wins over a
+# bad artifact contract, an empty run is idle, and a real protocol failure waits
+# a full cooldown before its next attempt.
+OC_LOG=$T/outcome.log
+OC_SAVED_RUNNABLE=$(declare -f runnable_issues)
+# An earlier battery leaves the shell in a temp clone — never use $(pwd) here.
+MF_PROMPTS=$TEST_SCRIPT_DIR/prompts
+MF_COMPOSER_COOLDOWN=900
+MF_COMPOSER_PROTOCOL_COOLDOWN=900
+MF_COMPOSER_PROTOCOL_BACKOFF_MAX=14400
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
+MF_COMPOSER_DISCOVERY_ATTEMPTS=2
+MF_COMPOSER_DISCOVERY_SLEEP=0
+MF_DRY_RUN=0
+COMPOSER_REQUEST_LOADED=0
+OC_CALLS=0
+OC_CORRECTIONS=0
+OC_AFTER='[]'
+OC_CASE=none
+log(){ printf '%s\n' "$*" >>"$OC_LOG"; }
+# The real notify() logs "NOTIFY: …" AND posts to the owner webhook, so the
+# battery has to distinguish "reached events.log" from "reached the owner".
+notify(){ log "NOTIFY: $*"; }
+runnable_issues(){ :; }
+mf_recent_issues_json(){ printf '%s\n' "$OC_AFTER"; }
+mf_issue_json_by_number(){ return 1; }
+role_diff(){ echo hard; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+mstatus(){ :; }
+# Stands in for the model. Reads the run id and manifest path out of the real
+# composer prompt, exactly as the helper the composer is told to call would.
+mf_cc(){
+  local run manifest body
+  OC_CALLS=$((OC_CALLS + 1))
+  grep -q 'PROTOCOL CORRECTION RETRY' <<<"$3" && OC_CORRECTIONS=$((OC_CORRECTIONS + 1))
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  case "$OC_CASE" in
+    none)     printf 'NONE\n' >"$manifest"; OC_AFTER='[]';;
+    silent)   OC_AFTER='[]';;   # no manifest at all: a genuine protocol failure
+    created-invalid)
+      # Issues WERE filed, but the artifact contract does not hold: the manifest
+      # claims an autopilot issue and #913 carries no such label.
+      body=$(printf '## Context\nquoted\n\n## Scope\ninvalid\n\n## Acceptance criteria\n- [ ] invalid\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: invalid\n-->' "$run")
+      printf 'ISSUE 913 autopilot\n' >"$manifest"
+      OC_AFTER=$(jq -cn --arg body "$body" \
+        '[{number:913,title:"invalid",body:$body,labels:["diff:normal"],created_at:"now"}]')
+      ;;
+  esac
+  return 0
+}
+oc_reset(){
+  rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests"
+  rm -f "$CONTROL"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff,protocol-attempt} \
+        "$CONTROL/composer-quarantine"
+  rm -f "$MFSTATE"/merge-queue/*.json
+  mkdir -p "$CONTROL/composer-manifests"
+  printf '[]\n' >"$TICK_ISSUES"
+  OC_CALLS=0; OC_CORRECTIONS=0; OC_AFTER='[]'; : >"$OC_LOG"
+}
+
+oc_reset
+OC_CASE=created-invalid
+composer_step run || true
+check "a run whose issues were all quarantined invokes the model once" "1" "$OC_CALLS"
+check "quarantined-but-created issues are still fenced off from the scheduler" "913" \
+  "$(cat "$CONTROL/composer-quarantine" 2>/dev/null)"
+check "created-but-quarantined is NOT booked as a protocol failure" "0" \
+  "$(grep -c 'composer protocol failure' "$OC_LOG")"
+check "created-but-quarantined is logged as a created outcome" "1" \
+  "$(grep -c 'composer outcome created: issues \[913\] quarantined' "$OC_LOG")"
+# The most expensive terminal state: paid run, real issues, permanently excluded
+# from runnable_issues until a human reconciles them, and nothing retries. It has
+# to reach the owner's webhook, not only events.log — same as the fence-reconcile
+# twin in composer_discovery_fence_reconcile.
+check "created-but-quarantined notifies the owner, not just events.log" "1" \
+  "$(grep -c 'NOTIFY: composer outcome created: issues \[913\] quarantined' "$OC_LOG")"
+check "created-but-quarantined books the ordinary composer cooldown" "1" \
+  "$([ -f "$CONTROL/.composer-last" ] && echo 1 || echo 0)"
+check "created-but-quarantined arms no protocol retry" "0" \
+  "$([ -e "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
+# The same tick again: the cooldown, not a retry counter, is what must stop it.
+composer_step run || true
+check "no second composer starts in the same tick after a created run" "1" "$OC_CALLS"
+
+oc_reset
+OC_CASE=none
+composer_step run || true
+check "a valid empty run invokes the model once" "1" "$OC_CALLS"
+check "a valid empty run is booked idle, not protocol" "0" \
+  "$(grep -c 'composer protocol failure' "$OC_LOG")"
+check "a valid empty run feeds the idle backoff (#1202)" "900" \
+  "$(cat "$CONTROL/.composer-backoff" 2>/dev/null)"
+check "a valid empty run quarantines nothing" "0" \
+  "$([ -e "$CONTROL/composer-quarantine" ] && echo 1 || echo 0)"
+
+oc_reset
+OC_CASE=silent
+composer_step run || true
+check "a malformed run invokes the model ONCE per tick, never back-to-back" "1" "$OC_CALLS"
+check "a malformed run is booked as attempt 1 of 2" "1" \
+  "$(grep -c 'composer protocol failure (attempt 1/2' "$OC_LOG")"
+check "the malformed-run retry waits a full composer cooldown" "900" \
+  "$(cat "$CONTROL/.composer-protocol-backoff")"
+check "the attempt counter outlives the tick" "1" \
+  "$(cat "$CONTROL/.composer-protocol-attempt")"
+composer_step run || true
+check "the next 15-second tick does not re-run the composer" "1" "$OC_CALLS"
+backdate "$CONTROL/.composer-protocol-last" 901
+composer_step run || true
+check "the corrective retry runs only after the protocol cooldown" "2" "$OC_CALLS"
+check "the retry is the second attempt, and the backoff doubles" "1" \
+  "$(grep -c 'composer protocol failure (attempt 2/2' "$OC_LOG")"
+check "the corrective retry carries the correction preamble" "1" "$OC_CORRECTIONS"
+check "repeated malformed runs back off independently" "1800" \
+  "$(cat "$CONTROL/.composer-protocol-backoff")"
+# Spent attempts saturate: the run stays "attempt max/max" and only the doubling
+# protocol backoff bounds it from there. Asserting it so the knob's real reach
+# is pinned rather than assumed.
+backdate "$CONTROL/.composer-protocol-last" 1801
+composer_step run || true
+check "the attempt number saturates once the corrective attempts are spent" "2" \
+  "$(grep -c 'composer protocol failure (attempt 2/2' "$OC_LOG")"
+check "a saturated sequence is bounded by the backoff alone" "3600" \
+  "$(cat "$CONTROL/.composer-protocol-backoff")"
+# A later good run clears the whole correction sequence.
+OC_CASE=none
+backdate "$CONTROL/.composer-protocol-last" 3601
+composer_step run || true
+check "a later valid run clears the persisted attempt counter" "0" \
+  "$([ -e "$CONTROL/.composer-protocol-attempt" ] && echo 1 || echo 0)"
+
+# MF_COMPOSER_PROTOCOL_ATTEMPTS=0 is the value an owner reaches for to turn the
+# corrective retry off; it must not be silently rewritten to the default 2.
+oc_reset
+MF_COMPOSER_PROTOCOL_ATTEMPTS=0
+OC_CASE=silent
+composer_step run || true
+check "MF_COMPOSER_PROTOCOL_ATTEMPTS=0 means no corrective attempt, not the default 2" "1" \
+  "$(grep -c 'composer protocol failure (attempt 0/0' "$OC_LOG")"
+backdate "$CONTROL/.composer-protocol-last" 901
+composer_step run || true
+check "a zero-attempt sequence still re-runs under the backoff" "2" "$OC_CALLS"
+check "a zero-attempt sequence never sends the correction preamble" "0" "$OC_CORRECTIONS"
+# Non-numeric still falls back, so a typo cannot disable the correction silently.
+# The sanitized bound — not the raw env value — is what the display and the
+# owner-brief `[ "$attempt" -ge … ]` tests consume; a raw "off" in the latter is
+# an integer-expression error, so the sanitizer is asserted directly too.
+check "the attempt bound sanitizes an unset-style empty value" "2" \
+  "$(MF_COMPOSER_PROTOCOL_ATTEMPTS= composer_protocol_attempt_max)"
+check "the attempt bound sanitizes a non-numeric value" "2" \
+  "$(MF_COMPOSER_PROTOCOL_ATTEMPTS=off composer_protocol_attempt_max)"
+check "the attempt bound passes an explicit zero through" "0" \
+  "$(MF_COMPOSER_PROTOCOL_ATTEMPTS=0 composer_protocol_attempt_max)"
+MF_COMPOSER_PROTOCOL_ATTEMPTS=off
+oc_reset
+OC_CASE=silent
+composer_step run || true
+check "a non-numeric attempt setting falls back to the default bound" "1" \
+  "$(grep -c 'composer protocol failure (attempt 1/2' "$OC_LOG")"
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
+
+oc_reset
+unset MF_PROMPTS MF_COMPOSER_COOLDOWN MF_COMPOSER_PROTOCOL_COOLDOWN \
+  MF_COMPOSER_PROTOCOL_BACKOFF_MAX MF_COMPOSER_PROTOCOL_ATTEMPTS \
+  MF_COMPOSER_DISCOVERY_ATTEMPTS MF_COMPOSER_DISCOVERY_SLEEP
+unset -f mf_cc mf_recent_issues_json mf_issue_json_by_number role_diff with_pack \
+  fetch_issues mstatus
+eval "$OC_SAVED_RUNNABLE"
+MF_DRY_RUN=1
+log(){ :; }
+MF_SOURCE_ONLY=1 . "$TEST_SCRIPT_DIR/master.sh"   # restore the real orchestration functions
+. "$TEST_SCRIPT_DIR/mflib.sh"
+
+echo "— composer role caps: the priciest role is bounded in turns and wall clock"
+# Until #1623 only the Sol branch was capped; a Claude composer inherited
+# MF_ROLE_TIMEOUT=7200 with no turn cap at all, which is how one tick could buy
+# two ~20-minute xhigh runs. Assert the dispatch mf_cc assembles, per branch.
+CAPS_MODELS=$T/caps-models.json
+CAPS_OUT=$T/caps-dispatch
+cat >"$CAPS_MODELS" <<'JSON'
+{"version":2,"difficulties":{"hard":{"provider":"claude","model":"claude-opus-4-8","effort":"max"}},
+ "roles":{"composer":{"provider":"claude","model":"claude-opus-5","effort":"xhigh"}}}
+JSON
+(
+  MF_MODELS_FILE=$CAPS_MODELS
+  mf_with_claude_profile(){ "$@"; }
+  cc(){ printf '%s turns=%s timeout=%s\n' "$1" "${CC_MAX_TURNS:-none}" "${CC_TIMEOUT:-none}"; }
+  : >"$CAPS_OUT"
+  mf_cc composer hard p >>"$CAPS_OUT"
+  mf_cc writer hard p >>"$CAPS_OUT"
+  MF_COMPOSER_MAX_TURNS=25 MF_COMPOSER_TIMEOUT=600 mf_cc composer hard p >>"$CAPS_OUT"
+  MF_COMPOSER_MAX_TURNS=nonsense MF_COMPOSER_TIMEOUT=99999 mf_cc composer hard p >>"$CAPS_OUT"
+)
+check "the claude composer carries --max-turns 60 and a 1800s role timeout" \
+  "claude-opus-5 turns=60 timeout=1800" "$(sed -n 1p "$CAPS_OUT")"
+check "no other role is capped by the composer knobs" \
+  "claude-opus-4-8 turns=none timeout=none" "$(sed -n 2p "$CAPS_OUT")"
+check "the owner can tighten the composer caps by env" \
+  "claude-opus-5 turns=25 timeout=600" "$(sed -n 3p "$CAPS_OUT")"
+check "unusable composer caps fall back to the defaults, never to unbounded" \
+  "claude-opus-5 turns=60 timeout=1800" "$(sed -n 4p "$CAPS_OUT")"
+CAPS_SOL=$T/caps-sol.json
+cat >"$CAPS_SOL" <<'JSON'
+{"version":2,"difficulties":{"hard":{"provider":"claudex","model":"gpt-5.6-terra","effort":"high"}},
+ "roles":{"composer":{"provider":"claudex","model":"gpt-5.6-sol","effort":"high"}}}
+JSON
+(
+  MF_MODELS_FILE=$CAPS_SOL
+  cc_claudex(){ printf '%s turns=%s timeout=%s\n' "$1" "${CC_MAX_TURNS:-none}" "${MF_ROLE_TIMEOUT:-none}"; }
+  : >"$CAPS_OUT"
+  mf_cc composer hard p >>"$CAPS_OUT"
+)
+check "the Sol composer keeps its own tighter caps" "gpt-5.6-sol turns=40 timeout=1200" \
+  "$(sed -n 1p "$CAPS_OUT")"
+unset CAPS_MODELS CAPS_OUT CAPS_SOL
 
 echo "— merger: bounded approval-read failures park the queue head (#891 jam)"
 MF_DRY_RUN=0

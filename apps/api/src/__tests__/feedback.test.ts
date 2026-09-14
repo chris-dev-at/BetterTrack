@@ -21,6 +21,7 @@ import {
 
 import * as schema from '../data/schema';
 import { FIRST_PARTY_CLIENTS } from '../services/oauth/firstPartyClients';
+import { limiterKeyForUser } from '../http/middleware/rateLimit';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
@@ -232,7 +233,7 @@ describe('POST /api/v1/feedback', () => {
       .send({ body: 'Answering the owner’s question mid-cooldown.' });
     expect(replyWhileClosed.status).toBe(201);
 
-    const keys = progressiveKeys('feedback', user.id);
+    const keys = progressiveKeys('feedback', limiterKeyForUser(user.id));
     expect(await harness.ctx.redis.get(keys.count)).toBe(String(configuredLimit + 1));
 
     // Simulate the one-minute first cooldown expiring while the original hourly
@@ -275,8 +276,8 @@ describe('POST /api/v1/feedback', () => {
     expect(created.status).toBe(201);
     const threadId = createFeedbackResponseSchema.parse(created.body).id;
 
-    const captureKeys = progressiveKeys('feedback', user.id);
-    const threadKeys = progressiveKeys('feedback_thread', user.id);
+    const captureKeys = progressiveKeys('feedback', limiterKeyForUser(user.id));
+    const threadKeys = progressiveKeys('feedback_thread', limiterKeyForUser(user.id));
     const threadLimit = harness.ctx.config.rateLimits.feedbackThread.limit;
     expect(threadLimit).toBeGreaterThan(harness.ctx.config.rateLimits.feedback.limit);
 
@@ -668,8 +669,8 @@ describe('DELETE /api/v1/feedback/:id', () => {
     // The delete counted against the conversation budget only. Metering it on
     // the five-per-hour capture counter would spend the very allowance the
     // open-cap 409 tells the submitter to reclaim by deleting.
-    const captureKeys = progressiveKeys('feedback', user.id);
-    const deleteKeys = progressiveKeys('feedback_thread', user.id);
+    const captureKeys = progressiveKeys('feedback', limiterKeyForUser(user.id));
+    const deleteKeys = progressiveKeys('feedback_thread', limiterKeyForUser(user.id));
     expect(await harness.ctx.redis.get(deleteKeys.count)).toBe('1');
     expect(await harness.ctx.redis.get(captureKeys.count)).toBeNull();
 

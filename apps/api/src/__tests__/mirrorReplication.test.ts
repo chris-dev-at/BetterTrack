@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MIRROR_CONFLICT,
   MIRROR_OP_VERSION,
+  MIRROR_ROW_DELETED,
   MIRROR_SYNC_STALLED,
+  SOURCE_TAG_MANUAL,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   type MirrorOpPayload,
 } from '@bettertrack/contracts';
@@ -125,6 +127,46 @@ async function sourceBalances(userId: string, portfolioId: string) {
     includeArchived: true,
   });
   return sources;
+}
+
+/** The frozen tax facts of a copy's sells, in insertion order (issue #1861). */
+async function sellTaxFacts(portfolioId: string) {
+  const rows = await harness.db
+    .select()
+    .from(schema.transactions)
+    .where(eq(schema.transactions.portfolioId, portfolioId));
+  return rows
+    .filter((row) => row.side === 'sell')
+    .map((row) => ({
+      source: row.source,
+      taxMode: row.taxMode,
+      taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+    }));
+}
+
+/** A buy and a taxable sell of it, submitted on the origin copy (issue #1861). */
+async function submitBuyAndGainSell(userId: string, portfolioId: string, assetId: string) {
+  await harness.ctx.mirror.submitTransactionsCreate(userId, portfolioId, [
+    {
+      assetId,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      fee: 0,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    },
+  ]);
+  await harness.ctx.mirror.submitTransactionsCreate(userId, portfolioId, [
+    {
+      assetId,
+      side: 'sell',
+      quantity: 10,
+      price: 19,
+      fee: 0,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    },
+  ]);
 }
 
 async function mirrorAuditRows(portfolioId: string) {
@@ -480,6 +522,167 @@ describe('mirrorchain M2 — replication core', () => {
     expect(
       aCash.movements.some((m) => m.kind === 'tax_withholding' || m.kind === 'tax_refund'),
     ).toBe(false);
+  });
+
+  it('the manual-per-trade default applies to replicated rows, so equal settings book equal tax (#1861)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    // Both members run manual-per-trade with the same 27.5 % default. One
+    // logical trade in one logical portfolio must therefore carry one tax
+    // figure — the replica used to skip the default and book zero, because its
+    // `sync:mirrorchain` tag failed a literal `=== 'manual'` gate.
+    for (const member of [alice, bob]) {
+      await harness.ctx.tax.updateSettings(member.id, {
+        mode: 'manual_per_trade',
+        manualDefaultRatePct: 27.5,
+      });
+    }
+    await submitBuyAndGainSell(alice.id, aPid, asset.id);
+    await harness.ctx.mirror.submitDividendRecord(alice.id, aPid, {
+      assetId: asset.id,
+      grossAmountEur: 100,
+      executedAt: '2026-03-01T10:00:00.000Z',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Gain 10·(19−10) = 90 → 27.5 % = 24.75 in BOTH books, each frozen locally.
+    expect(await sellTaxFacts(aPid)).toEqual([
+      { source: SOURCE_TAG_MANUAL, taxMode: 'manual_per_trade', taxAmountEur: 24.75 },
+    ]);
+    expect(await sellTaxFacts(bPid)).toEqual([
+      { source: SOURCE_TAG_SYNC_MIRRORCHAIN, taxMode: 'manual_per_trade', taxAmountEur: 24.75 },
+    ]);
+
+    // The dividend path carries its own copy of the gate (§6.8.4): 27.5 % of
+    // the €100 gross = 27.50, on the origin and on the replica alike.
+    const aDividends = (await harness.ctx.tax.listDividends(alice.id, aPid)).dividends;
+    const bDividends = (await harness.ctx.tax.listDividends(bob.id, bPid)).dividends;
+    expect(aDividends[0]).toMatchObject({
+      source: SOURCE_TAG_MANUAL,
+      taxMode: 'manual_per_trade',
+      taxAmountEur: 27.5,
+    });
+    expect(bDividends[0]).toMatchObject({
+      source: SOURCE_TAG_SYNC_MIRRORCHAIN,
+      taxMode: 'manual_per_trade',
+      taxAmountEur: 27.5,
+    });
+
+    // Each copy settled its own tax in its own cash book.
+    for (const [userId, pid] of [
+      [alice.id, aPid],
+      [bob.id, bPid],
+    ] as const) {
+      const cash = await harness.ctx.portfolio.getCashMovements(userId, pid);
+      expect(
+        cash.movements.filter((m) => m.kind === 'tax_withholding').map((m) => m.amountEur),
+      ).toEqual(expect.arrayContaining([-24.75, -27.5]));
+    }
+  });
+
+  it('applying the default stays per copy: a member with a different default books their own tax (§6.17)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    // Same mode, different configured default — replication carries the trade,
+    // never the settings.
+    await harness.ctx.tax.updateSettings(alice.id, {
+      mode: 'manual_per_trade',
+      manualDefaultRatePct: 27.5,
+    });
+    await harness.ctx.tax.updateSettings(bob.id, {
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
+    await submitBuyAndGainSell(alice.id, aPid, asset.id);
+    await harness.ctx.mirror.submitDividendRecord(alice.id, aPid, {
+      assetId: asset.id,
+      grossAmountEur: 100,
+      executedAt: '2026-03-01T10:00:00.000Z',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    expect(await sellTaxFacts(aPid)).toEqual([
+      { source: SOURCE_TAG_MANUAL, taxMode: 'manual_per_trade', taxAmountEur: 24.75 },
+    ]);
+    expect(await sellTaxFacts(bPid)).toEqual([
+      { source: SOURCE_TAG_SYNC_MIRRORCHAIN, taxMode: 'manual_per_trade', taxAmountEur: 5 },
+    ]);
+    expect((await harness.ctx.tax.listDividends(alice.id, aPid)).dividends[0]).toMatchObject({
+      taxAmountEur: 27.5,
+    });
+    expect((await harness.ctx.tax.listDividends(bob.id, bPid)).dividends[0]).toMatchObject({
+      taxAmountEur: 5,
+    });
+
+    // Bob's stored settings are untouched by what Alice runs — the default that
+    // applied is his, read back from his own record.
+    expect(await harness.ctx.tax.getSettings(bob.id)).toMatchObject({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
+  });
+
+  it('refuses an edit to a cash movement whose delete is already the latest op (§3 terminality)', async () => {
+    const { alice, bob, aPid, bPid, chain } = await setupChain();
+    const movementRepo = createCashMovementRepository(harness.db);
+    const deposit = await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 100 });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // (1) Alice deletes the movement — op N, appended chain-wide. (2) Bob's copy
+    // never applied it: his watermark reads the chain head (so the submit path's
+    // origin catch-up is a no-op) while his row and its mirror link still exist
+    // and are still displayed. That is the copy-diverged-from-the-oplog state
+    // the §2 residual scans exist to detect — and the one state in which the §3
+    // door guard, not the catch-up, is what stands between a member and a write
+    // against a deleted row.
+    await harness.ctx.mirror.submitCashDelete(alice.id, aPid, deposit.movement.id);
+    const bobMovement = (await movementRepo.listForPortfolio(bPid)).find(
+      (movement) => movement.kind === 'deposit' && movement.amountEur === 100,
+    );
+    if (!bobMovement) throw new Error('Replica funding movement was not applied');
+    const head = (await mirrorRepo.getChain(chain.id))!.lastSeq;
+    await harness.db
+      .update(schema.mirrorChainMembers)
+      .set({ appliedSeq: head })
+      .where(eq(schema.mirrorChainMembers.portfolioId, bPid));
+    const balanceBefore = (await sourceBalances(bob.id, bPid)).find((s) => s.isMain)!.balanceEur;
+
+    // (3) The `version` Bob's UI carries into the editor is chain-wide MAX(seq)
+    // for the mirror id — which the delete already advanced, so the stale-edit
+    // guard alone would let this through. Terminality is what must refuse it.
+    const info = (await mirrorRepo.listMirrorRowInfoForPortfolio(bPid)).find(
+      (row) => row.kind === 'cash_movement' && row.localId === bobMovement.id,
+    );
+    if (!info) throw new Error('Replica movement has no mirror link');
+
+    await expect(
+      harness.ctx.mirror.submitCashUpdate(
+        bob.id,
+        bPid,
+        bobMovement.id,
+        { amountEur: 999 },
+        { baseSeq: info.latestSeq },
+      ),
+    ).rejects.toMatchObject({ statusCode: 409, code: MIRROR_ROW_DELETED });
+
+    // (4) The refusal is at the door: no local apply, no op, no moved balance —
+    // the acknowledged-then-silently-discarded write never happens.
+    const after = (await movementRepo.listForPortfolio(bPid)).find((m) => m.id === bobMovement.id);
+    expect(after?.amountEur).toBe(100);
+    expect((await sourceBalances(bob.id, bPid)).find((s) => s.isMain)!.balanceEur).toBe(
+      balanceBefore,
+    );
+    expect(
+      (await mirrorRepo.listOpsSince(chain.id, 0)).filter((o) => o.kind === 'cash.update'),
+    ).toHaveLength(0);
+
+    // A duplicate delete is refused identically — the tx/dividend behaviour.
+    await expect(
+      harness.ctx.mirror.submitCashDelete(bob.id, bPid, bobMovement.id, {
+        baseSeq: info.latestSeq,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: MIRROR_ROW_DELETED });
+    expect((await movementRepo.listForPortfolio(bPid)).some((m) => m.id === bobMovement.id)).toBe(
+      true,
+    );
   });
 
   it('set-balance replicates the origin-computed delta; force mode lets a skewed copy go honestly negative (§2/§8)', async () => {

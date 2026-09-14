@@ -61,6 +61,7 @@ describe('notification taxonomy (#368)', () => {
       'standing_order.skipped',
       'feedback.status_changed',
       'feedback.reply_created',
+      'comment.created',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',

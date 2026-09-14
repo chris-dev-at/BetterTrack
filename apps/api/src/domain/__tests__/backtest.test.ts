@@ -212,6 +212,112 @@ describe('backtest — common-start clipping', () => {
     expect(z?.contributionPct).toBe(0);
   });
 
+  it('reports an END short of the window the same way a short start is reported (#1755)', async () => {
+    // ALIVE trades the whole window; DEAD stops on 06-13 (a delisting). The
+    // start was never the problem here — both list before the window — so the
+    // clip notice is silent, and until #1755 nothing else spoke either: the
+    // basket was charted to the window's end on a carried-forward price and its
+    // stats were annualised over a span it did not survive.
+    const res = await backtest({
+      positions: [
+        { assetId: 'ALIVE', weight: 50 },
+        { assetId: 'DEAD', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'ALIVE',
+          symbol: 'ALIVE',
+          currency: 'EUR',
+          prices: dailyCloses('2024-06-10', [10, 11, 12, 13, 14, 15]),
+        },
+        {
+          assetId: 'DEAD',
+          symbol: 'DEAD',
+          currency: 'EUR',
+          prices: dailyCloses('2024-06-10', [20, 18, 16, 14]),
+        },
+      ],
+      range: { start: '2024-06-10', end: '2024-06-15' },
+      converter: stubConverter(),
+    });
+    expect(res.notice).toBeNull();
+    expect(res.endCoverage).toEqual({ date: '2024-06-13', symbol: 'DEAD' });
+    // Reporting only: the engine's own output is unchanged — the axis, and so
+    // the charted series, still runs to the window's end.
+    expect(res.endDate).toBe('2024-06-15');
+  });
+
+  it('names the EARLIEST-stopping position when several stop short, and stays silent when none do', async () => {
+    const assets: BacktestAsset[] = [
+      {
+        assetId: 'LONG',
+        symbol: 'LONG',
+        currency: 'EUR',
+        prices: dailyCloses('2026-01-01', [10, 11, 12, 13]),
+      },
+      {
+        assetId: 'MID',
+        symbol: 'MID',
+        currency: 'EUR',
+        prices: dailyCloses('2026-01-01', [20, 21, 22]),
+      },
+      {
+        assetId: 'SHORT',
+        symbol: 'SHORT',
+        currency: 'EUR',
+        prices: dailyCloses('2026-01-01', [30, 31]),
+      },
+    ];
+    const positions = assets.map((a) => ({ assetId: a.assetId, weight: 1 }));
+
+    const short = await backtest({
+      positions,
+      assets,
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+    });
+    // `min` over the positions' last covered day, mirroring the start's `max`
+    // over their first — deterministic, and the whole basket is only covered as
+    // far as its earliest-stopping member.
+    expect(short.endCoverage).toEqual({ date: '2026-01-02', symbol: 'SHORT' });
+
+    // Ask for a window that ends where every position still has data: covered.
+    const covered = await backtest({
+      positions,
+      assets,
+      range: { start: '2026-01-01', end: '2026-01-02' },
+      converter: stubConverter(),
+    });
+    expect(covered.endCoverage).toBeNull();
+  });
+
+  it('a §14 constituent listed after the window never entered it, so it cannot limit its end', async () => {
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'FUTURE', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110, 120]),
+        },
+        {
+          assetId: 'FUTURE',
+          symbol: 'FUTURE',
+          currency: 'EUR',
+          prices: dailyCloses('2026-02-01', [50, 55]),
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-03' },
+      converter: stubConverter(),
+      mode: 'cash',
+    });
+    expect(res.endCoverage).toBeNull();
+  });
+
   it('produces no notice when the requested start is already within every asset’s history', async () => {
     const res = await backtest(singleAssetInput([100, 101, 102], '2026-03-02'));
     expect(res.notice).toBeNull();
@@ -797,6 +903,111 @@ describe('backtest — validation', () => {
       ),
     ).rejects.toThrow(/finite close/);
   });
+
+  // --- #1778: a non-positive close never reaches the arithmetic. Before the
+  // fix, positivity was checked at t₀ and on entry days only, so a 0 or
+  // negative close mid-window divided into Infinity/NaN — or, through the
+  // rebalance primitive, threw a bare Error and answered 500 instead of 422.
+
+  it('rejects a zero close mid-window instead of indexing it into Infinity (rebalance: none)', async () => {
+    // Before: series 100, 0, 50 ⇒ bestDay.returnPct Infinity (50/0 − 1),
+    // volatilityPct NaN, and every comparison built on them poisoned.
+    const input = singleAssetInput([100, 0, 50]);
+
+    await expect(backtest(input)).rejects.toThrow(BacktestError);
+    await expect(backtest(input)).rejects.toThrow(/positive close/);
+  });
+
+  it('rejects a zero close landing on a rebalance period boundary (NaN for the whole series)', async () => {
+    // Before: the boundary day set the segment base to 0, so `segBaseValue ·
+    // (eur / segBaseEur)` returned NaN from there on — series and every stat.
+    const prices = [
+      { date: '2026-01-30', close: 100 },
+      { date: '2026-02-02', close: 0 },
+      { date: '2026-02-03', close: 50 },
+    ];
+
+    await expect(
+      backtest({
+        positions: [{ assetId: 'A', weight: 100 }],
+        assets: [{ assetId: 'A', symbol: 'A', currency: 'EUR', prices }],
+        range: { start: '2026-01-30', end: '2026-02-03' },
+        converter: stubConverter(),
+        rebalance: 'monthly',
+      }),
+    ).rejects.toThrow(BacktestError);
+  });
+
+  it('rejects a negative close with a schedule as a mapped error, not a bare Error', async () => {
+    // Before: the negative value flowed into rebalanceToTargets, whose plain
+    // `Error` the module header reserves for caller bugs ⇒ a 500, not a 422.
+    const prices = [
+      { date: '2026-01-30', close: 100 },
+      { date: '2026-02-02', close: -50 },
+      { date: '2026-02-03', close: 50 },
+    ];
+    const input: BacktestInput = {
+      positions: [
+        { assetId: 'A', weight: 60 },
+        { assetId: 'B', weight: 40 },
+      ],
+      assets: [
+        { assetId: 'A', symbol: 'A', currency: 'EUR', prices },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-30', [10, 11, 12]),
+        },
+      ],
+      range: { start: '2026-01-30', end: '2026-02-03' },
+      converter: stubConverter(),
+      rebalance: 'monthly',
+    };
+
+    await expect(backtest(input)).rejects.toThrow(BacktestError);
+    await expect(backtest(input)).rejects.toThrow(/positive close/);
+  });
+
+  it('refuses a zero close outside the window too — the whole handed-in series is validated', async () => {
+    await expect(
+      backtest({
+        positions: [{ assetId: 'A', weight: 100 }],
+        assets: [
+          {
+            assetId: 'A',
+            symbol: 'A',
+            currency: 'EUR',
+            prices: [
+              { date: '2026-01-01', close: 0 },
+              { date: '2026-02-02', close: 100 },
+              { date: '2026-02-03', close: 110 },
+            ],
+          },
+        ],
+        range: { start: '2026-02-02', end: '2026-02-03' },
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/positive close/);
+  });
+
+  it('never reports a non-finite statistic for a series it accepts', async () => {
+    const res = await backtest(singleAssetInput([100, 1, 250, 3, 180]));
+    const stats = [
+      res.stats.totalReturnPct,
+      res.stats.cagrPct,
+      res.stats.maxDrawdownPct,
+      res.stats.volatilityPct,
+      res.stats.bestDay?.returnPct,
+      res.stats.worstDay?.returnPct,
+    ];
+
+    for (const value of stats) {
+      if (value === null || value === undefined) continue;
+      expect(Number.isFinite(value)).toBe(true);
+    }
+    for (const point of res.series) expect(point.value).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -912,6 +1123,21 @@ describe('rebalanceToTargets — the §14 entry-day rebalance primitive', () => 
     expect(() =>
       rebalanceToTargets([{ key: 'A', value: Number.NaN }], [{ key: 'A', weight: 1 }]),
     ).toThrow(/finite non-negative value/);
+    // A bad holding VALUE is a data state the engine can only reach from a
+    // pathological price series, so it is a mapped BacktestError (422 at the
+    // route) — not the bare Error the caller-bug checks throw (#1778).
+    expect(() => rebalanceToTargets([{ key: 'A', value: -1 }], [{ key: 'A', weight: 1 }])).toThrow(
+      BacktestError,
+    );
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 1 }],
+        [
+          { key: 'A', weight: 1 },
+          { key: 'A', weight: 2 },
+        ],
+      ),
+    ).not.toThrow(BacktestError);
   });
 
   it('rejects negative, non-finite, empty, or all-zero target weights', () => {
@@ -936,6 +1162,94 @@ describe('rebalanceToTargets — the §14 entry-day rebalance primitive', () => 
         ],
       ),
     ).toThrow(/sum to a positive number/);
+  });
+
+  it('conserves the total exactly, which is what the duplicate-key guard protects (#1811)', () => {
+    // A legal rebalance conserves the pool to the last bit…
+    const out = rebalanceToTargets(
+      [
+        { key: 'A', value: 60 },
+        { key: 'B', value: 40 },
+      ],
+      [
+        { key: 'A', weight: 30 },
+        { key: 'B', weight: 70 },
+      ],
+    );
+    expect(out.reduce((sum, h) => sum + h.value, 0)).toBeCloseTo(100, 12);
+
+    // …and the reason a duplicate key may not be tolerated is that the engine
+    // reads the result back through a Map keyed by the same key: two entries for
+    // one key would BOTH be read as the last one's value, so an 80/20 pool would
+    // come back as 2 × 80 — value created out of nothing. The guard refuses
+    // before any such holding exists.
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 100 }],
+        [
+          { key: 'A', weight: 80 },
+          { key: 'A', weight: 20 },
+        ],
+      ),
+    ).toThrow(/duplicate target key/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate positions (#1811)
+// ---------------------------------------------------------------------------
+
+describe('backtest — a duplicated position is a typed refusal, never a 500', () => {
+  /** The same asset listed twice, 60/40 — schema-valid before #1811. */
+  function duplicateInput(over: Partial<BacktestInput> = {}): BacktestInput {
+    return {
+      positions: [
+        { assetId: 'A', weight: 60 },
+        { assetId: 'A', weight: 40 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'AAA',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110, 120, 130]),
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+      ...over,
+    };
+  }
+
+  it('refuses the basket with a BacktestError naming the asset, in every mode × schedule', async () => {
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      for (const rebalance of ['none', 'monthly'] as const) {
+        await expect(backtest(duplicateInput({ mode, rebalance }))).rejects.toThrow(BacktestError);
+        await expect(backtest(duplicateInput({ mode, rebalance }))).rejects.toThrow(
+          /AAA appears more than once/,
+        );
+      }
+    }
+  });
+
+  it('refuses before the pipeline runs, so no schedule ever reaches the rebalance primitive', async () => {
+    // The pre-#1811 shape of the bug: `clip`+`none` took the buy-and-hold path
+    // and answered 200, while every other combination reached
+    // `rebalanceToTargets` with two cursors on one key and threw the plain Error
+    // a caller bug throws — a 500 from flipping a dropdown. One refusal now.
+    const converter = stubConverter();
+    await expect(
+      backtest(duplicateInput({ mode: 'clip', rebalance: 'none', converter })),
+    ).rejects.toThrow(BacktestError);
+    expect(converter.toBase).not.toHaveBeenCalled();
+  });
+
+  it('still backtests the merged weight — one position at the combined weight is fine', async () => {
+    const res = await backtest({
+      ...duplicateInput(),
+      positions: [{ assetId: 'A', weight: 100 }],
+    });
+    expect(res.series.at(-1)?.value).toBeCloseTo(130, 10);
   });
 });
 

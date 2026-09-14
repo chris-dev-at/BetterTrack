@@ -70,22 +70,94 @@ export const dividendEventSchema = z
   .strict();
 export type DividendEvent = z.infer<typeof dividendEventSchema>;
 
+/**
+ * Which basis an annual dividend-per-share figure carries. The two are NOT
+ * interchangeable, and a provider commonly populates only one of them:
+ *
+ * - `trailing-12m` — the **realized** sum of the last twelve months' payouts, so
+ *   it INCLUDES one-off special dividends (a company that just paid one reads
+ *   high for a full year afterwards).
+ * - `forward-annualized` — the last **regular** payout × its frequency, so it
+ *   EXCLUDES specials but assumes the regular schedule continues unchanged.
+ *
+ * Right after a special payout the two can differ by a large factor, so a
+ * consumer that projects forward from the number must be able to see which one
+ * it got — hence {@link dividendEventsSchema.shape.trailingAmountBasis}.
+ */
+export const DIVIDEND_AMOUNT_BASES = ['trailing-12m', 'forward-annualized'] as const;
+export const dividendAmountBasisSchema = z.enum(DIVIDEND_AMOUNT_BASES);
+export type DividendAmountBasis = z.infer<typeof dividendAmountBasisSchema>;
+
+/**
+ * The basis a whole-book projection carries: one of the two per-holding bases
+ * when every contributing holding shared it, or `mixed` when they did not —
+ * which is a real state, not an error. Providers populate whichever field they
+ * have per asset, so one total legitimately sums a `trailing-12m` holding and a
+ * `forward-annualized` one; the projection says so instead of presenting the sum
+ * as a single kind of number (#1790).
+ */
+export const DIVIDEND_PROJECTION_BASES = [...DIVIDEND_AMOUNT_BASES, 'mixed'] as const;
+export const dividendProjectionBasisSchema = z.enum(DIVIDEND_PROJECTION_BASES);
+export type DividendProjectionBasis = z.infer<typeof dividendProjectionBasisSchema>;
+
+/**
+ * Upper bound `forwardYield` is validated against: 1 = 100 %/yr, above any
+ * forward yield a real payer carries.
+ *
+ * It is a **plausibility ceiling only — it cannot determine the field's unit**,
+ * and it used to be documented as if it could. The convention is a fraction
+ * (`0.015` ≈ 1.5 %) and a provider reporting percent renders 100× wrong, but no
+ * bound at 1 separates the two conventions below 1.0: on a percent-reporting
+ * build a 0.44 %-yielding name arrives as `0.44`, passes this bound, and reads
+ * "44 %" — while every correct payer on that same build (`2.5`) is above the
+ * bound and vanishes. Filtering on the bound alone therefore deletes the right
+ * answers and keeps the wrong ones (#1790).
+ *
+ * Determining the unit is the provider mapper's job and needs evidence, not a
+ * range: see `mapDividendEvents` in `apps/api/src/providers/yahooMapping.ts`,
+ * which cross-checks the reported figure against the payload's own annual
+ * dividend per share ÷ price and publishes only the reading that check confirms.
+ * This bound stays as the schema's last sanity gate on the result.
+ */
+export const DIVIDEND_FORWARD_YIELD_MAX = 1;
+
 /** The provider payload for the dividends capability. */
 export const dividendEventsSchema = z
   .object({
     /** Canonical currency of the payouts, or null when the provider omitted it. */
     currency: currencyCodeSchema.nullable(),
-    /** Past payouts, ascending by ex-date. */
+    /**
+     * Past payouts, ascending by ex-date. The read service dedupes and bounds
+     * this list before it reaches a client (`DIVIDEND_HISTORY_MAX_EVENTS` in
+     * `services/marketIntel/marketIntelService.ts`, where the news digest's
+     * bound also lives) — a provider is not a trust boundary.
+     */
     history: z.array(dividendEventSchema),
     /** Known upcoming ex/pay dates (forward calendar). */
     upcoming: z.array(dividendEventSchema),
     /**
-     * Forward annual dividend yield as the provider reports it (a fraction —
-     * `0.015` ≈ 1.5 %), where cheaply available (arc e). Null when absent.
+     * Forward annual dividend yield as a **fraction** — `0.015` ≈ 1.5 % — where
+     * cheaply available (arc e). Null when absent, and null whenever the
+     * provider mapper could not *determine* that the upstream figure is in this
+     * convention (see {@link DIVIDEND_FORWARD_YIELD_MAX}): an unpublished yield,
+     * never a 100×-wrong one.
      */
-    forwardYield: z.number().nullable(),
-    /** Trailing 12-month dividend per share in `currency`, where available. */
+    forwardYield: z.number().min(0).max(DIVIDEND_FORWARD_YIELD_MAX).nullable(),
+    /**
+     * Annual dividend per share in `currency`, where available — the forward
+     * estimate a projection multiplies. Its basis is **not** fixed: providers
+     * supply a realized trailing-12-month sum or a forward-annualized regular
+     * rate depending on what they populate, so read `trailingAmountBasis` to
+     * know which one this payload carries. (The field name is historical; it has
+     * always carried whichever of the two the provider had.)
+     */
     trailingAmount: z.number().nonnegative().nullable(),
+    /**
+     * Which basis {@link DIVIDEND_AMOUNT_BASES} `trailingAmount` carries. Null
+     * exactly when `trailingAmount` is null — a number never travels without the
+     * basis that explains it.
+     */
+    trailingAmountBasis: dividendAmountBasisSchema.nullable(),
   })
   .strict();
 export type DividendEvents = z.infer<typeof dividendEventsSchema>;
@@ -101,6 +173,18 @@ export type DividendsResponse = z.infer<typeof dividendsResponseSchema>;
 // from the same provider/cache keystone (NO storage). `available` mirrors the
 // per-asset shape: it is the global `MARKET_INTEL_ENABLED` gate, so the UI hides
 // the whole block when it is false (invisible when unconfigured).
+
+/**
+ * Roll-up completeness marker, shared by the three book-wide reads (dividend
+ * calendar, dividend projection, news digest). Those reads fan out one provider
+ * call per held/watched asset onto a shared, deliberately small outbound queue
+ * (§5.3), so the server caps the fan-out per request. Present and `true` ONLY
+ * when the caller's book exceeded that cap and the response therefore covers a
+ * deterministic subset of it (held before watchlist-only, then by symbol);
+ * absent means the whole book was covered. Optional so a complete roll-up keeps
+ * exactly the shape it has always had.
+ */
+export const rollupTruncatedSchema = z.literal(true).optional();
 
 /** Whether a calendar entry's asset is currently held or only watchlisted. */
 export const DIVIDEND_CALENDAR_SOURCES = ['holding', 'watchlist'] as const;
@@ -136,16 +220,19 @@ export const dividendCalendarResponseSchema = z
   .object({
     available: z.boolean(),
     entries: z.array(dividendCalendarEntrySchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type DividendCalendarResponse = z.infer<typeof dividendCalendarResponseSchema>;
 
 /**
  * One holding's projected annual dividend income. `annualPerShare` is the
- * forward estimate in the asset's dividend `currency` (the provider's trailing
- * 12-month dividend per share, the standard "assume it continues" proxy);
- * `annualIncomeEur` is `quantity × annualPerShare` converted to EUR at the
- * current spot rate.
+ * forward estimate in the asset's **dividend** `currency` (the standard "assume
+ * it continues" proxy) and `annualPerShareBasis` names which basis that estimate
+ * carries. `annualIncomeBase` is `quantity × annualPerShare` converted once, at
+ * the current spot rate, into the **response's** `currency` — the caller's base
+ * (§5.4) — which is a different field from this holding's `currency`; the
+ * suffix is what keeps the two apart.
  */
 export const projectedDividendHoldingSchema = z
   .object({
@@ -155,28 +242,61 @@ export const projectedDividendHoldingSchema = z
     quantity: z.number().nonnegative(),
     annualPerShare: z.number().nonnegative(),
     currency: currencyCodeSchema,
-    annualIncomeEur: z.number().nonnegative(),
+    annualPerShareBasis: dividendAmountBasisSchema,
+    annualIncomeBase: z.number().nonnegative(),
   })
   .strict();
 export type ProjectedDividendHolding = z.infer<typeof projectedDividendHoldingSchema>;
 
 /**
  * `GET /assets/portfolio/dividend-projection` — projected dividend income for
- * the whole portfolio, monthly + yearly, EUR. `monthlyTotalEur` is
- * `yearlyTotalEur / 12` (an even spread — the clean series shape the V5-P6b
- * Forecast consumes). `currency` is always EUR. `available: false` (gate off) ⇒
- * zeros/empty and hidden.
+ * the whole portfolio, monthly + yearly.
+ *
+ * `currency` is the **caller's base currency** (§5.4: EUR is the default, never
+ * a constant), and every `…Base`-suffixed amount here and in `holdings` is
+ * denominated in it. That is not cosmetic: the V5-P6b Forecast adds this figure
+ * to a base-denominated net worth and renders the sum with the base's symbol, so
+ * a EUR-pinned total would put two denominations under one label. The field
+ * names deliberately no longer assert a currency — the payload names it.
+ *
+ * `monthlyTotalBase` is `yearlyTotalBase / 12` (an even spread — the clean
+ * series shape the Forecast consumes). `available: false` (gate off, an
+ * unresolvable holding, or a book over the fan-out cap) ⇒ zeros/empty and
+ * hidden, with `currency` still naming the base those zeros are in.
+ *
+ * `basis` names what the totals are made of ({@link DIVIDEND_PROJECTION_BASES}),
+ * and is null exactly when no holding contributed — an unavailable or all-zero
+ * projection describes nothing. A `trailing-12m` total includes any special
+ * dividend paid in the last twelve months and so reads well above true forward
+ * income for a year afterwards: every surface that renders the total must render
+ * this beside it, so the figure is not read as a forward promise (#1790).
  */
 export const projectedDividendIncomeResponseSchema = z
   .object({
     available: z.boolean(),
     currency: currencyCodeSchema,
-    monthlyTotalEur: z.number().nonnegative(),
-    yearlyTotalEur: z.number().nonnegative(),
+    monthlyTotalBase: z.number().nonnegative(),
+    yearlyTotalBase: z.number().nonnegative(),
+    basis: dividendProjectionBasisSchema.nullable(),
     holdings: z.array(projectedDividendHoldingSchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type ProjectedDividendIncomeResponse = z.infer<typeof projectedDividendIncomeResponseSchema>;
+
+/**
+ * Query for `GET /assets/portfolio/dividend-projection`. Omitted ⇒ the read
+ * stays user-wide across every active, non-vaulted portfolio (what the portfolio
+ * page's income line has always shown). `portfolioId` narrows it to ONE
+ * portfolio — the V5-P6b Forecast projects a single portfolio's net worth, so
+ * its dividend factor may only carry that portfolio's income. A portfolio the
+ * caller does not own simply matches no holdings (the repository is
+ * user-scoped), so the answer is an empty projection, never another user's.
+ */
+export const projectedDividendIncomeQuerySchema = z
+  .object({ portfolioId: z.string().uuid().optional() })
+  .strict();
+export type ProjectedDividendIncomeQuery = z.infer<typeof projectedDividendIncomeQuerySchema>;
 
 // ── Earnings (arc b) ─────────────────────────────────────────────────────────
 
@@ -185,10 +305,20 @@ export type ProjectedDividendIncomeResponse = z.infer<typeof projectedDividendIn
  * figures are still an estimate (an unconfirmed upcoming report); a past report
  * carries the actual EPS. EPS values are informational and left in the
  * provider's reporting unit (not converted to the portfolio base).
+ *
+ * The two dates are DIFFERENT things and each has its own field (#1790): `date`
+ * is when the results are/were **announced** — the date a "next report" label
+ * may show — and `periodEnd` is the end of the fiscal period being reported on,
+ * which for a June quarter announced on 31 Jul is 28 Jun, over a month earlier.
+ * They used to share one field, so a reported quarter's period end rendered
+ * under a heading that meant announcement date. Either may be null: a provider
+ * that supplies only period ends for its history leaves `date` null there, and
+ * an upcoming report has no period end of its own to give.
  */
 export const earningsEventSchema = z
   .object({
     date: z.string().datetime().nullable(),
+    periodEnd: z.string().datetime().nullable(),
     epsEstimate: z.number().nullable(),
     epsActual: z.number().nullable(),
     estimated: z.boolean(),
@@ -199,9 +329,18 @@ export type EarningsEvent = z.infer<typeof earningsEventSchema>;
 /** The provider payload for the earnings capability. */
 export const earningsEventsSchema = z
   .object({
-    /** The next (upcoming) earnings report, or null when none is known. */
+    /**
+     * The next (upcoming) earnings report, or null when none is known. `date` is
+     * its announcement date — note that a provider keeps returning the last one
+     * it knew about, so a consumer that labels this "next" MUST drop a date that
+     * has already passed (the read path's cache is served stale for days).
+     */
     next: earningsEventSchema.nullable(),
-    /** Recent past reports, ascending by date. */
+    /**
+     * Recent past reports, ascending by the date they carry. Yahoo's history
+     * gives only the fiscal period end, so these rows carry `periodEnd` and a
+     * null `date`; a surface renders them as the period they are.
+     */
     recent: z.array(earningsEventSchema),
   })
   .strict();
@@ -238,12 +377,15 @@ export type EarningsCalendarEntry = z.infer<typeof earningsCalendarEntrySchema>;
  * `GET /assets/intel/earnings-calendar` — the caller's upcoming-earnings feed
  * across held + watched assets, ascending by date (the Workboard panel, arc b).
  * `available` is false (and `entries` empty) whenever the global gate is off, so
- * the panel stays invisible when the arc is unconfigured.
+ * the panel stays invisible when the arc is unconfigured. `truncated` is set
+ * when the book exceeded the roll-up fan-out budget and the calendar therefore
+ * covers only part of it — the panel must say so rather than read as complete.
  */
 export const earningsCalendarResponseSchema = z
   .object({
     available: z.boolean(),
     entries: z.array(earningsCalendarEntrySchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type EarningsCalendarResponse = z.infer<typeof earningsCalendarResponseSchema>;
@@ -305,6 +447,7 @@ export const newsDigestResponseSchema = z
   .object({
     available: z.boolean(),
     groups: z.array(newsDigestGroupSchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type NewsDigestResponse = z.infer<typeof newsDigestResponseSchema>;

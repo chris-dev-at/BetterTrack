@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { currencyCodeSchema } from './market';
+import { MAX_TRANSACTION_PRICE } from './portfolio';
 
 /**
  * Standing orders — scheduled recurring actions that auto-record on their own
@@ -44,6 +45,104 @@ export const STANDING_ORDER_AMOUNT_MAX = 1_000_000_000;
 
 /** An ISO `YYYY-MM-DD` calendar day (the schedule speaks in calendar dates). */
 const isoDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO YYYY-MM-DD day');
+
+/** One candidate price for an automatic `buy-asset` booking, as both engines see it. */
+export interface StandingOrderQuoteCandidate {
+  /** The polled provider price (or local valuation), denominated in `quoteCurrency`. */
+  price: number;
+  /** The currency the quote is denominated in. */
+  quoteCurrency: string;
+  /** The order's stored currency — server-derived from the asset at create time. */
+  orderCurrency: string;
+  /** The asset row's own native currency; `null` when it cannot be resolved. */
+  assetCurrency: string | null;
+}
+
+/** Why a quote may not price an automatic buy. */
+export const STANDING_ORDER_QUOTE_REFUSALS = [
+  'price-not-finite',
+  'price-not-positive',
+  'price-above-ceiling',
+  'currency-mismatch',
+] as const;
+export type StandingOrderQuoteRefusal = (typeof STANDING_ORDER_QUOTE_REFUSALS)[number];
+
+/**
+ * The one definition of a bookable automatic-buy quote, shared by the server
+ * engine and the vault twin so they cannot drift (#1712).
+ *
+ * A stored transaction price is a bare number that is later converted using the
+ * ASSET's currency, so a quote answered in another currency (a failover chain
+ * reaching a secondary listing, say) would be silently reinterpreted at the
+ * wrong FX rate — permanently wrong cost basis, P/L and tax. `NaN` is a legal
+ * Postgres `numeric` that sorts above every number, so it would also pass the
+ * non-negative price constraint and poison every later valuation. Both are
+ * refused here rather than booked, and the ceiling is
+ * {@link MAX_TRANSACTION_PRICE} — the very bound the manual write path's
+ * `transactionInputSchema` enforces — so the engines and the contract cannot
+ * disagree about what a writable price is.
+ *
+ * A refusal is never a booking: the caller leaves the period unclaimed so it
+ * retries (and surfaces through the standard `standing_order.skipped` notice).
+ * An unresolvable `assetCurrency` counts as a mismatch — agreement it cannot
+ * prove is not agreement.
+ */
+export function standingOrderQuoteRefusal(
+  candidate: StandingOrderQuoteCandidate,
+): StandingOrderQuoteRefusal | null {
+  if (!Number.isFinite(candidate.price)) return 'price-not-finite';
+  if (candidate.price <= 0) return 'price-not-positive';
+  if (candidate.price >= MAX_TRANSACTION_PRICE) return 'price-above-ceiling';
+  if (
+    candidate.assetCurrency === null ||
+    candidate.quoteCurrency !== candidate.orderCurrency ||
+    candidate.assetCurrency !== candidate.orderCurrency
+  ) {
+    return 'currency-mismatch';
+  }
+  return null;
+}
+
+/** One conformance vector: a quote both booking twins must refuse. */
+export interface StandingOrderQuoteRefusalVector {
+  /** Human-readable case name, used as the test title on both sides. */
+  name: string;
+  price: number;
+  currency: string;
+  refusal: StandingOrderQuoteRefusal;
+}
+
+/** The order/asset currency the refusal vectors below are stated against. */
+export const STANDING_ORDER_QUOTE_VECTOR_CURRENCY = 'EUR';
+
+/**
+ * The bad quotes BOTH engines must refuse for an order and asset priced in
+ * {@link STANDING_ORDER_QUOTE_VECTOR_CURRENCY} — one shared table rather than
+ * two prose copies, so the API suite and the vault suite assert the same
+ * conditions (#1712).
+ */
+export const STANDING_ORDER_QUOTE_REFUSAL_VECTORS: readonly StandingOrderQuoteRefusalVector[] = [
+  { name: 'a NaN price', price: Number.NaN, currency: 'EUR', refusal: 'price-not-finite' },
+  { name: 'a zero price', price: 0, currency: 'EUR', refusal: 'price-not-positive' },
+  {
+    name: 'a price at the transaction ceiling',
+    price: MAX_TRANSACTION_PRICE,
+    currency: 'EUR',
+    refusal: 'price-above-ceiling',
+  },
+  {
+    name: 'a price above the transaction ceiling',
+    price: MAX_TRANSACTION_PRICE * 10,
+    currency: 'EUR',
+    refusal: 'price-above-ceiling',
+  },
+  {
+    name: 'a foreign-currency quote',
+    price: 128.4,
+    currency: 'USD',
+    refusal: 'currency-mismatch',
+  },
+];
 
 /**
  * Create a standing order. `assetId` is required exactly for `buy-asset` and
@@ -141,8 +240,11 @@ export const standingOrderSchema = z
     status: standingOrderStatusSchema,
     /**
      * True when the owning portfolio is archived, regardless of manual pause
-     * state. The API always emits it; optional because the vault surface does
-     * not model archive suspension yet (#1188).
+     * state. Both producers emit it — the API from the portfolio's
+     * `archived_at`, the vault store from the local portfolio entity's
+     * `archivedAt` (#1712) — and both suspend the schedule on it, so
+     * `nextRunDate` is null while it is true. Optional only so a payload
+     * captured before the field existed still parses.
      */
     suspendedByArchive: z.boolean().optional(),
     /**

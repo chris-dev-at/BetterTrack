@@ -6,7 +6,9 @@ import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { apiBaseUrl } from '../../lib/runtimeConfig';
 import { formatDateTime } from '../../lib/format';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
 /**
@@ -59,6 +61,7 @@ export function MonitoringPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [override, setOverride] = useState<MonitoringStatusResponse | null>(null);
+  const onFailure = useAdminCallFailure();
 
   const resource = useResource((signal) => api.getMonitoringStatus(signal), []);
   const { loading, error, reload } = resource;
@@ -71,19 +74,23 @@ export function MonitoringPage() {
       setActionError(null);
       try {
         setOverride(await api.setMonitoringExternalAccess(enabled));
-      } catch {
-        setActionError(t('admin.monitoring.actionError'));
+      } catch (err) {
+        // The kill-switch write addresses no removable row, so a 404 here is
+        // §6.12's "not an admin any more" — the console signs out rather than
+        // reporting a failed toggle it can never retry (#1814).
+        if (!onFailure(err, 'session')) setActionError(t('admin.monitoring.actionError'));
       } finally {
         setBusy(false);
       }
     },
-    [t],
+    [onFailure, t],
   );
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <PageHeader
+          eyebrow={t('admin.nav.sections.operations')}
           title={t('admin.monitoring.title')}
           description={t('admin.monitoring.subtitle')}
         />
@@ -97,6 +104,9 @@ export function MonitoringPage() {
           {t('admin.monitoring.refresh')}
         </Button>
       </div>
+
+      {/* W4 folds Operations into one tab strip; this page is a tab of it. */}
+      <WorkspaceTabs />
 
       {actionError ? <Alert tone="error">{actionError}</Alert> : null}
 

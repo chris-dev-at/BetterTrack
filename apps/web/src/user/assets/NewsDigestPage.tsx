@@ -50,10 +50,15 @@ function NewsGroupCard({ group }: { group: NewsDigestGroup }) {
  * `/assets/news` — the portfolio news digest (PROJECTPLAN.md §13.5 V5-P5, arc
  * c). Aggregates recent headlines across the caller's held + watchlist assets,
  * grouped per asset and newest-first, over the same `MARKET_INTEL_ENABLED` gate
- * as the per-asset feeds. When the arc is unconfigured (or the provider serves
- * no news) the endpoint returns the "unconfigured" shape and this view shows a
- * calm empty state — no news content renders anywhere (regression-guarded). Each
- * group's feed is compact + expandable per the anti-bloat rule.
+ * as the per-asset feeds. Each group's feed is compact + expandable per the
+ * anti-bloat rule.
+ *
+ * The destination itself disappears when the arc is unconfigured (the section
+ * nav and the ⌘K registry both gate on `capabilities.marketIntel`), so this
+ * page is only reachable by direct URL then — and it says so: `available:
+ * false` renders an explicit unavailable state, NEVER the "no headlines yet"
+ * empty state, which would misreport a deploy-level kill-switch as a quiet news
+ * day.
  */
 export function NewsDigestPage() {
   const t = useT();
@@ -63,7 +68,17 @@ export function NewsDigestPage() {
     staleTime: NEWS_DIGEST_STALE_MS,
   });
 
+  const unavailable = data !== undefined && !data.available;
   const groups = data?.available ? data.groups : [];
+  // The server caps the per-request provider fan-out (§5.3), so a book past that
+  // budget yields a digest covering only part of it. Say so on a single line —
+  // a partial digest rendered as complete reads as "nothing else happened".
+  // The line is tied to `truncated`, NOT to having groups to show: the cap runs
+  // over the raw book before the news-capability filter, so a capped selection
+  // can yield zero groups, and the empty state ("News appears here once there
+  // are headlines for the assets you hold or watch") is the loudest
+  // claim-of-completeness on the page.
+  const truncated = data?.available === true && data.truncated === true;
 
   return (
     <div className="flex flex-col gap-6">
@@ -89,17 +104,24 @@ export function NewsDigestPage() {
             <Alert tone="error">{t('assets.news.loadError')}</Alert>
             <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
           </div>
-        ) : groups.length === 0 ? (
+        ) : unavailable ? (
           <EmptyState
-            icon="📰"
-            title={t('assets.news.emptyTitle')}
-            description={t('assets.news.emptyDescription')}
+            icon="🚫"
+            title={t('assets.news.unavailableTitle')}
+            description={t('assets.news.unavailableDescription')}
           />
         ) : (
           <div className="flex flex-col gap-3">
-            {groups.map((g) => (
-              <NewsGroupCard key={g.assetId} group={g} />
-            ))}
+            {truncated ? <p className="bt-meta">{t('assets.news.truncated')}</p> : null}
+            {groups.length === 0 ? (
+              <EmptyState
+                icon="📰"
+                title={t('assets.news.emptyTitle')}
+                description={t('assets.news.emptyDescription')}
+              />
+            ) : (
+              groups.map((g) => <NewsGroupCard key={g.assetId} group={g} />)
+            )}
           </div>
         )}
       </section>

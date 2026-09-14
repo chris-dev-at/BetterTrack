@@ -43,6 +43,12 @@ Do, in order:
    bug-fix/hardening work that is actionable now.
 3. Create up to {{BATCH}} new issues — only work that is actionable RIGHT NOW or actionable once another issue IN THIS BATCH closes (declare that with depends-on). Before creating each candidate, confirm it is not a duplicate with a TARGETED search — `gh issue list --state all --search "<keywords>"` per candidate — never a full listing. Each issue:
 
+   - SIZING (owner 2026-08-29): prefer FEWER, LARGER, coherent issues — one
+     singular step a single agent run can finish, never a spray of sibling
+     micro-nits. When several open residuals touch the same module, compose ONE
+     consolidated package that absorbs them (name the absorbed issue numbers in
+     Context) instead of adding more siblings. A batch smaller than {{BATCH}} is
+     always acceptable; padding the batch is not.
    - Title: `"[<phase-id>] <verb> <thing>"`, using the phase identifier exactly as
      the current milestone digest gives it (for example `V5-P14`) — one coherent
      work package a single agent run can finish. A brief-authorized maintenance

@@ -97,6 +97,7 @@ function stubMarketData(
     getFundamentals: unused('getFundamentals'),
     settled: async () => {},
     breakerStates: () => [],
+    breakerSnapshots: () => [],
     failoverStatus: () => ({ chains: [], switches: [], attribution: [] }),
   };
   return { service, getQuote, getHistory };

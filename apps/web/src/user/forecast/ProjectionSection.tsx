@@ -1,13 +1,21 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contracts';
+import type {
+  DividendProjectionBasis,
+  PortfolioHistoryRange,
+  PortfolioSummary,
+} from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
+import { type TranslateFn, useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
-import { formatMoney } from '../../lib/format';
-import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
+import { useDeployCapability } from '../../lib/featureFlags';
+import { formatMoney, getMoneyCurrency } from '../../lib/format';
+import {
+  getPortfolioDividendProjectionFor,
+  PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY,
+} from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
 import { MAIN_SERIES } from '../../ui/charts/palette';
@@ -15,7 +23,11 @@ import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
-import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
+import { clientSeriesTwrCagrPct } from '../vault/engine/clientSeries';
+import {
+  STANDING_ORDER_SCHEDULE_TZ,
+  calendarDayInTimezone,
+} from '../vault/standingOrders/schedule';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 import {
@@ -26,6 +38,8 @@ import {
   clampForecastReturnPct,
   normalizeStandingOrders,
   projectNetWorth,
+  returnFactorContainsDistributions,
+  type ForecastAssetPrice,
   type ForecastWhatIfPlan,
 } from './projection';
 
@@ -36,12 +50,21 @@ const ProjectionChart = lazy(() =>
 /**
  * Forecast projection view (PROJECTPLAN.md §13.5 V5-P6b arc (b), issue #596) —
  * the deterministic client-side net-worth projection that fills the #594 slot.
- * It reads the active portfolio's value + sampled historical return, its active
- * standing orders and the projected dividend income, then draws the base
- * projection with one overlay per local what-if plan. Every factor toggles
+ * It reads the active portfolio's value + sampled historical return (the
+ * time-weighted one, #1759 — the value curve's CAGR counts the user's own
+ * deposits as return), its active standing orders and the projected dividend
+ * income, then draws the base projection with one overlay per local what-if
+ * plan. Every factor toggles
  * individually and the base line responds; what-if plans are local state only
  * (never persisted). The engine (`./projection`) is pure and hand-fixtured; this
  * surface only resolves inputs and renders — compact per the anti-bloat rule.
+ *
+ * The factors are not independent, and the engine owns the rule that says so
+ * (#1892): a sampled return is a TOTAL return, so the projected dividend income
+ * is already inside the line it draws and is not added on top of it. This
+ * surface renders that composition — the dividend control stays on the page,
+ * disabled, saying which factor already carries its number — rather than
+ * restating the arithmetic.
  */
 
 /**
@@ -67,6 +90,10 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const t = useT();
   const store = usePortfolioStore();
   const privacyMode = useResolvedPrivacyMode();
+  // Whether this deployment has market intelligence at all (§13.5 V5-P5). Off ⇒
+  // the dividend factor does not exist here; that is a different statement from
+  // "configured, but this portfolio's projection could not be computed".
+  const marketIntel = useDeployCapability('marketIntel');
 
   const portfolioId = useMemo(() => {
     const available = portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
@@ -124,10 +151,14 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     staleTime: 60_000,
   });
 
+  // Scoped to the portfolio this section projects, key included: the starting
+  // value is ONE portfolio's `totalValueEur`, so a user-wide dividend total
+  // would add the other portfolios' income to this portfolio's curve, and a
+  // portfolio-less key would then serve that figure to the next portfolio too.
   const dividendQuery = useQuery({
-    queryKey: ['portfolio', 'dividend-projection'],
-    queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
-    enabled: portfolioId !== null && privacyMode === 'normal',
+    queryKey: PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY(portfolioId ?? ''),
+    queryFn: ({ signal }) => getPortfolioDividendProjectionFor(portfolioId!, signal),
+    enabled: portfolioId !== null && privacyMode === 'normal' && marketIntel,
     staleTime: 60_000,
   });
 
@@ -156,26 +187,30 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             : [{ error: historyQuery.error, refetch: () => historyQuery.refetch() }]),
         ];
 
-  // The sampled historical return over the selected window (null when the series
-  // is too short to state a CAGR); it drives the return field until edited. The
-  // paranoid branch goes through `clientSeriesCagrPct` so the window's zero
-  // edges are trimmed exactly like the analytics header trims them.
+  // The sampled historical return over the selected window (null when the
+  // window is too short to state a rate); it drives the return field until
+  // edited. Both branches sample a TIME-WEIGHTED return (#1759) — the server's
+  // `twr` block, and the vault's own performance curve — never the value curve's
+  // CAGR, which rises with every contribution the user made and would then be
+  // compounded forward on top of those same contributions. The paranoid branch
+  // trims the 5Y envelope to the exact 3Y boundary itself, then the domain
+  // rebases onto that window's first point.
   const sampledReturnPct =
     privacyMode === 'paranoid'
       ? historyQuery.data == null
         ? null
-        : clientSeriesCagrPct(
-            historyQuery.data.points.filter(
+        : clientSeriesTwrCagrPct(
+            historyQuery.data.performance.filter(
               (point) => windowFrom === undefined || point.date >= windowFrom,
             ),
           )
-      : (analyticsQuery.data?.primary.stats.cagrPct ?? null);
+      : (analyticsQuery.data?.twr?.cagrPct ?? null);
   useEffect(() => {
     setReturnPct(sampledReturnPct === null ? '' : String(round2(sampledReturnPct)));
   }, [sampledReturnPct]);
 
   // ── Resolve the projection factors ──────────────────────────────────────────
-  const startingNetWorthEur = portfolioQuery.data?.totals.totalValueEur ?? 0;
+  const startingNetWorth = portfolioQuery.data?.totals.totalValueEur ?? 0;
   // `projectNetWorth` projects WHOLE years (it rounds its own input), so the
   // horizon is resolved to that same integer here, once, at the section
   // boundary: the label, the chart and the projected stat then all describe the
@@ -189,19 +224,108 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     FORECAST_HORIZON_MAX_YEARS,
   );
   const enteredReturnPct = safeNumber(returnPct);
-  const annualReturnPct = returnEnabled ? clampForecastReturnPct(enteredReturnPct) : 0;
-  const returnPctIsClamped = returnEnabled && enteredReturnPct !== annualReturnPct;
-  const standingOrders = ordersEnabled
-    ? normalizeStandingOrders(ordersQuery.data?.orders ?? [])
-    : [];
-  const dividendAvailable = dividendQuery.data?.available === true;
-  const monthlyDividendEur =
-    dividendEnabled && dividendAvailable ? dividendQuery.data!.monthlyTotalEur : 0;
+  // `null`, not 0, whenever this run states NO return assumption: the engine
+  // reads that absence as the one state where projected income is a flow of its
+  // own (#1892), and a 0 %/yr assumption is not that state.
+  //
+  // Two ways to be in it, and the blank field is the one that bites. The factor
+  // may be off — or on over an EMPTY rate, which is what a portfolio whose
+  // history cannot state a CAGR prefills (`sampledReturnPct === null` ⇒ the
+  // effect above writes `''`), and what clearing the field gives. `safeNumber('')`
+  // is 0, so reading that blank as a rate would claim the user asserted a 0 %
+  // TOTAL return, disable the dividend factor and tell them an average return
+  // they never sampled already contains the income — taking the only factor
+  // that moved that line off a fresh portfolio's curve. The projected rate is 0
+  // either way; what differs is whether the income is still a flow of its own.
+  const returnAssumed = returnEnabled && returnPct.trim() !== '';
+  const annualReturnPct = returnAssumed ? clampForecastReturnPct(enteredReturnPct) : null;
+  const returnPctIsClamped = annualReturnPct !== null && enteredReturnPct !== annualReturnPct;
+  // Three distinct dividend-factor states (#1681). No market intel on this
+  // deployment, or an account mode that never reads the endpoint (paranoid
+  // vaults project locally) ⇒ `dividendProjection` stays undefined and no
+  // control renders. A resolved projection ⇒ a normal toggle. A projection this
+  // portfolio could not resolve — #1616 makes the total all-or-nothing, so one
+  // unresolvable holding lands here — ⇒ the control stays on the page, disabled
+  // and explained, rather than removing the reason for the lower curve. Either
+  // way an unusable factor contributes exactly 0, as before.
+  const dividendProjection = marketIntel ? dividendQuery.data : undefined;
+  // The projection now names its own denomination — the caller's base (§5.4) —
+  // and the balance it is added to is in that same base. They can still disagree
+  // for one render after a base change (either response may be the cached one),
+  // and adding a figure in another currency to this balance is exactly the
+  // defect #1741 closes: a mismatch counts as "could not resolve", so the factor
+  // contributes 0 and says so rather than silently distorting the curve.
+  //
+  // The comparison is against the OTHER OPERAND's own denomination — the base
+  // that travels beside `totals.totalValueEur` in the very same payload — not
+  // against the display global. Comparing to the global would compare one
+  // operand to the label and let a stale portfolio payload through in exactly
+  // the window this guard exists for. Without a portfolio payload there is no
+  // balance either (the start is 0), so the display currency it renders under is
+  // the right fallback.
+  const netWorthCurrency = portfolioQuery.data?.baseCurrency ?? getMoneyCurrency();
+  const dividendDenominationMatches =
+    dividendProjection === undefined || dividendProjection.currency === netWorthCurrency;
+  const dividendAvailable = dividendProjection?.available === true && dividendDenominationMatches;
+  const dividendUnresolved = dividendProjection !== undefined && !dividendAvailable;
+  // A fourth state, and NOT the third one wearing its copy (#1690): the book is
+  // past the per-request provider fan-out budget (§5.3), so the projection
+  // refused before computing anything. "Too many holdings to fan out" and "one
+  // holding could not be computed" are different answers to the user.
+  const dividendTruncated = dividendProjection?.truncated === true;
+  // A fifth state, and the one the tab ships in (#1892): the return factor is
+  // on, so the curve ALREADY contains this income — the sampled TWR is a total
+  // return and a `dividend` is internal to it by design (§domain cashLedger).
+  // Adding the projection on top would book the same euro twice, so the engine
+  // drops it; the control says why instead of offering a toggle that either
+  // moves nothing or moves the line wrongly.
+  const dividendInReturn = dividendAvailable && returnFactorContainsDistributions(annualReturnPct);
+  const monthlyDividend =
+    dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalBase : 0;
+
+  // The standing-orders factor gets the same three states (#1759). A cash
+  // order's `amount` is a EUR magnitude by contract while the balance it would
+  // join is in `netWorthCurrency`, so the engine refuses to mix them: for a
+  // non-EUR base the factor is RESOLVED-BUT-NOT-COMPARABLE — present, disabled,
+  // and named — rather than silently adding 3.000 CHF a month where the
+  // schedule will book 3.000 €. Absent (no orders loaded, or none that continue
+  // forward) stays the plain enabled toggle contributing nothing, and a
+  // base-matching set is the ordinary resolved factor.
+  //
+  // A buy-asset order's `amount` is a share QUANTITY, so only a unit price turns
+  // it into the money its booking will record (#1892). The portfolio read this
+  // section already makes carries one per holding in the asset's own currency,
+  // and the engine puts that price through the SAME base gate as a cash order's
+  // magnitude. A buy it cannot price at all is the factor's second unresolved
+  // reason — same all-or-nothing rule, its own sentence to the user.
+  //
+  // That holdings read is the ONLY price source here, and the dialog picks a
+  // buy's asset from the global search rather than from holdings — so a savings
+  // plan for an asset not yet held has no entry and refuses the factor by name
+  // until its first occurrence books. Explained rather than silently smaller,
+  // and self-healing; reading a quote per distinct order asset id is the
+  // follow-up that would price it on day one.
+  const assetPrices = useMemo(() => {
+    const prices = new Map<string, ForecastAssetPrice>();
+    for (const holding of portfolioQuery.data?.holdings ?? []) {
+      if (holding.price === null) continue;
+      prices.set(holding.asset.id, { price: holding.price, currency: holding.asset.currency });
+    }
+    return prices;
+  }, [portfolioQuery.data]);
+  const normalizedOrders = normalizeStandingOrders(
+    ordersQuery.data?.orders ?? [],
+    netWorthCurrency,
+    assetPrices,
+  );
+  const ordersUnresolved =
+    normalizedOrders.foreignCurrencies.length > 0 || normalizedOrders.unpricedAssets.length > 0;
+  const standingOrders = ordersEnabled && !ordersUnresolved ? normalizedOrders.orders : [];
 
   const whatIfPlans: ForecastWhatIfPlan[] = plans.map((plan, index) => ({
     id: plan.id,
     label: plan.label.trim() || t('forecast.projection.whatIf.defaultLabel', { n: index + 1 }),
-    monthlyContributionEur: safeNumber(plan.monthlyContribution),
+    monthlyContribution: safeNumber(plan.monthlyContribution),
     annualReturnPct: plan.ownReturn.trim() === '' ? null : safeNumber(plan.ownReturn),
   }));
 
@@ -209,20 +333,20 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     () =>
       projectNetWorth({
         asOf,
-        startingNetWorthEur,
+        startingNetWorth,
         horizonYears,
         annualReturnPct,
         standingOrders,
-        monthlyDividendEur,
+        monthlyDividend,
         whatIfPlans,
       }),
     [
       asOf,
-      startingNetWorthEur,
+      startingNetWorth,
       horizonYears,
       annualReturnPct,
       JSON.stringify(standingOrders),
-      monthlyDividendEur,
+      monthlyDividend,
       JSON.stringify(whatIfPlans),
     ],
   );
@@ -243,7 +367,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     return row;
   });
 
-  const finalBase = result.base[result.base.length - 1]?.value ?? startingNetWorthEur;
+  const finalBase = result.base[result.base.length - 1]?.value ?? startingNetWorth;
 
   // The base line plus each overlay, paired with a colour and final value — feeds
   // both the SVG lines and the accessible HTML legend the tests read.
@@ -353,13 +477,48 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
           <FactorToggle
             label={t('forecast.projection.factor.standingOrders')}
-            checked={ordersEnabled}
+            checked={ordersEnabled && !ordersUnresolved}
+            disabled={ordersUnresolved}
+            note={
+              normalizedOrders.foreignCurrencies.length > 0
+                ? t('forecast.projection.ordersUnconvertible', {
+                    orderCurrency: normalizedOrders.foreignCurrencies.join(', '),
+                    baseCurrency: netWorthCurrency,
+                  })
+                : normalizedOrders.unpricedAssets.length > 0
+                  ? // The list is joined into one sentence, so the sentence has
+                    // to agree with its own length — "its recurring buy" over
+                    // two named assets reads as a copy bug in both catalogs.
+                    t(
+                      normalizedOrders.unpricedAssets.length === 1
+                        ? 'forecast.projection.ordersUnpricedOne'
+                        : 'forecast.projection.ordersUnpricedOther',
+                      { assets: normalizedOrders.unpricedAssets.join(', ') },
+                    )
+                  : undefined
+            }
             onChange={setOrdersEnabled}
           />
-          {dividendAvailable ? (
+          {dividendAvailable || dividendUnresolved ? (
             <FactorToggle
               label={t('forecast.projection.factor.dividends')}
-              checked={dividendEnabled}
+              checked={dividendEnabled && dividendAvailable && !dividendInReturn}
+              disabled={dividendUnresolved || dividendInReturn}
+              note={
+                dividendTruncated
+                  ? t('forecast.projection.dividendsTruncated')
+                  : dividendUnresolved
+                    ? t('forecast.projection.dividendsUnresolved')
+                    : dividendInReturn
+                      ? t('forecast.projection.dividendsInReturn')
+                      : // A resolved factor says what its number is made of: a
+                        // `trailing-12m` estimate carries any special dividend of
+                        // the last twelve months and so projects income the
+                        // schedule does not promise, and a book may legitimately
+                        // mix the two bases (#1790). The contract has named the
+                        // basis since #1741; this is the Forecast rendering it.
+                        dividendBasisNote(dividendProjection?.basis ?? null, t)
+              }
               onChange={setDividendEnabled}
             />
           ) : null}
@@ -411,7 +570,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <StatCard
           label={t('forecast.projection.startingLabel')}
-          value={formatMoney(startingNetWorthEur)}
+          value={formatMoney(startingNetWorth)}
         />
         <StatCard
           label={t('forecast.projection.projectedLabel', { years: horizonYears })}
@@ -490,35 +649,78 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
 // ─── Small building blocks ───────────────────────────────────────────────────
 
-/** A labelled checkbox factor toggle; the wrapping label is its accessible name. */
+/**
+ * A labelled checkbox factor toggle; the wrapping label is its accessible name.
+ * An optional `note` sits outside that label — a disabled factor has to say why
+ * without renaming the control the assertion and the user both look for.
+ */
+/**
+ * What the dividend factor's number is made of, as the Forecast says it.
+ * Undefined when the projection names no basis — an unusable factor contributes
+ * 0 and already carries its own explanation.
+ */
+function dividendBasisNote(
+  basis: DividendProjectionBasis | null,
+  t: TranslateFn,
+): string | undefined {
+  switch (basis) {
+    case 'trailing-12m':
+      return t('forecast.projection.dividendsBasis.trailing12m');
+    case 'forward-annualized':
+      return t('forecast.projection.dividendsBasis.forwardAnnualized');
+    case 'mixed':
+      return t('forecast.projection.dividendsBasis.mixed');
+    default:
+      return undefined;
+  }
+}
+
 function FactorToggle({
   label,
   checked,
   onChange,
+  disabled = false,
+  note,
 }: {
   label: string;
   checked: boolean;
   onChange: (next: boolean) => void;
+  disabled?: boolean;
+  note?: string;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm bt-soft">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded"
-        style={{ accentColor: 'var(--bt-gold-graphic)' }}
-      />
-      <span>{label}</span>
-    </label>
+    <div className="flex flex-col gap-1">
+      <label className={cx('flex items-center gap-2 text-sm bt-soft', disabled && 'opacity-60')}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          className="h-4 w-4 rounded"
+          style={{ accentColor: 'var(--bt-gold-graphic)' }}
+        />
+        <span>{label}</span>
+      </label>
+      {note ? <p className="text-xs bt-muted">{note}</p> : null}
+    </div>
   );
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Today as ISO `YYYY-MM-DD` — the projection's month-0 anchor. */
+/**
+ * Today as ISO `YYYY-MM-DD` — the projection's month-0 anchor, resolved in the
+ * timezone the standing-order schedule itself speaks in (#1759).
+ *
+ * It used to be `new Date().toISOString()`, i.e. UTC, while the scan, the DTO's
+ * `nextRunDate` and the vault materializer all resolve "today" in
+ * `Europe/Vienna`. For a user loading the page between 00:00 and 01:00 (02:00
+ * in summer) on the 1st, UTC still says the previous month's last day — so
+ * every emitted point AND every monthly occurrence shifted a full month earlier
+ * than the schedule that will actually fire.
+ */
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return calendarDayInTimezone(new Date(), STANDING_ORDER_SCHEDULE_TZ);
 }
 
 function returnHistoryRange(window: ReturnWindow): PortfolioHistoryRange {

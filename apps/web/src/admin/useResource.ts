@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { localizedMessage, useI18n } from '../i18n';
 import { ApiError, classifyApiError } from '../lib/apiClient';
 import { isAdminTwoFactorSetupRequired, useAuth } from './AuthContext';
+import { adminSignOutReason } from './sessionExpiry';
 
 interface ResourceState<T> {
   data: T | null;
@@ -102,7 +103,14 @@ export function useResource<T>(
           return;
         }
         if (err instanceof ApiError && err.isNotAuthorized) {
-          clearSession();
+          // 401 OR 404 — unchanged (V5-P13c must not regress the read path, which
+          // is what makes a live-refresh page bounce on the first tick after the
+          // window closes instead of 401-looping). The REASON is per-failure: a
+          // 404 that names a domain outcome (`GET /admin/users/:id` answering
+          // `USER_NOT_FOUND` for an account another admin just deleted) still ends
+          // the surface, but must not claim on the login screen that this admin's
+          // session expired.
+          clearSession(adminSignOutReason(err));
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {

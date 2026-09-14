@@ -414,3 +414,174 @@ describe('digest mode (§13.5 V5-P3)', () => {
     expect(webpushCalls).toHaveLength(1);
   });
 });
+
+/**
+ * A quiet-hours-deferred digest summary (#1696). Such a row is the longest-lived
+ * row in the queue — a whole quiet window sits between the routing decision that
+ * produced it and its release — and it used to be waved past the release-time
+ * matrix re-check because it carries the synthetic summary type. It now carries
+ * a manifest of the types it summarizes and is re-checked against those.
+ */
+describe('quiet-hours-deferred digest summary re-checks the matrix (#1696)', () => {
+  // A UTC overnight window 22:00→07:00 (no timezone set ⇒ quiet hours in UTC).
+  const QUIET_START = 22 * 60;
+  const QUIET_END = 7 * 60;
+
+  let clock: Date;
+
+  /** A day whose period is certainly closed, at `hour`:30 UTC. */
+  function laterAt(hour: number, dayOffset = 8): Date {
+    const day = new Date(Date.now() + dayOffset * 24 * 60 * 60 * 1000);
+    day.setUTCHours(hour, 30, 0, 0);
+    return day;
+  }
+
+  function quietDigestService(): DigestService {
+    return createDigestService({
+      repo: digestRepo,
+      users: createUserRepository(db),
+      email,
+      // Quiet hours defer the summary; the matrix is re-resolved at release.
+      quietHours: digestRepo,
+      routing: createNotificationRepository(db),
+      now: () => clock,
+      logger: harness.ctx.logger,
+    });
+  }
+
+  /** Queue two email-routed daily items, then defer the summary to window end. */
+  async function deferSummaryFor(userId: string): Promise<void> {
+    await enableEmailFor(userId, 'friend.request', 'watchlist.shared');
+    await digestRepo.setCadences(userId, {
+      'friend.request': 'daily',
+      'watchlist.shared': 'daily',
+    });
+    await dispatcher.dispatch(friendRequestEvent({ userId, requestId: 'r1' }));
+    await dispatcher.dispatch(watchlistSharedEvent({ userId }));
+    await createUserRepository(db).setQuietHours(userId, {
+      enabled: true,
+      startMinute: QUIET_START,
+      endMinute: QUIET_END,
+      timezone: null,
+    });
+
+    // 23:30 UTC: the item period has closed and the run sits inside the window.
+    clock = laterAt(23);
+    const run = await quietDigestService().deliverDue('daily');
+    expect(run).toMatchObject({ groups: 1, sent: 0, deferred: 1 });
+    expect(transport.sent).toHaveLength(0);
+  }
+
+  /** Rewrite the email matrix for the user, as the settings surface would. */
+  async function setEmailMatrix(userId: string, config: Record<string, boolean>): Promise<void> {
+    await db
+      .update(notificationSettings)
+      .set({ config })
+      .where(eq(notificationSettings.userId, userId));
+  }
+
+  it('suppresses the summary for a channel switched off inside the window', async () => {
+    const user = await harness.seedUser({ email: 'q-off@bt.test', username: 'quietalloff' });
+    await deferSummaryFor(user.id);
+
+    // Both carried types lose email while the summary waits out the window.
+    await setEmailMatrix(user.id, { 'friend.request': false, 'watchlist.shared': false });
+
+    clock = laterAt(7, 9); // past window end, next day
+    expect(await quietDigestService().deliverDeferred()).toMatchObject({
+      claimed: 1,
+      sent: 0,
+      dropped: 1,
+    });
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it('keeps the still-routed items when only one carried type is switched off', async () => {
+    const user = await harness.seedUser({ email: 'q-part@bt.test', username: 'quietpartoff' });
+    await deferSummaryFor(user.id);
+
+    await setEmailMatrix(user.id, { 'friend.request': false, 'watchlist.shared': true });
+
+    clock = laterAt(7, 9);
+    expect(await quietDigestService().deliverDeferred()).toMatchObject({ claimed: 1, sent: 1 });
+    expect(transport.sent).toHaveLength(1);
+    expect(transport.sent[0]!.text).toContain('watchlist');
+    expect(transport.sent[0]!.text).not.toContain('friend request');
+  });
+
+  it('delivers a summary whose carried types are still routed unchanged', async () => {
+    const user = await harness.seedUser({ email: 'q-on@bt.test', username: 'quietstillon' });
+    await deferSummaryFor(user.id);
+
+    clock = laterAt(7, 9);
+    expect(await quietDigestService().deliverDeferred()).toMatchObject({
+      claimed: 1,
+      sent: 1,
+      dropped: 0,
+    });
+    expect(transport.sent).toHaveLength(1);
+    expect(transport.sent[0]!.text).toContain('friend request');
+    expect(transport.sent[0]!.text).toContain('watchlist');
+  });
+
+  it('re-renders the push summary count and never ships the manifest to the device', async () => {
+    const user = await harness.seedUser({ email: 'q-push@bt.test', username: 'quietpush' });
+    const pushCalls: { userId: string; message: PushMessage }[] = [];
+    const fcm = {
+      deliver: async (userId: string, message: PushMessage) => {
+        pushCalls.push({ userId, message });
+      },
+    };
+    await createUserRepository(db).setQuietHours(user.id, {
+      enabled: true,
+      startMinute: QUIET_START,
+      endMinute: QUIET_END,
+      timezone: null,
+    });
+    const period = digestPeriodKey('daily', new Date(OCCURRED_AT));
+    for (const type of ['friend.request', 'watchlist.shared']) {
+      await digestRepo.enqueue({
+        userId: user.id,
+        type,
+        channel: 'push',
+        cadence: 'daily',
+        period,
+        title: `${type} title`,
+        body: `${type} body`,
+        data: {},
+      });
+    }
+    const service = () =>
+      createDigestService({
+        repo: digestRepo,
+        users: createUserRepository(db),
+        fcm,
+        quietHours: digestRepo,
+        routing: createNotificationRepository(db),
+        now: () => clock,
+        logger: harness.ctx.logger,
+      });
+
+    // 23:30 UTC the day after the items' period: the period has closed and the
+    // run sits inside the 22:00→07:00 window.
+    clock = new Date('2026-07-19T23:30:00.000Z');
+    expect(await service().deliverDue('daily')).toMatchObject({ deferred: 1, sent: 0 });
+
+    // Push for watchlist.shared goes off while the summary waits.
+    await db.insert(notificationSettings).values({
+      userId: user.id,
+      channel: 'push',
+      enabled: true,
+      config: { 'friend.request': true, 'watchlist.shared': false },
+    });
+
+    clock = new Date('2026-07-20T07:30:00.000Z');
+    expect(await service().deliverDeferred()).toMatchObject({ claimed: 1, sent: 1 });
+    expect(pushCalls).toHaveLength(1);
+    // One of the two carried types survived: the body counts one, not two.
+    expect(pushCalls[0]!.message.body).toContain('1');
+    expect(pushCalls[0]!.message.body).not.toContain('2');
+    // The manifest is bookkeeping for the re-check, never deep-link data.
+    expect(pushCalls[0]!.message.data).toEqual({ cadence: 'daily' });
+  });
+});

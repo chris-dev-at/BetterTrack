@@ -12,6 +12,9 @@ import {
   REALTIME_BEARER_SCOPE_REQUIREMENTS,
   REALTIME_CLIENT_EVENTS,
   REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET,
+  REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_USER,
   REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
@@ -29,6 +32,7 @@ import {
   type RealtimeBearerCapability,
   type RealtimeChatMessage,
   type RealtimeConnectionError,
+  type RealtimeFeatureDisabled,
   type RealtimeLiveFrame,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
@@ -109,6 +113,21 @@ export interface WatchableAsset {
 /** Bounded fail-closed backstop when a lifecycle pub/sub signal is missed. */
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
 export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
+/**
+ * Name of the sweep's interval callback, so a test can identify exactly that
+ * timer instead of matching on a delay another 30 s interval could share.
+ */
+export const REALTIME_SOCKET_SWEEP_TICK_NAME = 'realtimeSocketSweepTick';
+/**
+ * Worst-case delay between an admin flipping `realtime`/`liveMode` OFF and this
+ * gateway shedding the work that was ALREADY established when the flip landed
+ * (§13.5 V5-P2 arc (c)). Enforcement rides the revalidation sweep rather than a
+ * per-emit or per-tick flag read, so a kill switch costs one extra flag read per
+ * sweep — never a busy poll — and the shed is bounded by exactly one interval.
+ */
+export const REALTIME_FEATURE_SHED_MAX_DELAY_MS = REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS;
+/** A stuck flag read must not wedge the sweep's running guard — bound it. */
+export const REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS = 2_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 /** Cross-process live frames; each gateway emits remote frames into its local rooms. */
 export const REALTIME_LIVE_FANOUT_CHANNEL = 'bt:live:frames';
@@ -611,6 +630,74 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
+  /**
+   * The rooms this socket entered by CLIENT request (`room.join`), as the exact
+   * adapter room names. Server-side memberships — the principal's own
+   * `user:{id}`/scoped rooms and the `asset:{id}` room a live watch joins — are
+   * deliberately absent: they are already bounded by the connection and watch
+   * budgets, so counting them would charge one budget twice.
+   */
+  const clientRoomsOf = (socket: Socket): Set<string> =>
+    (socket.data.clientRooms as Set<string> | undefined) ??
+    (socket.data.clientRooms = new Set<string>());
+
+  /**
+   * Distinct client-joined rooms per user on THIS node, refcounted by the
+   * sockets holding each one, so N connections share one user budget instead of
+   * multiplying it (§13.5 V5-P1). Node-local exactly like the room memberships
+   * it bounds — the tree ships no Socket.IO adapter.
+   */
+  const userRooms = new Map<string, Map<string, number>>();
+
+  /**
+   * Take this socket's slot for a client-requested room. Idempotent for a room
+   * the socket already holds; a fresh slot is charged to both the socket and the
+   * user budget. A `fresh` reservation MUST be released again when the join it
+   * was taken for does not happen.
+   */
+  function reserveClientRoom(
+    socket: Socket,
+    userId: string,
+    name: string,
+  ): { ok: true; fresh: boolean } | { ok: false; error: RealtimeAckError } {
+    const rooms = clientRoomsOf(socket);
+    if (rooms.has(name)) return { ok: true, fresh: false };
+    if (rooms.size >= REALTIME_MAX_ROOMS_PER_SOCKET) {
+      return { ok: false, error: 'SOCKET_ROOM_LIMIT' };
+    }
+    const held = userRooms.get(userId) ?? new Map<string, number>();
+    const holders = held.get(name) ?? 0;
+    if (holders === 0 && held.size >= REALTIME_MAX_ROOMS_PER_USER) {
+      return { ok: false, error: 'USER_ROOM_LIMIT' };
+    }
+    held.set(name, holders + 1);
+    userRooms.set(userId, held);
+    rooms.add(name);
+    return { ok: true, fresh: true };
+  }
+
+  /** Give back one socket's slot in a room; the user refcount follows it. */
+  function releaseClientRoom(socket: Socket, userId: string, name: string): void {
+    if (!clientRoomsOf(socket).delete(name)) return;
+    const held = userRooms.get(userId);
+    const holders = held?.get(name);
+    if (!held || holders === undefined) return;
+    if (holders > 1) held.set(name, holders - 1);
+    else held.delete(name);
+    if (held.size === 0) userRooms.delete(userId);
+  }
+
+  /** Leave a client-joined room and release its budget in one step. */
+  async function leaveClientRoom(socket: Socket, userId: string, name: string): Promise<void> {
+    releaseClientRoom(socket, userId, name);
+    await socket.leave(name);
+  }
+
+  /** Disconnect cleanup: every room budget this socket held is given back. */
+  function releaseClientRooms(socket: Socket, userId: string): void {
+    for (const name of [...clientRoomsOf(socket)]) releaseClientRoom(socket, userId, name);
+  }
+
   async function handleRoomJoin(
     socket: Socket,
     principal: RealtimePrincipal,
@@ -632,30 +719,78 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'FORBIDDEN' });
       return;
     }
-    if (room.kind === 'portfolio') {
-      if (!hasCapability(principal, 'portfolioRoom')) {
-        respond({ ok: false, error: 'FORBIDDEN' });
-        return;
-      }
-      // Owner-or-shared, recomputed at join time — revoking a share stops new
-      // joins immediately (§6.9). Errors fail closed. The viewer's account lock
-      // is held across the check, the join AND the ack (same shape as
-      // `forwardLiveFrame`): otherwise a transition committing in that gap
-      // would leave the socket admitted on an authorization taken before it.
-      const admitted = await withAccountPrivacyLock(principal.userId, async () => {
-        const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
-        if (!allowed) return false;
-        await socket.join(roomName(room));
-        return true;
-      });
-      respond(admitted ? { ok: true } : { ok: false, error: 'FORBIDDEN' });
+    if (room.kind === 'portfolio' && !hasCapability(principal, 'portfolioRoom')) {
+      respond({ ok: false, error: 'FORBIDDEN' });
       return;
     }
-    await socket.join(roomName(room));
-    respond({ ok: true });
+    // A capability refusal never touches the budget; from here a refusal must
+    // give back whatever it reserved.
+    // Bound the membership BEFORE any join: an authenticated client may emit
+    // `room.join` at its full command rate, and the adapter holds every
+    // membership until disconnect (§13.5 V5-P1). The reservation is released
+    // again on every path that does not end in a join.
+    const name = roomName(room);
+    const reserved = reserveClientRoom(socket, principal.userId, name);
+    if (!reserved.ok) {
+      respond({ ok: false, error: reserved.error });
+      return;
+    }
+    // The command reached here through an awaited admission round trip, so the
+    // socket may already have disconnected — and its `disconnect` handler
+    // releases the room budget synchronously. Socket.IO flips `disconnected`
+    // BEFORE emitting that event, so reserving and checking with no await
+    // between them makes the two orders exhaustive: either the check sees a live
+    // socket and the cleanup that follows will find this entry, or we hand the
+    // slot back here. Without it a reservation taken after the cleanup would sit
+    // in the gateway-lifetime user map with no socket left to release it.
+    if (socket.disconnected) {
+      if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+      respond({ ok: false, error: 'GONE' });
+      return;
+    }
+    // The join itself stays idempotent and unconditional even for a room the
+    // budget already counts: another path (a live unwatch) may have evicted the
+    // socket meanwhile, and an ack must never report a membership it lacks.
+    try {
+      if (room.kind === 'portfolio') {
+        // Owner-or-shared, recomputed at join time — revoking a share stops new
+        // joins immediately (§6.9). Errors fail closed. The viewer's account lock
+        // is held across the check, the join AND the ack (same shape as
+        // `forwardLiveFrame`): otherwise a transition committing in that gap
+        // would leave the socket admitted on an authorization taken before it.
+        const admitted = await withAccountPrivacyLock(principal.userId, async () => {
+          const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
+          if (!allowed) return 'FORBIDDEN' as const;
+          // The same disconnect race, now on the far side of the authorization
+          // round trip: the adapter has already forgotten a disconnected socket,
+          // so joining it here would strand its id in the adapter's room map.
+          if (socket.disconnected) return 'GONE' as const;
+          await socket.join(name);
+          return 'ok' as const;
+        });
+        if (admitted !== 'ok') {
+          // A no-op when the disconnect cleanup already gave the slot back.
+          if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+          respond({ ok: false, error: admitted });
+          return;
+        }
+        respond({ ok: true });
+        return;
+      }
+      await socket.join(name);
+      respond({ ok: true });
+    } catch (err) {
+      if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+      throw err;
+    }
   }
 
-  async function handleRoomLeave(socket: Socket, payload: unknown, ack: unknown): Promise<void> {
+  async function handleRoomLeave(
+    socket: Socket,
+    principal: RealtimePrincipal,
+    payload: unknown,
+    ack: unknown,
+  ): Promise<void> {
     const respond = (result: RealtimeRoomAck): void => {
       if (typeof ack === 'function') (ack as (result: RealtimeRoomAck) => void)(result);
     };
@@ -664,7 +799,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'BAD_REQUEST' });
       return;
     }
-    await socket.leave(roomName(parsed.data.room));
+    await leaveClientRoom(socket, principal.userId, roomName(parsed.data.room));
     respond({ ok: true });
   }
 
@@ -794,7 +929,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
     }
     if (leaveRoom && !socket.disconnected) {
-      await socket.leave(assetRoom(assetId));
+      // Through `leaveClientRoom`, so a socket that had ALSO `room.join`ed this
+      // asset gives back the slot it is losing the membership for instead of
+      // paying for a room it no longer sits in. A no-op for the usual case where
+      // the room is a watch-only membership the budget never counted.
+      await leaveClientRoom(socket, entry.userId, assetRoom(assetId));
     }
   }
 
@@ -918,10 +1057,19 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * watches even when either command bucket rejects the frame.
    */
   function scheduleLiveCleanup(socket: Socket, assetId: string): void {
+    void runLiveCleanup(socket, assetId);
+  }
+
+  /**
+   * The awaitable body of {@link scheduleLiveCleanup}. A cleanup already queued
+   * for this asset resolves immediately — the in-flight pass owns the release,
+   * and re-entering would only duplicate it.
+   */
+  function runLiveCleanup(socket: Socket, assetId: string): Promise<void> {
     const queued = queuedLiveCleanupsOf(socket);
-    if (queued.has(assetId)) return;
+    if (queued.has(assetId)) return Promise.resolve();
     queued.add(assetId);
-    void (async () => {
+    return (async () => {
       try {
         const entry = liveAssetsOf(socket).get(assetId);
         if (entry) await releaseLiveWatch(socket, assetId, entry, true);
@@ -1110,7 +1258,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     // Runtime kill-switch (§13.5 V5-P2 arc (c)): `liveMode` flipped OFF stops new
-    // watches on the next op; the SPA falls back to its poll cadence.
+    // watches on the next op; the SPA falls back to its poll cadence. Watches
+    // already registered are released by the sweep, which drains the shared
+    // upstream loop instead of leaving it polling for nobody.
     if (!(await featureEnabled('liveMode'))) {
       respond({ ok: false, error: 'UNAVAILABLE' });
       return;
@@ -1309,9 +1459,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     }
     const { surface, id } = parsed.data;
     if (mode === 'enter') {
+      // The claim set is per socket and released only on leave/disconnect, so
+      // it needs its own bound exactly like the room set (§13.5 V5-P1).
+      const held = presenceOf(socket);
+      const key = `${surface}:${id}`;
+      if (!held.has(key) && held.size >= REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET) {
+        respond({ ok: false, error: 'SOCKET_PRESENCE_LIMIT' });
+        return;
+      }
       // Idempotent — a re-enter IS the heartbeat that keeps the TTL alive.
       await deps.presence.enter(principal.userId, surface, id);
-      presenceOf(socket).add(`${surface}:${id}`);
+      held.add(key);
     } else {
       await deps.presence.leave(principal.userId, surface, id);
       presenceOf(socket).delete(`${surface}:${id}`);
@@ -1323,11 +1481,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    *  the TTL is the backstop when even this cleanup is unreachable). */
   async function clearPresence(socket: Socket, userId: string): Promise<void> {
     const held = presenceOf(socket);
-    for (const key of held) {
+    if (held.size === 0) return;
+    const subjects = [...held].map((key) => {
       const [surface, id] = key.split(/:(.+)/, 2) as [PresenceSurface, string];
-      await deps.presence.leave(userId, surface, id).catch(() => undefined);
-    }
+      return { surface, id };
+    });
+    // Clear the local set first: disconnect cleanup runs once, and a failed
+    // batch must not leave claims a later path would try to drop again. The
+    // store batches the drop, so the cost is bounded round trips, not one
+    // awaited round trip per claim (§13.5 V5-P1).
     held.clear();
+    await deps.presence.leaveMany(userId, subjects).catch(() => undefined);
   }
 
   function acknowledgeLiveUnwatch(payload: unknown, ack: unknown): void {
@@ -1436,7 +1600,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           await withAccountPrivacyLock(userId, async () => {
             const allowed = await deps.canViewPortfolio(userId, portfolioId).catch(() => false);
             if (!allowed) {
-              await socket.leave(room);
+              // An evicted viewer gets its room budget back with the membership.
+              await leaveClientRoom(socket, userId, room);
               return;
             }
             if (!socket.disconnected) {
@@ -1509,12 +1674,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
-  async function withPrincipalRevalidationDeadline<T>(operation: () => Promise<T>): Promise<T> {
+  /** Race one sweep operation against a timer that never holds the process open. */
+  async function withDeadline<T>(
+    timeoutMs: number,
+    message: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        reject(new Error('realtime principal revalidation timed out'));
-      }, REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS);
+        reject(new Error(message));
+      }, timeoutMs);
       timer.unref?.();
     });
     try {
@@ -1522,6 +1692,14 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  function withPrincipalRevalidationDeadline<T>(operation: () => Promise<T>): Promise<T> {
+    return withDeadline(
+      REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS,
+      'realtime principal revalidation timed out',
+      operation,
+    );
   }
 
   /**
@@ -1575,16 +1753,124 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     schedulePrincipalExpiry(socket, next);
   }
 
+  /** Tell one socket why the server is about to shed its work, before shedding it. */
+  function emitFeatureDisabled(socket: Socket, feature: RealtimeFeatureDisabled['feature']): void {
+    if (socket.disconnected) return;
+    const payload: RealtimeFeatureDisabled = { feature };
+    socket.emit(REALTIME_SERVER_EVENTS.featureDisabled, payload);
+  }
+
+  /**
+   * Read the two kill switches that gate LONG-LIVED work, bounded so one stuck
+   * flag read cannot wedge the sweep's running guard. Fails OPEN: a flag-store
+   * blip must never disconnect every connected client, and the next sweep re-
+   * reads it. (Failing closed is right at the handshake, where refusing costs
+   * one connection; here it would cost all of them.)
+   */
+  async function killSwitchState(): Promise<{ realtime: boolean; liveMode: boolean }> {
+    try {
+      return await withDeadline(
+        REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS,
+        'realtime kill-switch read timed out',
+        async () => {
+          const [realtime, liveMode] = await Promise.all([
+            featureEnabled('realtime'),
+            deps.liveMode ? featureEnabled('liveMode') : Promise.resolve(true),
+          ]);
+          return { realtime, liveMode };
+        },
+      );
+    } catch (err) {
+      logger.warn({ err }, 'realtime kill-switch read failed');
+      return { realtime: true, liveMode: true };
+    }
+  }
+
+  /**
+   * `realtime` OFF sheds the connection itself: the socket learns WHY, then the
+   * server closes it. Socket.IO reports a server-initiated close, so the client
+   * does not reconnect into a gateway that would refuse the handshake anyway —
+   * during the incident this switch exists for, the load simply goes away and
+   * the SPA's permanent poll/refetch fallback carries every feature (§4.5).
+   * Flipping the switch back ON admits handshakes again with no restart.
+   */
+  function shedDisabledRealtime(socket: Socket): void {
+    if (socket.disconnected) return;
+    emitFeatureDisabled(socket, 'realtime');
+    socket.disconnect(true);
+  }
+
+  /**
+   * `liveMode` OFF sheds Live Mode ONLY — `realtime` owns the connection, so the
+   * socket stays up and its other pushes keep flowing. Every watch is released
+   * through the same path the client's own `live.unwatch` takes, so the shared
+   * upstream loop drains exactly as it does when the last viewer leaves (§6.3),
+   * and a watch still resolving is canceled by its generation watermark instead
+   * of registering a loop behind the sweep's back.
+   *
+   * The decision is synchronous and the release is not awaited here: every
+   * watermark is stamped before this returns, so the shed is already fenced,
+   * while the Redis round trips ride the same fire-and-forget cleanup tracking
+   * the disconnect handler uses. Awaiting them inside the sweep's running guard
+   * would let one stalled `releaseWatch` — the admission client queues commands
+   * offline indefinitely rather than rejecting — wedge principal revalidation
+   * for the whole process, exactly when an incident is under way. Per socket the
+   * releases stay ordered; across sockets they overlap, so a fleet-wide flip
+   * costs the slowest socket's chain, not the sum of every watch's round trip.
+   */
+  function shedDisabledLiveWatches(sockets: readonly Socket[]): void {
+    for (const socket of sockets) {
+      const assetIds = [
+        ...new Set([...liveAssetsOf(socket).keys(), ...pendingLiveWatchAssetsOf(socket).keys()]),
+      ].filter((assetId) => markLiveCleanupIntent(socket, assetId));
+      if (assetIds.length === 0) continue;
+      emitFeatureDisabled(socket, 'liveMode');
+      trackSocketCleanup(
+        (async () => {
+          for (const assetId of assetIds) await runLiveCleanup(socket, assetId);
+        })(),
+      );
+    }
+  }
+
+  /**
+   * One bounded pass over every connected socket. Kill-switch enforcement rides
+   * here (§13.5 V5-P2 arc (c)) and runs FIRST: shedding beats revalidating work
+   * that is about to go away, and a `realtime` shed makes the rest of the pass
+   * moot. Cost is one flag read per sweep, never per emit or per poll tick.
+   *
+   * Every await inside the running guard is deadline-bounded: the flag read by
+   * {@link REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS} and each revalidation by
+   * {@link REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS}. The kill-switch sheds
+   * add no unbounded I/O to it — both decide synchronously and hand their
+   * release work to the tracked cleanup paths.
+   */
+  async function sweepConnectedSockets(server: SocketIOServer): Promise<void> {
+    const sockets = [...server.sockets.sockets.values()];
+    if (sockets.length === 0) return;
+    const flags = await killSwitchState();
+    if (!flags.realtime) {
+      for (const socket of sockets) shedDisabledRealtime(socket);
+      return;
+    }
+    if (!flags.liveMode) shedDisabledLiveWatches(sockets);
+    await Promise.allSettled(sockets.map((socket) => revalidateSocket(socket)));
+  }
+
   function startPrincipalRevalidation(server: SocketIOServer): void {
     if (principalRevalidationTimer) return;
-    principalRevalidationTimer = setInterval(() => {
+    // Named so a test can identify THIS interval's callback among any other
+    // timer the gateway installs, rather than guessing from the delay.
+    principalRevalidationTimer = setInterval(function realtimeSocketSweepTick() {
       if (principalRevalidationRunning) return;
       principalRevalidationRunning = true;
-      void Promise.allSettled(
-        [...server.sockets.sockets.values()].map((socket) => revalidateSocket(socket)),
-      ).finally(() => {
-        principalRevalidationRunning = false;
-      });
+      void sweepConnectedSockets(server)
+        .catch((err) => {
+          logger.warn({ err }, 'realtime socket sweep failed');
+        })
+        .finally(() => {
+          principalRevalidationRunning = false;
+        });
     }, REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS);
     principalRevalidationTimer.unref?.();
   }
@@ -1802,7 +2088,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         socket.conn.once('close', fence.onClose);
         void (async () => {
           // Runtime kill-switch (§13.5 V5-P2 arc (c)): with `realtime` flipped
-          // OFF the gateway refuses the very next handshake.
+          // OFF the gateway refuses the very next handshake — and the sweep
+          // (see {@link REALTIME_FEATURE_SHED_MAX_DELAY_MS}) sheds the sockets
+          // that were already established when the flip landed.
           if (!(await featureEnabled('realtime'))) {
             disarmPreConnectCloseFence(socket);
             next(handshakeError('UNAVAILABLE'));
@@ -1869,6 +2157,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         socket.once('disconnect', () => {
           clearPrincipalExpiry(socket);
           stopAdmissionHeartbeat(socket);
+          // Synchronous, so the user's room budget is free the instant the
+          // socket is gone — no cleanup task can hold it open.
+          releaseClientRooms(socket, userId);
           const cleanup = Promise.allSettled([
             clearPresence(socket, userId),
             releaseConnectionLease(socket),
@@ -1907,7 +2198,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         socket.on(REALTIME_CLIENT_EVENTS.roomLeave, (payload: unknown, ack: unknown) => {
           void (async () => {
             if (!(await admitClientCommand(socket, principal, ack))) return;
-            await handleRoomLeave(socket, payload, ack);
+            await handleRoomLeave(socket, principal, payload, ack);
           })().catch((err) => {
             logger.warn({ err, userId }, 'realtime room leave failed');
             respondError(ack, 'UNAVAILABLE');

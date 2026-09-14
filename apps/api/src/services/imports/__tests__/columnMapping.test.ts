@@ -280,7 +280,12 @@ describe('understandTable — sniff and mapping composed', () => {
     // The old failure mode: an empty result a caller reads as "nothing wrong".
     expect(() => mapColumns([], [['02.01.2024', '500,00']])).toThrow(UnmappableTableError);
     // An empty table is not an error — there is simply nothing to map.
-    expect(mapColumns([], [])).toEqual({ mappings: [], unmapped: [], fieldWinners: {} });
+    expect(mapColumns([], [])).toEqual({
+      mappings: [],
+      unmapped: [],
+      fieldWinners: {},
+      ignoredColumns: [],
+    });
   });
 
   it('counts alias hits per row so the sniffer can break header ties', () => {

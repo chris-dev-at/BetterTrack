@@ -119,6 +119,30 @@ export function vaultStateOffersAction(state: EndpointVaultState, action: string
   );
 }
 
+/**
+ * The badge tone a state wears. Kept beside the affordance table because it is
+ * the same total map over the same union — and because the one distinction the
+ * COPY cannot make lives here: a locked vault and a locked-OUT vault share
+ * `state.locked` ("Locked on this device"), so only the tone separates "type
+ * your password" from "five wrong tries, wait". No new string, no new state.
+ */
+export type VaultStateTone = 'pos' | 'neg' | 'gold' | 'blue';
+
+export function vaultStateTone(state: EndpointVaultState): VaultStateTone {
+  if (vaultStateRetryAt(state) != null) return 'neg';
+  switch (endpointVaultStateCase(state)) {
+    case 'stored+wrapped:unlocked:open-silently':
+    case 'stored+plain:open-silently':
+      return 'pos';
+    case 'not-on-this-endpoint:provide-phrase':
+      return 'blue';
+    case 'endpoint-keystore-invalid:reset-endpoint-keystore':
+      return 'neg';
+    default:
+      return 'gold';
+  }
+}
+
 /** The instant a locked-out endpoint accepts a device password again, if it is. */
 export function vaultStateRetryAt(state: EndpointVaultState): number | null {
   return state.status === 'stored+wrapped' &&

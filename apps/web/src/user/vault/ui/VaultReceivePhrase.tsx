@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { MIN_PASSWORD_LENGTH, type VaultKeyFingerprint } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { Button, Field, Input, Textarea } from '../../../ui/origin';
+import { Button, CheckRow, Choice, ChoiceGroup, Field, Input, Textarea } from '../../../ui/origin';
 import { acknowledgePlainCustodyRisk } from '../keystore/acknowledgment';
 import type { EndpointVaultKeystore } from '../keystore/core';
 import { EndpointKeystoreError } from '../keystore/errors';
@@ -341,7 +341,7 @@ export function VaultReceivePhrase({
         </form>
       ) : (
         <form className="flex flex-col gap-5" onSubmit={(event) => void save(event)}>
-          <div className="rounded-lg border border-neutral-800 p-4">
+          <div className="bt-panel p-4">
             <p className="bt-row-title">{t('vault.transfer.receiver.checked')}</p>
             <dl className="mt-3 grid gap-2 text-sm">
               <div>
@@ -360,43 +360,32 @@ export function VaultReceivePhrase({
             />
           </Field>
 
-          <fieldset className="flex flex-col gap-3">
-            <legend className="text-sm font-semibold">
-              {t('vault.transfer.receiver.custody')}
-            </legend>
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                checked={custody === 'wrapped'}
+          <div className="flex flex-col gap-2">
+            <p className="bt-label">{t('vault.transfer.receiver.custody')}</p>
+            <ChoiceGroup label={t('vault.transfer.receiver.custody')}>
+              <Choice
+                description={t('vault.transfer.receiver.wrappedHint')}
                 name="vault-transfer-custody"
-                onChange={() => {
+                onSelect={() => {
                   setCustody('wrapped');
                   setPlainAcknowledged(false);
                 }}
-                type="radio"
-                value="wrapped"
+                selected={custody === 'wrapped'}
+                title={t('vault.transfer.receiver.wrapped')}
               />
-              <span>
-                <strong className="block">{t('vault.transfer.receiver.wrapped')}</strong>
-                <span className="bt-muted">{t('vault.transfer.receiver.wrappedHint')}</span>
-              </span>
-            </label>
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                checked={custody === 'plain'}
+              <Choice
+                description={t('vault.transfer.receiver.plainHint')}
+                muted
                 name="vault-transfer-custody"
-                onChange={() => {
+                onSelect={() => {
                   setCustody('plain');
                   setDevicePassword('');
                 }}
-                type="radio"
-                value="plain"
+                selected={custody === 'plain'}
+                title={t('vault.transfer.receiver.plain')}
               />
-              <span>
-                <strong className="block">{t('vault.transfer.receiver.plain')}</strong>
-                <span className="bt-muted">{t('vault.transfer.receiver.plainHint')}</span>
-              </span>
-            </label>
-          </fieldset>
+            </ChoiceGroup>
+          </div>
 
           {custody === 'wrapped' ? (
             <Field
@@ -415,18 +404,15 @@ export function VaultReceivePhrase({
               />
             </Field>
           ) : (
-            <div className="rounded-lg border border-amber-700 bg-amber-950/40 p-4 text-sm">
-              <p className="font-semibold text-amber-100">
-                {t('vault.transfer.receiver.plainWarning')}
-              </p>
-              <label className="mt-3 flex items-start gap-2">
-                <input
-                  checked={plainAcknowledged}
-                  onChange={(event) => setPlainAcknowledged(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>{t('vault.transfer.receiver.plainAcknowledgment')}</span>
-              </label>
+            <div className="flex flex-col gap-3">
+              {/* Was a hand-mixed `border-amber-700 bg-amber-950/40` box — a
+                  colour from outside the palette, so it read as a different
+                  product's warning. Gold is this app's caution ink, and it has
+                  tokens that follow the theme. */}
+              <p className="bt-gold-note text-sm">{t('vault.transfer.receiver.plainWarning')}</p>
+              <CheckRow checked={plainAcknowledged} onChange={setPlainAcknowledged} tone="gold">
+                {t('vault.transfer.receiver.plainAcknowledgment')}
+              </CheckRow>
             </div>
           )}
 

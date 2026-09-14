@@ -8,6 +8,7 @@ import {
   vaultStateAffordance,
   vaultStateOffersAction,
   vaultStateRetryAt,
+  vaultStateTone,
 } from './vaultStateAffordance';
 
 const STATES: EndpointVaultState[] = [
@@ -76,5 +77,21 @@ describe('vault state affordances', () => {
 
   it('carries the retry instant only for a live lockout', () => {
     expect(STATES.map(vaultStateRetryAt)).toEqual([null, 1, null, null, null, null]);
+  });
+
+  it('separates locked from locked-OUT by tone, since the copy cannot', () => {
+    // Both states resolve to the same string — "Locked on this device" — so the
+    // row badge's tone is the only thing that distinguishes "type your device
+    // password" from "five wrong tries, wait". Assert the pairing directly.
+    const [locked, lockedOut] = STATES;
+    expect(vaultStateAffordance(locked!).stateKey).toBe(vaultStateAffordance(lockedOut!).stateKey);
+    expect(STATES.map(vaultStateTone)).toEqual([
+      'gold', // locked, password accepted
+      'neg', // locked out, password withdrawn
+      'pos', // unlocked
+      'pos', // plain custody, open silently
+      'blue', // words needed on this endpoint
+      'neg', // endpoint keystore invalid
+    ]);
   });
 });

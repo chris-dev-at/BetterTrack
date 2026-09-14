@@ -134,6 +134,16 @@ export interface YahooSummaryDetail {
   marketCap?: number;
   trailingPE?: number;
   forwardPE?: number;
+  /**
+   * Last close, as this module reports it. Yahoo already ships both fields in
+   * the `summaryDetail` payload the dividends read fetches, so narrowing them
+   * here costs no extra upstream call — and being from the SAME module as the
+   * dividend rate above, they are in the same denomination, which is what lets
+   * the mapper cross-check the reported yield's unit without assuming that two
+   * modules agree on currency (#1790).
+   */
+  previousClose?: number;
+  regularMarketPreviousClose?: number;
 }
 
 /** One row of `quoteSummary.earningsHistory.history` — a past reported quarter. */

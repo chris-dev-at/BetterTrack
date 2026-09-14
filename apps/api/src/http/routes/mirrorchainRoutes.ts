@@ -33,9 +33,11 @@ import type { AppContext } from '../context';
  * MIRRORCHAIN group-portfolio membership API (§13.5 V5-P7 M3;
  * `docs/mirrorchain-design.md` §§4–7, §11). Thin handlers — every rule (the §5
  * authority matrix, friends-only invites, the member cap, kick/leave → fork, the
- * §7 owner-refusal stopgap) lives in `mirrorService`. Cookie sessions can use the
- * full lifecycle surface; the explicit bearer allowlist admits participation
- * reads plus accept/decline/leave and defaults every administrative route closed.
+ * §7 owner-departure succession) lives in `mirrorService`. Cookie sessions can use the
+ * full lifecycle surface; so do bearer tokens holding `mirrorchain:read`/`:write`
+ * since the owner-approved board-#67 widening (2026-08-07, §16) — the explicit
+ * allowlist in `bearerAuth` now admits administration as well as participation,
+ * and every route not listed there stays default-closed.
  * The eight `mirror.*` notifications and the per-copy content writes are wired
  * elsewhere (the dispatcher + the §1 seam); this router is the chain-lifecycle
  * surface only.
@@ -184,7 +186,9 @@ export function createMirrorchainRouter(ctx: AppContext, limiters: RateLimiters)
   );
 
   // POST /mirrorchain/chains/:chainId/leave — leave → keep an un-synced fork (§6).
-  // The owner is refused with the §7 stopgap 409 until M4 ships succession.
+  // The owner may leave too: §7 succession runs first (ownership passes to the
+  // oldest manager, or the chain dissolves with no manager), so no role is
+  // refused here and a chain can never be stranded ownerless by a departure.
   router.post(
     '/chains/:chainId/leave',
     validateParams(mirrorChainIdParamSchema),

@@ -24,7 +24,8 @@
       "heading": "Admin-Anmeldung",
       "notAdmin": "Dies ist ein Nutzerkonto, kein Administratorkonto — melde dich bitte über die Haupt-App an.",
       "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
-      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut."
+      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut.",
+      "sessionExpired": "Deine Admin-Sitzung ist abgelaufen. Bitte melde dich erneut an."
     },
     "adminForcedPassword": {
       "info": "Lege ein neues Passwort fest, bevor du mit der Admin-Konsole fortfährst."
@@ -242,6 +243,16 @@
     }
   },
   "common": {
+    "assetType": {
+      "stock": "Aktie",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Rohstoff",
+      "crypto": "Krypto",
+      "custom": "Eigene Anlage",
+      "other": "Sonstige"
+    },
     "save": "Speichern",
     "done": "Fertig",
     "cancel": "Abbrechen",
@@ -322,8 +333,8 @@
       "selectedOne": "1 ausgewählt",
       "selectedOther": "{{count}} ausgewählt",
       "scopeDescription": {
-        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen und Cashbestände ansehen",
-        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten",
+        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen, Cashbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds ansehen",
+        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten und das Steuerregime des Kontos für alle künftigen Verkäufe und Dividenden ändern",
         "workboard:read": "Deine Watchlist, Konglomerate und Backtests ansehen",
         "workboard:write": "Deine Watchlist und Konglomerate erstellen und bearbeiten",
         "market:read": "Anlagen suchen und Marktdaten lesen",
@@ -333,13 +344,13 @@
         "notifications:write": "Deine Benachrichtigungen als gelesen markieren und deine Benachrichtigungseinstellungen ändern",
         "chat:read": "Deine Nachrichten lesen",
         "chat:write": "Nachrichten in deinem Namen senden",
-        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung und App-PIN",
+        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung, App-PIN, Passkeys und verbundene Apps – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen",
         "alerts:read": "Deine Preisalarme ansehen",
         "alerts:write": "Deine Preisalarme erstellen, bearbeiten, neu aktivieren und löschen",
         "cash:read": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends ansehen",
         "cash:write": "Deine Cash-Tags, Budgets und Regeln erstellen und bearbeiten",
         "mirrorchain:read": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen ansehen",
-        "mirrorchain:write": "Einladungen zu Gruppenportfolios annehmen oder ablehnen und Gruppenportfolios verlassen",
+        "mirrorchain:write": "Gruppenportfolios beitreten oder verlassen und verwalten: Gruppen erstellen und umbenennen, Mitglieder einladen, befördern und entfernen, die Eigentümerschaft übertragen und ein Gruppenportfolio löschen",
         "vault:sync": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren",
         "feedback:write": "Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden",
         "feedback:read": "Deine Feedback-Einreichungen und deren Status ansehen"
@@ -347,7 +358,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Deine Portfolios, Bestände und Kassenbestände lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
+          "description": "Deine Portfolios, Bestände, Kassenbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten und das Steuerregime des Kontos für alle künftigen Verkäufe und Dividenden ändern."
         },
         "workboard": {
           "label": "Workbench",
@@ -379,7 +390,7 @@
         },
         "mirrorchain": {
           "label": "Gruppenportfolios",
-          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder Einladungen annehmen und ablehnen sowie Gruppenportfolios verlassen."
+          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder ihnen beitreten und sie verlassen sowie verwalten: Gruppen erstellen und umbenennen, Mitglieder einladen, befördern und entfernen, die Eigentümerschaft übertragen und ein Gruppenportfolio löschen."
         },
         "vaultSync": {
           "label": "Tresor-Synchronisierung",
@@ -387,7 +398,7 @@
         },
         "accountSecurity": {
           "label": "Kontosicherheit",
-          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort, App-PIN, Passkeys und verbundene Apps verwalten – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen."
         },
         "feedback": {
           "label": "Feedback",
@@ -424,7 +435,8 @@
     "expandRail": "Navigation ausklappen",
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
-    "collapseSection": "{{section}} einklappen"
+    "collapseSection": "{{section}} einklappen",
+    "back": "Zurück"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -631,6 +643,9 @@
         },
         "budgetExceeded": {
           "label": "Budget-Warnungen"
+        },
+        "commentCreated": {
+          "label": "Kommentare zu deinen geteilten Inhalten"
         },
         "standingOrderSkipped": {
           "label": "Probleme mit Daueraufträgen"
@@ -1038,7 +1053,19 @@
           "empty": "Noch keine Zustellungen aufgezeichnet.",
           "loadError": "Zustellungen konnten nicht geladen werden.",
           "success": "Zugestellt",
-          "failed": "Fehlgeschlagen"
+          "failed": "Fehlgeschlagen",
+          "showDetail": "Warum?",
+          "hideDetail": "Ausblenden",
+          "attempts": "Versuche: {{count}}",
+          "reason": {
+            "http": "Der Empfänger hat die Zustellung mit HTTP {{status}} abgelehnt.",
+            "refused": "Das Ziel wurde blockiert — es zeigt auf einen Netzbereich, den Webhooks nicht erreichen dürfen.",
+            "unresolved": "Der Zielhost konnte nicht aufgelöst werden.",
+            "timeout": "Der Empfänger hat nicht rechtzeitig geantwortet.",
+            "secret": "Der Signaturschlüssel konnte nicht gelesen werden, daher wurde nichts gesendet.",
+            "unsubscribed": "Dieser Ereignistyp wurde vor der Zustellung aus dem Webhook entfernt.",
+            "network": "Die Verbindung zum Empfänger ist fehlgeschlagen."
+          }
         },
         "secretModal": {
           "title": "Dein Webhook-Signaturschlüssel",
@@ -1062,6 +1089,7 @@
           "chatMessage": "Neue Chat-Nachricht",
           "dividendEvent": "Bevorstehende Dividende",
           "budgetExceeded": "Budget überschritten",
+          "commentCreated": "Kommentar zu einem geteilten Eintrag",
           "standingOrderSkipped": "Dauerauftrags-Ausführung nicht gebucht",
           "mirrorInvite": "Einladung zum Gruppen-Portfolio",
           "mirrorMemberJoined": "Mitglied im Gruppen-Portfolio beigetreten",
@@ -1361,8 +1389,11 @@
       "readyUntil": "Dein Export steht bis zum {{date}} zum Download bereit.",
       "readyNoToken": "Dein Export ist fertig, aber der Download-Zugriff wird beim Neuladen der Seite nicht gespeichert. Fordere nach Ablauf dieses Exports einen neuen an.",
       "download": "Export herunterladen",
-      "downloadFailed": "Dein Export konnte nicht heruntergeladen werden. Der einmalige Link ist möglicherweise abgelaufen oder wurde bereits verwendet.",
+      "downloadFailed": "Dein Export konnte nicht heruntergeladen werden. Du kannst den Download erneut versuchen — ein abgebrochener Transfer verbraucht deinen Link nicht, und er bleibt gültig, bis der Export abläuft.",
       "expired": "Dein letzter Export ist abgelaufen. Fordere einen neuen an, um deine Daten herunterzuladen.",
+      "failed": "Dein letzter Export konnte nicht erstellt werden. Bitte fordere einen neuen an — dein Tageskontingent wurde nicht verbraucht.",
+      "stalled": "Dein letzter Export wurde nie fertig vorbereitet. Fordere einen neuen an — dein Tageskontingent wurde nicht verbraucht.",
+      "failedTooLarge": "Dein Konto enthält mehr Daten, als ein einzelnes Export-Archiv fassen kann. Es wurde nichts erstellt und dein Tageskontingent wurde nicht verbraucht. Bitte deine Administration, das Export-Limit anzuheben.",
       "currentWrong": "Dein Passwort ist falsch.",
       "codeWrong": "Dieser Zwei-Faktor-Code ist falsch oder abgelaufen.",
       "rateLimited": "Du kannst einen Datenexport einmal pro Tag anfordern. Bitte versuche es später erneut.",
@@ -1467,6 +1498,14 @@
       "uncoveredNudge": "Erfasse für eine korrekte Historie besser den ursprünglichen Kauf.",
       "uncoveredBlocked": "Bestätige den Verkauf über deinen Bestand hinaus, um fortzufahren.",
       "uncoveredEntryPriceInvalid": "Gib einen gültigen Kaufpreis ein oder zähle die Stücke als 0 %.",
+      "rowErrors": {
+        "withSymbol": "{{symbol}}: {{message}}",
+        "priceRequired": "Der Preis muss größer als 0 sein.",
+        "amountRequired": "Der Betrag muss größer als 0 sein.",
+        "quantityRequired": "Die Anzahl muss größer als 0 sein.",
+        "priceNegative": "Der Preis muss 0 oder mehr sein.",
+        "derivedQuantity": "Aus diesem Preis und Betrag ließ sich keine gültige Anzahl ableiten."
+      },
       "tax": {
         "title": "Steuer auf diesen Verkauf (optional)",
         "description": "Der manuelle Steuermodus ist aktiv. Gib die Steuer für diesen Verkauf ein oder lass das Feld leer, um keine zu erfassen.",
@@ -1494,7 +1533,7 @@
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
-      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Ger\u00e4t offen \u2014 versuche es erneut.",
+      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Gerät offen — versuche es erneut.",
       "detailsLoadError": "Einige Portfolio-Details konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyState": {
         "title": "Dein Portfolio ist leer",
@@ -2095,10 +2134,19 @@
       },
       "perMonth": "prognostiziert / Monat",
       "perYear": "prognostiziert / Jahr",
+      "projectionUnresolved": "Ein prognostizierter Gesamtbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück. Die Termine unten sind davon nicht betroffen.",
+      "projectionTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb zeigen wir keinen Gesamtbetrag. Die Termine unten sind davon nicht betroffen.",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
+      "calendarTruncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
       "exOn": "Ex {{date}}",
+      "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
-      "showLess": "Weniger anzeigen"
+      "showLess": "Weniger anzeigen",
+      "basis": {
+        "trailing12m": "Basiert auf den Ausschüttungen der letzten 12 Monate — eine Sonderdividende ist darin enthalten.",
+        "forwardAnnualized": "Basiert auf der letzten regulären Ausschüttung, auf ein Jahr hochgerechnet.",
+        "mixed": "Gemischte Basis: ein Teil aus den Ausschüttungen der letzten 12 Monate (inklusive Sonderdividenden), der Rest aus der hochgerechneten regulären Ausschüttung."
+      }
     },
     "import": {
       "title": "Broker-CSV-Import",
@@ -2107,6 +2155,7 @@
       "fileLabel": "CSV-Export",
       "brokerLabel": "Broker",
       "brokerAuto": "Automatisch erkennen",
+      "aiBudgetNote": "Erkennt kein Broker die Datei, hilft die lokale KI beim Benennen der Spalten und beim Lesen unklarer Zeilen — sie nutzt dasselbe tägliche KI-Kontingent wie der Rest der App (heute noch {{remaining}} von {{cap}} übrig).",
       "uploadCta": "Vorschau erstellen",
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",
@@ -2368,6 +2417,7 @@
       },
       "earnings": {
         "heading": "Anstehende Quartalszahlen",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
         "held": "Gehalten",
         "watched": "Beobachtet",
         "heldTitle": "Du hältst diesen Wert",
@@ -2453,6 +2503,7 @@
       },
       "rangeAriaLabel": "Backtest-Zeitraum auswählen",
       "benchmarkAriaLabel": "Benchmark wählen",
+      "benchmarkUnresolvedShare": "{{pct}} ohne Assets — diese Spalte zeigt nur den Rest",
       "modeAriaLabel": "Modus für spät notierte Werte wählen",
       "rebalanceAriaLabel": "Rebalancing-Frequenz wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
@@ -2602,6 +2653,7 @@
       "viewStored": "Wie gebaut",
       "viewResolved": "Aufgelöst",
       "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Blueprints.",
+      "unresolvedShare": "{{pct}} dieses Blueprints sind ein verschachtelter Blueprint ohne Assets. Die Gewichte, das Aufteilungsdiagramm und der Backtest unten zeigen nur den Rest — und der Rechner lässt diesen Anteil eines Budgets unverteilt.",
       "resolvedLoadError": "Die aufgelöste Ansicht konnte nicht geladen werden.",
       "deleteInUseError": "Dieser Blueprint ist Bestandteil von {{parents}} — entferne ihn zuerst dort."
     },
@@ -2635,7 +2687,14 @@
         "capReached": "Du hast das heutige KI-Limit erreicht. Es wird morgen zurückgesetzt.",
         "error": "Daraus konnte kein Korb entworfen werden. Formuliere es anders.",
         "applied": "{{count}} Positionen vorausgefüllt — Gewichte prüfen und speichern.",
-        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:"
+        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:",
+        "reviewTitle": "KI-Entwurf prüfen",
+        "reviewDraft": "Entwurf bereit: {{count}} Positionen. Es ändert sich nichts, bis du ihn übernimmst.",
+        "replaceWarning": "Beim Übernehmen werden alle {{count}} Positionen in „{{name}}“ ersetzt.",
+        "apply": "Entwurf übernehmen",
+        "discard": "Entwurf verwerfen",
+        "nothingSavedYet": "Es wurde noch nichts gespeichert — beim Verwerfen bleibt dein Blueprint unverändert.",
+        "notAdvice": "KI-generiert und nur informativ — keine Anlageberatung."
       },
       "positionsHeading": "Positionen",
       "autoBalance": "Auto-Balance",
@@ -2671,7 +2730,9 @@
         "duplicateConglomerate": "Dieser Blueprint ist bereits ein Bestandteil.",
         "selfNest": "Ein Blueprint kann sich nicht selbst enthalten.",
         "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Blueprint kann sich nicht selbst enthalten, auch nicht über einen anderen Blueprint.",
-        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden."
+        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden.",
+        "normalizeLockedFull": "Gesperrte Gewichte ergeben bereits 100 % oder mehr — entsperre eine Position, um zu normalisieren.",
+        "normalizeNoUnlocked": "Es gibt keine entsperrten Positionen zum Normalisieren."
       }
     },
     "ideas": {
@@ -2731,9 +2792,9 @@
       "error": "Der Vergleich konnte nicht berechnet werden. Bitte versuche es erneut.",
       "windowError": "Einer der ausgewählten Blueprints hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne ihn.",
       "chartAriaLabel": "Vergleichschart der Blueprints",
-      "legendAriaLabel": "Verglichene Blueprints",
       "baselineLabel": "Basis",
       "setBaseline": "{{name}} als Basis verwenden",
+      "unresolvedShare": "{{pct}} ohne Assets",
       "grid": {
         "ariaLabel": "Vergleichsstatistiken der Blueprints",
         "metric": "Kennzahl"
@@ -2757,13 +2818,19 @@
       "horizonHint": "Zwischen 1 und 30 Jahren.",
       "factorsLegend": "Faktoren",
       "factor": {
-        "return": "Durchschnittliche Rendite",
+        "return": "Durchschnittliche Rendite (ohne Einzahlungen)",
         "standingOrders": "Daueraufträge",
         "dividends": "Erwartete Dividenden"
       },
+      "ordersUnconvertible": "Deine Daueraufträge sind in {{orderCurrency}} erfasst, diese Prognose läuft aber in {{baseCurrency}}. Wir rechnen hier nicht zwischen Währungen um, deshalb bleibt dieser Faktor außerhalb der Prognose.",
+      "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
+      "dividendsTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb bleibt dieser Faktor außerhalb der Prognose.",
+      "dividendsInReturn": "Deine durchschnittliche Rendite enthält die gezahlten Dividenden bereits — hier noch einmal gezählt, wäre es dasselbe Geld zweimal. Schalte den Renditefaktor ab, um die Ausschüttungen allein zu projizieren.",
+      "ordersUnpricedOne": "Für {{assets}} liegt uns kein aktueller Kurs vor, deshalb lässt sich nicht sagen, was der wiederkehrende Kauf beiträgt. Dieser Faktor bleibt außerhalb der Prognose, bis ein Kurs vorliegt.",
+      "ordersUnpricedOther": "Für {{assets}} liegen uns keine aktuellen Kurse vor, deshalb lässt sich nicht sagen, was die wiederkehrenden Käufe beitragen. Dieser Faktor bleibt außerhalb der Prognose, bis Kurse vorliegen.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
-      "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
+      "returnPctHint": "Aus deiner Historie als zeitgewichtete Rendite ermittelt — eingezahltes Geld zählt also nicht als Wertzuwachs, gezahlte Dividenden stecken bereits darin; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
       "returnPctClamped": "Der Renditesatz ist auf -100 % bis 100 % begrenzt. Für diese Prognose wird der nächstgelegene Wert verwendet.",
       "window": {
         "1Y": "1 J",
@@ -2786,12 +2853,18 @@
         "returnLabel": "Rendite (%)",
         "returnPlaceholder": "Basis",
         "remove": "Entfernen"
+      },
+      "dividendsBasis": {
+        "trailing12m": "Die Dividenden stammen aus den Ausschüttungen der letzten 12 Monate — eine Sonderdividende ist darin enthalten.",
+        "forwardAnnualized": "Die Dividenden stammen aus der letzten regulären Ausschüttung, auf ein Jahr hochgerechnet.",
+        "mixed": "Die Dividenden mischen zwei Grundlagen: teils aus den Ausschüttungen der letzten 12 Monate (inklusive Sonderdividenden), teils aus der hochgerechneten regulären Ausschüttung."
       }
     },
     "calculators": {
       "title": "Rechner",
       "description": "Eigenständige Werkzeuge, jeweils aus dem Portfolio vorbefüllbar.",
-      "prefillUnavailable": "Portfolio anlegen oder öffnen, um das Vorbefüllen zu aktivieren. Die Rechner laufen weiterhin mit den eingegebenen Werten."
+      "prefillUnavailable": "Portfolio anlegen oder öffnen, um das Vorbefüllen zu aktivieren. Die Rechner laufen weiterhin mit den eingegebenen Werten.",
+      "ratePctClamped": "Raten sind auf -100 % bis 100 % begrenzt. Für diese Berechnung wird der nächstgelegene Wert verwendet."
     },
     "compound": {
       "title": "Zinseszins",
@@ -2801,21 +2874,30 @@
       "ratePct": "Jährliche Rendite (%)",
       "years": "Jahre",
       "compoundingPerYear": "Verzinsungsschritte pro Jahr",
-      "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich.",
+      "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich. Die Jahresrendite ist ein Effektivzins — mehr Schritte verteilen deine Einzahlungen, sie erhöhen den Ertrag nicht.",
       "finalBalance": "Endwert",
       "totalContributions": "Gesamte Einzahlungen",
       "totalInterest": "Gesamte Zinsen"
     },
     "savings": {
       "title": "Sparplan",
-      "summary": "Welcher Monatsbetrag erreicht dein Ziel?",
+      "summary": "Welcher Monatsbetrag erreicht dein Ziel – oder wie lange es dauert?",
+      "solve": {
+        "label": "Berechnen",
+        "contribution": "Sparbetrag",
+        "years": "Jahre"
+      },
       "target": "Ziel (€)",
       "principal": "Startkapital (€)",
       "ratePct": "Jährliche Rendite (%)",
       "years": "Jahre",
+      "monthlyContributionInput": "Monatlicher Sparbetrag (€)",
       "compoundingPerYear": "Verzinsungsschritte pro Jahr",
-      "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich.",
+      "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich. Die Jahresrendite ist ein Effektivzins — mehr Schritte verteilen deine Einzahlungen, sie erhöhen den Ertrag nicht.",
       "monthlyContribution": "Benötigter Monatsbetrag",
+      "yearsNeeded": "Benötigte Jahre",
+      "yearsValue": "≈ {{years}} Jahre",
+      "notReachable": "Mit diesen Werten nicht erreichbar.",
       "feasible": "Erreichbar"
     },
     "dividend": {
@@ -2831,9 +2913,15 @@
     },
     "withdrawal": {
       "title": "Entnahmeplan",
-      "summary": "Wie lange reicht ein Kapitalstock bei fester Monatsentnahme.",
+      "summary": "Wie lange ein Kapitalstock reicht – oder was du monatlich sicher entnehmen kannst.",
+      "solve": {
+        "label": "Berechnen",
+        "horizon": "Reichweite",
+        "rate": "Sichere Entnahme"
+      },
       "balance": "Startkapital (€)",
       "monthlyWithdrawal": "Monatliche Entnahme (€)",
+      "horizonYears": "Entnahmedauer (Jahre)",
       "annualReturnPct": "Erwartete Jahresrendite (%)",
       "horizonLabel": "Reichweite bis zur Erschöpfung",
       "statusLabel": "Status",
@@ -2841,7 +2929,8 @@
       "statusDepletes": "Wird aufgebraucht",
       "sustainable": "Wird bei dieser Rate nie aufgebraucht.",
       "notComputable": "Mit diesen Werten nicht berechenbar.",
-      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)"
+      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)",
+      "rateLabel": "Tragfähige Monatsentnahme"
     },
     "standingOrders": {
       "title": "Daueraufträge",
@@ -2877,6 +2966,8 @@
         "notBookedQuoteUnavailable": "Nicht gebucht — Kurs nicht verfügbar — älteste verpasste Buchung fällig seit {{date}}",
         "notBookedInsufficientCash": "Nicht gebucht — nicht genügend Cash — älteste verpasste Buchung fällig seit {{date}}",
         "notBookedFailed": "Nicht gebucht — Buchungsfehler — älteste verpasste Buchung fällig seit {{date}}",
+        "droppedPeriods": "{{count}} verpasste Periode(n) übersprungen, bis {{date}} — nur die neueste wird nachgeholt, die übrigen werden nicht gebucht",
+        "bookedStalePrice": "Gebucht mit deiner eigenen Bewertung vom {{date}} — es gibt keinen neueren Wertpunkt",
         "pause": "Pausieren",
         "pausing": "Pausiere…",
         "resume": "Fortsetzen",
@@ -2937,10 +3028,12 @@
         "title": "Dividenden",
         "forwardYield": "Erwartete Rendite",
         "trailing": "Letzte 12 Monate je Anteil",
+        "trailingForward": "Hochgerechnet je Anteil",
         "nextExDate": "Nächster Ex-Tag",
         "nextPayDate": "Nächster Zahltag",
         "history": "Ausschüttungsverlauf",
-        "historyAriaLabel": "Verlauf der Dividendenausschüttungen"
+        "historyAriaLabel": "Verlauf der Dividendenausschüttungen",
+        "historyRange": "{{from}} – {{to}}"
       },
       "earnings": {
         "title": "Quartalszahlen",
@@ -2949,7 +3042,8 @@
         "estimated": "Geschätzt",
         "confirmed": "Bestätigt",
         "epsEstimate": "Erw. EPS {{value}}",
-        "epsActual": "EPS {{value}}"
+        "epsActual": "EPS {{value}}",
+        "periodEnded": "Zeitraum bis {{date}}"
       },
       "splits": {
         "title": "Aktiensplits",
@@ -2978,6 +3072,8 @@
       "waiting": "Warte auf Live-Kurse…",
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
       "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}",
+      "unavailable": "Live nicht verfügbar – verzögerte Daten",
+      "unavailableHint": "Der Server hat Live-Aktualisierungen pausiert. Der Chart aktualisiert stattdessen alle 60 s.",
       "marketClosed": "Markt geschlossen",
       "marketClosedHint": "Zeigt die letzte Handelssitzung. Live-Updates werden fortgesetzt, sobald der Markt wieder öffnet."
     },
@@ -3001,7 +3097,10 @@
       "showLess": "Weniger anzeigen",
       "loadError": "Der Nachrichten-Überblick konnte nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Keine aktuellen Nachrichten",
-      "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest."
+      "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest.",
+      "unavailableTitle": "Nachrichten sind hier deaktiviert",
+      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt.",
+      "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige sind hier nicht erfasst."
     },
     "comingSoon": {
       "overview": {
@@ -3123,6 +3222,10 @@
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
     "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dadurch könnten mehr Personen diesen Eintrag sehen.",
+    "audienceGroupNamed": {
+      "one": "Gruppe „{{name}}“ ({{count}} Mitglied)",
+      "other": "Gruppe „{{name}}“ ({{count}} Mitglieder)"
+    },
     "audienceWidenAcknowledge": "Mir ist bewusst, dass diese Änderung den Zugriff erweitert.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
@@ -3144,14 +3247,20 @@
       "specific_friends": "Bestimmte Freunde",
       "all_friends": "Alle Freunde",
       "public_link": "Öffentlicher Link",
-      "group": "Freundesgruppe"
+      "group": "Freundesgruppe",
+      "groupEmpty": "{{name}} · erreicht niemanden",
+      "groupDeleted": "Freundesgruppe gelöscht · erreicht niemanden"
     },
     "friendsSearchPlaceholder": "Freunde suchen",
     "friendsSelectedCount": "{{count}} ausgewählt",
     "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
     "share": "Teilen…",
     "groupsNone": "Du hast noch keine Gruppen. Erstelle auf der Freunde-Seite eine, um mit einem Kreis zu teilen.",
-    "groupMemberCount": "{{count}} Mitglieder",
+    "groupMemberCount": {
+      "one": "{{count}} Mitglied",
+      "other": "{{count}} Mitglieder"
+    },
+    "groupsAtLimit": "Das sind alle {{count}} Gruppen – das Maximum. Verwalte sie auf der Personen-Seite.",
     "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
   },
   "watchlists": {
@@ -3236,6 +3345,8 @@
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "portfolioMetadataLoading": "Datenschutz des Gruppen-Portfolios wird geprüft…",
       "portfolioMetadataError": "Der Hinweis zur Gruppenfreigabe dieses Portfolios konnte nicht geprüft werden. Versuche es vor dem Teilen erneut.",
+      "comments": "Kommentare",
+      "commentsTitle": "Kommentare zu {{name}}",
       "publicProfileLink": "Öffentliches Profil verwalten"
     },
     "alertSharing": {
@@ -3343,8 +3454,10 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "actionAdd": "Zusätzlich mit dieser Person teilen",
           "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
           "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
+          "confirmGroupDetach": "Mir ist bewusst, dass die aktuellen Mitglieder von {{group}} erhalten bleiben und {{username}} hinzukommt, das Element der Gruppe {{group}} danach aber nicht mehr folgt — spätere Änderungen an der Gruppe ändern dann nicht mehr, wer es sehen kann.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -3460,7 +3573,10 @@
       "cloneError": "Diese Idee konnte nicht geklont werden."
     },
     "comments": {
-      "count": "{{count}} Kommentare",
+      "count": {
+        "one": "{{count}} Kommentar",
+        "other": "{{count}} Kommentare"
+      },
       "empty": "Noch keine Kommentare.",
       "loadError": "Die Kommentare konnten nicht geladen werden. Bitte versuche es erneut.",
       "placeholder": "Kommentar hinzufügen…",
@@ -3468,6 +3584,9 @@
       "posting": "Wird gesendet…",
       "delete": "Löschen",
       "postError": "Kommentar konnte nicht gesendet werden.",
+      "deleteError": "Kommentar konnte nicht gelöscht werden.",
+      "reactionError": "Reaktion konnte nicht gespeichert werden.",
+      "loadOlder": "Ältere Kommentare laden",
       "itemReactionsLabel": "Auf dieses Element reagieren",
       "commentReactionsLabel": "Auf diesen Kommentar reagieren"
     },
@@ -3482,7 +3601,10 @@
       "loadError": "Deine Gruppen konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Noch keine Gruppen",
       "emptyDescription": "Erstelle eine Gruppe, um mit einem bestimmten Freundeskreis zu teilen.",
-      "memberCount": "{{count}} Mitglieder",
+      "memberCount": {
+        "one": "{{count}} Mitglied",
+        "other": "{{count}} Mitglieder"
+      },
       "nameLabel": "Gruppenname",
       "renameAction": "Umbenennen",
       "membersHeading": "Mitglieder",
@@ -3490,10 +3612,16 @@
       "addMemberHeading": "Freund hinzufügen",
       "addMemberNone": "Alle deine Freunde sind bereits in dieser Gruppe.",
       "add": "Hinzufügen",
+      "limitReached": "Du hast das Maximum von {{count}} Gruppen erreicht. Lösche eine, um eine neue zu erstellen.",
+      "memberLimitReached": "Diese Gruppe ist voll – eine Gruppe fasst höchstens {{count}} Mitglieder.",
       "mutateError": "Gruppe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "delete": "Gruppe löschen",
       "deleteTitle": "„{{name}}“ löschen",
-      "deleteWarning": "Alles, was mit dieser Gruppe geteilt wird, ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+      "deleteWarning": {
+        "none": "Mit dieser Gruppe ist derzeit nichts geteilt – das Löschen ändert für deine Freunde nichts. Dies kann nicht rückgängig gemacht werden.",
+        "one": "1 geteiltes Element verweist auf diese Gruppe und ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+        "other": "{{count}} geteilte Elemente verweisen auf diese Gruppe und sind für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden."
+      },
       "deleting": "Wird gelöscht…",
       "deleteError": "Gruppe konnte nicht gelöscht werden. Bitte versuche es erneut."
     }
@@ -3736,6 +3864,7 @@
       "deleteAction": "Leeren Tresor löschen",
       "deleteReferenced": "Dieser Tresor enthält noch ein Portfolio. Verschiebe alle Portfolios heraus, bevor du ihn löschst.",
       "deleteError": "Der Tresor konnte nicht gelöscht werden. Es wurde nichts geändert.",
+      "deferredFold": "Warum manche Aktionen noch nicht verfügbar sind",
       "deferred": {
         "rotate": "Das Wechseln der Wiederherstellungswörter ist noch nicht verfügbar: Es braucht einen geprüften Durchlauf auf jedem Speicher dieses Tresors. Bis dahin bleiben dieser Tresor und seine Wörter genau so, wie sie sind.",
         "startFresh": "Neu anfangen ist noch nicht verfügbar: Das Verwerfen der verschlüsselten Kopien braucht denselben geprüften Speicher-Durchlauf. Um einen Tresor heute zu entfernen, bewege seine Portfolios hinaus und lösche ihn.",
@@ -3843,7 +3972,28 @@
       "badge": "Gesperrt",
       "body": "Entsperre nur seinen Tresor, um Salden, Aktivität und Werkzeuge zu sehen.",
       "countOne": "1 gesperrtes Portfolio",
-      "count": "{{count}} gesperrte Portfolios"
+      "count": "{{count}} gesperrte Portfolios",
+      "opening": "Tresor entsperrt — Portfolio wird geöffnet…",
+      "openFailedTitle": "Der Tresor ist entsperrt, aber dieses Portfolio konnte nicht geöffnet werden.",
+      "openFailedBody": "Es wurde nichts geändert. Versuch es noch einmal oder öffne die Tresorverwaltung, um den Speicher dieses Tresors zu prüfen.",
+      "openFailedDetail": "Technisches Detail",
+      "wordsNeededBody": "Dieses Gerät hat die Wiederherstellungswörter des Tresors noch nicht. Gib die 12 Wörter einmal ein — sie werden hier gespeichert, geschützt durch dein Gerätepasswort.",
+      "enterWords": "Wiederherstellungswörter eingeben",
+      "lockedOutBody": "Zu viele falsche Gerätepasswörter. Dieses Gerät nimmt das Passwort ab {{time}} wieder an.",
+      "manage": "Tresorverwaltung"
+    },
+    "providePhrase": {
+      "title": "Wiederherstellungswörter eingeben",
+      "titleNamed": "Wiederherstellungswörter für „{{name}}“ eingeben",
+      "body": "Gib die 12 Wörter dieses Tresors ein und wähle das Gerätepasswort, das sie hier schützt. Das Portfolio öffnet sich direkt danach — du bleibst auf dieser Seite.",
+      "words": "12 Wiederherstellungswörter",
+      "devicePassword": "Gerätepasswort",
+      "devicePasswordHint": "Wenn dieses Gerät schon ein Tresor-Passwort hat, gib genau dieses ein.",
+      "action": "Wörter speichern und öffnen",
+      "working": "Wird geprüft…",
+      "wrongWords": "Diese Wörter öffnen diesen Tresor nicht. Vergleich sie mit deiner Kopie.",
+      "wrongPassword": "Dieses Gerätepasswort stimmt nicht. Es wurde nichts geändert — versuch es noch einmal.",
+      "error": "Die Wörter konnten nicht gespeichert werden. Es wurde nichts geändert — versuch es noch einmal."
     },
     "unlockedPortfolio": {
       "badge": "Entsperrt",
@@ -3880,6 +4030,7 @@
         "code": "Authenticator-Code",
         "recoveryCode": "Wiederherstellungscode"
       },
+      "preconditionBlocked": "Erforderlich",
       "precondition": {
         "mirrorchain": "Verlasse oder löse die aktive Gruppe dieses Portfolios auf, bevor du es verschiebst.",
         "mirrorchainFix": "Gruppeneinstellungen öffnen",
@@ -4054,7 +4205,7 @@
       "titleNamed": "„{{name}}“ entsperren",
       "body": "Gib das Gerätepasswort für diesen Tresor ein. Er öffnet sich direkt hier — du bleibst auf dieser Seite.",
       "wrongPassword": "Dieses Gerätepasswort stimmt nicht. Es wurde nichts geändert — versuch es noch einmal.",
-      "moreOptions": "Weitere Tresoroptionen"
+      "forgot": "Gerätepasswort vergessen?"
     },
     "sync": {
       "synced": "Verschlüsselter Tresor synchronisiert",
@@ -4088,6 +4239,11 @@
       "retryDrivePreparation": "Google-Anmeldung erneut vorbereiten",
       "driveNotConfigured": "Google Drive ist in dieser BetterTrack-Installation nicht eingerichtet, daher erreicht die Synchronisierung deine Drive-Kopie nicht. Bitte die Person, die diese Installation betreibt, Drive einzurichten.",
       "restore": "Speicher- und Wiederherstellungsoptionen",
+      "manage": "Tresore verwalten",
+      "lockAll": "Tresore sperren",
+      "portfoliosOne": "1 Portfolio",
+      "portfolios": "{{count}} Portfolios",
+      "portfoliosNone": "Noch keine Portfolios",
       "drive": {
         "signIn": "Bei Google anmelden, um zu synchronisieren"
       },
@@ -4439,7 +4595,10 @@
         "securityApi": "Sicherheit & API"
       },
       "registration": "Registrierung",
-      "testAccounts": "Testkonten"
+      "testAccounts": "Testkonten",
+      "opsHealth": "Zustand & Warteschlangen",
+      "providers": "Anbieter",
+      "marketData": "Marktdaten"
     },
     "settings": {
       "title": "Einstellungen",
@@ -4621,6 +4780,7 @@
         "followAlertFired": "Ausgelöste Alarme von gefolgten Personen",
         "dividendEvent": "Dividendenerinnerungen",
         "budgetExceeded": "Budgetalarme",
+        "commentCreated": "Kommentar zu einem geteilten Eintrag",
         "standingOrderSkipped": "Probleme mit Daueraufträgen",
         "mirrorInvite": "Einladungen zu Gruppenportfolios",
         "mirrorMemberJoined": "Mitglied beigetreten",
@@ -4690,7 +4850,8 @@
         "revoked": "Widerrufen",
         "tierAria": "Limitstufe für {{name}}",
         "defaultTier": "Standard",
-        "viewAudit": "Protokoll ansehen"
+        "viewAudit": "Protokoll ansehen",
+        "showRevoked": "Widerrufene Schlüssel anzeigen"
       },
       "audit": {
         "title": "Anfrageprotokoll — {{name}}",
@@ -4863,6 +5024,7 @@
         "change": "E-Mail ändern",
         "enabledNotice": "E-Mail-Codes aktiviert.",
         "disabledNotice": "E-Mail-Codes deaktiviert.",
+        "disableError": "E-Mail-Codes konnten nicht deaktiviert werden. Bitte versuche es erneut.",
         "turnOff": "Deaktivieren",
         "turningOff": "Wird deaktiviert…"
       },
@@ -4938,6 +5100,9 @@
       "actionError": "Das Problem konnte nicht aktualisiert werden.",
       "empty": "Keine Probleme – alles in Ordnung.",
       "openCount": "{{count}} offen",
+      "shownCount": "{{shown}} von {{total}} angezeigt",
+      "loadMore": "Mehr laden",
+      "regressed": "Erneut aufgetreten",
       "filters": {
         "kind": "Art",
         "status": "Status",
@@ -4956,7 +5121,12 @@
       "firstSeen": "Zuerst gesehen",
       "lastSeen": "Zuletzt gesehen",
       "fingerprint": "Fingerprint",
+      "route": "Route",
+      "httpStatus": "HTTP-Status",
+      "requestId": "Request-ID",
+      "stack": "Stacktrace",
       "context": "Kontext",
+      "dropped": "{{count}} Erfassungen wurden im aktuellen Zeitfenster vom Ratenlimit verworfen – diese Liste ist unvollständig.",
       "resolve": "Erledigen",
       "reopen": "Wieder öffnen"
     },
@@ -5035,7 +5205,7 @@
         },
         "ai": {
           "name": "KI",
-          "description": "KI-Einblicke und Assistent (reserviert – noch nicht gebaut)."
+          "description": "KI-Portfolio-Einblicke und der Sprach-Blueprint-Builder (lokaler Anbieter)."
         }
       }
     },
@@ -5551,6 +5721,135 @@
         "cleanupValue": "Der Ablauf löscht es im Job-Runner — dieselbe idempotente Bereinigung, ob sie einmal oder fünfmal läuft — und schreibt einen Audit-Eintrag."
       },
       "why": "Es gibt keine Staging-Umgebung: Produktion ist die einzige Umgebung, und die Einladungssperre macht echtes Durchtesten zum Token-Tanz. Genau dafür ist das hier da."
+    },
+    "ops": {
+      "refresh": "Aktualisieren",
+      "live": {
+        "label": "Live-Aktualisierung",
+        "off": "Aus",
+        "seconds": "{{seconds}} s",
+        "every": "Aktualisiert alle {{seconds}} s",
+        "manualOnly": "Nur manuelle Aktualisierung",
+        "pausedHidden": "Pausiert – dieser Tab ist im Hintergrund",
+        "updatedAt": "gelesen um {{time}}"
+      },
+      "health": {
+        "title": "Zustand & Warteschlangen",
+        "subtitle": "Wovon die API abhängt, was in der Warteschlange liegt und was endgültig fehlgeschlagen ist."
+      },
+      "system": {
+        "title": "System",
+        "components": "Abhängigkeiten",
+        "build": "Ausgelieferter Build",
+        "versionDetail": "Der Commit, aus dem dieser API-Prozess gebaut wurde.",
+        "versionUnavailable": "Die Deploy-Markierung konnte nicht gelesen werden."
+      },
+      "queues": {
+        "title": "Warteschlangen",
+        "queue": "Warteschlange",
+        "waiting": "Wartend",
+        "active": "Aktiv",
+        "delayed": "Verzögert",
+        "failed": "Fehlgeschlagen",
+        "paused": "Pausiert",
+        "heartbeat": "Worker-Heartbeat",
+        "heartbeatBudget": "erwartet alle {{seconds}} s",
+        "idleHidden": "{{count}} leere Warteschlangen sind nicht aufgeführt.",
+        "allIdle": "Alle Warteschlangen sind leer.",
+        "unavailable": "Dieser API-Prozess hält keine Queue-Registry und kann die Warteschlangen daher nicht einsehen. Das ist nicht dasselbe wie leere Warteschlangen."
+      },
+      "schedules": {
+        "title": "Geplante Läufe",
+        "subtitle": "Takt, letzter Lauf und was der Lauf gemeldet hat. Die Zeiten kommen vom Scheduler selbst.",
+        "job": "Job",
+        "cadence": "Takt",
+        "lastRun": "Letzter Lauf",
+        "duration": "Dauer",
+        "next": "Nächster",
+        "every": "alle {{age}}",
+        "in": "in {{age}}",
+        "overdue": "überfällig seit {{age}}",
+        "neverRun": "nie gelaufen",
+        "empty": "Es sind keine wiederkehrenden Läufe registriert.",
+        "milliseconds": "{{ms}} ms"
+      },
+      "failures": {
+        "title": "Endgültige Fehlschläge",
+        "subtitle": "{{total}} aufbewahrt. Neueste zuerst.",
+        "when": "Wann",
+        "queue": "Warteschlange",
+        "reason": "Grund",
+        "attempts": "Versuche",
+        "empty": "Kein Job ist endgültig fehlgeschlagen.",
+        "readOnlyNote": "Nur lesend. Job-Inhalte werden nie angezeigt, und es gibt kein erneutes Ausführen oder Verwerfen: was gefahrlos wiederholbar ist, unterscheidet sich je Job – eine gemeinsame Schaltfläche könnte das nicht abbilden.",
+        "malformed": "{{count}} aufbewahrte Einträge konnten nicht gelesen werden und sind nicht aufgeführt."
+      },
+      "providers": {
+        "title": "Anbieter",
+        "subtitle": "Schutzschalter je Fähigkeit, Aufrufergebnisse und wie viel der Cache abfängt.",
+        "capability": "Fähigkeit",
+        "breaker": "Schutzschalter",
+        "failures": "Fehler",
+        "lastError": "Letzter Fehler",
+        "retryAt": "Erneut ab",
+        "callsSummary": "{{success}} bedient · {{error}} fehlerhaft · {{shortCircuited}} kurzgeschlossen",
+        "noCapabilityCalls": "Dieser Anbieter wurde noch nicht aufgerufen und hat daher keine Schutzschalter zu melden.",
+        "sampledSince": "gezählt seit {{time}}",
+        "processLocalNote": "Diese Zähler gehören zu dem API-Prozess, der diese Anfrage beantwortet, und werden bei einem Neustart zurückgesetzt; der Worker zählt getrennt. Eine Kontingentanzeige gibt es nicht – der Anbieter arbeitet ohne Schlüssel, es existiert also kein verbindliches Kontingent."
+      },
+      "cache": {
+        "hitRate": "Cache-Trefferquote",
+        "hitDetail": "Aus der frischen Kopie bedient.",
+        "staleRate": "Veraltet bedient",
+        "staleDetail": "Letzter guter Stand, im Hintergrund erneuert.",
+        "lookups": "Cache-Abfragen",
+        "negative": "Negativtreffer"
+      }
+    },
+    "marketData": {
+      "title": "Marktdaten",
+      "subtitle": "Ein Prüfwerkzeug für Instrumente, Wechselkurse und Import-Zuordnungen. Noch nicht gebaut.",
+      "comingSoonShort": "Geplant — das Prüfwerkzeug selbst ist ein späteres Paket.",
+      "notShipped": "In diesem Tab wird das Prüfwerkzeug für Finanzdaten leben. Hier wird kein Instrument gelesen, kein Job eingereiht und kein Kurs verändert.",
+      "plannedTitle": "Was es tun wird – und was niemals",
+      "plannedDescription": "Die folgenden Leitplanken sind bereits entschieden und stehen nicht zur Neuauslegung.",
+      "rows": {
+        "inspector": "Prüfwerkzeug",
+        "inspectorValue": "Anbieterzuordnung, aktuelle und Stichtagswerte, Abdeckung und Lücken der Historie, Cache- und Schutzschalterzustand sowie die letzten Job-Ergebnisse zu einem Instrument oder Währungspaar.",
+        "detection": "Erkennung",
+        "detectionValue": "Veraltete Kurse, Kurslücken und Ausreißer – als Befund gemeldet, nicht als Korrektur.",
+        "imports": "Importe",
+        "importsValue": "Ungelöste Import-Zuordnungen nach Importquelle und Fehlercode gruppiert – nur Summen, nie eine rohe Broker-Datei.",
+        "writes": "Die einzigen Schreibvorgänge",
+        "writesValue": "Ein abgesichertes, protokolliertes Einreihen des bestehenden Nachladens je Symbol und der Cache-Erneuerung. Beide Jobs sind bereits idempotent; genau das macht die Schaltfläche vertretbar.",
+        "never": "Niemals",
+        "neverValue": "Keine direkte Bearbeitung von Kurszeilen, kein blindes Zusammenführen von Dubletten und keine personenbezogenen Daten – nur Anzahlen betroffener Konten."
+      },
+      "why": "Einen Kurs von Hand zu ändern würde Geldrechnung hinter eine Browser-Sitzung stellen, und Dubletten ohne Herkunft, Probelauf und Rücknahme zusammenzuführen ist eine Änderung, die niemand rückgängig machen kann. Beides braucht zuerst eine Antwort in der Domäne – deshalb liefert dieses Paket das Lesen und hört dort auf."
+    },
+    "audit": {
+      "title": "Audit-Protokoll",
+      "subtitle": "Jede administrative und sicherheitsrelevante Aktion.",
+      "loading": "Audit-Protokoll wird geladen …",
+      "empty": "Noch keine Audit-Einträge.",
+      "loadError": "Das Audit-Protokoll konnte nicht geladen werden.",
+      "loadMoreError": "Weitere Audit-Einträge konnten nicht geladen werden.",
+      "loadMore": "Mehr laden",
+      "loadingMore": "Wird geladen …",
+      "actorSystem": "System",
+      "columns": {
+        "when": "Zeitpunkt",
+        "action": "Aktion",
+        "actor": "Akteur",
+        "target": "Ziel",
+        "ip": "IP",
+        "details": "Details"
+      }
+    },
+    "pagination": {
+      "range": "{{first}}–{{last}} von {{total}}",
+      "previous": "Zurück",
+      "next": "Weiter"
     }
   },
   "create": {
@@ -5728,6 +6027,8 @@
         "title": "News",
         "description": "Schlagzeilen zu deinen Beständen",
         "empty": "Gerade keine Schlagzeilen zu deinen Beständen.",
+        "emptyPartial": "Keine Schlagzeilen in dem Teil deiner Anlagen, den wir abfragen konnten.",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen.",
         "unavailable": "News sind nicht verfügbar."
       },
       "attention": {
@@ -5793,6 +6094,8 @@
         "title": "Dividenden",
         "description": "Kommende Ex- und Zahltage",
         "empty": "Keine Dividenden in Sicht.",
+        "emptyPartial": "Keine Dividenden in Sicht in dem Teil deiner Anlagen, den wir abfragen konnten.",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen.",
         "unavailable": "Dividendendaten sind nicht verfügbar.",
         "exDate": "Ex-Tag",
         "payDate": "Zahltag"
@@ -6192,6 +6495,10 @@
       "title": "{{symbol}}: Ex-Dividende am {{date}}",
       "body": "{{symbol}} wird am {{date}} ex Dividende gehandelt ({{amount}} {{currency}} je Aktie)."
     },
+    "commentCreated": {
+      "title": "Neuer Kommentar",
+      "body": "{{actor}} hat „{{item}}“ kommentiert."
+    },
     "budgetExceeded": {
       "title": "Budget überschritten: {{category}}",
       "body": "Du hast diesen Monat {{spent}} {{currency}} für {{category}} ausgegeben — mehr als dein Budget von {{target}} {{currency}}."
@@ -6399,6 +6706,15 @@
       "body": "Maskiert jeden absoluten Betrag in der App — zeig BetterTrack anderen, ohne Zahlen offenzulegen."
     }
   },
+  "pwa": {
+    "install": {
+      "title": "BetterTrack installieren",
+      "body": "Füge es zu diesem Gerät hinzu — dann öffnet es sich in einem eigenen Fenster.",
+      "iosBody": "Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.",
+      "action": "Installieren",
+      "dismiss": "Nicht installieren"
+    }
+  },
   "parked": {
     "flag": "In Arbeit",
     "foot": "Im Produktplan reserviert — diese Oberfläche wartet auf ihre Umsetzung.",
@@ -6568,6 +6884,7 @@
     "ask": {
       "title": "BetterTrack fragen",
       "body": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. KI-Insights und der Sprach-Blueprint-Builder sind heute schon live; der volle Arbeitsbereich landet hier.",
+      "bodyUnavailable": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. Dieser Arbeitsbereich landet hier, sobald er gebaut ist.",
       "p1": "Du wählst genau, welche Portfolios die Antwort lesen darf",
       "p2": "Jede Zahl verlinkt zurück auf Datensätze und Annahmen",
       "p3": "Szenario-Antworten öffnen sich als Workbench-Entwürfe",
@@ -6600,15 +6917,6 @@
     "keys": {
       "navigate": "Navigieren",
       "open": "Öffnen"
-    },
-    "assetType": {
-      "stock": "Aktie",
-      "etf": "ETF",
-      "index": "Index",
-      "fx": "FX",
-      "commodity": "Rohstoff",
-      "crypto": "Krypto",
-      "other": "Sonstige"
     }
   },
   "firstrun": {

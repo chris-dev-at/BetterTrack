@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
+import type { DeployCapabilities } from '@bettertrack/contracts';
+
 import { EN_MESSAGES } from '../../i18n/registry';
 import type { MessageNode } from '../../i18n/registry';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
@@ -10,6 +12,7 @@ import {
   SUGGESTED_COMMANDS,
   commandPath,
   filterCommands,
+  isCommandConfigured,
   sectionLabelKeyFor,
   withPortfolioScope,
 } from './commands';
@@ -27,6 +30,16 @@ function t(key: string): string {
 function labels(query: string): string[] {
   return filterCommands(query, t).map((command) => t(command.labelKey));
 }
+
+/** The palette rows a deployment actually offers (⌘K's own filter, extracted). */
+function offered(query: string, capabilities: DeployCapabilities): string[] {
+  return filterCommands(query, t)
+    .filter((command) => isCommandConfigured(command, capabilities))
+    .map((command) => command.to);
+}
+
+const ALL_ON: DeployCapabilities = { marketIntel: true };
+const INTEL_OFF: DeployCapabilities = { marketIntel: false };
 
 describe('COMMANDS registry', () => {
   test('every label key resolves to real copy', () => {
@@ -201,5 +214,25 @@ describe('sectionLabelKeyFor', () => {
     expect(sectionLabelKeyFor('/portfolio?create=trade')).toBe('nav.portfolios');
     expect(sectionLabelKeyFor('/portfolio/cash/movements?create=movement')).toBe('nav.portfolios');
     expect(sectionLabelKeyFor('/portfolios?create=1')).toBe('nav.portfolios');
+  });
+});
+
+describe('deploy-time capability gating (§13.5 V5-P5)', () => {
+  test('offers the News destination when market intelligence is configured', () => {
+    expect(offered('news', ALL_ON)).toContain('/assets/news');
+  });
+
+  test('drops the News destination when market intelligence is unconfigured', () => {
+    expect(offered('news', INTEL_OFF)).not.toContain('/assets/news');
+    // The row is gone, not merely re-ranked: no query reaches it.
+    expect(offered('digest', ALL_ON)).toContain('/assets/news');
+    expect(offered('digest', INTEL_OFF)).not.toContain('/assets/news');
+  });
+
+  test('gates nothing else — only the market-intel destinations move', () => {
+    const dropped = COMMANDS.filter(
+      (command) => isCommandConfigured(command, ALL_ON) && !isCommandConfigured(command, INTEL_OFF),
+    );
+    expect(dropped.map((command) => command.to)).toEqual(['/assets/news']);
   });
 });

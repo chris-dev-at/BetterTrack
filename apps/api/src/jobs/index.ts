@@ -5,17 +5,22 @@
 export {
   QUEUE_NAMES,
   ALL_QUEUE_NAMES,
+  QUEUE_FEATURE_FLAGS,
+  featureFlagForQueue,
+  flagOwningQueues,
   type QueueName,
   type JobPayloads,
   type JobPayload,
   type JobContext,
   type JobDefinition,
+  type JobRunSummary,
   type RepeatSpec,
 } from './types';
 export {
   DEFAULT_JOB_OPTIONS,
   BACKOFF_BASE_MS,
   QUEUE_JOB_OPTIONS,
+  WEBHOOK_BACKOFF_JITTER,
   jobOptionsForQueue,
 } from './options';
 export {
@@ -46,7 +51,12 @@ export {
   toRepeatOptions,
   type SchedulableQueue,
 } from './scheduler';
-export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
+export {
+  createJobWorkers,
+  runJobDefinition,
+  type RunningWorkers,
+  type CreateJobWorkersDeps,
+} from './worker';
 export {
   assertParanoidJobBindings,
   bindParanoidJob,
@@ -90,6 +100,8 @@ export {
   createWebhookDeliveryCleanupJob,
   WebhookDeliveryRetryError,
   WEBHOOK_DELIVER_ATTEMPTS,
+  WEBHOOK_DELIVER_CONCURRENCY,
+  WEBHOOK_DELIVER_LIMITER,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
   WEBHOOK_DELIVERY_DELETE_BATCH_SIZE,
   WEBHOOK_DELIVERY_MAX_ROWS_PER_RUN,
@@ -122,6 +134,7 @@ export {
   DEFERRED_DELIVERY_SCHEDULER_ID,
   DEFERRED_DELIVERY_INTERVAL_MS,
   type DigestJobDeps,
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   EXPORT_CLEANUP_SCHEDULER_ID,
@@ -148,6 +161,7 @@ export {
   USAGE_ROLLUP_TZ,
   type UsageRollupJobDeps,
   createEarningsReminderJob,
+  earningsNotifyGate,
   EARNINGS_REMINDER_SCHEDULER_ID,
   EARNINGS_REMINDER_CRON,
   EARNINGS_REMINDER_TZ,

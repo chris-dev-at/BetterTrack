@@ -620,6 +620,45 @@ Move-in = capture → encrypt → verify → destructive commit
 | Home board widgets scoped to it                                         | Render through the `PortfolioStore` seam: live when unlocked, a locked-state tile with the unlock affordance otherwise     |
 | Imports in flight                                                       | Precondition-blocked; a portfolio with historical import batches is refused at capture (#1529)                             |
 
+### 9a. Legacy `country_specific` rows with no frozen country (#1635)
+
+Rows settled before `drizzle/0021_tax_engine.sql` can carry
+`tax_mode = 'country_specific'` with `tax_country = NULL` — the migration added
+the column and never backfilled it. **Server-side this is not ambiguous:**
+`frozenTaxCountryEngine(null)` settles it as **AT** (the `rowEngineCountry`
+legacy rule), and the #1512 shared row-engine classifier and its committed
+vectors pin that reading. Nothing in this section changes it.
+
+The vault side cannot inherit that fallback. A vault document is the only
+remaining copy of the row, so `assertProvenTaxFacts` (capture), the strict
+restore contract, the server's rehydration validator and the client snapshot
+gate (`engine/session.ts validateFrozenTaxShape`) all require a country
+whenever the mode is `country_specific`: a mode without its country cannot be
+re-settled the same way twice by construction. A portfolio holding such a row
+therefore **cannot move in**, and the refusal is typed —
+`VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED`, naming the offending rows, raised
+before a single ciphertext write — not the untyped row-schema `Error` it used
+to be.
+
+**Migration path (recommended, not yet shipped):** a one-off backfill
+migration
+
+```sql
+UPDATE transactions SET tax_country = 'AT'
+  WHERE tax_mode = 'country_specific' AND tax_country IS NULL;
+UPDATE dividends    SET tax_country = 'AT'
+  WHERE tax_mode = 'country_specific' AND tax_country IS NULL;
+```
+
+writing down exactly what the engine already reads. One source of truth, no
+settlement change, and the refusal above then has nothing left to reject. The
+rejected alternative was the capture rewriting the frozen fact to `AT` on the
+way in: capture must carry what the server holds byte for byte, or move-out
+cannot restore it, and a second place that decides what a frozen fact means is
+precisely the drift this section exists to prevent. Rows in any other mode
+(`none`, `manual_per_trade`, `custom`) legitimately carry a null country and
+are untouched by either the refusal or the backfill.
+
 ## 10. Portfolio move-out (the designed exit)
 
 "Deleting them as a public portfolio" makes move-in reversible **only via a
@@ -711,26 +750,38 @@ untouched** and is not part of this arc's diff.
   AES-256-GCM-wrapped under K_dev, and a wrap-check value verifies entry
   (`keystore/deviceCrypto.ts`). Entering it once per session unlocks ALL
   wrapped phrases on that endpoint.
-- **"Never cached across sessions" — the precise meaning (binding):** the
-  password and K_dev exist only in volatile process memory. They are never
-  written to IndexedDB, localStorage, sessionStorage, cookies, service-worker
-  caches, or any log. A **session** ends at: tab/app close (memory dies with
-  the process), an explicit "Lock vaults" action, or the existing PIN
-  idle-lock timer when the user has PIN lock on (one timer, one mental model —
-  no second setting). After any of these, the next vault read prompts again.
-  There is NO "keep unlocked on this device" checkbox for wrapped custody —
-  v1's persisted-VK convenience (`custody.ts` keep-unlocked) is deliberately
-  retired; the convenience path is plain custody, below. Unlocked K_c keys are
-  likewise memory-only and die with the session.
+- **What a session is, and what ends it (binding; amended by the owner
+  2026-09-03):** the password, the mnemonic entropy and every K_c exist only in
+  volatile process memory and are never written anywhere. A **session belongs
+  to the device** and ends at: an explicit "Lock vaults" action, sign-out, an
+  account switch on the same profile, the existing PIN idle-lock timer when the
+  user has PIN lock on (one timer, one mental model — no second setting), or
+  the absolute lifetime below. After any of these, the next vault read prompts
+  again. **A reload, a closed tab or an OAuth round-trip does NOT end it** — the
+  owner ruled on 2026-09-03 that a vault must stay unlocked "for the rest of
+  the session" and never re-lock because a sub-page was opened. To make that
+  true across full page loads, K_dev is kept on the device as a
+  **non-extractable AES-256-GCM `CryptoKey`** in a dedicated IndexedDB
+  (`keystore/sessionPersistence.ts`, `bettertrack-paranoid-session-v1`,
+  keyed by account) — the same shape the cross-tab channel already carries: a
+  handle that can decrypt but whose bytes no script on this origin can read
+  out. The record expires `ENDPOINT_SESSION_PERSISTENCE_TTL_MS` (7 days) after
+  the unlock that created it; every user-intended lock writes the §12
+  device-locked marker synchronously FIRST and then deletes the record, and the
+  resume path refuses a persisted key while the marker is set and installs one
+  only after the wrap-check proves it was derived from this endpoint's
+  password. There is still NO "keep unlocked" checkbox — the device session is
+  the default and the only mode; the convenience path without any password
+  remains plain custody, below. v1's persisted-VK `custody.ts` keep-unlocked
+  stays retired.
   Shipped: the device key is a private field zeroed by `clearSessionSecrets()`
-  (`keystore/core.ts`), and the keystore's IndexedDB holds only KDF
-  parameters, the wrap-check and lockout metadata — with no localStorage or
-  sessionStorage use at all (`keystore/storage.ts`). **The session-end wiring
-  is complete as of VAULT-UX-B:** `keystore/runtime.ts` binds
-  `bindToVaultLockSignal()` for the app singleton, so sign-out, an account
-  switch and the PIN idle lock now reach the endpoint keystore and not only the
-  legacy v1 runtime, and `ui/useEndpointVaultLock.ts` ships the "Lock vault"
-  control in the account menu.
+  (`keystore/core.ts`), the keystore's own IndexedDB holds only KDF
+  parameters, the wrap-check and lockout metadata (`keystore/storage.ts`), and
+  the session record holds only the CryptoKey handle plus its expiry.
+  `keystore/runtime.ts` binds `bindToVaultLockSignal()` for the app singleton,
+  so sign-out, an account switch and the PIN idle lock reach the endpoint
+  keystore; `ui/useEndpointVaultLock.ts` ships the "Lock vault" control in the
+  account menu and in the shield chip's popover.
 - **A session belongs to the ENDPOINT, not to one tab (ruled 2026-09-01, §16;
   binding).** "Unlocks ALL wrapped phrases on that endpoint" is read the way it
   is written: an endpoint is a device. A newly opened tab therefore asks the
@@ -744,9 +795,10 @@ untouched** and is not part of this arc's diff.
   Nothing but K_dev crosses; the receiver re-derives entropy and K_c from its
   own keystore and installs the session only after the wrap-check proves the key
   belongs to this endpoint's password. A lock in any tab (manual, sign-out, PIN
-  idle) revokes the session in every tab. **Persisting K_dev to survive a full
-  close remains RETIRED** — PR #1604 proposed it and it was removed; reviving it
-  is an owner-level amendment to this section, never a lane decision.
+  idle) revokes the session in every tab. Persisting K_dev to survive a full
+  close was retired with PR #1604 and **revived by the owner's 2026-09-03
+  amendment above** — the persisted record is the second source the resume
+  path consults, after a sibling tab, and under the same verification.
 - **Plain (the warned option):** the mnemonic entropy sits unwrapped and the
   vault opens without any prompt. Choosing it requires the friction ladder's
   strong rung — an explicit acknowledgment that a compromised end device
@@ -770,6 +822,15 @@ untouched** and is not part of this arc's diff.
   Every surface that renders a vault or locked stub carries its state's action
   inline. The map is total and compile-checked (`vaultStateAffordance.ts`);
   the QR-receiver half is still deferred at runtime (`ui/VaultManager.tsx:77`).
+  **The action is performed where the user stands (owner, 2026-09-03):** the
+  locked stub's "Unlock" and "Enter recovery words" are in-place dialogs
+  (`ui/VaultUnlockDialog.tsx`, `ui/VaultProvidePhraseDialog.tsx`) that never
+  navigate; only the settings-sized acts (reset this device, storage, rename,
+  start fresh) link into the vault manager. And a vault that is UNLOCKED but
+  whose portfolio cannot be opened is never rendered as "locked": the loader
+  surfaces the typed failure (`useVaultedPortfolioStores` → `failures`) and the
+  stub says so, with Retry — a swallowed resolver error used to paint a
+  "Locked" badge with an "Open" link after a successful unlock.
 
 ## 13. QR seed-phrase transfer
 

@@ -12,13 +12,12 @@
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
 import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
-import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
-import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   createParanoidEnforcementRepository,
@@ -36,6 +35,7 @@ import {
   bindParanoidJob,
   createBackfillScheduler,
   createDeadLetter,
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   createJobWorkers,
@@ -64,6 +64,7 @@ import {
   createDividendEventsScanJob,
   createStandingOrdersJob,
   dividendNotifyGate,
+  earningsNotifyGate,
   heartbeatJob,
   jobConnectionFactory,
   registerSchedules,
@@ -94,7 +95,7 @@ import {
 import {
   createWebhookBridge,
   createWebhookDispatcher,
-  createFetchWebhookTransport,
+  createPinnedWebhookTransport,
 } from '../services/webhooks';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
@@ -109,10 +110,13 @@ import { createUsageAnalyticsService } from '../services/analytics/usageAnalytic
 import { createLogger } from '../logger';
 import { createMetricsServer } from '../metrics';
 import { createMarketData, purgeManualAssetCaches } from '../providers';
-import { initObservability } from '../services/observability/sentry';
+import { initObservability, SENTRY_REFUSED_MESSAGE } from '../services/observability/sentry';
 import { createProblemService } from '../services/observability/problemService';
+import { createProblemDropTally } from '../services/observability/problemDropTally';
+import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
 import { createProblemRepository } from '../data/repositories/problemRepository';
 import { createAuditService } from '../services/audit/auditService';
+import { createFeatureFlagService } from '../services/featureFlags/featureFlagService';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport } from '../services/email/transport';
 import { createExportRepository } from '../data/repositories/exportRepository';
@@ -120,12 +124,11 @@ import { createTwoFactorRepository } from '../data/repositories/twoFactorReposit
 import { createExportService } from '../services/export';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import { createTwoFactorService } from '../services/auth/twoFactorService';
-import { createFcmChannel } from '../services/notifications/fcm';
+import { createNotificationChannelSet } from '../services/notifications/channelSet';
 import { createNotificationCenter } from '../services/notifications/notificationCenter';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
 import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
-import { createWebPushChannel } from '../services/notifications/webPush';
 import { createCashTagRepository } from '../data/repositories/cashTagRepository';
 import { createCashBudgetRepository } from '../data/repositories/cashBudgetRepository';
 import { createCashSummaryRepository } from '../data/repositories/cashSummaryRepository';
@@ -143,8 +146,10 @@ import { releaseRetiredLiveAssets } from '../services/liveMode';
 
 const config = loadConfig();
 const logger = createLogger(config);
-// Error tracking (§13.4 V4-P5a): init in the worker too, so BullMQ job failures
-// AND any uncaught worker error are captured. A no-op when BT_SENTRY_DSN is unset.
+// External Sentry is retired (§16 2026-07-17): this never initialises an SDK.
+// A DSN found in the env is refused and captured as a problem below, so the
+// operator learns it from the admin Problems page rather than believing errors
+// are being shipped somewhere they are not.
 const observability = initObservability(config, logger, { serverName: 'worker' });
 const createConnection = jobConnectionFactory(config.redisUrl);
 
@@ -200,7 +205,24 @@ const standingOrderParanoidFilter = createParanoidUserJobFilter(
 // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement): the
 // worker captures its own permanently-failed jobs and provider failures into
 // the shared `problems` table. No audit sink here — resolve/reopen is admin-only.
-const problems = createProblemService({ repo: createProblemRepository(db), logger });
+// Refusals are published to a Redis tally the API reads: this process serves no
+// admin surface, so a drop counted only here is a drop the operator never sees.
+const workerDropTally = createProblemDropTally(deadLetterConnection, 'worker', { logger });
+const problems = createProblemService({
+  repo: createProblemRepository(db),
+  logger,
+  onDrop: (kind, reason) => workerDropTally.record(kind, reason),
+});
+// Same fatal-error seam the API installs: a rejected promise inside a job
+// callback's `.then`, a socket handler, an unref'd timer — none of them reaches
+// the BullMQ failure hooks, so without this the container dies silently.
+registerProcessErrorCapture({ problems, logger, process: 'worker' });
+if (observability.refusedDsn) {
+  problems.captureError(new Error(SENTRY_REFUSED_MESSAGE), {
+    process: 'worker',
+    source: 'config',
+  });
+}
 const marketDataConnection = createConnection();
 const { registry: providerRegistry, service: marketData } = createMarketData({
   db,
@@ -237,16 +259,18 @@ const email = createEmailService({
 const notificationRepo = createNotificationRepository(db);
 const notificationDigestRepo = createNotificationDigestRepository(db);
 const alertRepo = createAlertRepository(db);
-const fcmChannel = createFcmChannel({
-  serviceAccountFile: config.push.fcmServiceAccountFile,
-  devices: createDeviceTokenRepository(db),
-  logger,
-});
-const webPushChannel = createWebPushChannel({
-  vapid: config.webPush,
-  subscriptions: createPushSubscriptionRepository(db),
-  logger,
-});
+// Every outbound channel comes from the ONE shared factory the API context
+// uses too (#1723). Before it the worker built only FCM + web push, so with the
+// V5-P0 kill-switch flipped ON the authoritative dispatcher silently dropped
+// every Telegram and Discord notification.
+const {
+  fcm: fcmChannel,
+  webPush: webPushChannel,
+  telegram: telegramChannel,
+  discord: discordChannel,
+  telegramLinks: telegramLinkRepo,
+  discordWebhooks: discordWebhookRepo,
+} = createNotificationChannelSet({ db, config, logger });
 const dispatcher = createNotificationDispatcher({
   bus: events,
   repo: notificationRepo,
@@ -257,6 +281,16 @@ const dispatcher = createNotificationDispatcher({
   // log here at boot; the worker runs on either way.
   fcm: fcmChannel,
   webPush: webPushChannel,
+  telegram: telegramChannel,
+  discord: discordChannel,
+  // V5-P0 kill-switch (#1795): while a channel is deactivated the dispatcher
+  // asks whether the recipient still holds the link the switch preserves — a
+  // linked user's event is left undelivered and re-deliverable instead of being
+  // marked delivered and lost. Never queried while the channel is live.
+  deactivatedLinks: {
+    telegram: async (userId) => Boolean((await telegramLinkRepo.findForUser(userId))?.chatId),
+    discord: async (userId) => Boolean(await discordWebhookRepo.findForUser(userId)),
+  },
   presence: createPresenceStore({ redis: deadLetterConnection }),
   // Digest cadence + queue (V5-P3): a daily/weekly type's outbound channels are
   // deferred into the digest queue; the digest jobs below deliver them.
@@ -300,9 +334,12 @@ const notify = createNotificationCenter({
 });
 
 // Account data export (§13.4 V4-P6a, #494): the build + daily cleanup jobs close
-// over the export service. Only buildExport/cleanupExpired run here (the re-auth
-// deps below back the HTTP request path and are inert on the worker); enqueue is
-// wired to the durable queue for completeness though the worker never requests.
+// over the export service. Only buildExport/cleanupExpired/sweepOrphanedArtifacts
+// run here (the re-auth deps below back the HTTP request path and are inert on
+// the worker) — but this process IS the one that re-enqueues: a build deferred
+// by a portfolio-vault finalization re-drives itself from here, so the enqueue
+// must carry the deferral delay. It shares the API's single queue mapping
+// (`createExportBuildEnqueuer`) precisely so it cannot lose it (#1812).
 const exportUserRepo = createUserRepository(db);
 const dataExportService = createExportService({
   config,
@@ -321,9 +358,7 @@ const dataExportService = createExportService({
   }),
   audit,
   notify,
-  enqueueBuild: async (jobId) => {
-    await registry.enqueue('data.export', { jobId });
-  },
+  enqueueBuild: createExportBuildEnqueuer(registry),
   withAccountTransitionLock: (userId, run) =>
     withFreshLockedPrivacyModes(lockDb, [userId], () => run()),
   logger,
@@ -372,7 +407,11 @@ const portfolioVaultFinalizationSnapshots = createPortfolioSnapshotService({
   currencyService,
   logger,
 });
-const portfolioVaultFinalizationCashBudgets = createCashBudgetService({
+// Cash budgets, the worker's instance. Two entry points, both used below: the
+// move-out finalizer needs `evaluateRequired` (a failure there must stay
+// durable), and the portfolio service takes `onCashWrite` — the non-throwing
+// seam every cash write this process books runs through (#1754).
+const cashBudgets = createCashBudgetService({
   budgets: createCashBudgetRepository(db),
   summaries: createCashSummaryRepository(db),
   tags: createCashTagRepository(db),
@@ -400,7 +439,7 @@ const portfolioVaultFinalizer = createPortfolioVaultMoveOutFinalizer({
     }
   },
   runAfterMoveOutUnlock: async (userId, portfolioId, plan) => {
-    await portfolioVaultFinalizationCashBudgets.evaluateRequired(userId, portfolioId);
+    await cashBudgets.evaluateRequired(userId, portfolioId);
     await events.publish({
       type: 'portfolio.changed',
       userId,
@@ -459,6 +498,10 @@ const portfolioService = createPortfolioService({
   cashSourceRepo,
   // Read-only: lets the cash ledger DTO carry each movement's tags (V5 cash fusion).
   cashTagRepo: createCashTagRepository(db),
+  // THE CASH-WRITE SEAM (#1754), the worker's copy: a cash movement this
+  // process books (a standing order's monthly deduction, a replicated apply)
+  // re-evaluates the portfolio's budgets exactly as the API's does.
+  onCashWrite: cashBudgets.onCashWrite,
   marketData,
   currencyService,
   referenceBackfill: createReferenceBackfill({
@@ -524,8 +567,10 @@ const webhookDispatcher = createWebhookDispatcher({
   deliveries: webhookDeliveryRepo,
   // No `dnsResolver` override: the guard re-resolves each user-supplied
   // destination through the system resolver before every attempt (§8 outbound
-  // safety), so a rebinding hostname is refused here, not delivered to.
-  transport: createFetchWebhookTransport(),
+  // safety), so a rebinding hostname is refused here, not delivered to — and
+  // the transport pins that vetted answer into the socket, so the connect
+  // cannot resolve it a second time.
+  transport: createPinnedWebhookTransport(),
   encryptionKey: config.twoFactor.encryptionKey,
   audit,
   logger,
@@ -591,12 +636,19 @@ const definitions = assembleRegisteredJobDefinitions({
   createUsageRollupJob: createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
-  // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
+  // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis; the
+  // per-user opt-in is read from the matrix before any side effect.
   createEarningsReminderJob: bindParanoidJob(
     createEarningsReminderJob({
       intelRepo: createMarketIntelRepository(db),
       marketData,
       notify,
+      // The kill-switch view of the two additive channels (#1795): a user
+      // routed only to a deactivated Telegram/Discord is not an opt-in.
+      isEnabled: earningsNotifyGate(notificationRepo, {
+        telegram: config.telegram.enabled,
+        discord: config.discord.enabled,
+      }),
       enabled: config.marketIntel.enabled,
       runIfAllowed: earningsParanoidFilter.runAllowed,
     }),
@@ -609,7 +661,10 @@ const definitions = assembleRegisteredJobDefinitions({
       repo: createMarketIntelRepository(db),
       marketData,
       notify,
-      isEnabled: dividendNotifyGate(notificationRepo),
+      isEnabled: dividendNotifyGate(notificationRepo, {
+        telegram: config.telegram.enabled,
+        discord: config.discord.enabled,
+      }),
       enabled: config.marketIntel.enabled,
       runIfAllowed: dividendParanoidFilter.runAllowed,
     }),
@@ -685,15 +740,41 @@ const definitions = assembleRegisteredJobDefinitions({
     emailLog: createEmailLogRepository(db),
     vaultStaging: createParanoidVaultRepository(db),
     vaultCandidates: createVaultBlobRepository(db),
+    problems: createProblemRepository(db),
+    usageEvents: createUsageAnalyticsRepository(db, lockDb),
+    // Delivered digest-queue rows (#1696) — the one operational table that had
+    // no sweep; pending rows are the live work list and are never eligible.
+    digestQueue: notificationDigestRepo,
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,
+    problemRetentionDays: config.retention.problemDays,
+    usageEventRetentionDays: config.retention.usageEventDays,
   }),
 });
 
 assertParanoidJobBindings(definitions, ALL_QUEUE_NAMES);
 
-const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
+/**
+ * The worker's own read of the runtime kill switches (§13.5 V5-P2 arc (c)),
+ * built exactly like the API context's: same `app_settings` rows, same shared
+ * Redis snapshot, so an admin flip reaches the worker on the NEXT scheduled run
+ * — the producer-side equivalent of `requireFeature` reading per request.
+ */
+const featureFlags = createFeatureFlagService({
+  repo: createAppSettingsRepository(db),
+  redis: deadLetterConnection,
+  audit,
+  logger,
+});
+
+const ctx: JobContext = {
+  events,
+  deadLetter,
+  redis: deadLetterConnection,
+  logger,
+  isFeatureEnabled: (key) => featureFlags.isEnabled(key),
+};
 
 const running = createJobWorkers({
   createConnection,
@@ -705,6 +786,13 @@ const running = createJobWorkers({
   onPermanentFailure: (err, meta) => {
     observability.captureException(err, meta);
     problems.captureJobFailure(err, meta);
+  },
+  // Worker-scoped errors (Redis link dropped, lock extension failed, payload
+  // undeserializable) never arrive as a per-job `failed` event, so without this
+  // binding the Problems page reports calm while the job system is down.
+  onWorkerError: (err, meta) => {
+    observability.captureException(err, meta);
+    problems.captureWorkerError(err, meta);
   },
 });
 
@@ -735,8 +823,10 @@ async function shutdown(signal: string): Promise<void> {
       metricsServer.closeIdleConnections();
       await new Promise<void>((resolve) => metricsServer.close(() => resolve()));
     }
-    // Persist any in-flight problem captures before the DB connection closes.
+    // Persist any in-flight problem captures (and any deferred occurrences)
+    // before the DB connection closes, and publish the last refusals.
     await problems.flush();
+    await workerDropTally.settled();
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await marketData.settled();
@@ -746,7 +836,7 @@ async function shutdown(signal: string): Promise<void> {
     await marketDataConnection.quit();
     await lockClient.end();
     await client.end();
-    // Flush any buffered Sentry events before the process exits.
+    // Retired external tracker (§16 2026-07-17): inert, closed for symmetry.
     await observability.close();
   } catch (err) {
     logger.error({ err }, 'error during worker shutdown');

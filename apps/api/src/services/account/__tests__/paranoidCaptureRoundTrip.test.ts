@@ -242,7 +242,7 @@ function restoreDocument(userId: string, captured: Captured): ParanoidDisableReq
         executedAt: movement.executedAt,
         note: movement.note,
         source: movement.source,
-        dedupHash: null,
+        dedupHash: movement.dedupHash ?? null,
         originalCurrency: movement.originalCurrency ?? null,
         createdAt: movement.createdAt,
       }),

@@ -36,6 +36,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { getSharedPortfolio } from '../../lib/socialApi';
 import { ApiError } from '../../lib/apiClient';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { SharedPortfolioPage } from './SharedPortfolioPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
@@ -205,5 +206,35 @@ describe('SharedPortfolioPage', () => {
     expect(screen.queryByText("Jane's Main")).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(getSharedPortfolio).toHaveBeenCalledTimes(2);
+  });
+});
+
+/** The curated icon a rendered avatar actually painted (inert `data-icon-id`). */
+function avatarIconId(container: HTMLElement): string | null | undefined {
+  return container.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id');
+}
+
+describe('SharedPortfolioPage — the owner has a face (§6.9)', () => {
+  test('renders the owner’s curated icon beside the title', async () => {
+    vi.mocked(getSharedPortfolio).mockResolvedValue({
+      ...detail,
+      owner: { ...detail.owner, profileIcon: 'fox' as const },
+    });
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText("Jane's Main")).toBeInTheDocument());
+    expect(avatarIconId(container)).toBe('fox');
+    expect(screen.getByText(/Shared by jane/i)).toBeInTheDocument();
+  });
+
+  test('falls back to the deterministic default when the owner never picked one', async () => {
+    vi.mocked(getSharedPortfolio).mockResolvedValue({
+      ...detail,
+      owner: { ...detail.owner, profileIcon: null },
+    });
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText("Jane's Main")).toBeInTheDocument());
+    expect(avatarIconId(container)).toBe(defaultProfileIconIdFor('jane'));
   });
 });
