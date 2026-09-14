@@ -55,3 +55,23 @@ Dependabot owns GitHub Actions and npm updates. Renovate owns the deployable
 Dockerfiles via [`renovate.json`](../renovate.json): its Dockerfile manager
 updates every `FROM` stage and groups base-image digest changes into one
 reviewable pull request.
+
+## The SQL-identifier reachability gate (`pnpm lint`)
+
+Drizzle parameterises values but cannot parameterise identifiers, so
+`sql.identifier()`, `sql.raw()`, `alias()` and a subquery's `.as()` are the only
+places in this repository where a JavaScript string becomes SQL text verbatim.
+The vault/paranoid review signed those call sites off on a claim — _no
+user-controlled string ever reaches them_ — that held only as long as every one
+of those arguments stayed a literal, which nothing checked.
+
+[`packages/config/rules/noDynamicSqlIdentifier.js`](../packages/config/rules/noDynamicSqlIdentifier.js)
+is that check, wired in `eslint.config.js` over `apps/api/src`, `packages/*/src`
+and `e2e` (tests included). A non-literal argument fails `pnpm lint` and
+therefore CI. The escape hatch is one shape only —
+`// eslint-disable-next-line sql/no-dynamic-identifier -- <why the value is from
+a closed allow-list>` — and the rule reports the exemption itself when it names
+no reason, uses the `-line` or block form, or hides behind a blanket directive.
+An exemption's reason must name the closed list the value comes from (a
+module-level constant, an `as const` table list, a checked-in migration file);
+"it is safe" is not one.
