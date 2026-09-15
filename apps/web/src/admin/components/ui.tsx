@@ -268,9 +268,19 @@ export function TextAreaField({
   const hintId = `${areaId}-hint`;
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <label htmlFor={areaId} className={cx(TEXT_MICRO, hideLabel ? 'sr-only' : null)}>
-        {label}
-      </label>
+      {/* Same label structure as `TextField`, required marker included: a
+          multi-line field is no less required than a single-line one, and the
+          marker stays `aria-hidden` so it never joins the accessible name. */}
+      <span className={cx('bt-field__label', hideLabel ? 'sr-only' : null)}>
+        <label htmlFor={areaId} className={TEXT_MICRO}>
+          {label}
+        </label>
+        {rest.required ? (
+          <span aria-hidden="true" className="bt-field__required-marker">
+            {'*'}
+          </span>
+        ) : null}
+      </span>
       <textarea
         id={areaId}
         className={cx(FIELD_BASE, 'resize-y leading-relaxed', className)}

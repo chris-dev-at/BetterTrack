@@ -6,15 +6,21 @@ import {
   ANNOUNCEMENT_NOTIFICATION_TYPE,
   activeAnnouncementListResponseSchema,
   announcementListResponseSchema,
+  announcementRedeliverResponseSchema,
   announcementSchema,
   notificationListResponseSchema,
   type CreateAnnouncementRequest,
 } from '@bettertrack/contracts';
 
+import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
+import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
-import { announcementEventKey } from '../services/announcements/announcementService';
+import {
+  announcementEventKey,
+  ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+} from '../services/announcements/announcementService';
 
 /**
  * Announcements (§13.4 V4-P5b). Covers the acceptance criteria:
@@ -27,6 +33,13 @@ import { announcementEventKey } from '../services/announcements/announcementServ
  *  5. Inbox entry reuses the P0c `account.notice` type + deep-link route.
  *  6. Admin CRUD rejects non-admins (404 mask, mirroring the admin router pattern).
  *  7. Delivery is banner + inbox only (no email/push routing gates apply).
+ *
+ * ADMIN-W7a (#1909) moved publication off the request path onto the
+ * `announcements.publishDue` job, so a save no longer delivers anything: these
+ * tests create through HTTP and then run the publication explicitly through
+ * {@link publishDue}, exactly as the worker's sweep does. `config.isTest` leaves
+ * `ctx.queues` null, so nothing is enqueued and an admin write that DID fan out
+ * would be caught by the "no delivery at save time" assertions below.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -53,6 +66,14 @@ async function loginUserAgent(
     .send({ identifier, password });
   expect(res.status).toBe(200);
   return agent;
+}
+
+/**
+ * Run the publication sweep the way `announcements.publishDue` does. The HTTP
+ * layer never triggers it any more — that separation is the point of #1909.
+ */
+async function publishDue() {
+  return harness.ctx.announcements.publishDue();
 }
 
 async function createViaAdmin(
@@ -155,11 +176,17 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     const created = await createViaAdmin(adminAgent, BASE_BODY);
     expect(created.status).toBe(201);
     const announcement = announcementSchema.parse(created.body);
-    expect(announcement.publishedAt).not.toBeNull();
+    // The write returned BEFORE any delivery: unstamped, and the job's to do.
+    expect(announcement.publishedAt).toBeNull();
+    expect(announcement.deliveryState).toBe('publishing');
 
-    // Each user gets exactly one row keyed by the announcement's event key.
     const notifRepo = createNotificationRepository(harness.db);
     const key = announcementEventKey(announcement.id);
+    expect(await notifRepo.existsForEventKey(en.id, key)).toBe(false);
+
+    // The job publishes it. Each user then holds exactly one row keyed by the
+    // announcement's event key.
+    expect(await publishDue()).toMatchObject({ due: 1, published: 1, failed: 0 });
     expect(await notifRepo.existsForEventKey(en.id, key)).toBe(true);
     expect(await notifRepo.existsForEventKey(de.id, key)).toBe(true);
 
@@ -180,7 +207,9 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     expect(deRow).toBeDefined();
     expect(deRow!.title).toBe(BASE_BODY.titleDe);
 
-    // Re-publish (toggle off → on) is a per-user no-op via the shared eventKey.
+    // Re-publish (toggle off → on, then another sweep) is a per-user no-op: the
+    // row is stamped, so it is not due, and the shared eventKey would collapse
+    // it even if it were.
     await adminAgent
       .patch(`/api/v1/admin/announcements/${announcement.id}`)
       .set(...XRW)
@@ -189,6 +218,7 @@ describe('announcements — publishing fans an inbox row out to every user', () 
       .patch(`/api/v1/admin/announcements/${announcement.id}`)
       .set(...XRW)
       .send({ active: true });
+    expect(await publishDue()).toMatchObject({ due: 0, published: 0, inserted: 0 });
 
     const enInbox2 = await enAgent.get('/api/v1/notifications');
     const enList2 = notificationListResponseSchema.parse(enInbox2.body);
@@ -204,6 +234,7 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     await createUserRepository(harness.db).setLocale(de.id, 'de');
 
     await createViaAdmin(adminAgent, BASE_BODY);
+    await publishDue();
 
     const enAgent = await loginUserAgent(harness.app, en.email, en.password);
     const enRes = await enAgent.get('/api/v1/notifications/announcements');
@@ -217,6 +248,95 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     const deRes = await deAgent.get('/api/v1/notifications/announcements');
     const deBody = activeAnnouncementListResponseSchema.parse(deRes.body);
     expect(deBody.announcements[0]!.title).toBe(BASE_BODY.titleDe);
+  });
+});
+
+/**
+ * ADMIN-W7a (#1909): the admin's HTTP request persists the announcement and
+ * returns. It does not walk the user table, and a future `startsAt` now defers
+ * the inbox fan-out exactly as it always deferred the banner.
+ */
+describe('announcements — the write path never fans out', () => {
+  it('POST and PATCH return without delivering, and only hand an OPEN window to the queue', async () => {
+    const enqueued: Array<{ announcementId: string; attempt: number }> = [];
+    harness = await createTestApp({
+      announcementPublishEnqueue: async (request) => {
+        enqueued.push({ announcementId: request.announcementId, attempt: request.attempt });
+        return { jobId: `${request.announcementId}:${request.attempt}` };
+      },
+    });
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser({ email: 'w@bt.test', username: 'writepathuser' });
+    const notifRepo = createNotificationRepository(harness.db);
+
+    // 1. Active + a FUTURE start: nothing delivered, nothing even queued.
+    const scheduled = announcementSchema.parse(
+      (
+        await createViaAdmin(adminAgent, {
+          ...BASE_BODY,
+          active: true,
+          startsAt: new Date('2099-01-01T00:00:00.000Z').toISOString(),
+        })
+      ).body,
+    );
+    expect(scheduled.deliveryState).toBe('scheduled');
+    expect(scheduled.publishedAt).toBeNull();
+    expect(await notifRepo.existsForEventKey(user.id, announcementEventKey(scheduled.id))).toBe(
+      false,
+    );
+    expect(enqueued).toHaveLength(0);
+
+    // 2. A draft activated with an OPEN window: still nothing delivered on the
+    //    request, but the worker is asked to publish it now.
+    const draft = announcementSchema.parse(
+      (await createViaAdmin(adminAgent, { ...BASE_BODY, active: false })).body,
+    );
+    expect(draft.deliveryState).toBe('draft');
+    expect(enqueued).toHaveLength(0);
+
+    const patched = await adminAgent
+      .patch(`/api/v1/admin/announcements/${draft.id}`)
+      .set(...XRW)
+      .send({ active: true });
+    expect(patched.status).toBe(200);
+    const activated = announcementSchema.parse(patched.body);
+    expect(activated.deliveryState).toBe('publishing');
+    expect(activated.publishedAt).toBeNull();
+    expect(await notifRepo.existsForEventKey(user.id, announcementEventKey(draft.id))).toBe(false);
+    expect(enqueued).toEqual([{ announcementId: draft.id, attempt: 0 }]);
+  });
+
+  it('the list projection is parsed through its contract and carries the derived state', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const expired = announcementSchema.parse(
+      (
+        await createViaAdmin(adminAgent, {
+          ...BASE_BODY,
+          active: true,
+          titleEn: 'Old news',
+          titleDe: 'Alte Nachricht',
+          startsAt: new Date('2020-01-01T00:00:00.000Z').toISOString(),
+          endsAt: new Date('2020-02-01T00:00:00.000Z').toISOString(),
+        })
+      ).body,
+    );
+    const live = announcementSchema.parse((await createViaAdmin(adminAgent, BASE_BODY)).body);
+    await publishDue();
+
+    const res = await adminAgent.get('/api/v1/admin/announcements');
+    expect(res.status).toBe(200);
+    // `.strict()` on the way out too: an unparsed `res.json` is how a
+    // projection and its contract drift apart unnoticed.
+    const list = announcementListResponseSchema.parse(res.body);
+    const byId = new Map(list.announcements.map((a) => [a.id, a]));
+    expect(byId.get(expired.id)!.deliveryState).toBe('expired');
+    expect(byId.get(expired.id)!.deliveredCount).toBeNull();
+    expect(byId.get(live.id)!.deliveryState).toBe('published');
+    expect(byId.get(live.id)!.deliveredCount).toBeGreaterThan(0);
+    expect(byId.get(live.id)!.failedCount).toBe(0);
   });
 });
 
@@ -365,6 +485,7 @@ describe('announcements — inbox entry contract', () => {
 
     const created = await createViaAdmin(adminAgent, BASE_BODY);
     const announcement = announcementSchema.parse(created.body);
+    await publishDue();
 
     const agent = await loginUserAgent(harness.app, user.email, user.password);
     const inbox = await agent.get('/api/v1/notifications');
@@ -376,5 +497,174 @@ describe('announcements — inbox entry contract', () => {
     // Reuses the V4-P0c account.notice slot, so the bell deep-link resolver
     // takes it through the existing `/settings/notifications` mapping.
     expect(row!.type).toBe(ANNOUNCEMENT_NOTIFICATION_TYPE);
+  });
+});
+
+/**
+ * ADMIN-W7c (#1943): `POST /admin/announcements/:id/redeliver`.
+ *
+ * The console showed a published announcement standing at "N failed" with
+ * nothing attached to it — the automatic ladder stops after one retry, and
+ * `publishDue` only takes UNSTAMPED rows, so those recipients were never coming
+ * back. This route is the operator's hand on that: it validates, audits with
+ * the acting admin, and hands ONE targeted pass to the queue. It never walks
+ * the user table on the request — that is what makes it a 202.
+ */
+describe('announcements — redelivering the recipients a publication missed', () => {
+  const ENQUEUED: Array<{ announcementId: string; attempt: number; actorId?: string }> = [];
+
+  /** A harness whose publication transport records instead of queueing. */
+  async function withRecordingQueue() {
+    ENQUEUED.length = 0;
+    harness = await createTestApp({
+      announcementPublishEnqueue: async (request) => {
+        ENQUEUED.push({
+          announcementId: request.announcementId,
+          attempt: request.attempt,
+          ...(request.actorId !== undefined ? { actorId: request.actorId } : {}),
+        });
+        return { jobId: `job:${request.announcementId}:${request.attempt}` };
+      },
+    });
+  }
+
+  /**
+   * Only the OPERATOR passes. Creating an announcement with an open window
+   * legitimately asks for its automatic first publication (`attempt: 0`), so an
+   * unfiltered recorder would be asserting about that instead of the click.
+   */
+  const manualPasses = () =>
+    ENQUEUED.filter((r) => r.attempt === ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT);
+
+  /** Put a published announcement into the state the issue is about. */
+  async function stuckWithFailures(
+    agent: ReturnType<typeof request.agent>,
+    counts: { delivered: number; failed: number },
+  ) {
+    const created = announcementSchema.parse((await createViaAdmin(agent, BASE_BODY)).body);
+    await createAnnouncementRepository(harness.db).claimPublication(created.id, new Date(), counts);
+    return created;
+  }
+
+  it('is invisible to a non-admin and refused to an admin who has not enrolled 2FA', async () => {
+    await withRecordingQueue();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const stuck = await stuckWithFailures(adminAgent, { delivered: 9, failed: 3 });
+    const path = `/api/v1/admin/announcements/${stuck.id}/redeliver`;
+
+    // Anonymous: a bare 404, like every route under the admin router (§6.12).
+    expect(
+      (
+        await request(harness.app)
+          .post(path)
+          .set(...XRW)
+      ).status,
+    ).toBe(404);
+
+    // A signed-in USER: the same 404 — the route does not announce itself.
+    const user = await harness.seedUser({ email: 'nosy@bt.test', username: 'nosyuser' });
+    const userAgent = await loginUserAgent(harness.app, user.email, user.password);
+    expect((await userAgent.post(path).set(...XRW)).status).toBe(404);
+
+    // A real admin who has not enrolled 2FA: the mandatory-2FA gate, not the
+    // route's own logic (§6.12, #400).
+    const fresh = await harness.seedAdmin({
+      email: 'fresh@bt.test',
+      username: 'freshadmin',
+      password: 'fresh-strong-password-1',
+    });
+    const freshAgent = request.agent(harness.app);
+    const login = await freshAgent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: fresh.email, password: fresh.password });
+    expect(login.status).toBe(200);
+    const gated = await freshAgent.post(path).set(...XRW);
+    expect(gated.status).toBe(403);
+    expect(gated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+
+    // None of the three got anywhere near the queue.
+    expect(manualPasses()).toHaveLength(0);
+  });
+
+  it('accepts the retry with 202, queues ONE operator pass, and audits it with the actor and the counts', async () => {
+    await withRecordingQueue();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const stuck = await stuckWithFailures(adminAgent, { delivered: 9, failed: 3 });
+
+    const res = await adminAgent
+      .post(`/api/v1/admin/announcements/${stuck.id}/redeliver`)
+      .set(...XRW);
+    expect(res.status).toBe(202);
+    const accepted = announcementRedeliverResponseSchema.parse(res.body);
+    expect(accepted).toMatchObject({
+      announcementId: stuck.id,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      // The counts the operator ACTED ON — the outcome arrives on the next list.
+      failedCount: 3,
+      deliveredCount: 9,
+    });
+    expect(accepted.jobId).toBeTruthy();
+
+    // Exactly one pass, carrying the admin who clicked.
+    expect(manualPasses()).toEqual([
+      {
+        announcementId: stuck.id,
+        attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+        actorId: admin.id,
+      },
+    ]);
+
+    // Audited as an OPERATOR action: `announcement.publish` rows are the job's
+    // and carry `actorId: null`; this one names the person and the counts.
+    const { entries } = await createAuditRepository(harness.db).listForTarget({
+      targetId: stuck.id,
+      limit: 20,
+    });
+    const asked = entries.filter((row) => row.action === 'announcement.redeliver');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.actorId).toBe(admin.id);
+    expect(asked[0]!.meta).toMatchObject({
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      jobId: accepted.jobId,
+      delivered: 9,
+      failed: 3,
+    });
+
+    // The row itself is untouched by the request: no re-stamp, no zeroed
+    // counts. The queued pass replaces them from its own outcome.
+    const list = announcementListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/announcements')).body,
+    );
+    const row = list.announcements.find((a) => a.id === stuck.id)!;
+    expect(row.failedCount).toBe(3);
+    expect(row.deliveredCount).toBe(9);
+    expect(row.publishedAt).toBe(stuck.publishedAt ?? row.publishedAt);
+  });
+
+  it('404s an unknown id and 409s an announcement with nothing failed', async () => {
+    await withRecordingQueue();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const unknown = await adminAgent
+      .post('/api/v1/admin/announcements/00000000-0000-4000-8000-000000000000/redeliver')
+      .set(...XRW);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error.code).toBe('ANNOUNCEMENT_NOT_FOUND');
+
+    // Published cleanly: the button is hidden in the console at 0 failed, and
+    // the server refuses it anyway rather than walking every account for
+    // nothing.
+    const clean = await stuckWithFailures(adminAgent, { delivered: 12, failed: 0 });
+    const refused = await adminAgent
+      .post(`/api/v1/admin/announcements/${clean.id}/redeliver`)
+      .set(...XRW);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe('ANNOUNCEMENT_NOTHING_TO_REDELIVER');
+
+    expect(manualPasses()).toHaveLength(0);
   });
 });

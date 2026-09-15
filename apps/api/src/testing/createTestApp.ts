@@ -23,6 +23,7 @@ import type { Database } from '../data/db';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { generateTotpCode } from '../services/auth/totp';
 import * as schema from '../data/schema';
+import type { EventBus } from '../events/bus';
 import { buildContext, type AppContext } from '../http/context';
 import type { BackfillScheduler } from '../jobs';
 import { createLogger } from '../logger';
@@ -36,6 +37,7 @@ import type { DispatchableEvent } from '../services/notifications/notificationDi
 import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard';
 import type { WebhookTransport } from '../services/webhooks';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
+import { liveHarnesses, type HarnessDisposer } from './harnessRegistry';
 
 /**
  * Offline DNS for the webhook outbound guard: every hostname resolves to one
@@ -161,6 +163,39 @@ async function acquirePgliteDb(): Promise<Database> {
 // inside each hash the two costs coexist freely.
 const testPasswordHasher = createPasswordHasher({ memoryCost: 4096, timeCost: 1 });
 
+/**
+ * Builds a harness's release (#1914 semantics, #1936 shape).
+ *
+ * Module-level on purpose. The live-harness registry holds this closure until
+ * file teardown, and a closure defined inside `createTestApp` would share that
+ * function's scope — retaining it would pin the express app, the router tree
+ * and every service for the life of the file, across as many harnesses as the
+ * file builds. This one captures only what a release actually needs.
+ *
+ * `ownedRedis` is the harness's own client or `null`: in integration mode the
+ * real client is the worker-shared singleton and must outlive every harness
+ * (#1485), while the PGlite path's `RedisMock` is built per harness and is the
+ * harness's to close.
+ */
+function createHarnessDisposer(events: EventBus, ownedRedis: Redis | null): HarnessDisposer {
+  let disposed = false;
+
+  const dispose: HarnessDisposer = async () => {
+    if (disposed) return;
+    disposed = true;
+    // Out of the registry first, so an explicit dispose() leaves the reaper
+    // nothing to do even if the release below throws.
+    liveHarnesses.forget(dispose);
+    try {
+      await events.close();
+    } finally {
+      if (ownedRedis) await ownedRedis.quit();
+    }
+  };
+
+  return dispose;
+}
+
 // Base env used for loadConfig. URLs reflect whichever backend is active.
 const BASE_TEST_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: 'test',
@@ -193,9 +228,19 @@ export interface TestHarness {
   ctx: AppContext;
   db: Database;
   /**
-   * Releases only resources owned by this harness. The real-service Redis
-   * client is process-shared, so disposal is deliberately a no-op in that
-   * mode.
+   * Releases only resources owned by this harness: the event bus's own
+   * publisher/subscriber pair (`redis.duplicate()` x2 in `buildContext`) and,
+   * on the PGlite path, the per-harness `RedisMock`. The real-service Redis
+   * client is process-shared and is deliberately left open (#1485, #1914).
+   * Idempotent: a second call is a no-op. Terminal: after `dispose()` the
+   * harness must not be used again — `ctx.events.publish()` rejects once the
+   * bus pair is closed, while `ctx.db`/`ctx.redis` would still answer.
+   *
+   * Calling it explicitly stays the preferred thing to do: it releases the
+   * connections at the point the test is done with them rather than at the end
+   * of the file. A harness that is never disposed is no longer a leak either —
+   * every harness is registered in `harnessRegistry.ts` and released by the
+   * file-teardown reaper the shared vitest setup file installs (#1936).
    */
   dispose(): Promise<void>;
   seedAdmin(input?: Partial<Omit<SeededAdmin, 'id'>>): Promise<SeededAdmin>;
@@ -248,6 +293,18 @@ export interface CreateTestAppOptions {
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
   /** Recording data-export build transport for atomic request-gate tests. */
   exportEnqueue?: (jobId: string, opts?: { delayMs?: number }) => Promise<void>;
+  /**
+   * Recording announcement publication transport (#1909). Left undefined by
+   * default so an admin write provably delivers nothing; pass a recorder to
+   * assert WHAT the write asked the worker to publish.
+   */
+  announcementPublishEnqueue?: (request: {
+    announcementId: string;
+    attempt: number;
+    delayMs?: number;
+    actorId?: string;
+    dedupeWindowMs?: number;
+  }) => Promise<{ jobId: string }>;
   /** Pause an export after collection while its account transition lock is held. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Shrink the export build ceilings (#1714) so the clean-refusal path is provable. */
@@ -318,22 +375,6 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     await redis.flushall();
   }
 
-  // The real Redis client belongs to the worker-level integration harness and
-  // must outlive every individual createTestApp() call. RedisMock, by contrast,
-  // is constructed above for this harness alone and is safe to close here.
-  const releaseOwnedRedis: () => Promise<void> = realRedisUrl
-    ? async () => undefined
-    : async () => {
-        await redis.quit();
-      };
-  let disposed = false;
-
-  async function dispose(): Promise<void> {
-    if (disposed) return;
-    disposed = true;
-    await releaseOwnedRedis();
-  }
-
   const config = loadConfig({ ...BASE_TEST_ENV, ...options.env });
   if (options.rateLimitsEnabled) {
     config.rateLimits.enabled = true;
@@ -356,6 +397,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     realtimeCommandNow: options.realtimeCommandNow,
     notificationEnqueue: options.notificationEnqueue,
     exportEnqueue: options.exportEnqueue,
+    announcementPublishEnqueue: options.announcementPublishEnqueue,
     exportAfterCollect: options.exportAfterCollect,
     exportLimits: options.exportLimits,
     exportDownloadMaxMs: options.exportDownloadMaxMs,
@@ -367,6 +409,29 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     aiFetch: options.aiFetch,
     oauthLogoFetcher: options.oauthLogoFetcher,
   });
+
+  // Resources this harness opened, released in creation-inverse order (#1914).
+  //
+  // `buildContext` gives the event bus a dedicated publisher/subscriber pair via
+  // `redis.duplicate()` (`http/context.ts`) — two connections per harness that
+  // nothing used to close. In integration mode (`vitest.config.integration.ts`,
+  // `singleFork`) that meant every harness in every file left two real sockets
+  // open for the life of the fork. `EventBus.close()` quits exactly that pair and
+  // never the client they were duplicated from, so it is correct on the
+  // process-shared real client as much as on the per-harness `RedisMock`.
+  //
+  // That pair is the whole of it: `buildContext` builds no BullMQ registry under
+  // test (`queues` is null when `config.isTest`), every other service rides the
+  // passed-in client, and the realtime gateway's own `duplicate()` is opened by
+  // `attach()` — which `createTestApp` itself never calls (gateway tests do,
+  // and close it through `realtime.close()`).
+  //
+  // Registered before `createApp` so a harness is reapable from the moment it
+  // owns anything: most callers never call `dispose()`, and the shared setup
+  // file releases whatever is still live at file teardown (#1936).
+  const dispose = createHarnessDisposer(ctx.events, realRedisUrl ? null : redis);
+  liveHarnesses.register(dispose);
+
   const app = createApp(ctx);
 
   const userRepo = createUserRepository(db);

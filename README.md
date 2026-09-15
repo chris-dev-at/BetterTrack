@@ -139,15 +139,19 @@ with no SMTP config the app boots and every account flow still works, because
 the admin gets a copyable temp password / invite URL straight from the API
 response. Configure these in `apps/api/.env` to turn it on:
 
-| Variable    | Example (Gmail preset)        | Notes                                          |
-| ----------- | ----------------------------- | ---------------------------------------------- |
-| `SMTP_HOST` | `smtp.gmail.com`              | required to enable the channel                 |
-| `SMTP_PORT` | `465`                         | `465` ⇒ implicit TLS, anything else ⇒ STARTTLS |
-| `SMTP_USER` | `you@gmail.com`               | your Gmail address (omit for unauth relays)    |
-| `SMTP_PASS` | your 16-char **app password** | never logged or returned by the API            |
-| `SMTP_FROM` | `BetterTrack <you@gmail.com>` | required to enable the channel                 |
+| Variable    | Example (Gmail preset)        | Notes                                                      |
+| ----------- | ----------------------------- | ---------------------------------------------------------- |
+| `SMTP_HOST` | `smtp.gmail.com`              | required to enable the channel                             |
+| `SMTP_PORT` | `465`                         | `465` ⇒ implicit TLS; any other port **requires** STARTTLS |
+| `SMTP_USER` | `you@gmail.com`               | your Gmail address (omit for unauth relays)                |
+| `SMTP_PASS` | your 16-char **app password** | never logged or returned by the API                        |
+| `SMTP_FROM` | `BetterTrack <you@gmail.com>` | required to enable the channel                             |
 
-The channel is enabled only when both `SMTP_HOST` and `SMTP_FROM` are set. Send
+The channel is enabled only when both `SMTP_HOST` and `SMTP_FROM` are set. On
+any port other than 465 the STARTTLS upgrade is mandatory (`requireTLS`): a
+relay that does not offer it fails the send with `ETLS` rather than sending
+`SMTP_USER`/`SMTP_PASS` as cleartext `AUTH PLAIN`. A plaintext-only relay is
+therefore not supported — point at 465, or give the relay a certificate. Send
 failures never roll back account creation/reset/invite state — they are logged
 and written to the audit log as `email.send_failed` with a coarse error code,
 no secrets. Every attempt (whether `sent`, `failed`, or — when SMTP is
