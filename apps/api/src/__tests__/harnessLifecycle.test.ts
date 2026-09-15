@@ -1,10 +1,17 @@
 import type { Redis } from 'ioredis';
 import request from 'supertest';
+import type { MockInstance } from 'vitest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DomainEvent } from '../events/types';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
-import { createHarnessRegistry, liveHarnesses } from '../testing/harnessRegistry';
+import {
+  createHarnessRegistry,
+  liveHarnesses,
+  type HarnessDisposer,
+  type SuiteScope,
+  type TestScope,
+} from '../testing/harnessRegistry';
 
 /**
  * Harness lifecycle (#1914 — the release itself; #1936 — who calls it).
@@ -24,6 +31,14 @@ import { createHarnessRegistry, liveHarnesses } from '../testing/harnessRegistry
  * the slice, one of which disposed. The second half of this file proves the
  * reaper that closes that gap — and, just as importantly, proves it does NOT
  * run per test.
+ *
+ * #1940 adds the suite level. The file reaper left a floor — the largest single
+ * file's own live set — so a `describe` now drains as soon as the runner leaves
+ * it, while anything owned by a suite that is still open (or by the file) is
+ * untouched. The last third of this file proves both halves of that: the inner
+ * suite's `beforeEach` harnesses are gone in the next sibling describe, and the
+ * `beforeAll` harness of the describe around them is still serving requests
+ * there.
  */
 
 /** A minimal well-formed domain event; publishing it needs a live bus. */
@@ -224,9 +239,13 @@ describe('file-teardown reaper (#1936)', () => {
   });
 
   it('holds every undisposed harness, and drops the ones that dispose themselves', async () => {
-    // The two leaked above plus the file-level harness are all still live.
+    // The file-level harness is always still live here. The two leaked above
+    // are not: they belong to the describe that just ended, and the #1940 suite
+    // reaper released them on the way out of it (proved below). This test is
+    // about register/forget accounting, so it counts from whatever is carried.
     const carried = liveHarnesses.liveCount();
-    expect(carried).toBeGreaterThanOrEqual(leaked.length + 1);
+    expect(carried).toBeGreaterThanOrEqual(1);
+    expect(leaked).toHaveLength(2);
 
     const explicit = await createTestApp();
     expect(liveHarnesses.liveCount()).toBe(carried + 1);
@@ -314,6 +333,298 @@ describe('file-teardown reaper (#1936)', () => {
     // The set is emptied before anything is released, so a failed release is
     // never retried by a later reap.
     expect(await registry.reap()).toEqual({ reaped: 0, failures: [] });
+  });
+});
+
+/* ------------------------------------------------------------------------- *
+ * #1940 — suite teardown                                                      *
+ * ------------------------------------------------------------------------- */
+
+/** A vitest `File` task, as far as the registry's chain walk is concerned. */
+function fakeFile(name = 'fake.test.ts'): SuiteScope {
+  return { name, filepath: `/fake/${name}` };
+}
+
+/** A top-level describe: vitest gives it a `file` but no parent `suite`. */
+function fakeSuite(name: string, file: SuiteScope): SuiteScope {
+  return { name, file };
+}
+
+/** A nested describe: parent through `suite`, root still through `file`. */
+function fakeNested(name: string, parent: SuiteScope, file: SuiteScope): SuiteScope {
+  return { name, suite: parent, file };
+}
+
+/**
+ * A registry wired exactly as the setup file wires the real one, but driven by
+ * hand: `running` stands in for vitest's `getCurrentTest()`, `startTest()` calls
+ * the installed `beforeEach` with the task shape vitest passes, and `endFile()`
+ * calls the installed `afterAll`. No PGlite, no Redis — just the attribution and
+ * transition rules.
+ */
+function drivenRegistry() {
+  const registry = createHarnessRegistry();
+  const released: string[] = [];
+  const hooks: {
+    beforeEach?: (context: TestScope) => Promise<void>;
+    afterAll?: () => Promise<void>;
+  } = {};
+  let running = false;
+
+  registry.installReaper((fn) => {
+    hooks.afterAll = fn;
+  });
+  registry.installSuiteReaper(
+    (fn) => {
+      hooks.beforeEach = fn;
+    },
+    () => running,
+  );
+
+  return {
+    registry,
+    released,
+    /** Register a harness. `failWith` makes its release throw, after recording. */
+    add(label: string, failWith?: Error): HarnessDisposer {
+      const dispose: HarnessDisposer = async () => {
+        released.push(label);
+        registry.forget(dispose);
+        if (failWith) throw failWith;
+      };
+      registry.register(dispose);
+      return dispose;
+    },
+    /** Outside a test: a `beforeAll`/`afterAll` body. */
+    betweenTests(): void {
+      running = false;
+    },
+    /** Start a test in `suite`, the way vitest starts one. */
+    async startTest(suite: SuiteScope, file: SuiteScope, concurrent = false): Promise<void> {
+      running = true;
+      await hooks.beforeEach!({
+        task: { suite: suite === file ? undefined : suite, file, concurrent },
+      });
+    },
+    /** Run the file-teardown hook. */
+    async endFile(): Promise<void> {
+      await hooks.afterAll!();
+    },
+  };
+}
+
+describe('suite-teardown attribution and transitions (#1940)', () => {
+  it('gives a beforeAll harness the outermost suite that opened, and a test its own suite', async () => {
+    const file = fakeFile();
+    const a = fakeSuite('A', file);
+    const b = fakeSuite('B', file);
+    const driven = drivenRegistry();
+
+    // The file's own beforeAll, before anything has opened.
+    driven.betweenTests();
+    driven.add('file-beforeAll');
+
+    await driven.startTest(a, file);
+    driven.add('a1');
+    await driven.startTest(a, file);
+    driven.add('a2');
+
+    // Nothing has closed yet, so nothing has been released.
+    expect(driven.released).toEqual([]);
+    expect(driven.registry.liveCount()).toBe(3);
+
+    // A ends, B opens and builds its own beforeAll harness.
+    driven.betweenTests();
+    driven.add('b-beforeAll');
+    await driven.startTest(b, file);
+
+    // A's two are gone, newest first. The file-level harness is NOT: at the
+    // start of a file the outermost suite that opened is the file itself.
+    expect(driven.released).toEqual(['a2', 'a1']);
+    expect(driven.registry.liveCount()).toBe(2);
+
+    // …and B's own beforeAll harness survives its own tests.
+    driven.add('b1');
+    await driven.startTest(b, file);
+    expect(driven.released).toEqual(['a2', 'a1']);
+
+    await driven.endFile();
+    expect(driven.released).toEqual(['a2', 'a1', 'b1', 'b-beforeAll', 'file-beforeAll']);
+  });
+
+  it('keeps an outer suite alive while its inner suites come and go', async () => {
+    const file = fakeFile();
+    const outer = fakeSuite('outer', file);
+    const inner = fakeNested('inner', outer, file);
+    const sibling = fakeNested('sibling', outer, file);
+    const later = fakeSuite('later', file);
+    const driven = drivenRegistry();
+
+    // Open the file on a throwaway suite so `outer` is not the first thing that
+    // opens — otherwise its beforeAll harness is attributed to the file.
+    const first = fakeSuite('first', file);
+    await driven.startTest(first, file);
+
+    driven.betweenTests();
+    driven.add('outer-beforeAll');
+    await driven.startTest(inner, file);
+    driven.add('inner1');
+    await driven.startTest(inner, file);
+    driven.add('inner2');
+
+    // Into a sibling of `inner`, still inside `outer`.
+    await driven.startTest(sibling, file);
+    expect(driven.released).toEqual(['inner2', 'inner1']);
+
+    // Back up to the outer level itself: `sibling` closes, `outer` does not.
+    await driven.startTest(outer, file);
+    expect(driven.registry.liveCount()).toBe(1);
+
+    // Only leaving `outer` releases its beforeAll harness.
+    await driven.startTest(later, file);
+    expect(driven.released).toEqual(['inner2', 'inner1', 'outer-beforeAll']);
+    expect(driven.registry.liveCount()).toBe(0);
+  });
+
+  it('reads the suite off the running task, not the hook argument vitest drops', async () => {
+    // Vitest wraps every `beforeEach` callback in `withFixtures`, which
+    // re-invokes it as `fn(context)` — the suite passed as the second argument
+    // never arrives. Driving the installed hook with a context whose `task`
+    // carries the chain is the only thing that must work.
+    const file = fakeFile();
+    const a = fakeSuite('A', file);
+    const b = fakeSuite('B', file);
+    const driven = drivenRegistry();
+
+    await driven.startTest(a, file);
+    driven.add('a1');
+    await driven.startTest(b, file);
+
+    expect(driven.released).toEqual(['a1']);
+  });
+
+  it('switches itself off for a file with concurrent tests', async () => {
+    const file = fakeFile();
+    const a = fakeSuite('A', file);
+    const b = fakeSuite('B', file);
+    const driven = drivenRegistry();
+
+    await driven.startTest(a, file, true);
+    driven.add('a1');
+    await driven.startTest(b, file);
+
+    // Chains of concurrent tests interleave, so a transition proves nothing.
+    // Nothing is released until the file backstop runs.
+    expect(driven.released).toEqual([]);
+    await driven.endFile();
+    expect(driven.released).toEqual(['a1']);
+  });
+
+  it('carries a failed transition release to file teardown instead of the innocent test', async () => {
+    const file = fakeFile();
+    const a = fakeSuite('A', file);
+    const b = fakeSuite('B', file);
+    const boom = new Error('release failed');
+    const driven = drivenRegistry();
+
+    await driven.startTest(a, file);
+    driven.add('a1', boom);
+    driven.add('a2');
+
+    // The transition drains the whole suite and does not throw at the test
+    // whose beforeEach happened to trigger it…
+    await expect(driven.startTest(b, file)).resolves.toBeUndefined();
+    expect(driven.released).toEqual(['a2', 'a1']);
+
+    // …the file's teardown reports it instead, and it is never retried.
+    await expect(driven.endFile()).rejects.toThrow(/1 of 2 undisposed harness/);
+    await expect(driven.endFile()).resolves.toBeUndefined();
+  });
+
+  it('is installed for this file by the shared vitest setup file', () => {
+    // RED without `installSuiteReaper` in `setupHarnessReaper.ts`: the flag is
+    // set by the very call that registers the hook.
+    expect(liveHarnesses.isSuiteReaperInstalled()).toBe(true);
+  });
+});
+
+describe('a describe that leaks harnesses, and the one around it (#1940)', () => {
+  /**
+   * Built in THIS describe's `beforeAll` and never disposed. It must survive
+   * every inner suite below — a suite reaper that released it would take the
+   * readiness probe in the sibling describe down with it.
+   */
+  let groupHarness: TestHarness;
+  let groupClose: MockInstance<() => Promise<void>>;
+  /** Connections on the harness DB with only `groupHarness` live (real Redis). */
+  let groupBaseline = 0;
+
+  /** One per test of the inner describe, never disposed — the leaking pattern. */
+  const innerHarnesses: TestHarness[] = [];
+  const innerCloses: MockInstance<() => Promise<void>>[] = [];
+
+  beforeAll(async () => {
+    groupHarness = await createTestApp();
+    groupClose = vi.spyOn(groupHarness.ctx.events, 'close');
+    if (integrationMode) groupBaseline = await stableClientCount(groupHarness.ctx.redis);
+  });
+
+  describe('the inner describe', () => {
+    beforeEach(async () => {
+      const harness = await createTestApp();
+      innerHarnesses.push(harness);
+      innerCloses.push(vi.spyOn(harness.ctx.events, 'close'));
+    });
+
+    it('has its own live harness', async () => {
+      await expect(
+        innerHarnesses.at(-1)!.ctx.events.publish(sampleEvent()),
+      ).resolves.toBeUndefined();
+      expect(groupClose).not.toHaveBeenCalled();
+    });
+
+    it("still has the previous test's harness — the reaper is never per test", async () => {
+      expect(innerHarnesses).toHaveLength(2);
+      expect(innerCloses[0]!).not.toHaveBeenCalled();
+      await expect(innerHarnesses[0]!.ctx.events.publish(sampleEvent())).resolves.toBeUndefined();
+      await expect(innerHarnesses[1]!.ctx.events.publish(sampleEvent())).resolves.toBeUndefined();
+    });
+
+    it('and the third, so the suite is holding three at its peak', async () => {
+      expect(innerHarnesses).toHaveLength(3);
+      for (const close of innerCloses) expect(close).not.toHaveBeenCalled();
+      if (integrationMode) {
+        // Instrument check: unless the three live harnesses visibly move the
+        // number, "back to baseline afterwards" would pass on a broken counter.
+        const during = await settledClientCount(
+          groupHarness.ctx.redis,
+          groupBaseline + 3 * CONNECTIONS_PER_HARNESS,
+        );
+        expect(during).toBe(groupBaseline + 3 * CONNECTIONS_PER_HARNESS);
+      }
+    });
+  });
+
+  describe('a later sibling describe', () => {
+    it("finds the inner describe drained and this describe's own harness untouched", async () => {
+      // RED without the suite reaper: all three are still live here, and only
+      // the file's teardown would ever release them.
+      expect(innerHarnesses).toHaveLength(3);
+      for (const close of innerCloses) expect(close).toHaveBeenCalledTimes(1);
+
+      if (integrationMode) {
+        expect(await settledClientCount(groupHarness.ctx.redis, groupBaseline)).toBe(groupBaseline);
+      }
+
+      // The harness of the describe AROUND the drained one is untouched and
+      // still fully usable: DB and Redis through its own express app, plus the
+      // event-bus pair that a release quits.
+      expect(groupClose).not.toHaveBeenCalled();
+      const res = await request(groupHarness.app).get('/api/v1/health/ready');
+      expect(res.status).toBe(200);
+      expect(res.body.checks.database.status).toBe('ok');
+      expect(res.body.checks.redis.status).toBe('ok');
+      await expect(groupHarness.ctx.events.publish(sampleEvent())).resolves.toBeUndefined();
+    }, 30_000);
   });
 });
 
