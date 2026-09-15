@@ -259,6 +259,29 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
     expect(screen.queryByText('Next report')).not.toBeInTheDocument();
   });
 
+  test('keeps a late-UTC report on the Vienna day it is printed as (#1894)', async () => {
+    // 23:30 UTC renders as the NEXT Vienna day (§7.1), and the page compared the
+    // UTC substring against a Vienna boundary: on the very day the headline said
+    // the report happens, "Next report" vanished. The clock is pinned to that
+    // day, at noon, so no local-midnight window is involved.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-09-06T12:00:00.000Z'));
+    try {
+      const date = '2026-09-05T23:30:00.000Z'; // → 06.09.2026 in Vienna.
+      vi.mocked(getAssetEarnings).mockResolvedValue({
+        available: true,
+        next: { date, periodEnd: null, epsEstimate: 1.42, epsActual: null, estimated: true },
+        recent: [],
+      });
+      renderPage();
+      await waitFor(() => expect(screen.getByText('Earnings')).toBeInTheDocument());
+      expect(screen.getByText('Next report')).toBeInTheDocument();
+      expect(screen.getByText(formatDate(date))).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('dates a reported quarter as the fiscal period it is, not as a report date', async () => {
     // Yahoo's history carries the fiscal PERIOD END (28 Jun for a June quarter),
     // while the announcement lands over a month later. The row says which.

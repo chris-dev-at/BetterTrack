@@ -101,7 +101,10 @@ export interface MarketIntelRepository {
    * GLOBAL watchlisted assets across every user — the scan job's unguarded
    * first pass. Account-owned (custom) assets are excluded for the same
    * provenance reason as {@link listUserWatchAssets}; the job picks them up
-   * per user inside that account's transition lock.
+   * per user inside that account's transition lock. Rows are restricted to the
+   * SAME recipients {@link listNormalUserIds} yields (active, `role = 'user'`,
+   * non-paranoid): this pass never goes through that method, so the predicate
+   * has to be part of the query.
    */
   listAllWatchAssets(): Promise<UserIntelAssetWithUser[]>;
   /** Active normal user ids; holding jobs lock each id before reading transactions. */
@@ -273,7 +276,22 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         })
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
-        .where(isNull(assets.ownerId))
+        // The recipient predicate of {@link listNormalUserIds}, applied HERE
+        // because this is the one scan pass that does not discover its
+        // recipients through that method. Without it the earnings reminder kept
+        // mailing a DISABLED account every morning — §6.12 kills its sessions
+        // and bearer credentials instantly, and nothing downstream re-checks
+        // (`notificationCenter.emit` only enqueues) — and reached paranoid and
+        // admin accounts the rest of the lane deliberately excludes.
+        .innerJoin(users, eq(workboardItems.userId, users.id))
+        .where(
+          and(
+            isNull(assets.ownerId),
+            eq(users.role, 'user'),
+            eq(users.status, 'active'),
+            eq(users.privacyMode, 'normal'),
+          ),
+        )
         .groupBy(
           workboardItems.userId,
           assets.id,

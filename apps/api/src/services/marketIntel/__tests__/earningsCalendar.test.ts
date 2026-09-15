@@ -395,4 +395,31 @@ describe('marketIntel.earningsCalendar — the day the entry is rendered in (#18
 
     expect((await service.earningsCalendar('u1')).entries.map((e) => e.symbol)).toEqual(['AAPL']);
   });
+
+  // The EVENT side of the same comparison (#1894). #1827 moved the boundary to
+  // Vienna and left the report's own day as the UTC substring; every fixture
+  // above stamps `…T00:00:00.000Z`, where the two agree, so nothing caught it.
+  // An APAC issuer reporting at 23:30 UTC renders as the NEXT Vienna day.
+  const LATE_UTC_REPORT = '2026-09-05T23:30:00.000Z'; // → 06.09.2026 in Vienna.
+
+  const calendarAt = async (nowIso: string) => {
+    const service = createMarketIntelService({
+      marketData: createStubMarketData({ earnings: nextOn(LATE_UTC_REPORT) }),
+      assetRepo,
+      intelRepo: intelRepo([AAPL]),
+      enabled: true,
+      now: clock(nowIso),
+    });
+    return (await service.earningsCalendar('u1')).entries.map((e) => e.symbol);
+  };
+
+  it('keeps a late-UTC report on the display day it is shown as, and drops it after', async () => {
+    // The day before: still ahead, as it reads.
+    expect(await calendarAt('2026-09-05T12:00:00.000Z')).toEqual(['AAPL']);
+    // ON the Vienna day the panel prints for it — where the UTC substring made
+    // it vanish from the panel, the asset page and the roll-up at once.
+    expect(await calendarAt('2026-09-06T12:00:00.000Z')).toEqual(['AAPL']);
+    // And the day after, it has happened.
+    expect(await calendarAt('2026-09-07T12:00:00.000Z')).toEqual([]);
+  });
 });

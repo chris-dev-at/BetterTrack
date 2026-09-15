@@ -20,3 +20,25 @@ export const MARKET_INTEL_DISPLAY_TIME_ZONE = 'Europe/Vienna';
 export function marketIntelDisplayDay(nowMs: number): string {
   return calendarDayInTimezone(nowMs, MARKET_INTEL_DISPLAY_TIME_ZONE);
 }
+
+/**
+ * The day an EVENT's timestamp falls on in the display zone — the other side of
+ * every comparison {@link marketIntelDisplayDay} supplies the boundary for.
+ *
+ * #1827 moved the boundary to Vienna and left the event side as the UTC date
+ * substring, which is a different day for any stamp after 22:00 UTC (23:00 in
+ * winter). An APAC issuer's `2026-09-05T23:30:00.000Z` report renders as
+ * 06.09.2026 (`formatDate`, §7.1) and was therefore shown dated the 6th on the
+ * 5th — and dropped on the 6th, the very day the reader's calendar said it
+ * happened, because `'2026-09-05' < '2026-09-06'`. Both sides have to be the day
+ * the date is RENDERED in.
+ *
+ * Null for a stamp that cannot be parsed, so a caller decides what an undated
+ * event means rather than inheriting a silently wrong day.
+ */
+export function marketIntelEventDay(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return null;
+  return calendarDayInTimezone(at, MARKET_INTEL_DISPLAY_TIME_ZONE);
+}

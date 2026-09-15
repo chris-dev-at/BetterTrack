@@ -1,4 +1,4 @@
-import type { AssetRef, DividendEvents } from '@bettertrack/contracts';
+import type { AssetRef, DividendEvent, DividendEvents } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
 import type { MarketIntelRepository } from '../../data/repositories/marketIntelRepository';
@@ -40,6 +40,20 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * {@link DIVIDEND_PROVIDER_ATTEMPTS_PER_ASSET}) rather than writing the asset off
  * for the whole run; a row or a user that throws is isolated; and every skip is
  * counted into `skipped`, so a partially-failed run cannot log as complete.
+ *
+ * That last rule now covers the dedupe itself. A candidate the marker refuses
+ * because it cannot TELL whether it is the payout already notified about — see
+ * {@link payoutIdentity} — is counted into {@link DividendScanResult.ambiguous},
+ * never into `suppressed`, and folds into `skipped` like every other thing the
+ * run did not do. `suppressed` therefore means exactly one thing again: this
+ * (holder, asset, ex-date) was already notified about, which is a clean no-op.
+ *
+ * One case stays outside that guarantee, unchanged from before this arc: a
+ * second payout on the regular one's OWN ex-date (a special declared for the
+ * same day). The idempotency key IS `(holder, asset, ex-date)`, so the per-date
+ * claim collapses the pair before {@link payoutIdentity} is ever consulted, and
+ * the drop is counted as `suppressed`. Separating it needs the key itself to
+ * carry the payout — a change to the marker's shape, not to its counters.
  */
 
 export const DIVIDEND_SCAN_SCHEDULER_ID = 'marketIntel.dividendScan';
@@ -57,15 +71,58 @@ export const DIVIDEND_EVENT_HORIZON_DAYS = 7;
 export const DIVIDEND_EVENT_MARKER_TTL_SECONDS = 45 * 24 * 60 * 60;
 
 /**
- * How far an ex-date may move and still be the SAME payout. Sized between the
- * two things it must separate: a provider amending an announced ex-date moves it
- * by a day or two, while the tightest real payout cadence is a monthly
- * distributor at ~28 days. A week sits clear of both, so an amended date is
- * never a second notification and a genuine next payout is never swallowed.
- * (Matches the ruling #1758 made for earnings: exactly one notification per
- * event, with no "date changed" follow-up.)
+ * How far an ex-date may move and still be the SAME payout, when nothing else
+ * separates the two dates.
+ *
+ * It must stay STRICTLY below {@link DIVIDEND_EVENT_HORIZON_DAYS}, and that is
+ * the whole point of the number. At a week — the same width as the horizon — two
+ * payouts the horizon filter admits together were declared identical by the
+ * distance alone: a weekly distributor notified once and then stayed silent for
+ * the anchor's whole 45-day life. The sizing comment that justified a week
+ * ("the tightest real payout cadence is a monthly distributor at ~28 days") was
+ * simply false for a weekly-distributing ETF.
+ *
+ * Three days covers an amendment — a provider firming an announced ex-date moves
+ * it by a day or two — and leaves every real cadence, weekly included, outside
+ * it. Inside those three days the distance is no longer the only evidence:
+ * {@link payoutIdentity} decides, and says so when it cannot. (The #1758 ruling
+ * still holds: exactly one notification per payout, with no "date changed"
+ * follow-up.)
  */
-export const DIVIDEND_EVENT_MATCH_DAYS = 7;
+export const DIVIDEND_EVENT_MATCH_DAYS = 3;
+
+/**
+ * What identifies a payout apart from its ex-date: the money it pays.
+ *
+ * An amendment moves the DATES of a payout and never its amount, so the amount
+ * (with the currency that denominates it) is exactly the part that survives one
+ * — which is why the pay date is deliberately NOT in here: it moves with the
+ * ex-date it was announced beside. Two payouts landing within
+ * {@link DIVIDEND_EVENT_MATCH_DAYS} of each other — a special paid alongside the
+ * regular one — carry different amounts and are therefore two notifications, not
+ * one swallowed.
+ *
+ * Null when the provider gave no amount: nothing then distinguishes the two, the
+ * marker refuses (a duplicate notification is the worse failure), and the scan
+ * counts the refusal as `ambiguous` rather than as a clean suppression. Note
+ * that this only ever decides a payout on a DIFFERENT nearby date — a second
+ * payout on the regular one's OWN ex-date is collapsed by the per-date claim
+ * before the identity is ever compared.
+ *
+ * The amount is canonicalised to fixed decimals rather than stringified raw: a
+ * provider re-serialising the same payout as `0.30000000000000004` must not read
+ * as a different one and produce a second notification for an amended date.
+ */
+const PAYOUT_AMOUNT_DECIMALS = 6;
+
+export function payoutIdentity(
+  event: Pick<DividendEvent, 'amount' | 'currency'>,
+  fallbackCurrency: string | null,
+): string | null {
+  if (event.amount === null || !Number.isFinite(event.amount)) return null;
+  const amount = event.amount.toFixed(PAYOUT_AMOUNT_DECIMALS);
+  return `${amount}@${event.currency ?? fallbackCurrency ?? ''}`;
+}
 
 /**
  * How many times one asset's dividend read may be attempted in a single run. A
@@ -116,13 +173,21 @@ export interface DividendScanResult {
   assetsScanned: number;
   /**
    * Due ex-dates considered for an opted-in holder. Decomposes EXACTLY:
-   * `candidates === emitted + suppressed + failed + errored`.
+   * `candidates === emitted + suppressed + ambiguous + failed + errored`.
    */
   candidates: number;
   /** `dividend.event` emits the durable transport accepted. */
   emitted: number;
   /** Candidates the durable marker says were already notified — a clean no-op. */
   suppressed: number;
+  /**
+   * Candidates dropped because the marker could not tell them apart from the
+   * payout already notified about (no amount on one side of the comparison, or
+   * an anchor predating {@link payoutIdentity}). Silent, like `suppressed`, but
+   * NOT a no-op: a payout may have been swallowed, so it counts into `skipped`
+   * and the run reports degraded.
+   */
+  ambiguous: number;
   /** Candidates not notified: the enqueue was REFUSED (`emit` returned false), or
    *  the marker store was unreachable. Both retry on the next scan. */
   failed: number;
@@ -136,8 +201,9 @@ export interface DividendScanResult {
   usersFailed: number;
   /** Users the paranoid transition guard deferred (`runIfAllowed` said no). */
   usersDeferred: number;
-  /** Everything the run did NOT do: `holdersSkipped + failed + errored +
-   *  usersFailed + usersDeferred`. Non-zero ⇒ the run is not complete. */
+  /** Everything the run did NOT do: `holdersSkipped + ambiguous + failed +
+   *  errored + usersFailed + usersDeferred`. Non-zero ⇒ the run is not
+   *  complete. */
   skipped: number;
   /** `skipped > 0` — a run that must never be logged as clean. */
   degraded: boolean;
@@ -150,6 +216,7 @@ function emptyResult(): DividendScanResult {
     candidates: 0,
     emitted: 0,
     suppressed: 0,
+    ambiguous: 0,
     failed: 0,
     errored: 0,
     holdersSkipped: 0,
@@ -208,6 +275,7 @@ export async function runDividendEventsScan(
   let candidates = 0;
   let emitted = 0;
   let suppressed = 0;
+  let ambiguous = 0;
   let failed = 0;
   let errored = 0;
   let holdersSkipped = 0;
@@ -281,8 +349,19 @@ export async function runDividendEventsScan(
                 dateKey: exDateKey,
                 matchDays: DIVIDEND_EVENT_MATCH_DAYS,
                 ttlSeconds: DIVIDEND_EVENT_MARKER_TTL_SECONDS,
+                identity: payoutIdentity(event, events.currency),
               });
               if (claim.status === 'duplicate') {
+                if (claim.reason === 'ambiguous') {
+                  // Silent, but not a no-op: this may have been a second payout
+                  // the marker could not tell from the one already notified.
+                  ambiguous += 1;
+                  logger?.warn(
+                    { userId, assetId: row.assetId, exDate: exDateKey },
+                    'dividend scan: payout indistinguishable from the one already notified; not sent',
+                  );
+                  continue;
+                }
                 suppressed += 1;
                 continue;
               }
@@ -346,12 +425,13 @@ export async function runDividendEventsScan(
     }
   }
 
-  const skipped = holdersSkipped + failed + errored + usersFailed + usersDeferred;
+  const skipped = holdersSkipped + ambiguous + failed + errored + usersFailed + usersDeferred;
   return {
     assetsScanned: scannedAssetIds.size,
     candidates,
     emitted,
     suppressed,
+    ambiguous,
     failed,
     errored,
     holdersSkipped,
