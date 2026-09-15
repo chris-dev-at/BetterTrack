@@ -48,6 +48,12 @@ export default defineConfig({
       // login on real Redis. It runs here so that class of harness abuse takes
       // the slice down instead of hiding until someone else moves a case over.
       'src/__tests__/adminFeedback.test.ts',
+      // #1947: this suite exercises the same feedbackRepository.ts hand-written
+      // SQL as its siblings above — the `sort: status` lifecycle `CASE` and the
+      // `sql.raw` integer splices behind it — but had been left off this list,
+      // running only on PGlite. #1443 is exactly the PGlite-vs-postgres-js
+      // divergence class that repository's raw SQL can hit in production.
+      'src/__tests__/adminSupportInbox.test.ts',
       // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).
