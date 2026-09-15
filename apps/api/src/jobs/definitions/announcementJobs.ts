@@ -2,6 +2,7 @@ import type { QueueRegistry } from '../queues';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 import type {
+  AnnouncementPublishEnqueued,
   AnnouncementPublishRequest,
   AnnouncementService,
 } from '../../services/announcements/announcementService';
@@ -29,11 +30,14 @@ import type {
  *    announcement whose window has opened and which has never been stamped.
  *    This is the durable path: if every targeted enqueue below were lost, the
  *    next tick would still publish everything that is due.
- *  • **a targeted pass** (`{ announcementId, attempt }`) — enqueued by a save
- *    whose window is already open, so "publish now" does not wait up to five
- *    minutes, and by the single bounded retry after a partial delivery. It
- *    RE-CHECKS the window before walking: an announcement deactivated,
- *    rescheduled or expired between enqueue and run is skipped, not delivered.
+ *  • **a targeted pass** (`{ announcementId, attempt, actorId? }`) — enqueued by
+ *    a save whose window is already open, so "publish now" does not wait up to
+ *    five minutes; by the single bounded retry after a partial delivery; and by
+ *    an operator's manual redelivery of the recipients a publication missed
+ *    (ADMIN-W7c, #1943 — the one pass that carries an `actorId`, because a human
+ *    ordered it). It RE-CHECKS the window before walking: an announcement
+ *    deactivated, rescheduled or expired between enqueue and run is skipped, not
+ *    delivered.
  *
  * ── Idempotency (§9 — the key, stated in code) ──────────────────────────────
  *
@@ -103,7 +107,11 @@ export const ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
  * Two things are in the id besides the announcement, and both have to be:
  *
  *  • **`attempt`** — the single bounded retry is a genuinely different pass over
- *    the same announcement, and it must not be swallowed by the first one.
+ *    the same announcement, and it must not be swallowed by the first one. A
+ *    manual redelivery (#1943) carries its own attempt number above the ladder
+ *    for the same reason, and narrows the window below to 30 s: nothing re-runs
+ *    a click, so coalescing an operator's second one for five minutes would be
+ *    the "button does nothing" that issue exists to remove.
  *  • **a coarse time bucket** — the queue's defaults keep the last 1000
  *    COMPLETED jobs (`DEFAULT_JOB_OPTIONS.removeOnComplete`), and BullMQ refuses
  *    to re-add an id that is still sitting in that set. A bare
@@ -119,8 +127,9 @@ export function announcementPublishJobId(
   announcementId: string,
   attempt: number,
   at: number,
+  windowMs: number = ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS,
 ): string {
-  const bucket = Math.floor(at / ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS);
+  const bucket = Math.floor(at / windowMs);
   return `${QUEUE_NAMES.announcementsPublishDue}:${announcementId}:${attempt}:${bucket}`;
 }
 
@@ -132,16 +141,32 @@ export function announcementPublishJobId(
 export function createAnnouncementPublishEnqueuer(
   queues: QueueRegistry,
   now: () => number = Date.now,
-): (request: AnnouncementPublishRequest) => Promise<void> {
-  return async (request: AnnouncementPublishRequest): Promise<void> => {
+): (request: AnnouncementPublishRequest) => Promise<AnnouncementPublishEnqueued> {
+  return async (request: AnnouncementPublishRequest): Promise<AnnouncementPublishEnqueued> => {
+    const jobId = announcementPublishJobId(
+      request.announcementId,
+      request.attempt,
+      now(),
+      request.dedupeWindowMs,
+    );
     await queues.enqueue(
       QUEUE_NAMES.announcementsPublishDue,
-      { announcementId: request.announcementId, attempt: request.attempt },
       {
-        jobId: announcementPublishJobId(request.announcementId, request.attempt, now()),
+        announcementId: request.announcementId,
+        attempt: request.attempt,
+        // Only a pass a HUMAN ordered carries an actor (#1943); the automatic
+        // ones are the job's own and stay unattributed on purpose.
+        ...(request.actorId !== undefined ? { actorId: request.actorId } : {}),
+      },
+      {
+        jobId,
         ...(request.delayMs !== undefined ? { delay: request.delayMs } : {}),
       },
     );
+    // The id is returned, not just used: the redelivery route hands it to the
+    // operator, so two clicks the window deliberately collapsed are visibly one
+    // job rather than a silent no-op.
+    return { jobId };
   };
 }
 
@@ -159,7 +184,14 @@ export function createAnnouncementPublishJob(
       const announcementId = job.data?.announcementId;
       if (announcementId) {
         const attempt = job.data?.attempt ?? 0;
-        const outcome = await deps.announcements.publishAnnouncement(announcementId, attempt);
+        // Present only on an operator-ordered redelivery (#1943); it makes the
+        // pass's own audit row name the person who asked for it.
+        const actorId = job.data?.actorId;
+        const outcome = await deps.announcements.publishAnnouncement(
+          announcementId,
+          attempt,
+          actorId,
+        );
         if (outcome.status === 'skipped') {
           // Not an error: the window closed, the operator switched it off, or
           // the sweep got there first. Logged so a "why did my announcement not

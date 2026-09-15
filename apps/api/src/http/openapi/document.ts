@@ -566,6 +566,7 @@ const componentSchemas = {
   AnnouncementListResponse: contracts.announcementListResponseSchema,
   CreateAnnouncementRequest: contracts.createAnnouncementRequestSchema,
   UpdateAnnouncementRequest: contracts.updateAnnouncementRequestSchema,
+  AnnouncementRedeliverResponse: contracts.announcementRedeliverResponseSchema,
   ActiveAnnouncement: contracts.activeAnnouncementSchema,
   ActiveAnnouncementListResponse: contracts.activeAnnouncementListResponseSchema,
 
@@ -1791,6 +1792,16 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete an announcement (cascades its per-user dismissals away).',
     params: contracts.idParamSchema,
     status: 204,
+  },
+  {
+    method: 'post',
+    path: '/admin/announcements/{id}/redeliver',
+    tag: 'Admin',
+    summary:
+      'Re-run the fan-out for the recipients a publication missed. Queues ONE targeted `announcements.publishDue` pass and returns its job id — it never walks the user table on the request path. The per-user eventKey index means only the missing rows are inserted, and the pass replaces `deliveredCount`/`failedCount` from its own outcome without re-stamping `publishedAt`. 409 when there is nothing failed to retry, or when the announcement is inactive or its window has closed.',
+    params: contracts.idParamSchema,
+    status: 202,
+    response: R.AnnouncementRedeliverResponse,
   },
   {
     method: 'get',

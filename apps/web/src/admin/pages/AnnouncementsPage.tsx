@@ -14,6 +14,7 @@ import {
 import { useI18n, useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { ApiError } from '../../lib/apiClient';
 import { DISPLAY_TIME_ZONE, formatDateTime } from '../../lib/format';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
@@ -108,6 +109,20 @@ const STATE_TONE: Record<AnnouncementDeliveryState, Tone> = {
  */
 function errorMessage(t: TranslateFn): string {
   return t('common.genericError');
+}
+
+/**
+ * The one failure worth naming (#1943). A redelivery that could not be QUEUED
+ * is not a broken console — it is a queue that is down for a moment — and
+ * "something went wrong" would send the operator looking in the wrong place.
+ * Every other outcome keeps the generic catalog copy above (#1814): API
+ * envelopes are authored in English and are not locale-aware.
+ */
+function redeliverErrorMessage(t: TranslateFn, err: unknown): string {
+  if (err instanceof ApiError && err.code === 'ANNOUNCEMENT_REDELIVER_UNAVAILABLE') {
+    return t('admin.announcements.redeliver.unavailable');
+  }
+  return errorMessage(t);
 }
 
 // ── Time: display-zone wall clock in, UTC on the wire ───────────────────────
@@ -240,12 +255,28 @@ export function AnnouncementsPage() {
   const [rowError, setRowError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Announcement | null>(null);
+  const [redelivering, setRedelivering] = useState<Announcement | null>(null);
+  const [rowNotice, setRowNotice] = useState<string | null>(null);
+  /**
+   * The job id the last accepted redelivery came back with. Two clicks inside
+   * the server's manual dedupe window are deliberately ONE pass — a second
+   * identical re-walk would deliver exactly what the first one does — and the
+   * 202 says so by returning the same id. Remembering it is what keeps that
+   * collapse from reading as "the button did nothing again".
+   */
+  const [lastRedeliverJobId, setLastRedeliverJobId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!saved) return;
     const timer = setTimeout(() => setSaved(null), 3000);
     return () => clearTimeout(timer);
   }, [saved]);
+
+  useEffect(() => {
+    if (!rowNotice) return;
+    const timer = setTimeout(() => setRowNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [rowNotice]);
 
   function resetComposer() {
     setComposer(EMPTY_COMPOSER);
@@ -313,6 +344,38 @@ export function AnnouncementsPage() {
       announcements.reload();
     } catch (err) {
       if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /**
+   * Ask for the recipients this announcement missed to be delivered again
+   * (#1943). The request QUEUES a pass — the fan-out is a walk of every
+   * account and runs on a worker — so the confirmation says "retrying", and the
+   * new counts arrive with the reload, once the pass has run.
+   */
+  async function redeliverAnnouncement(row: Announcement) {
+    if (busyId !== null) return;
+    setRowError(null);
+    setBusyId(row.id);
+    try {
+      const accepted = await api.redeliverAnnouncement(row.id);
+      setRedelivering(null);
+      setRowNotice(
+        accepted.jobId === lastRedeliverJobId
+          ? t('admin.announcements.redeliver.sameJob', { jobId: accepted.jobId })
+          : t(
+              accepted.failedCount === 1
+                ? 'admin.announcements.redeliver.queuedOne'
+                : 'admin.announcements.redeliver.queued',
+              { failed: accepted.failedCount, jobId: accepted.jobId },
+            ),
+      );
+      setLastRedeliverJobId(accepted.jobId);
+      announcements.reload();
+    } catch (err) {
+      if (!onFailure(err, 'surface')) setRowError(redeliverErrorMessage(t, err));
     } finally {
       setBusyId(null);
     }
@@ -488,6 +551,7 @@ export function AnnouncementsPage() {
       </Panel>
 
       {rowError ? <Alert tone="error">{rowError}</Alert> : null}
+      {rowNotice ? <Alert tone="success">{rowNotice}</Alert> : null}
 
       {announcements.loading ? (
         <Spinner label={t('admin.announcements.list.loading')} />
@@ -564,10 +628,26 @@ export function AnnouncementsPage() {
                               delivered: row.deliveredCount,
                             })}
                       </span>
+                      {/* The retry exists only where there is something to
+                          retry: at 0 (or a row nothing has walked yet) there is
+                          no failure to act on and no button to mislead with. */}
                       {row.failedCount ? (
-                        <span className="text-red-400">
-                          {t('admin.announcements.list.reachFailed', { failed: row.failedCount })}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-red-400">
+                            {t('admin.announcements.list.reachFailed', { failed: row.failedCount })}
+                          </span>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={busyId === row.id}
+                            onClick={() => {
+                              setRowError(null);
+                              setRedelivering(row);
+                            }}
+                          >
+                            {t('admin.announcements.list.redeliver')}
+                          </Button>
+                        </div>
                       ) : null}
                     </div>
                   </Td>
@@ -610,6 +690,46 @@ export function AnnouncementsPage() {
           </DataTable>
         </>
       )}
+
+      {redelivering ? (
+        <Modal
+          title={t('admin.confirmations.redeliverAnnouncement.title')}
+          onClose={() => setRedelivering(null)}
+          dismissable={busyId !== redelivering.id}
+        >
+          <div className="flex flex-col gap-4">
+            <p className="text-[13px] text-neutral-400">
+              {t(
+                redelivering.failedCount === 1
+                  ? 'admin.confirmations.redeliverAnnouncement.descriptionOne'
+                  : 'admin.confirmations.redeliverAnnouncement.description',
+                {
+                  name: locale === 'de' ? redelivering.titleDe : redelivering.titleEn,
+                  failed: redelivering.failedCount ?? 0,
+                },
+              )}
+            </p>
+            {rowError ? <Alert tone="error">{rowError}</Alert> : null}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                disabled={busyId === redelivering.id}
+                onClick={() => setRedelivering(null)}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                disabled={busyId === redelivering.id}
+                onClick={() => void redeliverAnnouncement(redelivering)}
+              >
+                {busyId === redelivering.id
+                  ? t('admin.confirmations.redeliverAnnouncement.pending')
+                  : t('admin.confirmations.redeliverAnnouncement.confirm')}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
 
       {deleting ? (
         <Modal

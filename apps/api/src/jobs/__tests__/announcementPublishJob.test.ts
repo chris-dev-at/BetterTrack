@@ -15,7 +15,11 @@ import { createAuditService } from '../../services/audit/auditService';
 import {
   announcementEventKey,
   createAnnouncementService,
+  ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+  ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT,
   ANNOUNCEMENT_PUBLISH_RETRY_DELAY_MS,
+  ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS,
+  type AnnouncementPublishEnqueued,
   type AnnouncementPublishRequest,
   type AnnouncementService,
 } from '../../services/announcements/announcementService';
@@ -102,7 +106,7 @@ function build(
     users?: Pick<UserRepository, 'listRecipientsAfter'>;
     fanOutPageSize?: number;
     /** Replace the recorder with a real transport (the job-id dedupe proof). */
-    enqueuePublish?: (request: AnnouncementPublishRequest) => Promise<void>;
+    enqueuePublish?: (request: AnnouncementPublishRequest) => Promise<AnnouncementPublishEnqueued>;
   } = {},
 ): Built {
   const repo = createAnnouncementRepository(db);
@@ -122,7 +126,18 @@ function build(
     audit: createAuditService(auditRepo),
     enqueuePublish: async (request) => {
       enqueued.push(request);
-      if (options.enqueuePublish) await options.enqueuePublish(request);
+      if (options.enqueuePublish) return options.enqueuePublish(request);
+      // The recorder still answers with the id the REAL transport would mint,
+      // so nothing downstream of an enqueue is tested against a shape the
+      // queue never produces.
+      return {
+        jobId: announcementPublishJobId(
+          request.announcementId,
+          request.attempt,
+          clock().getTime(),
+          request.dedupeWindowMs,
+        ),
+      };
     },
     now: clock,
     ...(options.fanOutPageSize !== undefined ? { fanOutPageSize: options.fanOutPageSize } : {}),
@@ -645,24 +660,24 @@ describe('announcements.publishDue — a cancelled announcement is not published
  * now" pass, so an operator fixing a typo three times enqueued three full walks
  * of the user table. BullMQ coalesces adds that share a job id.
  */
-describe('announcements.publishDue — the targeted enqueue is deduped by job id', () => {
-  /** A QueueRegistry that records what was enqueued, instead of a real queue. */
-  function recordingQueues() {
-    const calls: Array<{ name: string; data: unknown; opts?: { jobId?: string; delay?: number } }> =
-      [];
-    const queues = {
-      get: () => {
-        throw new Error('not used');
-      },
-      enqueue: async (name: string, data: unknown, opts?: { jobId?: string; delay?: number }) => {
-        calls.push({ name, data, opts });
-        return {} as never;
-      },
-      close: async () => {},
-    } as unknown as QueueRegistry;
-    return { queues, calls };
-  }
+/** A QueueRegistry that records what was enqueued, instead of a real queue. */
+function recordingQueues() {
+  const calls: Array<{ name: string; data: unknown; opts?: { jobId?: string; delay?: number } }> =
+    [];
+  const queues = {
+    get: () => {
+      throw new Error('not used');
+    },
+    enqueue: async (name: string, data: unknown, opts?: { jobId?: string; delay?: number }) => {
+      calls.push({ name, data, opts });
+      return {} as never;
+    },
+    close: async () => {},
+  } as unknown as QueueRegistry;
+  return { queues, calls };
+}
 
+describe('announcements.publishDue — the targeted enqueue is deduped by job id', () => {
   it('gives every enqueue in one window the same job id, so BullMQ collapses them', async () => {
     const t0 = Date.parse('2026-04-01T12:00:00.000Z');
     const { queues, calls } = recordingQueues();
@@ -732,5 +747,198 @@ describe('announcements.publishDue — the targeted enqueue is deduped by job id
     // user table is walked once instead of three times.
     expect(new Set(asks.map((c) => c.opts?.jobId)).size).toBe(1);
     expect(asks[0]!.opts?.jobId).toBe(announcementPublishJobId(created.id, 0, at));
+  });
+});
+
+/**
+ * ADMIN-W7c (#1943): the operator's own pass.
+ *
+ * #1941 made a partial delivery honest — the row is stamped, the counts are
+ * recorded, one bounded retry runs — but deliberately stopped there. An
+ * announcement whose delivery failed twice therefore sat in the console reading
+ * "N failed" with nothing attached to it, and those recipients never got their
+ * inbox row at all: `publishDue` only takes UNSTAMPED rows, so no sweep was
+ * ever coming back for them.
+ *
+ * The redelivery is not a second fan-out. It is the SAME targeted pass the
+ * bounded retry uses, asked for by a human and carrying their id.
+ */
+describe('announcements.publishDue — an operator redelivers the recipients it missed', () => {
+  it('inserts exactly the missing rows, leaves the delivered ones alone, and updates the counts', async () => {
+    const admin = await harness.seedAdmin();
+    const alice = await harness.seedUser({ email: 'r1@bt.test', username: 'redelivone' });
+    const bob = await harness.seedUser({ email: 'r2@bt.test', username: 'redelivtwo' });
+    const carol = await harness.seedUser({ email: 'r3@bt.test', username: 'redelivthree' });
+
+    const now = () => new Date('2026-05-04T09:00:00.000Z');
+    let failing = true;
+    const built = build(now, {
+      insert: async (input, real) => {
+        if (failing && input.userId === bob.id) throw new Error('insert boom');
+        return real.insert(input);
+      },
+    });
+
+    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const key = announcementEventKey(created.id);
+    const recipients = await recipientCount();
+
+    // The publication AND its single bounded retry both fail for Bob — the
+    // state the console was showing with no action attached to it.
+    expect(await run(built.job)).toMatchObject({ due: 1, published: 1, failed: 1 });
+    expect(await run(built.job, { announcementId: created.id, attempt: 1 })).toMatchObject({
+      failed: 1,
+    });
+    const stuck = (await built.repo.findById(created.id))!;
+    expect(stuck.failedCount).toBe(1);
+    expect(stuck.deliveredCount).toBe(recipients - 1);
+    expect(await noticeCount(bob.id, key)).toBe(0);
+
+    // The operator clicks. The REQUEST queues a pass and nothing else: no walk
+    // happened on it — the inbox is exactly as the failed retry left it.
+    failing = false;
+    const insertsBeforeClick = built.inserts.length;
+    const accepted = await built.service.redeliver(created.id, { id: admin.id, ip: '10.1.2.3' });
+    expect(built.inserts).toHaveLength(insertsBeforeClick);
+    expect(accepted).toMatchObject({
+      announcementId: created.id,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      failedCount: 1,
+      deliveredCount: recipients - 1,
+    });
+    // Above the automatic ladder, so it can never schedule a retry of its own.
+    expect(accepted.attempt).toBeGreaterThan(ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT);
+    const queued = built.enqueued.at(-1)!;
+    expect(queued).toMatchObject({
+      announcementId: created.id,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      // The one pass that names a human — a click, not a sweep.
+      actorId: admin.id,
+    });
+
+    // The worker runs it. ONE insert: the row Bob never got.
+    const outcome = await run(built.job, {
+      announcementId: created.id,
+      attempt: queued.attempt,
+      actorId: queued.actorId,
+    });
+    expect(outcome).toMatchObject({ due: 1, inserted: 1, failed: 0, retriesScheduled: 0 });
+    expect(built.inserts.length).toBe(insertsBeforeClick + recipients);
+
+    // Exactly one row each, for everybody — the eventKey index collapsed the
+    // re-walk over the accounts that were already delivered.
+    for (const user of [alice, bob, carol]) {
+      expect(await noticeCount(user.id, key)).toBe(1);
+    }
+
+    const after = (await built.repo.findById(created.id))!;
+    // Counts recomputed from the new outcome, never accumulated…
+    expect(after.deliveredCount).toBe(recipients);
+    expect(after.failedCount).toBe(0);
+    // …and `published_at` is untouched: the claim is the only writer of that
+    // column and this pass never reaches it, so a redelivery cannot re-stamp
+    // the publication or move its timestamp.
+    expect(after.publishedAt).toEqual(stuck.publishedAt);
+
+    // One re-run per click: the pass asked for nothing further.
+    expect(built.enqueued.filter((r) => r.attempt === ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT)).toEqual(
+      [queued],
+    );
+
+    // The trail: the operator's ASK, and the pass's own outcome — both naming
+    // them, unlike the automatic passes above, which are the job's.
+    const { entries } = await built.audit.listForTarget({ targetId: created.id, limit: 50 });
+    const asked = entries.filter((row) => row.action === 'announcement.redeliver');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.actorId).toBe(admin.id);
+    expect(asked[0]!.meta).toMatchObject({
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      jobId: accepted.jobId,
+      delivered: recipients - 1,
+      failed: 1,
+    });
+    // `listForTarget` reads newest-first, so the operator's pass is entry 0 and
+    // the two automatic ones behind it stay unattributed.
+    const passes = await publishAudits(built, created.id);
+    expect(passes.map((row) => row.actorId)).toEqual([admin.id, null, null]);
+    expect(passes[0]!.meta).toMatchObject({
+      users: recipients,
+      inserted: 1,
+      failed: 0,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+    });
+  });
+
+  it('refuses a pass the worker would skip, and one with nothing left to deliver', async () => {
+    const admin = await harness.seedAdmin();
+    await harness.seedUser({ email: 'r4@bt.test', username: 'redelivfour' });
+
+    const now = () => new Date('2026-05-05T09:00:00.000Z');
+    const built = build(now);
+
+    // Clean publication: nothing failed, so there is nothing to retry.
+    const clean = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    await run(built.job);
+    expect((await built.repo.findById(clean.id))!.failedCount).toBe(0);
+    await expect(built.service.redeliver(clean.id, { id: admin.id })).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'ANNOUNCEMENT_NOTHING_TO_REDELIVER',
+    });
+
+    // Never published: the sweep still owes it a first pass.
+    const draft = await built.service.create({ ...BODY, active: false }, { id: admin.id });
+    await expect(built.service.redeliver(draft.id, { id: admin.id })).rejects.toMatchObject({
+      statusCode: 409,
+    });
+
+    // Unknown id — the same 404 the rest of the surface answers.
+    await expect(
+      built.service.redeliver('00000000-0000-4000-8000-000000000000', { id: admin.id }),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'ANNOUNCEMENT_NOT_FOUND' });
+
+    // Nothing was queued by any of the three refusals.
+    expect(built.enqueued.filter((r) => r.attempt === ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT)).toEqual(
+      [],
+    );
+  });
+
+  it('gives an impatient double-click one job id, and a deliberate retry a minute later its own', async () => {
+    const t0 = Date.parse('2026-05-06T10:00:00.000Z');
+    const { queues, calls } = recordingQueues();
+    let clock = t0;
+    const enqueue = createAnnouncementPublishEnqueuer(queues, () => clock);
+    const manual = {
+      announcementId: 'a-9',
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      dedupeWindowMs: ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS,
+      actorId: 'admin-1',
+    };
+
+    const first = await enqueue(manual);
+    clock = t0 + 2_000;
+    const doubleClick = await enqueue(manual);
+    clock = t0 + 60_000;
+    const later = await enqueue(manual);
+
+    // Two clicks in the same breath are one walk — a second identical re-walk
+    // would deliver exactly what the first one does.
+    expect(doubleClick.jobId).toBe(first.jobId);
+    // A minute later is a genuine second ask, and it is NOT swallowed: nothing
+    // re-runs a click, so the five-minute automatic window would have made the
+    // button do nothing.
+    expect(later.jobId).not.toBe(first.jobId);
+    expect(new Set(calls.map((c) => c.opts?.jobId)).size).toBe(2);
+
+    // A manual pass never collides with the automatic ladder: the attempt
+    // segment differs, whatever the windows do.
+    clock = t0;
+    const automatic = await enqueue({ announcementId: 'a-9', attempt: 0 });
+    expect(automatic.jobId).not.toBe(first.jobId);
+    expect(calls.at(-1)!.data).toEqual({ announcementId: 'a-9', attempt: 0 });
+    expect(calls[0]!.data).toEqual({
+      announcementId: 'a-9',
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      actorId: 'admin-1',
+    });
   });
 });

@@ -25,6 +25,7 @@ import {
   adminSecuritySignalsResponseSchema,
   adminSessionPolicyResponseSchema,
   announcementListResponseSchema,
+  announcementRedeliverResponseSchema,
   announcementSchema,
   appSettingsResponseSchema,
   auditLogListResponseSchema,
@@ -80,6 +81,7 @@ import {
   type FeatureFlagKey,
   type Announcement,
   type AnnouncementListResponse,
+  type AnnouncementRedeliverResponse,
   type AppSettingsResponse,
   type AdminSecuritySignalsResponse,
   type AuditLogListResponse,
@@ -986,6 +988,20 @@ export async function updateAnnouncement(
 ): Promise<Announcement> {
   const data = await apiRequest<unknown>(`/admin/announcements/${id}`, { method: 'PATCH', body });
   return announcementSchema.parse(data);
+}
+
+/**
+ * Re-run the fan-out for the recipients a publication missed (#1943).
+ *
+ * 202, not 200: the walk is the whole user table and runs on a worker. What
+ * comes back is the queued pass's identity plus the counts the operator acted
+ * on — the RESULT lands on the next `listAnnouncements()`.
+ */
+export async function redeliverAnnouncement(id: string): Promise<AnnouncementRedeliverResponse> {
+  const data = await apiRequest<unknown>(`/admin/announcements/${id}/redeliver`, {
+    method: 'POST',
+  });
+  return announcementRedeliverResponseSchema.parse(data);
 }
 
 /** Delete an announcement (cascades per-user dismissals away). */

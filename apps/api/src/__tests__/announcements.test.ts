@@ -6,15 +6,21 @@ import {
   ANNOUNCEMENT_NOTIFICATION_TYPE,
   activeAnnouncementListResponseSchema,
   announcementListResponseSchema,
+  announcementRedeliverResponseSchema,
   announcementSchema,
   notificationListResponseSchema,
   type CreateAnnouncementRequest,
 } from '@bettertrack/contracts';
 
+import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
+import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
-import { announcementEventKey } from '../services/announcements/announcementService';
+import {
+  announcementEventKey,
+  ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+} from '../services/announcements/announcementService';
 
 /**
  * Announcements (§13.4 V4-P5b). Covers the acceptance criteria:
@@ -256,6 +262,7 @@ describe('announcements — the write path never fans out', () => {
     harness = await createTestApp({
       announcementPublishEnqueue: async (request) => {
         enqueued.push({ announcementId: request.announcementId, attempt: request.attempt });
+        return { jobId: `${request.announcementId}:${request.attempt}` };
       },
     });
     const admin = await harness.seedAdmin();
@@ -490,5 +497,174 @@ describe('announcements — inbox entry contract', () => {
     // Reuses the V4-P0c account.notice slot, so the bell deep-link resolver
     // takes it through the existing `/settings/notifications` mapping.
     expect(row!.type).toBe(ANNOUNCEMENT_NOTIFICATION_TYPE);
+  });
+});
+
+/**
+ * ADMIN-W7c (#1943): `POST /admin/announcements/:id/redeliver`.
+ *
+ * The console showed a published announcement standing at "N failed" with
+ * nothing attached to it — the automatic ladder stops after one retry, and
+ * `publishDue` only takes UNSTAMPED rows, so those recipients were never coming
+ * back. This route is the operator's hand on that: it validates, audits with
+ * the acting admin, and hands ONE targeted pass to the queue. It never walks
+ * the user table on the request — that is what makes it a 202.
+ */
+describe('announcements — redelivering the recipients a publication missed', () => {
+  const ENQUEUED: Array<{ announcementId: string; attempt: number; actorId?: string }> = [];
+
+  /** A harness whose publication transport records instead of queueing. */
+  async function withRecordingQueue() {
+    ENQUEUED.length = 0;
+    harness = await createTestApp({
+      announcementPublishEnqueue: async (request) => {
+        ENQUEUED.push({
+          announcementId: request.announcementId,
+          attempt: request.attempt,
+          ...(request.actorId !== undefined ? { actorId: request.actorId } : {}),
+        });
+        return { jobId: `job:${request.announcementId}:${request.attempt}` };
+      },
+    });
+  }
+
+  /**
+   * Only the OPERATOR passes. Creating an announcement with an open window
+   * legitimately asks for its automatic first publication (`attempt: 0`), so an
+   * unfiltered recorder would be asserting about that instead of the click.
+   */
+  const manualPasses = () =>
+    ENQUEUED.filter((r) => r.attempt === ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT);
+
+  /** Put a published announcement into the state the issue is about. */
+  async function stuckWithFailures(
+    agent: ReturnType<typeof request.agent>,
+    counts: { delivered: number; failed: number },
+  ) {
+    const created = announcementSchema.parse((await createViaAdmin(agent, BASE_BODY)).body);
+    await createAnnouncementRepository(harness.db).claimPublication(created.id, new Date(), counts);
+    return created;
+  }
+
+  it('is invisible to a non-admin and refused to an admin who has not enrolled 2FA', async () => {
+    await withRecordingQueue();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const stuck = await stuckWithFailures(adminAgent, { delivered: 9, failed: 3 });
+    const path = `/api/v1/admin/announcements/${stuck.id}/redeliver`;
+
+    // Anonymous: a bare 404, like every route under the admin router (§6.12).
+    expect(
+      (
+        await request(harness.app)
+          .post(path)
+          .set(...XRW)
+      ).status,
+    ).toBe(404);
+
+    // A signed-in USER: the same 404 — the route does not announce itself.
+    const user = await harness.seedUser({ email: 'nosy@bt.test', username: 'nosyuser' });
+    const userAgent = await loginUserAgent(harness.app, user.email, user.password);
+    expect((await userAgent.post(path).set(...XRW)).status).toBe(404);
+
+    // A real admin who has not enrolled 2FA: the mandatory-2FA gate, not the
+    // route's own logic (§6.12, #400).
+    const fresh = await harness.seedAdmin({
+      email: 'fresh@bt.test',
+      username: 'freshadmin',
+      password: 'fresh-strong-password-1',
+    });
+    const freshAgent = request.agent(harness.app);
+    const login = await freshAgent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: fresh.email, password: fresh.password });
+    expect(login.status).toBe(200);
+    const gated = await freshAgent.post(path).set(...XRW);
+    expect(gated.status).toBe(403);
+    expect(gated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+
+    // None of the three got anywhere near the queue.
+    expect(manualPasses()).toHaveLength(0);
+  });
+
+  it('accepts the retry with 202, queues ONE operator pass, and audits it with the actor and the counts', async () => {
+    await withRecordingQueue();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const stuck = await stuckWithFailures(adminAgent, { delivered: 9, failed: 3 });
+
+    const res = await adminAgent
+      .post(`/api/v1/admin/announcements/${stuck.id}/redeliver`)
+      .set(...XRW);
+    expect(res.status).toBe(202);
+    const accepted = announcementRedeliverResponseSchema.parse(res.body);
+    expect(accepted).toMatchObject({
+      announcementId: stuck.id,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      // The counts the operator ACTED ON — the outcome arrives on the next list.
+      failedCount: 3,
+      deliveredCount: 9,
+    });
+    expect(accepted.jobId).toBeTruthy();
+
+    // Exactly one pass, carrying the admin who clicked.
+    expect(manualPasses()).toEqual([
+      {
+        announcementId: stuck.id,
+        attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+        actorId: admin.id,
+      },
+    ]);
+
+    // Audited as an OPERATOR action: `announcement.publish` rows are the job's
+    // and carry `actorId: null`; this one names the person and the counts.
+    const { entries } = await createAuditRepository(harness.db).listForTarget({
+      targetId: stuck.id,
+      limit: 20,
+    });
+    const asked = entries.filter((row) => row.action === 'announcement.redeliver');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.actorId).toBe(admin.id);
+    expect(asked[0]!.meta).toMatchObject({
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      jobId: accepted.jobId,
+      delivered: 9,
+      failed: 3,
+    });
+
+    // The row itself is untouched by the request: no re-stamp, no zeroed
+    // counts. The queued pass replaces them from its own outcome.
+    const list = announcementListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/announcements')).body,
+    );
+    const row = list.announcements.find((a) => a.id === stuck.id)!;
+    expect(row.failedCount).toBe(3);
+    expect(row.deliveredCount).toBe(9);
+    expect(row.publishedAt).toBe(stuck.publishedAt ?? row.publishedAt);
+  });
+
+  it('404s an unknown id and 409s an announcement with nothing failed', async () => {
+    await withRecordingQueue();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const unknown = await adminAgent
+      .post('/api/v1/admin/announcements/00000000-0000-4000-8000-000000000000/redeliver')
+      .set(...XRW);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error.code).toBe('ANNOUNCEMENT_NOT_FOUND');
+
+    // Published cleanly: the button is hidden in the console at 0 failed, and
+    // the server refuses it anyway rather than walking every account for
+    // nothing.
+    const clean = await stuckWithFailures(adminAgent, { delivered: 12, failed: 0 });
+    const refused = await adminAgent
+      .post(`/api/v1/admin/announcements/${clean.id}/redeliver`)
+      .set(...XRW);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe('ANNOUNCEMENT_NOTHING_TO_REDELIVER');
+
+    expect(manualPasses()).toHaveLength(0);
   });
 });
