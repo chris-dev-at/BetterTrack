@@ -1,5 +1,7 @@
 # Origin demo evaluation tour
 
+_Archived 2026-09-02 — the Origin redesign record; the shipped design language now lives in `apps/web/src/styles/origin.css`, and the ground-up v6 redesign is tracked in #544._
+
 This is the fastest way to evaluate whether the sixth BetterTrack direction feels like
 one connected wealth suite rather than several products sharing a sidebar.
 
