@@ -84,6 +84,12 @@ export default defineConfig({
       // whether a harness actually gave its sockets back.
       'src/__tests__/harnessLifecycle.test.ts',
     ],
+    // Every test file gets the #1936 harness reaper: an `afterAll` that
+    // releases any `createTestApp()` harness the file did not dispose itself.
+    // Registered from a setup file so it is the first `afterAll` collected and
+    // — under Vitest's default `sequence.hooks: "stack"` — therefore the last
+    // to run, after any hook of the file's own that still uses its harness.
+    setupFiles: ['src/testing/setupHarnessReaper.ts'],
     pool: 'forks',
     poolOptions: {
       forks: { singleFork: true },
