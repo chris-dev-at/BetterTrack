@@ -110,6 +110,27 @@ export function writeScopeForRead(scope: ApiKeyScope): ApiKeyScope | undefined {
  * Expand a granted/held scope set with every implied read, deduped and returned
  * in canonical {@link API_KEY_SCOPES} order. Grant-time normalization so a stored
  * or displayed set never carries a `:write` without its `:read`.
+ *
+ * THE one normalizer (#1740, V5-P0b). Every server path that STORES a scope set
+ * calls it — api-key create, OAuth client register (user + admin first-party),
+ * first-party client update and seed, the authorization code, the grant and the
+ * access token — and so do the display paths, which is what lets already-stored
+ * pre-#1740 rows heal on the way out instead of needing a data migration.
+ *
+ * Deliberately a function, NOT a zod `.transform()` on the request schemas
+ * (`createApiKeyRequestSchema`, `createOAuthClientRequestSchema`,
+ * `updateOAuthClientRequestSchema`). Three reasons, in order of weight:
+ *  1. Those schemas feed the OpenAPI generator and the web client's request
+ *     types; a transform makes `z.infer` the POST-transform type, so the
+ *     documented request shape and the caller-facing type would quietly diverge
+ *     from what a caller actually sends.
+ *  2. Not every write path has a request schema — the authorize `scope` string
+ *     is space-delimited text, and the first-party seed is code-owned config —
+ *     so a schema transform would cover only some of them and the invariant
+ *     would still need applying service-side. One rule, one place.
+ *  3. The two ceiling comparisons ({@link scopeSatisfies} in `parseScopes` and
+ *     `clampToAllowed`) read a STORED set back; a request-schema transform can
+ *     say nothing about those.
  */
 export function withImpliedReadScopes(scopes: readonly ApiKeyScope[]): ApiKeyScope[] {
   const set = new Set<ApiKeyScope>(scopes);

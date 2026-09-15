@@ -1628,9 +1628,13 @@ describe('first-party app editing (#341) — consent-safe', () => {
  * same effective access the consent screen showed. `scopeSatisfies` lets a
  * granted `:write` satisfy its `:read` at request time, so a grant stored as
  * `['portfolio:write']` really can call the read-only routes.
+ *
+ * #1740 (V5-P0b) additionally normalizes at the write paths, so a NEW grant
+ * stores the pair; the display expansion remains what heals grants stored before
+ * that (pinned in `oauthScopeWriteImpliesRead.test.ts`).
  */
 describe('#1730 authorized-apps grants report the effective (implied-read) scopes', () => {
-  it('shows the implied read the token can actually use, without touching storage', async () => {
+  it('shows the implied read the token can actually use, and stores it (since #1740)', async () => {
     const { client } = await adminAndFirstPartyClient({
       scopes: ['portfolio:read', 'portfolio:write'],
     });
@@ -1653,12 +1657,14 @@ describe('#1730 authorized-apps grants report the effective (implied-read) scope
     );
     expect(grants.grants[0]!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
 
-    // Display-time expansion only: the stored grant is unchanged.
+    // #1740 superseded the original "storage unchanged" assertion: the consent
+    // path normalizes, so the grant stores exactly the set the consent screen
+    // displayed instead of a half-set the list has to expand back.
     const rows = await harness.db
       .select({ scopes: schema.oauthGrants.scopes })
       .from(schema.oauthGrants)
       .where(eq(schema.oauthGrants.userId, user.id));
-    expect(rows[0]!.scopes).toEqual(['portfolio:write']);
+    expect(rows[0]!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
   });
 
   it('still clamps to the app’s current ceiling before expanding', async () => {
