@@ -1425,6 +1425,23 @@ function DividendIntelSection({ portfolioId }: { portfolioId: string | null }) {
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
   const [showAll, setShowAll] = useState(false);
   const marketIntel = useDeployCapability('marketIntel');
+  // What the store under this subtree can serve, and the keyspace its answers
+  // belong in — read here rather than drilled, exactly as `useDeployCapability`
+  // above is.
+  const capabilities = usePortfolioStoreCapabilities();
+  const storeScope = usePortfolioStoreScope();
+
+  // A resolver-backed vault portfolio serves no server-side row reads at all
+  // (`RESOLVED_VAULT_STORE_CAPABILITIES`), and these two are server reads about
+  // a specific portfolio. Asked anyway with a vaulted id they do not come back
+  // empty: the vaulted-portfolio route guard reads `portfolioId` off the query
+  // and answers 403 VAULTED_PORTFOLIO, so the block would fire four doomed
+  // requests per mount and swallow every one. Stating the capability up front is
+  // what `PortfolioStoreProvider` exists for — "stated up front instead of
+  // discovered by calling it and catching the refusal" (#1416) — and the block
+  // disappearing on a vaulted portfolio is the correct §6.16 outcome anyway:
+  // server-computed reads are killed for that portfolio.
+  const serverReadable = capabilities.rowReads;
 
   // Both reads carry the portfolio this block sits on, and its id is part of
   // both query keys (#1898). The block stands between the allocation ring and
@@ -1433,22 +1450,24 @@ function DividendIntelSection({ portfolioId }: { portfolioId: string | null }) {
   // roll-ups: two portfolio pages printed the same monthly income, and a small
   // book inherited a large sibling's over-cap refusal. The id in the key is what
   // makes a topbar switch refetch instead of serving the previous portfolio's
-  // number out of the cache.
+  // number out of the cache, and `storeScope` rides along like every other key
+  // on this page so one store's answer is never read as another's.
   const projection = useQuery({
-    queryKey: PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY(portfolioId ?? ''),
+    queryKey: [...PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY(portfolioId ?? ''), ...storeScope],
     queryFn: ({ signal }) => getPortfolioDividendProjectionFor(portfolioId!, signal),
-    enabled: marketIntel && portfolioId !== null,
+    enabled: marketIntel && serverReadable && portfolioId !== null,
     staleTime: 3_600_000,
   });
   const calendar = useQuery({
-    queryKey: PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY(portfolioId ?? ''),
+    queryKey: [...PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY(portfolioId ?? ''), ...storeScope],
     queryFn: ({ signal }) => getPortfolioDividendCalendarFor(portfolioId!, signal),
-    enabled: marketIntel && portfolioId !== null,
+    enabled: marketIntel && serverReadable && portfolioId !== null,
     staleTime: 3_600_000,
   });
 
-  // Invisible when unconfigured: no heading, no empty state, no explanation.
-  if (!marketIntel) return null;
+  // Invisible when unconfigured, and equally invisible where the server cannot
+  // be asked: no heading, no empty state, no explanation.
+  if (!marketIntel || !serverReadable) return null;
 
   const proj = projection.data;
   const entries = calendar.data?.available ? calendar.data.entries : [];
