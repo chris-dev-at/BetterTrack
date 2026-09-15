@@ -81,18 +81,66 @@ export interface AnnouncementPublishJobDeps {
 }
 
 /**
+ * How wide a window collapses repeated targeted enqueues for one announcement
+ * into a single job. Deliberately the cron interval: anything the dedupe
+ * swallows is picked up by the sweep within that same window, so the worst case
+ * of coalescing is the latency the targeted enqueue exists to avoid — never a
+ * lost publication.
+ */
+export const ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * The BullMQ job id one targeted pass carries — the queue-side dedupe key
+ * (#1941 review).
+ *
+ * Without it, editing an unstamped active announcement N times enqueued N full
+ * walks of the user table: every `update()` on an open window asks for a
+ * "publish now" pass, and an operator fixing a typo three times in a row is
+ * ordinary behaviour. BullMQ coalesces adds that share a job id, so a stable id
+ * turns those N asks into one job — the same trick `createBackfillScheduler`
+ * uses per asset.
+ *
+ * Two things are in the id besides the announcement, and both have to be:
+ *
+ *  • **`attempt`** — the single bounded retry is a genuinely different pass over
+ *    the same announcement, and it must not be swallowed by the first one.
+ *  • **a coarse time bucket** — the queue's defaults keep the last 1000
+ *    COMPLETED jobs (`DEFAULT_JOB_OPTIONS.removeOnComplete`), and BullMQ refuses
+ *    to re-add an id that is still sitting in that set. A bare
+ *    `ann:<id>:<attempt>` would therefore work exactly once per announcement
+ *    and then silently refuse every later publish of it — an operator who
+ *    deactivates an announcement and switches it back on next week would get no
+ *    targeted pass at all. Bucketing by
+ *    {@link ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS} keeps the coalescing where it
+ *    is wanted (a burst of edits) and lets a legitimately new publish window
+ *    through.
+ */
+export function announcementPublishJobId(
+  announcementId: string,
+  attempt: number,
+  at: number,
+): string {
+  const bucket = Math.floor(at / ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS);
+  return `${QUEUE_NAMES.announcementsPublishDue}:${announcementId}:${attempt}:${bucket}`;
+}
+
+/**
  * The producer side of the targeted pass, in one place so the API context and
  * the worker cannot map the request onto the queue differently. `delayMs` is the
  * retry's backoff; without it the job is eligible immediately.
  */
 export function createAnnouncementPublishEnqueuer(
   queues: QueueRegistry,
+  now: () => number = Date.now,
 ): (request: AnnouncementPublishRequest) => Promise<void> {
   return async (request: AnnouncementPublishRequest): Promise<void> => {
     await queues.enqueue(
       QUEUE_NAMES.announcementsPublishDue,
       { announcementId: request.announcementId, attempt: request.attempt },
-      ...(request.delayMs !== undefined ? [{ delay: request.delayMs }] : []),
+      {
+        jobId: announcementPublishJobId(request.announcementId, request.attempt, now()),
+        ...(request.delayMs !== undefined ? { delay: request.delayMs } : {}),
+      },
     );
   };
 }

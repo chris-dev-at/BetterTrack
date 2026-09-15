@@ -21,11 +21,15 @@ import {
 } from '../../services/announcements/announcementService';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import {
+  announcementPublishJobId,
+  createAnnouncementPublishEnqueuer,
   createAnnouncementPublishJob,
   ANNOUNCEMENT_PUBLISH_CRON,
+  ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS,
   ANNOUNCEMENT_PUBLISH_SCHEDULER_ID,
   ANNOUNCEMENT_PUBLISH_TZ,
 } from '../definitions/announcementJobs';
+import type { QueueRegistry } from '../queues';
 import type { JobContext, JobPayload } from '../types';
 
 /**
@@ -97,6 +101,8 @@ function build(
     ) => Promise<string | null>;
     users?: Pick<UserRepository, 'listRecipientsAfter'>;
     fanOutPageSize?: number;
+    /** Replace the recorder with a real transport (the job-id dedupe proof). */
+    enqueuePublish?: (request: AnnouncementPublishRequest) => Promise<void>;
   } = {},
 ): Built {
   const repo = createAnnouncementRepository(db);
@@ -116,6 +122,7 @@ function build(
     audit: createAuditService(auditRepo),
     enqueuePublish: async (request) => {
       enqueued.push(request);
+      if (options.enqueuePublish) await options.enqueuePublish(request);
     },
     now: clock,
     ...(options.fanOutPageSize !== undefined ? { fanOutPageSize: options.fanOutPageSize } : {}),
@@ -480,5 +487,250 @@ describe('announcements.publishDue — partial failure stops being a permanent r
     await built.service.update(created.id, { active: true }, { id: admin.id });
     expect(await run(built.job)).toMatchObject({ due: 0, inserted: 0 });
     expect(built.inserts).toHaveLength(insertsAfterRetry);
+  });
+});
+
+/**
+ * #1941 review, low 1: the sweep acted on the batch snapshot it had taken
+ * before the first walk. An operator who switched an announcement off between
+ * `listDuePublications` and that row's turn still got a full fan-out to every
+ * account and a `published_at` stamp, because the claim conditioned on
+ * `published_at IS NULL` alone.
+ */
+describe('announcements.publishDue — a cancelled announcement is not published', () => {
+  it('re-reads before walking: deactivated between the batch snapshot and its turn → no fan-out, no stamp', async () => {
+    const admin = await harness.seedAdmin();
+    const alice = await harness.seedUser({ email: 'cancel@bt.test', username: 'canceluser' });
+
+    const now = () => new Date('2026-02-20T00:00:00.000Z');
+
+    // TWO due announcements, so the sweep's own batch genuinely spans a window
+    // in which an operator can act. Deactivating BEFORE `run()` would prove
+    // nothing — `listDuePublications` filters on `active` and would simply not
+    // return the row. The interleaving only exists mid-batch, so the switch-off
+    // is fired from inside the FIRST announcement's walk.
+    const sideChannel = createAnnouncementRepository(db);
+    let cancelled = false;
+    let second = '';
+    const built = build(now, {
+      insert: async (input, real) => {
+        const id = await real.insert(input);
+        if (!cancelled && second) {
+          cancelled = true;
+          await sideChannel.update(second, { active: false });
+        }
+        return id;
+      },
+    });
+
+    const first = await built.service.create(
+      { ...BODY, titleEn: 'First', active: true },
+      { id: admin.id },
+    );
+    const cancelledRow = await built.service.create(
+      { ...BODY, titleEn: 'Second', active: true },
+      { id: admin.id },
+    );
+    second = cancelledRow.id;
+
+    // Both are in the batch the sweep is about to take.
+    const listed = await built.repo.listDuePublications(now(), 20);
+    expect(listed.map((r) => r.id).sort()).toEqual([first.id, cancelledRow.id].sort());
+
+    const summary = await run(built.job);
+    expect(cancelled).toBe(true);
+
+    // The first one published; the cancelled one was never walked or stamped.
+    expect(summary).toMatchObject({ due: 2, published: 1 });
+    expect(await noticeCount(alice.id, announcementEventKey(first.id))).toBe(1);
+    expect(await noticeCount(alice.id, announcementEventKey(cancelledRow.id))).toBe(0);
+    expect(await built.repo.hasBeenPublished(cancelledRow.id)).toBe(false);
+    const row = (await built.repo.findById(cancelledRow.id))!;
+    expect(row.deliveredCount).toBeNull();
+    expect(await publishAudits(built, cancelledRow.id)).toHaveLength(0);
+
+    // And switching it back on still publishes it — a refused claim must leave
+    // the announcement re-publishable, not quietly spent.
+    await built.service.update(cancelledRow.id, { active: true }, { id: admin.id });
+    expect(await run(built.job)).toMatchObject({ due: 1, published: 1 });
+    expect(await noticeCount(alice.id, announcementEventKey(cancelledRow.id))).toBe(1);
+  });
+
+  it('refuses the claim for an announcement switched off DURING the walk', async () => {
+    const admin = await harness.seedAdmin();
+    const alice = await harness.seedUser({ email: 'midwalk@bt.test', username: 'midwalkuser' });
+
+    const now = () => new Date('2026-02-21T00:00:00.000Z');
+    let deactivate: (() => Promise<void>) | null = null;
+    const built = build(now, {
+      // Switch it off after the first recipient insert — past every pre-walk
+      // re-read, so only the claim's own `active = true` can catch it.
+      insert: async (input, real) => {
+        const id = await real.insert(input);
+        if (deactivate) {
+          const run = deactivate;
+          deactivate = null;
+          await run();
+        }
+        return id;
+      },
+    });
+
+    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const key = announcementEventKey(created.id);
+    deactivate = async () => {
+      await built.repo.update(created.id, { active: false });
+    };
+
+    const outcome = await built.service.publishAnnouncement(created.id);
+    expect(outcome.status).toBe('lost-claim');
+    // The walk had already begun, so some rows exist — but nothing was
+    // recorded, so the announcement is still re-publishable.
+    expect(await built.repo.hasBeenPublished(created.id)).toBe(false);
+    const row = (await built.repo.findById(created.id))!;
+    expect(row.deliveredCount).toBeNull();
+    expect(row.failedCount).toBeNull();
+    expect(await publishAudits(built, created.id)).toHaveLength(0);
+    // Nobody was notified twice by the abandoned pass.
+    expect(await noticeCount(alice.id, key)).toBeLessThanOrEqual(1);
+  });
+
+  it('skips a row whose window closes between the batch snapshot and its turn', async () => {
+    const admin = await harness.seedAdmin();
+    const alice = await harness.seedUser({ email: 'straddle@bt.test', username: 'straddleuser' });
+
+    let clock = new Date('2026-03-01T09:00:00.000Z');
+    // Again the interleaving has to happen INSIDE the batch: the first
+    // announcement's walk pushes the clock past the second's `endsAt`, so the
+    // batch snapshot is stale by the time the second row's turn arrives.
+    let advanced = false;
+    const built = build(() => clock, {
+      insert: async (input, real) => {
+        const id = await real.insert(input);
+        if (!advanced) {
+          advanced = true;
+          clock = new Date('2026-03-01T11:00:00.000Z');
+        }
+        return id;
+      },
+    });
+
+    const first = await built.service.create(
+      { ...BODY, titleEn: 'Opens the batch', active: true },
+      { id: admin.id },
+    );
+    const straddler = await built.service.create(
+      {
+        ...BODY,
+        titleEn: 'Window closes mid-batch',
+        active: true,
+        endsAt: '2026-03-01T10:00:00.000Z',
+      },
+      { id: admin.id },
+    );
+
+    const listed = await built.repo.listDuePublications(clock, 20);
+    expect(listed.map((r) => r.id).sort()).toEqual([first.id, straddler.id].sort());
+
+    const summary = await run(built.job);
+    expect(advanced).toBe(true);
+    expect(summary).toMatchObject({ due: 2, published: 1 });
+    expect(await noticeCount(alice.id, announcementEventKey(straddler.id))).toBe(0);
+    expect(await built.repo.hasBeenPublished(straddler.id)).toBe(false);
+  });
+});
+
+/**
+ * #1941 review, low 2: every `update()` on an open window asks for a "publish
+ * now" pass, so an operator fixing a typo three times enqueued three full walks
+ * of the user table. BullMQ coalesces adds that share a job id.
+ */
+describe('announcements.publishDue — the targeted enqueue is deduped by job id', () => {
+  /** A QueueRegistry that records what was enqueued, instead of a real queue. */
+  function recordingQueues() {
+    const calls: Array<{ name: string; data: unknown; opts?: { jobId?: string; delay?: number } }> =
+      [];
+    const queues = {
+      get: () => {
+        throw new Error('not used');
+      },
+      enqueue: async (name: string, data: unknown, opts?: { jobId?: string; delay?: number }) => {
+        calls.push({ name, data, opts });
+        return {} as never;
+      },
+      close: async () => {},
+    } as unknown as QueueRegistry;
+    return { queues, calls };
+  }
+
+  it('gives every enqueue in one window the same job id, so BullMQ collapses them', async () => {
+    const t0 = Date.parse('2026-04-01T12:00:00.000Z');
+    const { queues, calls } = recordingQueues();
+    let clock = t0;
+    const enqueue = createAnnouncementPublishEnqueuer(queues, () => clock);
+
+    await enqueue({ announcementId: 'a-1', attempt: 0 });
+    clock = t0 + 30_000;
+    await enqueue({ announcementId: 'a-1', attempt: 0 });
+    clock = t0 + 90_000;
+    await enqueue({ announcementId: 'a-1', attempt: 0 });
+
+    expect(calls).toHaveLength(3);
+    const ids = new Set(calls.map((c) => c.opts?.jobId));
+    // Three asks, ONE job identity — which is what makes BullMQ keep one job.
+    expect(ids.size).toBe(1);
+    expect([...ids][0]).toBe(announcementPublishJobId('a-1', 0, t0));
+    expect(calls[0]!.name).toBe('announcements.publishDue');
+    expect(calls[0]!.data).toEqual({ announcementId: 'a-1', attempt: 0 });
+    // A first pass carries no delay; only the bounded retry does.
+    expect(calls[0]!.opts?.delay).toBeUndefined();
+  });
+
+  it('keeps the retry, a different announcement and a later window distinct', async () => {
+    const t0 = Date.parse('2026-04-01T12:00:00.000Z');
+    const { queues, calls } = recordingQueues();
+    let clock = t0;
+    const enqueue = createAnnouncementPublishEnqueuer(queues, () => clock);
+
+    await enqueue({ announcementId: 'a-1', attempt: 0 });
+    // The bounded retry is a real second pass — it must not be swallowed.
+    await enqueue({ announcementId: 'a-1', attempt: 1, delayMs: 60_000 });
+    await enqueue({ announcementId: 'a-2', attempt: 0 });
+    // A publish window later (the queue keeps completed jobs, so a bare
+    // `<id>:<attempt>` would be refused forever after the first one).
+    clock = t0 + ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS * 2;
+    await enqueue({ announcementId: 'a-1', attempt: 0 });
+
+    const ids = calls.map((c) => c.opts?.jobId);
+    expect(new Set(ids).size).toBe(4);
+    expect(calls[1]!.opts?.delay).toBe(60_000);
+  });
+
+  it('two edits of one unstamped announcement enqueue ONE job, not two user-table walks', async () => {
+    const admin = await harness.seedAdmin();
+    await harness.seedUser({ email: 'edit@bt.test', username: 'edituser' });
+
+    const at = Date.parse('2026-04-02T08:00:00.000Z');
+    const { queues, calls } = recordingQueues();
+    // The service's transport is the REAL enqueuer here, so what is asserted is
+    // what BullMQ would actually receive — not a job id the test computed for
+    // itself.
+    const built = build(() => new Date(at), {
+      enqueuePublish: createAnnouncementPublishEnqueuer(queues, () => at),
+    });
+    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+
+    await built.service.update(created.id, { titleEn: 'Typo fixed' }, { id: admin.id });
+    await built.service.update(created.id, { titleEn: 'Typo fixed again' }, { id: admin.id });
+
+    // The service asks once per write — it does not try to be clever…
+    const asks = calls.filter(
+      (c) => (c.data as { announcementId?: string }).announcementId === created.id,
+    );
+    expect(asks.length).toBeGreaterThanOrEqual(3);
+    // …and every ask carries ONE job identity, so BullMQ keeps one job and the
+    // user table is walked once instead of three times.
+    expect(new Set(asks.map((c) => c.opts?.jobId)).size).toBe(1);
+    expect(asks[0]!.opts?.jobId).toBe(announcementPublishJobId(created.id, 0, at));
   });
 });

@@ -94,6 +94,8 @@ export {
 export {
   createAnnouncementPublishJob,
   createAnnouncementPublishEnqueuer,
+  announcementPublishJobId,
+  ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS,
   ANNOUNCEMENT_PUBLISH_SCHEDULER_ID,
   ANNOUNCEMENT_PUBLISH_CRON,
   ANNOUNCEMENT_PUBLISH_TZ,

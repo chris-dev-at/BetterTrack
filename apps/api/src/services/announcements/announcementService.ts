@@ -139,8 +139,10 @@ export type AnnouncementPublishOutcome =
     }
   | {
       /**
-       * Another worker stamped the publication while this one was walking. The
-       * per-recipient key means it delivered nothing new; it records nothing.
+       * The conditional claim did not match: another worker stamped the
+       * publication while this one was walking, or the announcement was
+       * switched off mid-walk. The per-recipient key means nothing was
+       * delivered twice, and this pass records nothing at all.
        */
       status: 'lost-claim';
       users: number;
@@ -375,12 +377,21 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       failed: result.failed,
     });
     if (!won) {
-      // Another worker walked the same row concurrently and stamped it first.
-      // The eventKey index means this pass inserted nothing it should not have;
-      // it records nothing so the counts and the audit stay single.
+      // The conditional claim did not match. Two ways that happens, and the
+      // re-read says which so the log is actionable: another worker walked the
+      // same row concurrently and stamped it first, or an operator switched the
+      // announcement off DURING this walk. Either way this pass records
+      // nothing — the eventKey index means it inserted nothing it should not
+      // have, and leaving `published_at` NULL keeps a cancelled announcement
+      // re-publishable if the operator changes their mind.
+      const after = await repo.findById(row.id);
       logger?.info(
-        { announcementId: row.id, inserted: result.inserted },
-        'announcement publication already claimed by another run — recording nothing',
+        {
+          announcementId: row.id,
+          inserted: result.inserted,
+          reason: !after ? 'deleted' : after.publishedAt ? 'claimed-by-another-run' : 'deactivated',
+        },
+        'announcement publication not claimed — recording nothing',
       );
       return { status: 'lost-claim', ...result, retryScheduled: false };
     }
@@ -461,6 +472,34 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
     if (row.publishedAt !== null) return 'already-published';
     if (row.startsAt && row.startsAt.getTime() > at.getTime()) return 'scheduled';
     return 'due';
+  }
+
+  /**
+   * Publish exactly one announcement, RE-READING it first.
+   *
+   * The fresh read is the point (#1941 review): the sweep's batch is a snapshot
+   * taken before the first walk, and a targeted job's payload was written
+   * before it was ever picked up. In both cases an operator can have switched
+   * the announcement off, moved its window, or had another worker publish it in
+   * between — and a fan-out is 100 % of the user base, so acting on a stale row
+   * is not a small mistake. One extra indexed SELECT per due announcement (the
+   * batch is 20, the sweep runs every five minutes) buys that.
+   */
+  async function publishOne(id: string, attempt: number): Promise<AnnouncementPublishOutcome> {
+    const row = await repo.findById(id);
+    if (!row) return { status: 'skipped', reason: 'not-found' };
+    const state = dueness(row, now());
+    // The bounded retry runs over a row that is already stamped — that is
+    // exactly what it is for — so `already-published` is only a stop for a
+    // first pass. Everything else (deactivated, rescheduled or expired between
+    // enqueue and run) stops both.
+    if (state === 'already-published' && attempt === 0) {
+      return { status: 'skipped', reason: 'already-published' };
+    }
+    if (state !== 'due' && state !== 'already-published') {
+      return { status: 'skipped', reason: state };
+    }
+    return runPublication(row, attempt);
   }
 
   /**
@@ -605,7 +644,12 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
         retriesScheduled: 0,
       };
       for (const row of due) {
-        const outcome = await runPublication(row, 0);
+        // Cheap guard on the snapshot first: a batch of 20 can straddle an
+        // `endsAt`, so a row that was due when the list was taken may have left
+        // its window before its turn came. `publishOne` then re-reads, which is
+        // what catches an operator switching it off mid-batch.
+        if (dueness(row, now()) !== 'due') continue;
+        const outcome = await publishOne(row.id, 0);
         if (outcome.status === 'skipped') continue;
         summary.inserted += outcome.inserted;
         summary.failed += outcome.failed;
@@ -615,21 +659,8 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       return summary;
     },
 
-    async publishAnnouncement(id, attempt = 0): Promise<AnnouncementPublishOutcome> {
-      const row = await repo.findById(id);
-      if (!row) return { status: 'skipped', reason: 'not-found' };
-      const state = dueness(row, now());
-      // The bounded retry runs over a row that is already stamped — that is
-      // exactly what it is for — so `already-published` is only a stop for a
-      // first pass. Everything else (deactivated, rescheduled or expired between
-      // enqueue and run) stops both.
-      if (state === 'already-published' && attempt === 0) {
-        return { status: 'skipped', reason: 'already-published' };
-      }
-      if (state !== 'due' && state !== 'already-published') {
-        return { status: 'skipped', reason: state };
-      }
-      return runPublication(row, attempt);
+    publishAnnouncement(id, attempt = 0): Promise<AnnouncementPublishOutcome> {
+      return publishOne(id, attempt);
     },
 
     async listActiveForUser(userId, userLocale): Promise<ActiveAnnouncement[]> {

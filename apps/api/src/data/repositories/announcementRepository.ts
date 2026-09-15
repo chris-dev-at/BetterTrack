@@ -227,6 +227,12 @@ export function createAnnouncementRepository(db: Database) {
      * the very next sweep tick re-publishes it. The per-recipient eventKey index
      * is what makes that re-walk free of duplicates — the two layers cover each
      * other, and neither alone is enough.
+     *
+     * `active = true` is in the predicate as well (#1941 review). The service
+     * re-reads and re-checks before it walks, so this is belt to that braces:
+     * an operator who switches an announcement off DURING the walk gets no
+     * stamp, which leaves the row re-publishable if they switch it back on
+     * rather than silently recording a publication they had just cancelled.
      */
     async claimPublication(
       id: string,
@@ -241,7 +247,13 @@ export function createAnnouncementRepository(db: Database) {
           failedCount: counts.failed,
           updatedAt: new Date(),
         })
-        .where(and(eq(announcements.id, id), isNull(announcements.publishedAt)))
+        .where(
+          and(
+            eq(announcements.id, id),
+            isNull(announcements.publishedAt),
+            eq(announcements.active, true),
+          ),
+        )
         .returning({ id: announcements.id });
       return rows.length > 0;
     },
