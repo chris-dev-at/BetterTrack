@@ -235,7 +235,17 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
           events: 'div',
         }),
       ),
-      queue.run(() => client.quoteSummary(ref.providerRef, ['calendarEvents', 'summaryDetail'])),
+      // `defaultKeyStatistics` rides along in the SAME quoteSummary request (one
+      // more module, not one more call): it carries `lastDividendValue`, the
+      // only per-payout amount Yahoo publishes, which `mapDividendEvents` reads
+      // onto the upcoming event when `lastDividendDate` is that ex-date (#1948).
+      queue.run(() =>
+        client.quoteSummary(ref.providerRef, [
+          'calendarEvents',
+          'summaryDetail',
+          'defaultKeyStatistics',
+        ]),
+      ),
     ]);
     if (chartResult.status === 'rejected' && summaryResult.status === 'rejected') {
       throw chartResult.reason;
