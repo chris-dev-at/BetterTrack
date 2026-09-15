@@ -26,8 +26,13 @@ export function createUsageRollupJob(deps: UsageRollupJobDeps): JobDefinition<'u
       tz: USAGE_ROLLUP_TZ,
     },
     async handler(_job, ctx) {
-      // Persist anything still buffered, then re-materialize the recent window.
-      await deps.usageAnalytics.flush();
+      // Re-materialize the recent window. Nothing is flushed first, on purpose
+      // (#1896): capture is wired only on the API — the middleware is mounted
+      // in `app.ts` and nothing calls `capture()` on the worker's own service
+      // instance — so a `flush()` here always drained an empty buffer while
+      // reading as a guarantee that the buffered events were persisted. The
+      // API's flush timer and its shutdown drain persist them; the trailing
+      // window re-materializes whatever landed after a day's first roll.
       await deps.usageAnalytics.rollupRecent();
       ctx.logger.info('usage.rollup complete');
     },
