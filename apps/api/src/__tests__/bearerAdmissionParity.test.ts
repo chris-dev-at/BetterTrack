@@ -41,6 +41,14 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * BOTH kinds on every one of the five twin surfaces. Still no new behavior, and
  * still importing nothing either issue touches, so this file keeps running
  * unmodified against the parent commit.
+ *
+ * #1965 does it once more for the SIXTH twin — `requireCookieSessionOrVaultSync`
+ * on the legacy account-singleton `/vault` surface. That twin gates the only
+ * bearer-reachable READ AND WRITE of vault bytes, so "did the refusal path move
+ * a decision" is the highest-stakes version of this question in the file: every
+ * allowlisted sync route is pinned with and without `vault:sync`, together with
+ * the off-allowlist method, the non-integer `{version}` sibling and the media
+ * transition that must all stay session-only.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -77,7 +85,7 @@ async function mintKeyForUser(scopes: string[]): Promise<{ token: string; userId
 
 const mintKey = async (scopes: string[]): Promise<string> => (await mintKeyForUser(scopes)).token;
 
-type Method = 'get' | 'post' | 'patch' | 'delete';
+type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
 interface ParityRow {
   name: string;
@@ -450,6 +458,82 @@ const ROWS: readonly ParityRow[] = [
     without: [403, 'API_KEY_FORBIDDEN'],
     with: [403, 'API_KEY_FORBIDDEN'],
   },
+
+  // ── #1965: the sixth twin — the legacy account-singleton `/vault` surface.
+  //    The four allowlisted sync routes below are the entire bearer-reachable
+  //    vault-byte surface; the three after them are the siblings that must stay
+  //    session-only. The `with` answers deliberately reach PAST the scope rail
+  //    into the vault's own state machine (409 while the server medium is
+  //    inactive, 403 VAULT_PARANOID_MODE_REQUIRED for history on a normal
+  //    account) — that is what proves admission happened rather than a refusal
+  //    that merely happens to share a status code.
+  {
+    name: 'vault envelope read (vault-sync twin)',
+    method: 'get',
+    path: '/vault',
+    scope: 'vault:sync',
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [409, 'VAULT_SERVER_MEDIUM_INACTIVE'],
+  },
+  {
+    name: 'vault envelope write (vault-sync twin)',
+    method: 'put',
+    path: '/vault',
+    scope: 'vault:sync',
+    body: { not: 'an envelope' },
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [409, 'VAULT_SERVER_MEDIUM_INACTIVE'],
+  },
+  {
+    name: 'vault media state read (vault-sync twin)',
+    method: 'get',
+    path: '/vault/media',
+    scope: 'vault:sync',
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [200, null],
+  },
+  {
+    name: 'vault history list (vault-sync twin)',
+    method: 'get',
+    path: '/vault/history',
+    scope: 'vault:sync',
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [403, 'VAULT_PARANOID_MODE_REQUIRED'],
+  },
+  {
+    name: 'vault history version (vault-sync twin)',
+    method: 'get',
+    path: '/vault/history/12',
+    scope: 'vault:sync',
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [403, 'VAULT_PARANOID_MODE_REQUIRED'],
+  },
+  {
+    name: 'vault envelope, off-allowlist method',
+    method: 'post',
+    path: '/vault',
+    scope: 'vault:sync',
+    body: {},
+    without: [403, 'API_KEY_FORBIDDEN'],
+    with: [403, 'API_KEY_FORBIDDEN'],
+  },
+  {
+    name: 'vault history, non-integer version sibling',
+    method: 'get',
+    path: '/vault/history/latest',
+    scope: 'vault:sync',
+    without: [403, 'API_KEY_FORBIDDEN'],
+    with: [403, 'API_KEY_FORBIDDEN'],
+  },
+  {
+    name: 'vault media transition (vault-sync twin, session-only)',
+    method: 'patch',
+    path: '/vault/media',
+    scope: 'account:security',
+    body: {},
+    without: [403, 'API_KEY_FORBIDDEN'],
+    with: [403, 'API_KEY_FORBIDDEN'],
+  },
 ];
 
 const send = (token: string, row: ParityRow) => {
@@ -460,9 +544,11 @@ const send = (token: string, row: ParityRow) => {
       ? base.get(url)
       : row.method === 'post'
         ? base.post(url)
-        : row.method === 'delete'
-          ? base.delete(url)
-          : base.patch(url);
+        : row.method === 'put'
+          ? base.put(url)
+          : row.method === 'delete'
+            ? base.delete(url)
+            : base.patch(url);
   const withAuth = started.set(bearer(token));
   return row.body ? withAuth.send(row.body) : withAuth;
 };
@@ -497,15 +583,17 @@ describe('#1951 bearer admission parity (golden — must not move)', () => {
 });
 
 /**
- * #1958 — the account-kind boundary on all five twins, both principal kinds.
+ * #1958 / #1965 — the account-kind boundary on all six twins, both principal
+ * kinds.
  *
  * The portfolio-vault and per-vault twins already carried an `admin → 404`
  * backstop; #1958 gives the passkey, grant and tax-year twins the same one
- * through a shared predicate. That is a narrowing *inside* three handlers, so
- * the thing to prove is that it narrows NOTHING an HTTP caller can observe: on
- * both sides of the change an admin-role principal is refused before routing —
- * a bearer by the global rail, a session by `requireUser` — and the answers
- * below are byte-identical on the parent commit.
+ * through a shared predicate, and #1965 the vault-sync twin. That is a
+ * narrowing *inside* four handlers, so the thing to prove is that it narrows
+ * NOTHING an HTTP caller can observe: on both sides of the change an admin-role
+ * principal is refused before routing — a bearer by the global rail, a session
+ * by `requireUser` — and the answers below are byte-identical on the parent
+ * commit.
  *
  * Which is exactly why the backstop is worth adding: it is unreachable today,
  * and it exists for the day one of those two rails is remounted or regresses.
@@ -516,12 +604,16 @@ const TWIN_SURFACES = [
   { name: 'passkey management twin', path: '/auth/passkeys' },
   { name: 'portfolio-vault twin', path: `/portfolios/${MISSING_ID}/vault/revision` },
   { name: 'per-vault twin', path: `/vaults/${MISSING_ID}` },
+  // #1965 — the sixth twin. It is the one that had no backstop at all, so this
+  // row is the only one of the six whose 404 the twin itself could not produce
+  // on the parent commit. The rail's answer is identical on both trees.
+  { name: 'vault-sync twin', path: '/vault' },
 ] as const;
 
-/** Every scope any of the five surfaces could ask for, so a refusal is never about scope. */
+/** Every scope any of the six surfaces could ask for, so a refusal is never about scope. */
 const TWIN_SCOPES = ['account:security', 'vault:sync'] as const;
 
-describe('#1958 admin-role principals on all five twins (golden — must not move)', () => {
+describe('#1958 admin-role principals on all six twins (golden — must not move)', () => {
   it.each(TWIN_SURFACES)('404s an admin-role BEARER on the $name', async (surface) => {
     // Promote the account directly in the table, deliberately bypassing
     // `userRepo.setRole` — which bumps `securityGeneration` and would revoke the
@@ -547,8 +639,8 @@ describe('#1958 admin-role principals on all five twins (golden — must not mov
     expect(rows).toHaveLength(0);
   });
 
-  it('403s an admin-kind SESSION on every one of the five, with the admin-area pointer', async () => {
-    // One (expensive) admin login drives all five surfaces: `loginAdmin` has to
+  it('403s an admin-kind SESSION on every one of the six, with the admin-area pointer', async () => {
+    // One (expensive) admin login drives all six surfaces: `loginAdmin` has to
     // enroll TOTP and re-authenticate through the §6.12 admin 2FA gate.
     const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
 

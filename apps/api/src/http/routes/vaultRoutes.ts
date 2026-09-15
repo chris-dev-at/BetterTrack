@@ -141,28 +141,91 @@ const serverMediumInactive = (message: string): ApiError =>
  * every media/storage transition and every future route still requires the
  * owning cookie session. Direct-router use therefore cannot silently widen the
  * exception if the mount or global policy changes later.
+ *
+ * ## Why it takes `ctx` (#1965)
+ *
+ * The sixth and last of the router-local twins to get the #1957/#1962 shape.
+ * The rail audits every bearer scope refusal it answers; a twin that refuses
+ * the IDENTICAL request silently loses that row at exactly the moment it
+ * matters — a twin only ever answers when the global policy table has
+ * regressed, and a regression the owner cannot see in `api_key.scope_denied` is
+ * a regression nobody finds. So the twin writes the row itself, through the
+ * same {@link recordBearerScopeDenied} rail and the same closed `reason`
+ * vocabulary as its five siblings.
+ *
+ * Exactly one row per refusal: when the global guard answers first it has
+ * already short-circuited the request, so this handler never runs; when it
+ * admits and the twin refuses, this is the only writer.
+ *
+ * A rejected audit write (an out-of-vocabulary reason, a dead database) goes to
+ * `next` through `.then(refuse, next)`, where `parseBearerScopeDenialReason`'s
+ * plain `Error` becomes a REPORTED 500 (#1951 L1) — never a silent 400, and
+ * never an admission to vault bytes.
+ *
+ * ## The account-kind backstop (#1965)
+ *
+ * A bearer-backed admin principal 404s here exactly as it does on the rail and
+ * on the other five twins, through one shared predicate. It precedes every
+ * other branch, so such a principal learns nothing about the vault surface and
+ * writes no `api_key.scope_denied` row: a 404 across the user/admin boundary is
+ * not a scope event, and the rail does not audit it either. An admin-KIND
+ * session is refused earlier and more loudly by `requireUser` (403
+ * `ADMIN_ACCOUNT_KIND`, §6.12), which is why the predicate is bearer-only.
+ *
+ * ## Which refusals are audited, and with which reason
+ *
+ * Only a real bearer refused on a route the sync allowlist ACCEPTS. An
+ * unauthenticated caller has no principal to audit; an off-allowlist method, a
+ * `{version}` that is not a positive integer, a media transition and every
+ * future sibling are session-only rather than scope events — the global table
+ * classifies those `session-only` and audits nothing either. Inside the audited
+ * set exactly one reason is reachable: the allowlist accepted the route, so the
+ * credential was refused for the scope it LACKS, and the row says
+ * `insufficient-scope`. `first-party-only` belongs to the grant twin, whose
+ * global policy carries a trust ceiling this read does not.
  */
-export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next) => {
-  const bearerSyncAllowed =
-    req.apiKey !== undefined &&
+function buildCookieSessionOrVaultSync(ctx: AppContext): RequestHandler {
+  // Named independently of the factory, exactly as the per-vault twin below and
+  // for the same reason: the production-route census pins this opaque mount by
+  // HANDLER NAME as well as by its `/vault` mount point. A named function
+  // expression that shadows its enclosing declaration is emitted with a numeric
+  // suffix, which would silently move that censused row.
+  return function requireCookieSessionOrVaultSync(req, _res, next) {
+    // The account-kind boundary, shared verbatim with the rail and the other
+    // five twins. See {@link isAdminRoleBearerPrincipal}.
+    if (isAdminRoleBearerPrincipal(req)) {
+      next(notFound());
+      return;
+    }
+    const path = `/vault${req.path === '/' || req.path === '' ? '' : req.path}`;
     // Route-aware AND scope-aware: if the global policy table is what regresses,
     // a token holding some unrelated scope must still not reach the vault.
-    scopeSatisfies(req.apiKey.scopes, VAULT_SYNC_SCOPE) &&
-    vaultSyncRouteAcceptsBearer(
-      req.method,
-      `/vault${req.path === '/' || req.path === '' ? '' : req.path}`,
-    );
-  if ((!req.apiKey && req.sessionId) || bearerSyncAllowed) {
-    next();
-    return;
-  }
-  next(
-    forbidden(
+    const routeAccepted = vaultSyncRouteAcceptsBearer(req.method, path);
+    const scoped = req.apiKey !== undefined && scopeSatisfies(req.apiKey.scopes, VAULT_SYNC_SCOPE);
+    if ((!req.apiKey && req.sessionId) || (scoped && routeAccepted)) {
+      next();
+      return;
+    }
+    // Built once and handed to `next` on both paths, so the HTTP answer is
+    // byte-identical whether or not the refusal is an audited one.
+    const refusal = forbidden(
       'This vault endpoint is available only to the owning browser session.',
       'API_KEY_FORBIDDEN',
-    ),
-  );
-};
+    );
+    if (req.apiKey !== undefined && routeAccepted) {
+      // Reachable only with `!scoped` — the admit branch above took the scoped
+      // case — so this is the rail's `insufficient-scope`, one row, same reason.
+      recordBearerScopeDenied(ctx, req, VAULT_SYNC_SCOPE, 'insufficient-scope', path).then(
+        () => next(refusal),
+        next,
+      );
+      return;
+    }
+    next(refusal);
+  };
+}
+
+export { buildCookieSessionOrVaultSync as requireCookieSessionOrVaultSync };
 
 /**
  * Vault write state machine: an owning cookie session may write while the
@@ -266,7 +329,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
   const router = Router();
   const parseRawEnvelope = rawVaultBody(ctx);
 
-  router.use(requireUser, requireCookieSessionOrVaultSync);
+  router.use(requireUser, buildCookieSessionOrVaultSync(ctx));
   router.use('/history', requireParanoidHistory);
 
   router.get('/history', validateQuery(vaultHistoryListQuerySchema), async (req, res) => {
