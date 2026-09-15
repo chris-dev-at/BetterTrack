@@ -25,12 +25,14 @@ import {
 
 import { forbidden, notFound } from '../../errors';
 
+import type { BearerScopeDenialReason } from '../../services/audit/auditService';
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
 import { TelegramSetupError } from '../../services/notifications/telegramSetupService';
 
 import {
   ACCOUNT_SECURITY_SCOPE,
   oauthGrantRouteAcceptsBearer,
+  recordBearerScopeDenied,
   taxYearDocumentationRouteAcceptsBearer,
 } from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
@@ -80,27 +82,102 @@ export const requireCookieSessionOrTaxYearDocumentationBearer: RequestHandler = 
  * checks the exact route, scope, credential kind and first-party marker so a
  * policy-table reshuffle or direct router mount cannot expose grant management
  * to a third-party token or personal key.
+ *
+ * Its refusals are split the same way the global rail splits them: a trusted
+ * first-party token that merely lacks `account:security` gets the actionable
+ * INSUFFICIENT_SCOPE answer naming the scope, and only a third-party token or
+ * personal key is told the route is first-party-only. Unreachable while the
+ * global policy answers first — but this fallback exists precisely for the case
+ * where that table regresses, and in that case it must not misdescribe the
+ * cause (#1365).
+ *
+ * ## Why it takes `ctx` (#1951 §2)
+ *
+ * The rail audits every bearer scope refusal it answers; a twin that refuses
+ * the IDENTICAL request silently would lose that row at exactly the moment it
+ * matters — the twin only ever answers when the global table has regressed, and
+ * a regression the owner cannot see in `api_key.scope_denied` is a regression
+ * nobody finds. So the twin writes the row itself, through the same
+ * {@link recordBearerScopeDenied} rail and the same closed `reason` vocabulary.
+ *
+ * Exactly one row per refusal: when the global guard answers first it has
+ * already short-circuited the request, so this handler never runs; when it
+ * admits and the twin refuses, this is the only writer.
+ *
+ * ## Which refusals are audited, and with which reason
+ *
+ * Only a refusal of a real bearer credential on a route the grant allowlist
+ * ACCEPTS is a scope denial. Everything else here is a different event: no
+ * credential at all (an unauthenticated caller — there is no principal to
+ * audit), or an off-allowlist path, which the global rail classifies
+ * session-only and audits nowhere either.
+ *
+ * Within that set the reason follows the rail's own scope-first order, and the
+ * documented meaning of the discriminator: a credential that LACKS the scope is
+ * `insufficient-scope` whether or not it is also untrusted, and only a
+ * credential that HOLDS the scope and is refused for being third-party is
+ * `first-party-only`. That deliberately makes the audited reason finer than the
+ * answer the client gets, which stays byte-identical to before: telling an
+ * untrusted caller "you are merely missing a scope" would hand it an actionable
+ * hint about a route reserved for first-party clients, while the owner reading
+ * their own audit log is entitled to the precise cause.
  */
-export const requireCookieSessionOrFirstPartyOAuthGrant: RequestHandler = (req, _res, next) => {
-  const bearerAllowed =
-    req.apiKey?.kind === 'oauth' &&
-    req.apiKey.firstParty &&
-    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-    oauthGrantRouteAcceptsBearer(
-      req.method,
-      `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
+export function requireCookieSessionOrFirstPartyOAuthGrant(ctx: AppContext): RequestHandler {
+  return function requireCookieSessionOrFirstPartyOAuthGrant(req, _res, next) {
+    const path = `/settings${req.path === '/' || req.path === '' ? '' : req.path}`;
+    const routeAccepted = oauthGrantRouteAcceptsBearer(req.method, path);
+    const trustedClient = req.apiKey?.kind === 'oauth' && req.apiKey.firstParty;
+    const scoped =
+      req.apiKey !== undefined && scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE);
+    if ((!req.apiKey && req.sessionId) || (trustedClient && scoped && routeAccepted)) {
+      next();
+      return;
+    }
+
+    const refuse = (error: unknown, reason?: BearerScopeDenialReason): void => {
+      if (reason === undefined) {
+        next(error);
+        return;
+      }
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, reason, path).then(
+        () => next(error),
+        next,
+      );
+    };
+    // `routeAccepted && req.apiKey` is what makes this a scope denial at all;
+    // `scoped` then picks the reason exactly as the global rail would.
+    const auditedReason: BearerScopeDenialReason | undefined =
+      req.apiKey !== undefined && routeAccepted
+        ? scoped
+          ? 'first-party-only'
+          : 'insufficient-scope'
+        : undefined;
+
+    if (trustedClient && routeAccepted && !scoped) {
+      refuse(
+        forbidden(
+          `API key is missing the required scope "${ACCOUNT_SECURITY_SCOPE}".`,
+          'INSUFFICIENT_SCOPE',
+        ),
+        auditedReason,
+      );
+      return;
+    }
+    refuse(
+      forbidden(
+        'This endpoint is available to first-party OAuth clients only.',
+        'API_KEY_FORBIDDEN',
+      ),
+      auditedReason,
     );
-  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
-    next();
-    return;
-  }
-  next(
-    forbidden('This endpoint is available to first-party OAuth clients only.', 'API_KEY_FORBIDDEN'),
-  );
-};
+  };
+}
 
 export function createSettingsRouter(ctx: AppContext): Router {
   const router = Router();
+  // Built once per router, not per request: the guard closes over `ctx` only to
+  // reach the audit rail.
+  const firstPartyOAuthGrantAccess = requireCookieSessionOrFirstPartyOAuthGrant(ctx);
 
   router.use(requireUser);
 
@@ -388,7 +465,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
   });
 
   // GET /settings/oauth-grants — apps the caller has authorized (active grants).
-  router.get('/oauth-grants', requireCookieSessionOrFirstPartyOAuthGrant, async (req, res) => {
+  router.get('/oauth-grants', firstPartyOAuthGrantAccess, async (req, res) => {
     const currentGrantId = req.apiKey?.kind === 'oauth' ? req.apiKey.id : null;
     const grants = await ctx.oauth.listGrants(req.authUser!.id, currentGrantId);
     res.json({ grants });
@@ -401,7 +478,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
    */
   router.delete(
     '/oauth-grants/:id',
-    requireCookieSessionOrFirstPartyOAuthGrant,
+    firstPartyOAuthGrantAccess,
     validateParams(idParamSchema),
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };

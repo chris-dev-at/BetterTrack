@@ -709,7 +709,7 @@ function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
       return;
     }
     if (!scopeSatisfies(req.apiKey.scopes, requiredScope)) {
-      recordBearerScopeDenied(ctx, req, requiredScope, path).then(
+      recordBearerScopeDenied(ctx, req, requiredScope, 'insufficient-scope', path).then(
         () =>
           next(
             forbidden(
