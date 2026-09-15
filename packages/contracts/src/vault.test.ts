@@ -477,12 +477,12 @@ describe('a restored rule’s tag fan-out (#1954)', () => {
   const RULE_B = '018f0000-0000-7000-8000-0000000000e2';
   const TAG = '018f0000-0000-7000-8000-0000000000f1';
 
-  const link = (ruleId: string, index: number) => ({
+  const link = (ruleId: string, index: number, deletedAt: string | null = null) => ({
     id: `018f0000-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
     rev: 1,
     editedAt: '2026-01-01T00:00:00.000Z',
     editedBy: UUID_A,
-    deletedAt: null,
+    deletedAt,
     kind: 'cashRuleTag' as const,
     data: { ruleId, tagId: TAG, createdAt: '2026-01-01T00:00:00.000Z' },
   });
@@ -496,6 +496,12 @@ describe('a restored rule’s tag fan-out (#1954)', () => {
 
   const linksFor = (ruleId: string, count: number, offset = 0) =>
     Array.from({ length: count }, (_unused, i) => link(ruleId, offset + i));
+
+  /** Soft-deleted links: `deletedAt` set, which is what a tombstone IS (§2/§4). */
+  const tombstonesFor = (ruleId: string, count: number, offset = 0) =>
+    Array.from({ length: count }, (_unused, i) =>
+      link(ruleId, offset + i, '2026-02-01T00:00:00.000Z'),
+    );
 
   it('accepts a rule landing EXACTLY on the cap', () => {
     const parsed = vaultStrictDocumentV1Schema.safeParse(
@@ -543,6 +549,47 @@ describe('a restored rule’s tag fan-out (#1954)', () => {
     // thousand tags" is a shape a client can actually write.
     expect(
       vaultStrictDocumentV1Schema.safeParse(documentWith(...linksFor(RULE_A, 5_000))).success,
+    ).toBe(false);
+  });
+
+  it('counts LIVE links only — a tombstone is not a tag the rule carries', () => {
+    /**
+     * THE TWO SEAMS HAVE TO AGREE, AND THE SERVICE SEAM COUNTS LIVE ROWS.
+     * `paranoidRehydrationService` hands `restoreRuleTags` the output of
+     * `liveEntities()` (`entity.deletedAt === null`), so a tombstoned link never
+     * reaches the table and never joins a rule's `array_agg`. A refinement
+     * counting tombstones would therefore refuse documents the service accepts —
+     * the two gates disagreeing about the same document.
+     *
+     * And the disagreement would not be academic. `paranoidDisable.ts`'s
+     * `toStrictRestoreDocument` pushes EVERY row of the unlocked document into
+     * this schema, tombstones included, and throws `document-invalid` when the
+     * parse fails — with no bypass. The day the paranoid client can soft-delete
+     * a `cashRuleTag` (§16 2026-08-19 item 6), a user who had unlinked one tag
+     * from a fully-tagged rule could not disable paranoid mode or move a
+     * portfolio out AT ALL. A cap on live fan-out must not become a lock on the
+     * exit.
+     */
+    const parsed = vaultStrictDocumentV1Schema.safeParse(
+      documentWith(
+        ...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX),
+        ...tombstonesFor(RULE_A, 40, 2_000),
+      ),
+    );
+    expect(parsed.success).toBe(true);
+    // The tombstones are CARRIED, not dropped: §4's merge rules key off them, so
+    // the refinement must ignore them without removing them.
+    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_PER_ITEM_MAX + 40);
+
+    // …and the live count is still what decides: one live link past the cap is
+    // refused however many tombstones sit beside it.
+    expect(
+      vaultStrictDocumentV1Schema.safeParse(
+        documentWith(
+          ...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX + 1),
+          ...tombstonesFor(RULE_A, 40, 2_000),
+        ),
+      ).success,
     ).toBe(false);
   });
 
