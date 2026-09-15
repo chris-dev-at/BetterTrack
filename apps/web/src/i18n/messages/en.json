@@ -4692,7 +4692,8 @@
         "status": "Status",
         "privacy": "Privacy",
         "lastLogin": "Last login",
-        "created": "Created"
+        "created": "Created",
+        "review": "Review"
       },
       "roles": {
         "admin": "admin",
@@ -4723,19 +4724,28 @@
       },
       "flags": {
         "mustChangePassword": "Must change password",
-        "chatBanned": "Chat banned"
+        "chatBanned": "Chat banned",
+        "underReview": "Under review"
       },
       "filters": {
         "anyRole": "Any kind",
         "anyStatus": "Any state",
         "anyPrivacy": "Any privacy mode",
         "pageSize": "Per page",
-        "reset": "Clear filters"
+        "reset": "Clear filters",
+        "anyReview": "Any review state",
+        "flagged": "Flagged only",
+        "notFlagged": "Not flagged"
       },
       "pagination": {
         "range": "{{first}}–{{last}} of {{total}}",
         "previous": "Previous",
         "next": "Next"
+      },
+      "bulkReason": {
+        "label": "Reason",
+        "hint": "Recorded on every account in this batch, and read by the next operator.",
+        "placeholder": "e.g. Coordinated signup wave from one address range."
       }
     },
     "accountDefaults": {
@@ -5529,10 +5539,6 @@
       "profile": "Profile",
       "saveProfile": "Save changes",
       "profileSaved": "Profile updated.",
-      "disabled": "Account disabled. Its sessions and bearer credentials were revoked.",
-      "enabled": "Account re-enabled.",
-      "chatBanned": "Banned from chat.",
-      "chatUnbanned": "Chat ban lifted.",
       "testEmailSent": "Test email sent to {{to}}.",
       "testEmailFailed": "The test email could not be sent.",
       "moreActions": "More actions",
@@ -5544,7 +5550,8 @@
         "support": "Support",
         "sharing": "Sharing",
         "activity": "Activity",
-        "notes": "Notes"
+        "notes": "Notes",
+        "moderation": "Moderation"
       },
       "actions": {
         "snapshot": "Copy support snapshot",
@@ -5681,7 +5688,78 @@
         }
       },
       "deleteTitle": "Delete account",
-      "deleteAction": "Delete account"
+      "deleteAction": "Delete account",
+      "moderation": {
+        "flaggedMarker": "flagged",
+        "flagTitle": "Review flag",
+        "flagOnDescription": "This account is flagged for a second look. The flag suspends nothing — it changes nothing the account can see.",
+        "flagOffDescription": "Mark this account for a second look without suspending it. Flagging changes nothing the account can see.",
+        "flag": "Flag for review",
+        "unflag": "Clear flag",
+        "loading": "Loading the moderation record…",
+        "empty": "No moderation action has been taken on this account.",
+        "unknownActor": "Operator no longer on the team",
+        "transition": "{{previous}} → {{next}}",
+        "reasonLabel": "Reason",
+        "reasonHint": "The next operator reads this. Say what happened, not what you decided.",
+        "reasonPlaceholder": "e.g. Two accounts reported harassment in chat on 14 Sep.",
+        "values": {
+          "active": "Active",
+          "disabled": "Disabled",
+          "allowed": "Chat allowed",
+          "banned": "Chat banned",
+          "user": "User",
+          "admin": "Administrator",
+          "flagged": "Flagged",
+          "unflagged": "Not flagged"
+        },
+        "actions": {
+          "disable": "Account disabled",
+          "enable": "Account re-enabled",
+          "chat_ban": "Chat banned",
+          "chat_unban": "Chat ban lifted",
+          "role_change": "Role changed",
+          "flag": "Flagged for review",
+          "unflag": "Review flag cleared",
+          "delete_reservation": "Reserved for deletion",
+          "password_reset": "Password reset"
+        },
+        "confirm": {
+          "disable": {
+            "title": "Disable this account",
+            "description": "Disabling {{username}} ends every session and revokes every API key and app grant immediately. Say why — the next operator will read it.",
+            "action": "Disable account"
+          },
+          "enable": {
+            "title": "Re-enable this account",
+            "description": "Re-enabling {{username}} lets them sign in again. Say why the suspension is over.",
+            "action": "Re-enable account"
+          },
+          "chatBan": {
+            "title": "Ban this account from chat",
+            "description": "{{username}} will not be able to send messages. Say why — the next operator will read it.",
+            "action": "Ban from chat"
+          },
+          "chatUnban": {
+            "title": "Lift the chat ban",
+            "description": "{{username}} will be able to send messages again. Say why the ban is over.",
+            "action": "Lift chat ban"
+          },
+          "flag": {
+            "title": "Flag this account for review",
+            "description": "Nothing happens to {{username}} — the flag is a note to whoever looks next. Say what you noticed.",
+            "action": "Flag for review"
+          }
+        },
+        "done": {
+          "disable": "Account disabled and recorded.",
+          "enable": "Account re-enabled and recorded.",
+          "chatBan": "Chat ban applied and recorded.",
+          "chatUnban": "Chat ban lifted and recorded.",
+          "flag": "Flagged for review and recorded.",
+          "unflag": "Review flag cleared and recorded."
+        }
+      }
     },
     "invites": {
       "title": "Invites",

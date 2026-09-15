@@ -149,6 +149,19 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   admin_user_notes: skipped(
     'Admin-only operator notes about the account — support/moderation workspace, not user-authored content (#1406 W2; mirrors the #1470 admin-only feedback columns).',
   ),
+  // ADMIN-ONLY for the same reason as the operator notes above (#1907
+  // ADMIN-W5). A moderation row is the record one operator keeps FOR the next
+  // one — the reason a suspension was decided, and by whom. Shipping it in the
+  // subject's own ZIP would turn every moderation decision into a disclosure
+  // and put the operator who signed it in front of the person they suspended.
+  // Retention is untouched: both tables cascade with the account, so deletion
+  // stays total.
+  admin_moderation_actions: skipped(
+    'Admin-only moderation record (reasoned, attributed suspensions/flags) — support/moderation workspace, not user-authored content (#1907; mirrors admin_user_notes, §16 2026-08-29).',
+  ),
+  admin_user_flags: skipped(
+    'Admin-only review flag on an account — operator workspace state, not user-authored content (#1907; mirrors admin_user_notes, §16 2026-08-29).',
+  ),
   email_log: skipped('Email delivery log — a system record retained independently of the user.'),
   problems: skipped(
     'Operational error/insight capture (the Sentry replacement) — a system diagnostics record, not user-owned.',
@@ -593,6 +606,13 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // a promise to erase the moderation record kept about it, exactly as
   // `audit_log` above is kept.
   admin_user_notes: 'server',
+  // Kept, never vaulted, never purged at paranoid-enable (#1907), exactly as
+  // `audit_log` and `admin_user_notes` above: paranoid mode hides what an
+  // account HOLDS, and was never a promise to erase the moderation record kept
+  // ABOUT it. Neither table can hold client data — the reason is operator
+  // prose and the values are short state labels.
+  admin_moderation_actions: 'server',
+  admin_user_flags: 'server',
   email_log: 'server',
   problems: 'server',
   // PURGED, not kept. `usage_events` folds one row per (user, feature, asset,

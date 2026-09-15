@@ -220,19 +220,32 @@ test('bulk-disable names the selected count and only runs after confirmation', a
   await user.click(screen.getByLabelText('Select jane'));
   await user.click(await screen.findByRole('button', { name: 'Disable selected' }));
 
-  expect(await screen.findByRole('dialog', { name: 'Disable selected users?' })).toHaveTextContent(
-    'Disable 1 selected user?',
-  );
+  const dialog = await screen.findByRole('dialog', { name: 'Disable selected users?' });
+  expect(dialog).toHaveTextContent('Disable 1 selected user?');
+  expect(api.bulkUserAction).not.toHaveBeenCalled();
+
+  // #1907: the batch is not submittable until a reason is typed — 200
+  // unattributed suspensions is the gap this wave closes, multiplied by 200.
+  expect(within(dialog).getByRole('button', { name: 'Disable 1 user' })).toBeDisabled();
+  await user.click(within(dialog).getByRole('button', { name: 'Disable 1 user' }));
   expect(api.bulkUserAction).not.toHaveBeenCalled();
 
   await user.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(api.bulkUserAction).not.toHaveBeenCalled();
 
   await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  await user.type(
+    await screen.findByLabelText('Reason'),
+    'Coordinated signup wave from one range.',
+  );
   await user.click(await screen.findByRole('button', { name: 'Disable 1 user' }));
 
   await waitFor(() =>
-    expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] }),
+    expect(api.bulkUserAction).toHaveBeenCalledWith({
+      action: 'disable',
+      userIds: ['user-1'],
+      reason: 'Coordinated signup wave from one range.',
+    }),
   );
   expect(await screen.findByText(/Disabled 1 user/)).toBeInTheDocument();
 });
@@ -263,6 +276,7 @@ test('keeps a bulk-disable failure visible in its confirmation dialog', async ()
   await user.click(screen.getByLabelText('Select jane'));
   await user.click(screen.getByRole('button', { name: 'Disable selected' }));
   const dialog = await screen.findByRole('dialog', { name: 'Disable selected users?' });
+  await user.type(within(dialog).getByLabelText('Reason'), 'Spam ring.');
   const confirm = within(dialog).getByRole('button', { name: 'Disable 1 user' });
 
   await user.click(confirm);
@@ -324,6 +338,40 @@ test('a state filter and a privacy filter combine rather than replace each other
   await waitFor(() =>
     expect(lastListQuery()).toMatchObject({ status: 'disabled', privacyMode: 'paranoid' }),
   );
+});
+
+/**
+ * The review filter is TRI-STATE (#1907 ADMIN-W5), and the state that matters
+ * most is the absent one: if an omitted key collapsed to `flagged=false`, the
+ * default list would silently hide every flagged account — exactly the accounts
+ * an operator opens this page to find.
+ */
+test('the review filter round-trips through the URL in three states and resets the offset', async () => {
+  const user = userEvent.setup();
+  renderPage('en', '/admin/users?offset=25');
+  await screen.findByText('jane@bettertrack.test');
+
+  // Absent: the key is not sent at all, so the server does not filter on it.
+  expect(lastListQuery()).not.toHaveProperty('flagged');
+
+  await user.selectOptions(screen.getByLabelText('Review'), 'true');
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ flagged: true, offset: 0 }));
+
+  await user.selectOptions(screen.getByLabelText('Review'), 'false');
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ flagged: false }));
+
+  // Back to "any": the filter is removed rather than pinned to `false`.
+  await user.selectOptions(screen.getByLabelText('Review'), '');
+  await waitFor(() => expect(lastListQuery()).not.toHaveProperty('flagged'));
+});
+
+test('a flagged account is marked in the list without showing the operator’s reason', async () => {
+  vi.mocked(api.listUsers).mockResolvedValue(page([{ ...jane, flagged: true }], 1, 0));
+  renderPage();
+
+  const row = (await screen.findByText('jane')).closest('tr');
+  expect(row).not.toBeNull();
+  expect(within(row!).getByText('Under review')).toBeInTheDocument();
 });
 
 test('clicking a column head sorts, and clicking it again flips the direction', async () => {
@@ -399,6 +447,7 @@ test('a page emptied by a bulk action snaps back to the last page that has rows'
     return offset === 0 ? page([jane], 25, 0) : page([], 25, offset);
   });
   await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  await user.type(await screen.findByLabelText('Reason'), 'Retired at the owner’s request.');
   await user.click(screen.getByRole('button', { name: 'Disable 1 user' }));
 
   await waitFor(() => expect(lastListQuery()).toMatchObject({ offset: 0 }));

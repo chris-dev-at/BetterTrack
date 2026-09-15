@@ -19,6 +19,7 @@ import {
   adminUserSupportResponseSchema,
   adminUserNoteSchema,
   adminUserNoteListResponseSchema,
+  adminModerationListResponseSchema,
   accountDefaultsResponseSchema,
   adminFeatureFlagsResponseSchema,
   adminSessionPolicyResponseSchema,
@@ -129,6 +130,8 @@ import {
   type AdminUserSupportResponse,
   type AdminUserNote,
   type AdminUserNoteListResponse,
+  type AdminModerationListResponse,
+  type AdminUserFlagRequest,
   type CreateAdminUserNoteRequest,
   type TestEmailRequest,
   type TestEmailResponse,
@@ -241,6 +244,10 @@ export async function listUsers(
       role: params.role,
       status: params.status,
       privacyMode: params.privacyMode,
+      // Tri-state (#1907): the key is only sent when the operator asked a
+      // question about the flag. `buildUrl` drops `undefined`, so an omitted
+      // filter really is omitted rather than sent as `false`.
+      flagged: params.flagged === undefined ? undefined : params.flagged ? 'true' : 'false',
       sort: params.sort,
       direction: params.direction,
       limit: params.limit,
@@ -302,6 +309,35 @@ export async function createUserNote(
 
 export async function deleteUserNote(id: string, noteId: string): Promise<void> {
   await apiRequest<unknown>(`/admin/users/${id}/notes/${noteId}`, { method: 'DELETE' });
+}
+
+/**
+ * The moderation record behind the People 360 "Moderation" tab (#1907
+ * ADMIN-W5): why this account is in the state it is in, who decided, and
+ * whether it was ever reversed. Paged like every other bounded admin list.
+ */
+export async function listUserModeration(
+  id: string,
+  params: Partial<AdminListQuery> = {},
+  signal?: AbortSignal,
+): Promise<AdminModerationListResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/moderation`, {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
+  return adminModerationListResponseSchema.parse(data);
+}
+
+/** Raise (or re-state) the review flag. Suspends nothing; the reason is required. */
+export async function flagUser(id: string, body: AdminUserFlagRequest): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/flag`, { method: 'POST', body });
+  okResponseSchema.parse(data);
+}
+
+/** Clear the review flag. Idempotent — clearing an unflagged account is fine. */
+export async function unflagUser(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/flag`, { method: 'DELETE' });
+  okResponseSchema.parse(data);
 }
 
 export async function createUser(body: CreateUserRequest): Promise<CreateUserResponse> {

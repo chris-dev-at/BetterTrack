@@ -191,6 +191,13 @@ export const adminUserSchema = z
         historyCount: z.number().int().nonnegative(),
       })
       .optional(),
+    /**
+     * Review flag (#1907 ADMIN-W5). Additive and present ONLY when the account
+     * is flagged, exactly as `privacyMode` above is: an unflagged account's
+     * payload stays byte-for-byte what it was before this wave. The flag is a
+     * marker, not a suspension — see `admin_user_flags`.
+     */
+    flagged: z.literal(true).optional(),
     lastLoginAt: z.string().datetime().nullable(),
     createdAt: z.string().datetime(),
   })
@@ -253,6 +260,18 @@ export const adminUserListQuerySchema = z
     role: roleSchema.optional(),
     status: userStatusSchema.optional(),
     privacyMode: adminUserPrivacyFilterSchema.optional(),
+    /**
+     * Review flag (#1907 ADMIN-W5). Tri-state on purpose, exactly as the
+     * helpdesk queue's `unread` is: absent means "don't filter on the flag",
+     * which is a different request from `flagged=false` ("only accounts that
+     * are NOT flagged"). `.optional()` sits OUTSIDE the transform so an omitted
+     * key stays `undefined` instead of collapsing to `false` and silently
+     * hiding every flagged account from the default list.
+     */
+    flagged: z
+      .enum(['true', 'false'])
+      .transform((value) => value === 'true')
+      .optional(),
     sort: adminUserSortSchema.default('createdAt'),
     direction: adminUserSortDirectionSchema.default('desc'),
     limit: z.coerce
@@ -299,6 +318,102 @@ export const createUserResponseSchema = z.object({
 });
 export type CreateUserResponse = z.infer<typeof createUserResponseSchema>;
 
+// ── Moderation depth (#1907 ADMIN-W5) ────────────────────────────────────────
+// Every moderation action carries a REASON, is attributed to a named operator,
+// and lands in a record the next operator can read. Before this wave disabling
+// an account, banning it from chat or changing its role recorded what happened
+// and never why.
+
+/**
+ * Same bound the operator-note body has, and for the same reason: the column's
+ * CHECK repeats it, so no caller can write unbounded prose past the route.
+ */
+export const ADMIN_MODERATION_REASON_MAX_LENGTH = 2000;
+export const ADMIN_MODERATION_PAGE_SIZE_DEFAULT = 25;
+
+/**
+ * Why an operator did it. Trimmed and non-empty: a reason made of spaces is the
+ * same unattributed suspension this wave exists to end, and the
+ * `admin_moderation_actions.reason` CHECK refuses it at the column too.
+ */
+export const adminModerationReasonSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(ADMIN_MODERATION_REASON_MAX_LENGTH);
+
+/**
+ * Short state labels (`active`, `disabled`, `admin`) — never free text, and
+ * never anything that came out of a portfolio (§6.12). Bounded so the column
+ * cannot become a second, unbounded prose field beside `reason`.
+ */
+export const ADMIN_MODERATION_VALUE_MAX_LENGTH = 64;
+
+/**
+ * What the record can hold.
+ *
+ * `delete_reservation` is the row an admin DELETE writes when it disables the
+ * account to reserve the removal: that suspension is durable and survives a
+ * failed delete, so it has to be explainable like any other (#1907).
+ *
+ * `password_reset` is reserved by the table's CHECK and this enum but is not
+ * written by any route today: `POST /admin/users/:id/reset-password` takes no
+ * body, and giving it a mandatory one is a breaking change to a shipped route
+ * that #1907 §1 did not ask for.
+ */
+export const ADMIN_MODERATION_ACTIONS = [
+  'disable',
+  'enable',
+  'chat_ban',
+  'chat_unban',
+  'role_change',
+  'flag',
+  'unflag',
+  'delete_reservation',
+  'password_reset',
+] as const;
+export const adminModerationActionSchema = z.enum(ADMIN_MODERATION_ACTIONS);
+export type AdminModerationAction = z.infer<typeof adminModerationActionSchema>;
+
+/**
+ * One row of the moderation record. The actor is resolved to a USERNAME — never
+ * an e-mail, a session id or any other handle — and goes null-with-tombstone
+ * when that operator's account is gone, exactly as an operator note does.
+ * `previousValue` / `nextValue` are short state labels (`active`, `admin`);
+ * nothing portfolio-derived may ever be written into them (§6.12).
+ */
+export const adminModerationEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    action: adminModerationActionSchema,
+    reason: z.string(),
+    previousValue: z.string().max(ADMIN_MODERATION_VALUE_MAX_LENGTH).nullable(),
+    nextValue: z.string().max(ADMIN_MODERATION_VALUE_MAX_LENGTH).nullable(),
+    actorId: z.string().uuid().nullable(),
+    actorUsername: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminModerationEntry = z.infer<typeof adminModerationEntrySchema>;
+
+export const adminModerationListResponseSchema = z
+  .object({
+    actions: z.array(adminModerationEntrySchema),
+    page: adminListPageSchema,
+  })
+  .strict();
+export type AdminModerationListResponse = z.infer<typeof adminModerationListResponseSchema>;
+
+/**
+ * `POST /admin/users/:id/flag` — mark an account for a second look WITHOUT
+ * suspending it. The reason is mandatory here with no exceptions: a flag whose
+ * reason is optional is the unattributed suspicion this wave replaces.
+ */
+export const adminUserFlagRequestSchema = z
+  .object({ reason: adminModerationReasonSchema })
+  .strict();
+export type AdminUserFlagRequest = z.infer<typeof adminUserFlagRequestSchema>;
+
 export const updateUserRequestSchema = z
   .object({
     status: userStatusSchema.optional(),
@@ -307,6 +422,15 @@ export const updateUserRequestSchema = z
     email: emailSchema.optional(),
     /** Admin chat ban toggle (§13.4 V4-P0d): true bans, false unbans (instant). */
     chatBanned: z.boolean().optional(),
+    /**
+     * Why. Required when the request MODERATES, optional otherwise — a rename
+     * or an e-mail correction is administration, not moderation, and demanding
+     * prose for one would train operators to type filler into the field the
+     * suspensions depend on. The requirement is expressed HERE rather than in
+     * the route handler so the OpenAPI document, the SPA and the server refuse
+     * identically.
+     */
+    reason: adminModerationReasonSchema.optional(),
   })
   .strict()
   .refine(
@@ -317,7 +441,23 @@ export const updateUserRequestSchema = z
       d.email !== undefined ||
       d.chatBanned !== undefined,
     { message: 'Provide at least one field to update.' },
-  );
+  )
+  .superRefine((d, ctx) => {
+    // Suspending, chat-banning and role changes are the three moderating
+    // writes. Reversals (`status: 'active'`, `chatBanned: false`) deliberately
+    // stay optional — the console always sends one, and the server records the
+    // reversal in the moderation record whenever it does.
+    const moderates = d.status === 'disabled' || d.chatBanned === true || d.role !== undefined;
+    if (moderates && d.reason === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reason'],
+        // Generic, state-free (§10): it says what the REQUEST is missing and
+        // discloses nothing about the account it names.
+        message: 'A reason is required for this change.',
+      });
+    }
+  });
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
 
 /**
@@ -332,6 +472,13 @@ export const bulkUserActionRequestSchema = z
   .object({
     action: bulkUserActionSchema,
     userIds: z.array(z.string().uuid()).min(1).max(200),
+    /**
+     * Mandatory with no exception: every action a batch can take today is a
+     * suspension, and 200 unattributed suspensions is the gap this wave closes
+     * multiplied by 200. The one reason is copied onto every affected row's
+     * moderation record, so each account carries its own answer to "why".
+     */
+    reason: adminModerationReasonSchema,
   })
   .strict();
 export type BulkUserActionRequest = z.infer<typeof bulkUserActionRequestSchema>;
