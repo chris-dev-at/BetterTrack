@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   VAULT_MEDIA,
@@ -10,7 +9,7 @@ import {
 import { useT } from '../../../i18n';
 import { pointerInSeparateOverlay } from '../../../ui/overlayStack';
 import { formatDateTime } from '../../../lib/format';
-import { Icon } from '../../../ui/origin';
+import { Badge, Button, Icon, LinkButton } from '../../../ui/origin';
 import { cx } from '../../components/ui';
 import {
   projectVaultMediaSyncStatus,
@@ -19,15 +18,28 @@ import {
 } from '../media/status';
 import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 import { useVaultRuntime } from '../VaultRuntimeContext';
+import { vaultStateTone } from '../vaultStateAffordance';
+import type { EndpointVaultLock } from './useEndpointVaultLock';
 import { VaultStateAction } from './VaultStateAction';
 
 type VaultSyncChipProps =
-  | { media: ParanoidVaultMediaState; vaults?: never }
-  | { media?: never; vaults: readonly VaultDirectorySyncInput[] };
+  | { media: ParanoidVaultMediaState; vaults?: never; lock?: never; portfolioCounts?: never }
+  | {
+      media?: never;
+      vaults: readonly VaultDirectorySyncInput[];
+      /** §12's explicit "Lock vaults", offered from the chip's own popover. */
+      lock?: EndpointVaultLock | undefined;
+      /** Portfolios per vault id, from the roster the shell already reads; absent ⇒ not shown. */
+      portfolioCounts?: ReadonlyMap<string, number> | undefined;
+    };
 
 export function VaultSyncChip(props: VaultSyncChipProps) {
   return props.vaults !== undefined ? (
-    <DirectoryVaultSyncChip vaults={props.vaults} />
+    <DirectoryVaultSyncChip
+      lock={props.lock}
+      portfolioCounts={props.portfolioCounts}
+      vaults={props.vaults}
+    />
   ) : (
     <LegacyVaultSyncChip media={props.media} />
   );
@@ -92,7 +104,9 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   }
 
   return (
-    <div className="relative" ref={rootRef}>
+    // `bt-menu-anchor`: below the phone breakpoint the popover's inline
+    // `right: 0` re-points at the header instead of at this ~36px chip (#1663).
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -152,7 +166,7 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
             ) : null}
 
             {media.mediaSet.includes('drive') && runtime.driveAuthorization !== 'connected' ? (
-              <div className="flex flex-col items-start gap-1">
+              <div className="flex flex-col items-start gap-2">
                 {drivePreparation.state === 'failed' ? (
                   <p className="bt-neg text-xs" role="alert">
                     {t('vault.sync.drivePreparationFailed')}
@@ -164,8 +178,7 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                     {t('vault.sync.driveNotConfigured')}
                   </p>
                 ) : null}
-                <button
-                  className="bt-link text-left text-sm"
+                <Button
                   disabled={
                     resumePending ||
                     drivePreparation.state === 'preparing' ||
@@ -176,6 +189,7 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                     if (drivePreparation.state === 'failed') drivePreparation.retry();
                     else void resumeDrive();
                   }}
+                  size="sm"
                   type="button"
                 >
                   {resumePending
@@ -185,16 +199,19 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                       : drivePreparation.state === 'failed'
                         ? t('vault.sync.retryDrivePreparation')
                         : t('vault.sync.reauthorize')}
-                </button>
+                </Button>
               </div>
             ) : null}
-            <Link
-              className="bt-link text-sm"
-              onClick={() => setOpen(false)}
-              to="/control/privacy?restore=1"
-            >
-              {t('vault.sync.restore')}
-            </Link>
+            <div className="bt-t-rule pt-3">
+              <LinkButton
+                onClick={() => setOpen(false)}
+                size="sm"
+                to="/control/privacy?restore=1"
+                variant="quiet"
+              >
+                {t('vault.sync.restore')}
+              </LinkButton>
+            </div>
           </div>
         </div>
       ) : null}
@@ -230,12 +247,33 @@ function aggregateSyncLabel(
   return t(projection.messageKey);
 }
 
-function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyncInput[] }) {
+/**
+ * The chip is where the owner looks for "all synced" — so its popover is the
+ * one-glance vault manager: every vault, how many portfolios it holds, how it
+ * is stored and synced, its state on this device with the state's action IN
+ * PLACE, and the device-wide lock. The Control Center page remains for the
+ * settings-sized acts (create, rename, storage, reset, start fresh).
+ */
+function DirectoryVaultSyncChip({
+  vaults,
+  lock,
+  portfolioCounts,
+}: {
+  vaults: readonly VaultDirectorySyncInput[];
+  lock?: EndpointVaultLock | undefined;
+  portfolioCounts?: ReadonlyMap<string, number> | undefined;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const projection = useMemo(() => projectVaultMediaSyncStatus({ vaults }), [vaults]);
   const label = aggregateSyncLabel(t, projection);
+  const portfolioCountLabel = (vaultId: string): string | null => {
+    if (portfolioCounts === undefined) return null;
+    const count = portfolioCounts.get(vaultId) ?? 0;
+    if (count === 0) return t('vault.sync.portfoliosNone');
+    return count === 1 ? t('vault.sync.portfoliosOne') : t('vault.sync.portfolios', { count });
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -259,7 +297,9 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
   }, [open]);
 
   return (
-    <div className="relative" ref={rootRef}>
+    // `bt-menu-anchor`: below the phone breakpoint the popover's inline
+    // `right: 0` re-points at the header instead of at this ~36px chip (#1663).
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -289,70 +329,106 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
             </div>
             <ul className="flex max-h-80 flex-col gap-3 overflow-y-auto">
               {projection.rows.map((row) => (
-                <li className="bt-b-rule flex flex-col gap-1 pb-3" key={row.vault.id}>
-                  <div className="flex items-center justify-between gap-4">
+                <li className="bt-b-rule flex flex-col gap-2 pb-3" key={row.vault.id}>
+                  {/* Identity and verdict on one line — the row's state was a
+                      muted 11px word competing with five other muted 11px
+                      lines below it. */}
+                  <div className="flex items-center justify-between gap-3">
                     <span className="bt-row-title truncate">{row.vault.name}</span>
-                    <span className="bt-muted text-xs">
+                    <Badge tone={vaultStateTone(row.endpointState)}>
                       {t(`vault.sync.aggregate.rowState.${row.state}`)}
-                    </span>
+                    </Badge>
                   </div>
-                  <span className="bt-row-sub">
-                    {t(
-                      row.vault.media.length > 1
-                        ? 'vault.manager.media.both'
-                        : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
-                    )}
-                  </span>
-                  <dl className="flex flex-col gap-1">
-                    {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
-                      row.vault.media.includes(medium),
-                    ).map((medium) => (
-                      <div className="flex items-center justify-between gap-4" key={medium}>
-                        <dt className="bt-muted text-xs">{t(`vault.sync.medium.${medium}`)}</dt>
-                        <dd className="bt-muted text-xs">
-                          {t(`vault.sync.status.${row.perMedium[medium] ?? 'disconnected'}`)}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <span className="bt-muted text-xs">{t(row.messageKey)}</span>
-                  <span className="bt-muted text-xs">
-                    {t('vault.sync.lastWrite')}:{' '}
-                    {row.lastWriteAt == null
-                      ? t('vault.sync.never')
-                      : formatDateTime(row.lastWriteAt)}
-                  </span>
-                  {row.recoveryAction === 'drive-sign-in' ? (
-                    <Link
-                      className="bt-link text-sm"
-                      to={`/control/connections?vault=${encodeURIComponent(row.vault.id)}`}
-                    >
-                      {t('vault.sync.aggregate.signInGoogle')}
-                    </Link>
-                  ) : row.recoveryAction === 'restore' ? (
-                    <Link
-                      className="bt-link text-sm"
-                      to={`/control/privacy?vault=${encodeURIComponent(row.vault.id)}&action=restore`}
-                    >
-                      {t('vault.sync.aggregate.openRestore')}
-                    </Link>
-                  ) : null}
+                  <div className="flex flex-col gap-0.5">
+                    <span className="bt-row-sub">
+                      {t(
+                        row.vault.media.length > 1
+                          ? 'vault.manager.media.both'
+                          : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
+                      )}
+                      {portfolioCountLabel(row.vault.id) ? (
+                        <> · {portfolioCountLabel(row.vault.id)}</>
+                      ) : null}
+                    </span>
+                    <dl className="bt-kv">
+                      {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
+                        row.vault.media.includes(medium),
+                      ).map((medium) => (
+                        <Fragment key={medium}>
+                          <dt className="bt-muted text-xs">{t(`vault.sync.medium.${medium}`)}</dt>
+                          <dd className="bt-soft text-xs">
+                            {t(`vault.sync.status.${row.perMedium[medium] ?? 'disconnected'}`)}
+                          </dd>
+                        </Fragment>
+                      ))}
+                      <dt className="bt-muted text-xs">{t('vault.sync.lastWrite')}</dt>
+                      <dd className="bt-soft text-xs">
+                        {row.lastWriteAt == null
+                          ? t('vault.sync.never')
+                          : formatDateTime(row.lastWriteAt)}
+                      </dd>
+                    </dl>
+                    <span className="bt-meta">{t(row.messageKey)}</span>
+                  </div>
                   {/* The storage recovery link answers the storage problem; the
                       endpoint affordance rides alongside it rather than instead
                       of it, so a row that is BOTH needs-sign-in and locked on
                       this device still shows its unlock / enter-words step. */}
-                  <VaultStateAction
-                    inPlace
-                    state={row.endpointState}
-                    vaultId={row.vault.id}
-                    vaultName={row.vault.name}
-                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    {row.recoveryAction === 'drive-sign-in' ? (
+                      <LinkButton
+                        size="sm"
+                        to={`/control/connections?vault=${encodeURIComponent(row.vault.id)}`}
+                        variant="quiet"
+                      >
+                        {t('vault.sync.aggregate.signInGoogle')}
+                      </LinkButton>
+                    ) : row.recoveryAction === 'restore' ? (
+                      <LinkButton
+                        size="sm"
+                        to={`/control/privacy?vault=${encodeURIComponent(row.vault.id)}&action=restore`}
+                        variant="quiet"
+                      >
+                        {t('vault.sync.aggregate.openRestore')}
+                      </LinkButton>
+                    ) : null}
+                    <VaultStateAction
+                      inPlace
+                      state={row.endpointState}
+                      vaultId={row.vault.id}
+                      vaultName={row.vault.name}
+                    />
+                  </div>
                 </li>
               ))}
             </ul>
-            <Link className="bt-link text-sm" onClick={() => setOpen(false)} to="/control/privacy">
-              {t('vault.sync.restore')}
-            </Link>
+            <div className="bt-t-rule flex flex-wrap items-center justify-between gap-2 pt-3">
+              <LinkButton
+                onClick={() => setOpen(false)}
+                size="sm"
+                to="/control/privacy"
+                variant="quiet"
+              >
+                {t('vault.sync.manage')}
+              </LinkButton>
+              {/* The device-wide lock, where the state is read. `canLock` is
+                  false while nothing is unlocked, and a control that could
+                  only refuse is not offered (§12). */}
+              {lock?.canLock ? (
+                <Button
+                  icon="lock"
+                  onClick={() => {
+                    lock.lock();
+                    setOpen(false);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="quiet"
+                >
+                  {t('vault.sync.lockAll')}
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}

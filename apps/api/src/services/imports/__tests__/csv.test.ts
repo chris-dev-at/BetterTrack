@@ -129,6 +129,25 @@ describe('parseDecimal', () => {
     expect(parseDecimal('1.2345')).toBe(1.2345);
   });
 
+  it('refuses unmistakably ENGLISH grouping instead of booking a thousandth', () => {
+    // `1,234.56` read as German is 1.23456 — the amount silently divided by
+    // 1000. The guard used to live only in the generic path's
+    // `parseLocalizedDecimal`, so every broker mapper calling this parser
+    // booked the thousandth (a `1,234.56` deposit staged `mapped` at 1.23456).
+    expect(parseDecimal('1,234.56')).toBeNull();
+    expect(parseDecimal('2,000.00')).toBeNull();
+    expect(parseDecimal('1,234,567.89')).toBeNull();
+    // Decoration is stripped BEFORE the check, so a decorated cell is refused
+    // exactly like the bare one rather than walking past an anchored pattern.
+    expect(parseDecimal('1,234.56 EUR')).toBeNull();
+    expect(parseDecimal('$1,234.56')).toBeNull();
+    expect(parseDecimal('-1,234.56')).toBeNull();
+    // German notation is untouched — it can never produce a comma before a dot.
+    expect(parseDecimal('1.234,56')).toBe(1234.56);
+    expect(parseDecimal('500,00')).toBe(500);
+    expect(parseDecimal('1234.56')).toBe(1234.56);
+  });
+
   it('survives currency suffixes and returns null for junk', () => {
     expect(parseDecimal('-751,00 EUR')).toBe(-751);
     expect(parseDecimal('€ 12,50')).toBe(12.5);

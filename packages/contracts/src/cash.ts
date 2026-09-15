@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { currencyCodeSchema } from './market';
 import { MAX_CASH_AMOUNT_EUR } from './portfolio';
 
 /**
@@ -291,6 +290,24 @@ export const cashBudgetRawListResponseSchema = z
 export type CashBudgetRawListResponse = z.infer<typeof cashBudgetRawListResponseSchema>;
 
 /**
+ * THE BUDGET CURRENCY CONTRACT (#1754): **EUR only**.
+ *
+ * A budget is measured against `portfolio_cash_movements.amount_eur`, which is
+ * EUR by definition — the cash ledger has exactly one storage currency (§5.4).
+ * The comparison that decides `exceeded` therefore has no FX step in it, so a
+ * budget carrying any other code would be a target the server silently judges
+ * as EUR while every surface renders it with a foreign symbol: a €95 spend
+ * would read as "$95.00 / $100.00" and never alert.
+ *
+ * Rather than teach the evaluator FX for a target the product never offers (the
+ * web dialog has always sent `'EUR'`), the REQUEST refuses anything else. The
+ * stored column and the response field stay free-form `string` so a row written
+ * before this rule still reads back faithfully rather than being re-labelled.
+ */
+export const cashBudgetCurrencySchema = z.literal('EUR');
+export type CashBudgetCurrency = z.infer<typeof cashBudgetCurrencySchema>;
+
+/**
  * `POST /cash/budgets` body. One budget per (portfolio, tag, period) — a second
  * create for the same triple is a 409. `period` omitted / `null` creates the
  * recurring monthly target.
@@ -301,20 +318,21 @@ export const createCashBudgetRequestSchema = z
     tagId: z.string().uuid(),
     period: cashMonthSchema.nullish(),
     amount: cashBudgetAmountSchema,
-    currency: currencyCodeSchema.default('EUR'),
+    currency: cashBudgetCurrencySchema.default('EUR'),
   })
   .strict();
 export type CreateCashBudgetRequest = z.infer<typeof createCashBudgetRequestSchema>;
 
 /**
  * `PATCH /cash/budgets/:budgetId` body — retarget the amount (and optionally the
- * currency). Portfolio, tag and period are fixed at creation (move = delete +
- * create), so a budget can never drift onto another ledger or another month.
+ * currency, which {@link cashBudgetCurrencySchema} pins to EUR). Portfolio, tag
+ * and period are fixed at creation (move = delete + create), so a budget can
+ * never drift onto another ledger or another month.
  */
 export const updateCashBudgetRequestSchema = z
   .object({
     amount: cashBudgetAmountSchema.optional(),
-    currency: currencyCodeSchema.optional(),
+    currency: cashBudgetCurrencySchema.optional(),
   })
   .strict();
 export type UpdateCashBudgetRequest = z.infer<typeof updateCashBudgetRequestSchema>;

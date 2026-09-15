@@ -1,3 +1,5 @@
+import type { DeployCapabilities, DeployCapabilityKey } from '@bettertrack/contracts';
+
 import type { IconName } from '../../ui/origin';
 import {
   ACTIVE_PORTFOLIO_PARAM,
@@ -56,6 +58,13 @@ export interface CommandEntry {
   extra?: readonly string[];
   /** Present in the structure, build lands later — rendered with the gold dot. */
   parked?: boolean;
+  /**
+   * Offered only when this deployment has the capability at all (§13.5 V5-P5) —
+   * the palette's half of the same rule the section nav applies to its
+   * `capability` children. A destination whose whole arc is unconfigured must be
+   * unreachable from the palette too, not merely empty once opened.
+   */
+  capability?: DeployCapabilityKey;
   /**
    * The destination writes into ONE portfolio, so the link has to carry the
    * active portfolio scope — see `withPortfolioScope`.
@@ -231,6 +240,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     group: 'navigate',
     icon: 'book',
     extra: ['digest'],
+    capability: 'marketIntel',
   },
   {
     labelKey: 'assets.tabs.events',
@@ -485,6 +495,19 @@ export const CREATE_COMMANDS: readonly CommandEntry[] = COMMANDS.filter(
 export const SUGGESTED_COMMANDS: readonly CommandEntry[] = COMMANDS.filter(
   (command) => command.suggested !== undefined,
 ).sort((a, b) => a.suggested! - b.suggested!);
+
+/**
+ * Whether this deployment offers the command's destination at all. An entry
+ * without a {@link CommandEntry.capability} is always offered; a gated one only
+ * while its deploy-time capability is present, so an unconfigured arc has no
+ * palette row leading into it (§13.5 V5-P5 "invisible when unconfigured").
+ */
+export function isCommandConfigured(
+  command: CommandEntry,
+  capabilities: DeployCapabilities,
+): boolean {
+  return command.capability === undefined || capabilities[command.capability];
+}
 
 /**
  * Where a nested destination lives, as quiet row meta ("Cash flow — Portfolio").

@@ -20,7 +20,7 @@ import {
   valueOverTime,
   type Transaction,
 } from '@bettertrack/domain/holdings';
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
+import { computeSeriesStats, modifiedDietzReturn } from '@bettertrack/domain/seriesStats';
 
 import type { MarketDataSource, MarketDataValue } from '../../../lib/marketDataSource';
 import { decryptVaultDocument } from '../crypto';
@@ -163,6 +163,8 @@ export async function expectedClientMoneyFixtureDerivation() {
     holdings,
     cashBalances: [...cashBalancesBySource(movements).values()],
     stats: computeSeriesStats(worth.map((point) => ({ date: point.date, value: point.valueEur }))),
+    // MAX = since inception: the opening money is the first flow (#1669).
+    moneyWeightedPct: modifiedDietzReturn(worth, flows, { anchor: 'inception' }),
     series: worth.map((point) => {
       const costBasisEur = costValues.get(point.date) ?? 0;
       return {

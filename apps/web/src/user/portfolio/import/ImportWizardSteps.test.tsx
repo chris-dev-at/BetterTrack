@@ -120,7 +120,7 @@ const UNDERSTANDING: ImportUnderstanding = {
       header: 'Kurswert',
       field: 'amount',
       confidence: 0.6,
-      reason: 'ai proposal (heavy tier) — a suggestion, not a mapping',
+      reason: 'ai proposal — a suggestion, not a mapping',
       needsReview: true,
       source: 'ai',
       alternativeOf: { header: 'Betrag', confidence: 0.97 },
@@ -589,6 +589,51 @@ describe('a row nobody has decided is a question, not a dead end', () => {
     expect(screen.getAllByLabelText('Was ist diese Zeile?')).toHaveLength(3);
     // Server English must never reach the localized surface.
     expect(screen.queryByText(/All the same kind/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Review and Confirm state the same money', () => {
+  /**
+   * An UNDECIDED row still carries the file's raw amount in the file's OWN
+   * currency — the server has not shaped it by a kind yet, and a non-EUR cash
+   * row is refused at confirmation naming that currency. The review step got
+   * this right and the confirm table hard-coded `€`, so one wizard showed
+   * `-1.500,00 $` on one screen and `-1.500,00 €` on the next, immediately
+   * before money is booked.
+   */
+  const USD_ROW = STATEMENT_ROW({
+    id: 'r-usd',
+    rowIndex: 2,
+    note: 'WIRE TRANSFER',
+    amountEur: -1500,
+    currency: 'USD',
+  });
+  const USD_PREVIEW: ImportPreviewResponse = {
+    ...UNDECIDED,
+    rows: [USD_ROW],
+    batch: {
+      ...UNDECIDED.batch,
+      counts: { total: 1, mapped: 0, unmapped: 0, duplicate: 0, error: 1 },
+    },
+  };
+
+  test('renders an undecided USD row in USD on BOTH steps', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(USD_PREVIEW);
+    renderPage();
+    const user = await upload();
+
+    // Step 2 — the review step, which already used the row's own currency.
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('What still needs you');
+    const reviewed = screen.getByText(/1[.,]500/);
+    expect(reviewed.textContent).not.toContain('€');
+
+    // Step 3 — the confirm table, which used to restate it as EUR.
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText('Preview: statement.csv');
+    const confirmed = screen.getByText(/1[.,]500/);
+    expect(confirmed.textContent).toBe(reviewed.textContent);
+    expect(confirmed.textContent).not.toContain('€');
   });
 });
 

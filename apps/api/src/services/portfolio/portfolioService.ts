@@ -91,10 +91,12 @@ import {
   type HoldingAssetInput,
   type Transaction as DomainTransaction,
 } from '../../domain/holdings';
+import { modifiedDietzReturn } from '../../domain/seriesStats';
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
+import type { CashWriteHook } from '../cash/cashBudgetService';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -107,6 +109,7 @@ import {
   assetDayKey,
   buildIntradayEurValuePoints,
   downsampledIndices,
+  intradayMoneyWeightedReturn,
   intradayPerformancePoints,
   isDownsampledRange,
   isIntradayRange,
@@ -157,6 +160,18 @@ export interface PortfolioServiceDeps {
    * cannot start writing classification as a side effect of moving money.
    */
   cashTagRepo: Pick<CashTagRepository, 'tagIdsForMovements'>;
+  /**
+   * THE CASH-WRITE SEAM (#1754): called after every write in this service that
+   * moves cash — deposit / withdraw / fee, transfer, movement update + delete,
+   * set-balance. Wired to `cashBudgetService.onCashWrite`, which re-evaluates
+   * the portfolio's budgets for the current month and alerts once each.
+   *
+   * Optional and NON-FATAL by construction (see `afterCashWrite`): a budget
+   * alert is a side effect of moving money and must never fail the write that
+   * triggered it, nor roll it back — the money is already committed when the
+   * hook runs.
+   */
+  onCashWrite?: CashWriteHook;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -485,6 +500,14 @@ export interface PortfolioService {
     /** Daily on 1M+; a dense intraday curve (each point carries `time`) on 1D/1W (#556). */
     points: PortfolioHistoryPoint[];
     performance: PortfolioPerformancePoint[];
+    /**
+     * The money-weighted (Modified Dietz) return of the served window, percent
+     * (#1669, §16 2026-09-14) — computed from the SAME points and external
+     * flows `performance` is built from, so the MAX headline can state what
+     * the money earned next to the flow-invariant TWR curve. `null` when the
+     * window has no capital (denominator ≤ 0). Served on EVERY range.
+     */
+    moneyWeightedPct: number | null;
     assets?: PortfolioHistoryOverlay[];
   }>;
   /**
@@ -514,12 +537,16 @@ export interface PortfolioService {
    */
   invalidateHistory(portfolioId: string, fromDay: string): Promise<void>;
   /**
-   * Freshness watermark for the summary + history conditional reads (issue
-   * #555): the snapshot-state `updated_at` (issue #553), which advances on
-   * every history-invalidating write. Ownership-checked (404 on a
-   * foreign/missing id); null when the portfolio has no computed history yet.
-   * Advisory `Last-Modified` only — the authoritative validator is the
-   * body-derived ETag (a live "today" quote moves the ETag, not this).
+   * Ownership-checked read of the snapshot-state `updated_at` (issue #553),
+   * which advances on every history-invalidating write. 404 on a
+   * foreign/missing id; null when the portfolio has no computed history yet.
+   *
+   * NOT wired to the conditional reads any more (#1762). It fed an advisory
+   * `Last-Modified` on the summary + series routes, which are `liveToday` — so
+   * the date validator could never gate a 304 there, and `Cache-Control:
+   * private, no-cache` forbids a client using the header heuristically. §6.8.6
+   * puts it plainly: the portfolio rail emits no `Last-Modified`. What remains
+   * is the plain accessor for the snapshot state.
    */
   getSnapshotFreshness(userId: string, portfolioId: string): Promise<Date | null>;
 }
@@ -574,8 +601,27 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     notify,
     liveRing,
     logger,
+    onCashWrite,
   } = deps;
   const now = deps.now ?? Date.now;
+
+  /**
+   * THE CASH-WRITE SEAM (#1754). Every write below that moves cash ends here,
+   * so budget evaluation is wired ONCE rather than remembered per endpoint.
+   *
+   * Called AFTER the movement is committed and swallowing everything: the
+   * evaluator is already non-throwing, and this second belt makes the ordering
+   * rule explicit — a budget alert must never fail, or roll back, the money
+   * write it hangs off.
+   */
+  async function afterCashWrite(userId: string, portfolioId: string): Promise<void> {
+    if (!onCashWrite) return;
+    try {
+      await onCashWrite(userId, portfolioId);
+    } catch (err) {
+      logger?.warn({ err, userId, portfolioId }, 'cash write budget hook failed');
+    }
+  }
 
   // The STORAGE base (EUR): the cash ledger's currency and the denomination of
   // the cached history ingredients. A caller's per-user base (V3-P10d) never
@@ -862,11 +908,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       note: r.note,
       source: r.source,
       createdAt: r.createdAt.toISOString(),
-      // Cash-flow overlay (V5 cash fusion). Both fields are OPTIONAL in the
+      // Cash-flow overlay (V5 cash fusion). All three fields are OPTIONAL in the
       // contract, so a caller that does not resolve tags simply omits them and
-      // every pre-fusion fixture still parses; `[]` genuinely means untagged.
+      // every pre-fusion fixture still parses; `[]` genuinely means untagged and
+      // an absent `dedupHash` means the row carries none (a manual entry), which
+      // is exactly what the paranoid capture writes into the vault for it.
       ...(tags !== undefined ? { tags: [...tags] } : {}),
       ...(r.originalCurrency !== null ? { originalCurrency: r.originalCurrency } : {}),
+      ...(r.dedupHash !== null ? { dedupHash: r.dedupHash } : {}),
     };
   }
 
@@ -1087,6 +1136,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // outflow reshapes it from its own day on (§16 rule 4).
     await invalidateHistory(portfolioId, dayOf(executedAt));
     const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+    // A withdrawal or a fee is spend: it is the write that most often blows a
+    // per-tag budget (#1754).
+    await afterCashWrite(userId, portfolioId);
     return {
       movement: movementToDto(movement),
       sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
@@ -1302,7 +1354,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     grid: NonNullable<ResolvedHistoryInterval['grid']>,
     fx: CurrencyService,
     asOf: { day: string; nowMs: number },
-  ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
+  ): Promise<{
+    points: PortfolioHistoryPoint[];
+    performance: PortfolioPerformancePoint[];
+    moneyWeightedPct: number | null;
+  } | null> {
     const series = await snapshots.getSeries(portfolioId);
     if (series.points.length === 0) return null;
 
@@ -1540,15 +1596,21 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       timeMs: Date.parse(p.time!),
       valueEur: p.valueEur,
     }));
-    const performance: PortfolioPerformancePoint[] = intradayPerformancePoints({
+    const performanceInput = {
       intradayPoints: baseIntraday,
       dailyBasePoints: baseDaily.points,
       flowsBase: baseDaily.flows,
       flowEvents: flowEventsBase,
       stepMs: grid.stepMs,
-    }).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
+    };
+    const performance: PortfolioPerformancePoint[] = intradayPerformancePoints(
+      performanceInput,
+    ).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
+    // The money-weighted headline of the same window, from the very same
+    // input — points, flows and flow instants (#1669).
+    const moneyWeightedPct = intradayMoneyWeightedReturn(performanceInput);
 
-    return { points, performance };
+    return { points, performance, moneyWeightedPct };
   }
 
   return {
@@ -1845,7 +1907,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         portfolioId,
         inputs,
         assetsById,
-        // The manual-default gate (V5-P4c): imported rows never take the default.
+        // The manual-default gate (V5-P4c): imported and provider-synced rows
+        // never take the default; rows this account's owner is responsible for
+        // — hand-entered, standing-order, mirrorchain replica (V5-P7) — do.
+        // The mapping is `manualDefaultAppliesToSource` in services/tax.
         source,
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
         // Preserve the replica apply signal for the tax planner's cash semantics.
@@ -2491,6 +2556,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // invalidate from the (possibly back-dated) transfer day (§16 rule 4).
       await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // The legs cancel in every roll-up, but they are still tagged rows in the
+      // month a budget measures — evaluate like any other cash write (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         outgoing: movementToDto(outgoing),
         incoming: movementToDto(incoming),
@@ -2542,6 +2610,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // effective now, so only today's (never-persisted) point moves (§16 rule 4).
       await invalidateHistory(portfolioId, dayOf(domainMovement.occurredAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // The recorded delta is a normal movement, so it counts exactly like a
+      // hand-entered one (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         movement: movementToDto(movement),
         deltaEur: domainMovement.amountEur,
@@ -2569,6 +2640,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // deposit reshapes it from its own day on (§16 rule 4).
       await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // An inflow never raises a budget's spend on its own, but it takes the
+      // same seam as every other cash write: the enumeration is the point, and
+      // a re-armed period may be waiting on any evaluation (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         movement: movementToDto(movement),
         sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
@@ -2669,6 +2744,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         updated.executedAt < previous.executedAt ? updated.executedAt : previous.executedAt;
       await invalidateHistory(portfolioId, dayOf(from));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // A correction can raise the month's spend, or drop it back under the
+      // target and RE-ARM the period's claim (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         movement: movementToDto(updated),
         sourceBalanceEur: balanceBySource.get(updated.sourceId) ?? 0,
@@ -2708,6 +2786,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
       await invalidateHistory(portfolioId, dayOf(removed.executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // Removing spend is the classic re-arm trigger: the month may drop back
+      // under its target (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         sourceId: removed.sourceId,
         sourceBalanceEur: balanceBySource.get(removed.sourceId) ?? 0,
@@ -2797,6 +2878,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
               baseCurrency: fx.baseCurrency,
               points: intraday.points,
               performance: intraday.performance,
+              moneyWeightedPct: intraday.moneyWeightedPct,
             };
           }
           // Overlays stay per-asset daily price curves (issue #122), sliced to
@@ -2810,6 +2892,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             baseCurrency: fx.baseCurrency,
             points: intraday.points,
             performance: intraday.performance,
+            moneyWeightedPct: intraday.moneyWeightedPct,
             assets: overlayAssets,
           };
         }
@@ -2831,6 +2914,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // an arbitrary offset. Compounding, not subtraction.
       const perfSlice = sliceRange(timeWeightedReturn(series.points, series.flows), range, today);
       let performance = range === 'MAX' ? perfSlice : rebasePerformance(perfSlice);
+      // The money-weighted headline of the SAME window (#1669): the sliced
+      // points and the same external flows, before downsampling thins the
+      // curve. MAX measures since inception (the index's own anchor before day
+      // one), a range slice from its first plotted point — the two anchors the
+      // TWR above already uses, so the pair always describes one window.
+      const moneyWeightedPct = modifiedDietzReturn(points, series.flows, {
+        anchor: range === 'MAX' ? 'inception' : 'first-point',
+      });
 
       // 6M/1Y/5Y thin the daily series to the shared point budget (2026-07-20):
       // every k-th day, endpoints kept, so a long chart is ~TARGET_POINTS points
@@ -2845,7 +2936,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Everything below serves the daily grid — echo `1d` regardless of what
       // was requested (the null-builder fallthrough above lands here too).
       if (!overlay) {
-        return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance };
+        return {
+          range,
+          interval: '1d',
+          baseCurrency: fx.baseCurrency,
+          points,
+          performance,
+          moneyWeightedPct,
+        };
       }
 
       // Overlays share the curve's daily grid, so the same range slice keeps
@@ -2867,7 +2965,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           };
         })
         .filter((a) => a.points.length > 0);
-      return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance, assets };
+      return {
+        range,
+        interval: '1d',
+        baseCurrency: fx.baseCurrency,
+        points,
+        performance,
+        moneyWeightedPct,
+        assets,
+      };
     },
 
     async getAssetValueSeries(userId, portfolioId) {

@@ -16,6 +16,20 @@ beforeEach(async () => {
   await redis.flushall();
 });
 
+/**
+ * The SHIPPED §10 COST TABLE weights (#1643), in work units per request.
+ * `config/__tests__/rateLimitTable.test.ts` pins these against the real loader;
+ * they are restated here so the guard can be driven with production numbers.
+ */
+const SHIPPED_COSTS = {
+  socialShared: 10,
+  backtestPreview: 25,
+  analyticsSeries: 10,
+  importCreate: 100,
+} as const;
+/** The shipped unit budget: 3000 units / 60 s, per user. */
+const SHIPPED_EXPENSIVE_LIMIT = 3000;
+
 // A tiny enabled schedule so a couple of calls overflow the allowance. The guard
 // only reads `config.rateLimits` and `redis` off the context. `generalBurst`
 // mirrors the steady-state schedule here so the single-dimension escalation
@@ -27,8 +41,11 @@ const ctxWith = (limit: number, firstCooldown: number): AppContext => {
       enabled: true,
       general: schedule,
       generalBurst: schedule,
+      expensive: schedule,
+      requestCosts: SHIPPED_COSTS,
       search: schedule,
       social: schedule,
+      socialWrite: schedule,
       feedback: schedule,
       feedbackThread: schedule,
       vault: schedule,
@@ -41,18 +58,23 @@ const ctxWith = (limit: number, firstCooldown: number): AppContext => {
   return { config, redis } as unknown as AppContext;
 };
 
-// Realistic two-window general limiter: a generous 15-min/4500 steady state a
-// reload flood can't reach, fronted by a tight 60-req / 10-s burst window. Both
-// feed the same escalation ladder (owner report #202).
+// The SHIPPED two-window general limiter (§10 limiter table, owner directive
+// 2026-09-02): a 15-min/9000 steady state a reload flood can't reach, fronted by
+// a 600-req / 30-s burst window. Both feed the same escalation ladder (owner
+// report #202). Kept in sync with `config/env.ts`, which
+// `config/__tests__/rateLimitTable.test.ts` pins against the real loader.
 const burstCtx = (): AppContext => {
   const ladder = { cooldownsSec: [20, 60, 180, 600], decaySec: 15 * 60 };
   const config = {
     rateLimits: {
       enabled: true,
-      general: { windowSec: 15 * 60, limit: 4500, ...ladder },
-      generalBurst: { windowSec: 10, limit: 60, ...ladder },
-      search: { windowSec: 60, limit: 60, ...ladder },
+      general: { windowSec: 15 * 60, limit: 9000, ...ladder },
+      generalBurst: { windowSec: 30, limit: 600, ...ladder },
+      expensive: { windowSec: 60, limit: SHIPPED_EXPENSIVE_LIMIT, ...ladder },
+      requestCosts: SHIPPED_COSTS,
+      search: { windowSec: 60, limit: 300, ...ladder },
       social: { windowSec: 60 * 60, limit: 30, ...ladder },
+      socialWrite: { windowSec: 300, limit: 1200, ...ladder },
       feedback: { windowSec: 60 * 60, limit: 5, ...ladder },
       feedbackThread: { windowSec: 60 * 60, limit: 60, ...ladder },
       vault: { windowSec: 60, limit: 60, ...ladder },
@@ -65,11 +87,17 @@ const burstCtx = (): AppContext => {
   return { config, redis } as unknown as AppContext;
 };
 
-const runOnce = (
+/** Drive a guard with an anonymous caller from `ip` (no resolved principal). */
+const runFrom = (
   handler: (req: Request, res: Response, next: NextFunction) => void,
+  ip: string,
+  authUserId?: string,
 ): Promise<{ headers: Record<string, string>; err: unknown }> => {
   const headers: Record<string, string> = {};
-  const req = { ip: '10.0.0.1', authUser: undefined } as unknown as Request;
+  const req = {
+    ip,
+    authUser: authUserId === undefined ? undefined : { id: authUserId },
+  } as unknown as Request;
   const res = {
     setHeader(name: string, value: string | number) {
       headers[name] = String(value);
@@ -79,6 +107,9 @@ const runOnce = (
     handler(req, res, (err?: unknown) => resolve({ headers, err }));
   });
 };
+
+const runOnce = (handler: (req: Request, res: Response, next: NextFunction) => void) =>
+  runFrom(handler, '10.0.0.1');
 
 describe('progressive rate-limit middleware (§10)', () => {
   it('passes through while under the allowance', async () => {
@@ -131,15 +162,19 @@ describe('per-vault read/write budgets (E1 review F3)', () => {
     expect((await runOnce(vaultRead)).err).toBeUndefined();
     expect((await runOnce(vaultRead)).err).toBeInstanceOf(ApiError);
 
-    expect(await redis.get(progressiveKeys('vault', '10.0.0.1').cooldown)).toBe('1');
-    expect(await redis.get(progressiveKeys('vault_read', '10.0.0.1').cooldown)).toBe('1');
+    expect(await redis.get(progressiveKeys('vault', 'ip:10.0.0.1').cooldown)).toBe('1');
+    expect(await redis.get(progressiveKeys('vault_read', 'ip:10.0.0.1').cooldown)).toBe('1');
   });
 });
 
 describe('general burst dimension — reload-flood hardening (§10, #202)', () => {
-  // The number of /api/v1 calls one full page load fires. The reproduction only
-  // needs it > 0; the burst window trips long before 1000 reloads regardless.
-  const REQUESTS_PER_RELOAD = 6;
+  /**
+   * The number of /api/v1 calls one full page load fires, measured against the
+   * real SPA: a cold dashboard load is 10 + 2N requests, and a 10-widget board
+   * at N=5 portfolios is ~50 (see the §10 LIMITER TABLE in `config/env.ts`).
+   * The old figure here was 6, which is why the burst window looked roomy.
+   */
+  const REQUESTS_PER_RELOAD = 50;
 
   it('a rapid page-reload flood trips a 429 with Retry-After well before 1000 reloads', async () => {
     const { general } = createRateLimiters(burstCtx());
@@ -163,48 +198,236 @@ describe('general burst dimension — reload-flood hardening (§10, #202)', () =
     expect(err.code).toBe('RATE_LIMITED');
     expect(err.details).toEqual({ retryAfter: 20 }); // first (short) rung
     expect(trip!.headers['Retry-After']).toBe('20');
-    // 60 req / 10 s at 6 req/reload → trips around reload 11, nowhere near 1000.
-    expect(reloadsUntilTrip).toBeLessThan(1000);
-    expect(reloadsUntilTrip).toBeLessThanOrEqual(11);
-  });
+    // 600 req / 30 s at ~50 req/reload → trips at reload 13. A human mashing
+    // reload manages roughly one a second, so the guard still notices a genuine
+    // flood less than halfway through its own window.
+    expect(reloadsUntilTrip).toBeLessThanOrEqual(13);
+    // ~650 requests through the in-memory Redis before the trip; this one is
+    // deliberately end-to-end, so it gets its own budget instead of the default.
+  }, 60_000);
 
   it('continued hammering after the cooldown elapses climbs the escalation ladder', async () => {
     const { general } = createRateLimiters(burstCtx());
-    const burstCooldown = progressiveKeys('general_burst', '10.0.0.1').cooldown;
+    const keys = progressiveKeys('general_burst', 'ip:10.0.0.1');
 
-    // First flood → first rung (20 s), then simulate that cooldown elapsing.
-    for (let i = 0; i <= 60; i += 1) await runOnce(general);
-    await redis.del(burstCooldown);
+    // Drive the window to its boundary by seeding the limiter's OWN counter,
+    // then let one real request cross it. Replaying all 600 requests twice would
+    // assert nothing extra about the ladder (the counting is covered by the
+    // flood test above) and costs a minute of mock-Redis round trips. Seeding
+    // state to reach an edge is what this suite already does to simulate a
+    // cooldown elapsing.
+    const atTheBoundary = async () => {
+      await redis.set(keys.count, '600', 'EX', 30);
+    };
 
-    // A fresh flood while the escalation level is still armed → next rung (60 s).
-    let last: { headers: Record<string, string>; err: unknown } | undefined;
-    for (let i = 0; i <= 60; i += 1) last = await runOnce(general);
+    // First overflow → first rung (20 s), then simulate that cooldown elapsing.
+    await atTheBoundary();
+    const first = await runOnce(general);
+    expect((first.err as ApiError).details).toEqual({ retryAfter: 20 });
+    await redis.del(keys.cooldown);
 
-    const err = last!.err as ApiError;
+    // A fresh overflow while the escalation level is still armed → rung 2 (60 s).
+    await atTheBoundary();
+    const second = await runOnce(general);
+
+    const err = second.err as ApiError;
     expect(err.statusCode).toBe(429);
     expect(err.details).toEqual({ retryAfter: 60 });
-    expect(last!.headers['Retry-After']).toBe('60');
+    expect(second.headers['Retry-After']).toBe('60');
   });
 
-  it('normal multi-tab refetch at human cadence never trips a 429', async () => {
+  it('a two-tab cold load plus a navigation and a search never trips a 429', async () => {
     const { general } = createRateLimiters(burstCtx());
-    const burstCount = progressiveKeys('general_burst', '10.0.0.1').count;
-    const steadyCount = progressiveKeys('general', '10.0.0.1').count;
+    const burstCount = progressiveKeys('general_burst', 'u:user-1').count;
+    const steadyCount = progressiveKeys('general', 'u:user-1').count;
 
-    // 3 tabs each refetching the app's ~6 core endpoints on focus = 18 requests.
-    const perRefetch = 3 * 6;
-    // ~a minute of human reload cadence: a refetch round, then the 10 s burst
-    // window rolls over (its counter expires) before the next round.
-    for (let round = 0; round < 20; round += 1) {
-      for (let i = 0; i < perRefetch; i += 1) {
-        const { err } = await runOnce(general);
+    // THE MODELLED NORMAL-USE BAR, fired as one uninterrupted spike inside a
+    // single burst window — the case that used to 429 and is the whole point of
+    // the 2026-09-02 pass. Two tabs cold-loading a widget board (50 each), a
+    // portfolio navigation (14), one deliberate asset search including its
+    // enrichment polls (24), and an unkeyed `invalidateQueries()` replaying a
+    // cold load's worth of reads (50).
+    const spike = 50 * 2 + 14 + 24 + 50;
+    expect(spike).toBe(188);
+
+    // Five consecutive burst windows of that spike — a user hammering reload
+    // and re-navigating for two and a half minutes without a pause.
+    const ROUNDS = 5;
+    for (let round = 0; round < ROUNDS; round += 1) {
+      for (let i = 0; i < spike; i += 1) {
+        const { err } = await runFrom(general, '10.0.0.1', 'user-1');
         expect(err).toBeUndefined();
       }
-      await redis.del(burstCount); // 10 s elapsed → burst window resets
+      // …and each spike fits its window with room to spare, not by a hair.
+      expect(Number(await redis.get(burstCount))).toBe(spike);
+      expect(spike * 3).toBeLessThanOrEqual(600);
+      await redis.del(burstCount); // 30 s elapsed → burst window rolls over
     }
 
-    // The generous steady-state window never came close to its 4500 allowance.
-    expect(Number(await redis.get(steadyCount))).toBeLessThan(4500);
+    // Every one of those requests landed in the steady-state window, and a full
+    // quarter-hour at that cadence (30 windows of 30 s) still does not reach it.
+    expect(Number(await redis.get(steadyCount))).toBe(spike * ROUNDS);
+    expect(spike * 30).toBeLessThan(9000);
+  });
+});
+
+describe('cost-based limiting for the expensive reads (§10 COST TABLE, #1643)', () => {
+  /** `general`'s sustained request allowance, per user, per minute: 9000 / 15 min. */
+  const GENERAL_PER_MINUTE = 600;
+
+  /** Fire one request at a cost-metered endpoint as `user-1`. */
+  const hit = (
+    handler: ReturnType<typeof createRateLimiters>['cost'],
+    key: keyof typeof SHIPPED_COSTS,
+  ) => runFrom(handler(key), '10.0.0.1', 'user-1');
+
+  it('lets the modelled normal minute through all four endpoints with 3x room', async () => {
+    const { cost } = createRateLimiters(burstCtx());
+
+    // THE MODELLED NORMAL-USE BAR for the unit budget (§10 COST TABLE): one
+    // user pessimistically doing ALL FOUR expensive things inside one minute —
+    // a builder weight-tuning session (a debounced preview every ~3 s), an
+    // analytics page being re-ranged and re-filtered, the shared-with-me list
+    // refetching on focus/reconnect, and two CSV uploads.
+    const minute: Array<[keyof typeof SHIPPED_COSTS, number]> = [
+      ['backtestPreview', 20],
+      ['analyticsSeries', 12],
+      ['socialShared', 6],
+      ['importCreate', 2],
+    ];
+    let units = 0;
+    for (const [key, times] of minute) {
+      for (let i = 0; i < times; i += 1) {
+        const { err } = await hit(cost, key);
+        expect(err).toBeUndefined();
+        units += SHIPPED_COSTS[key];
+      }
+    }
+
+    expect(units).toBe(880);
+    expect(Number(await redis.get(progressiveKeys('expensive', 'u:user-1').count))).toBe(units);
+    // …and it clears by 3×, not by a hair (the §10 sizing rule).
+    expect(units * 3).toBeLessThanOrEqual(SHIPPED_EXPENSIVE_LIMIT);
+  });
+
+  it('turns a pathological caller away by COST, in fewer requests than the count limiter would', async () => {
+    for (const key of Object.keys(SHIPPED_COSTS) as Array<keyof typeof SHIPPED_COSTS>) {
+      await redis.flushall();
+      const { cost, general } = createRateLimiters(burstCtx());
+
+      let requests = 0;
+      let denial: { headers: Record<string, string>; err: unknown } | undefined;
+      while (!denial && requests < GENERAL_PER_MINUTE) {
+        requests += 1;
+        const res = await hit(cost, key);
+        if (res.err) denial = res;
+      }
+
+      // Bounded by the WORK asked for: budget / weight requests get through,
+      // the next one is refused — strictly before `general`'s 600 req/min would
+      // have noticed anything at all.
+      expect(denial, `${key} was never denied`).toBeDefined();
+      expect(requests).toBe(Math.floor(SHIPPED_EXPENSIVE_LIMIT / SHIPPED_COSTS[key]) + 1);
+      expect(requests).toBeLessThan(GENERAL_PER_MINUTE);
+
+      // The 429 envelope is the shipped one, unchanged: header + body detail.
+      const err = denial!.err as ApiError;
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.statusCode).toBe(429);
+      expect(err.code).toBe('RATE_LIMITED');
+      expect(err.details).toEqual({ retryAfter: 20 }); // first (short) rung
+      expect(denial!.headers['Retry-After']).toBe('20');
+
+      // The cost dimension is its own namespace: the caller never touched the
+      // request-count windows, and one more plain request still passes.
+      expect(await redis.get(progressiveKeys('general', 'u:user-1').count)).toBeNull();
+      expect((await runFrom(general, '10.0.0.1', 'user-1')).err).toBeUndefined();
+    }
+  }, 60_000);
+
+  it('meters units per user, so one account cannot spend another account budget', async () => {
+    const { cost } = createRateLimiters(burstCtx());
+    const guard = cost('importCreate'); // 100 units → 30 through, 31st refused
+
+    for (let i = 0; i < 30; i += 1) {
+      expect((await runFrom(guard, '203.0.113.7', 'alice')).err).toBeUndefined();
+    }
+    expect((await runFrom(guard, '203.0.113.7', 'alice')).err).toBeInstanceOf(ApiError);
+
+    // Bob shares the address and nothing else.
+    expect((await runFrom(guard, '203.0.113.7', 'bob')).err).toBeUndefined();
+    expect(await redis.get(progressiveKeys('expensive', 'u:bob').count)).toBe('100');
+  });
+
+  it('is a no-op when limiting is disabled (the API test suite)', async () => {
+    const ctx = burstCtx();
+    (ctx.config.rateLimits as { enabled: boolean }).enabled = false;
+    const { cost } = createRateLimiters(ctx);
+    const guard = cost('importCreate');
+    for (let i = 0; i < 40; i += 1) {
+      expect((await runFrom(guard, '10.0.0.1', 'user-1')).err).toBeUndefined();
+    }
+  });
+});
+
+describe('general limiter keying — per user, not per address (§10)', () => {
+  it('does not let one account exhaust another account behind the same address', async () => {
+    const { general } = createRateLimiters(ctxWith(2, 20));
+
+    // Two people on one home router / office NAT / CGNAT egress.
+    expect((await runFrom(general, '203.0.113.7', 'alice')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7', 'alice')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7', 'alice')).err).toBeInstanceOf(ApiError);
+
+    // Bob shares the address and nothing else: his allowance is untouched, and
+    // Alice's live cooldown does not reach him.
+    expect((await runFrom(general, '203.0.113.7', 'bob')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7', 'bob')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7', 'bob')).err).toBeInstanceOf(ApiError);
+
+    // `general` guards a burst window in front of the steady one and the first
+    // denial wins, so the cooldown these two earned lives in `general_burst`.
+    // Two cooldowns, one per account — never one shared by the address.
+    expect(await redis.get(progressiveKeys('general_burst', 'u:alice').cooldown)).toBe('1');
+    expect(await redis.get(progressiveKeys('general_burst', 'u:bob').cooldown)).toBe('1');
+    // The address itself was never metered for authenticated traffic.
+    expect(await redis.get(progressiveKeys('general_burst', 'ip:203.0.113.7').count)).toBeNull();
+    expect(await redis.get(progressiveKeys('general', 'ip:203.0.113.7').count)).toBeNull();
+  });
+
+  it('meters one account as one budget across every address it connects from', async () => {
+    const { general } = createRateLimiters(ctxWith(2, 20));
+
+    // Phone on cellular, then the same account on the laptop over wifi. The
+    // budget belongs to the user, so roaming cannot mint a fresh allowance.
+    expect((await runFrom(general, '198.51.100.4', 'alice')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7', 'alice')).err).toBeUndefined();
+    expect((await runFrom(general, '192.0.2.9', 'alice')).err).toBeInstanceOf(ApiError);
+  });
+
+  it('falls back to the address only for anonymous callers, in a disjoint key space', async () => {
+    const { general } = createRateLimiters(ctxWith(2, 20));
+
+    expect((await runFrom(general, '203.0.113.7')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7')).err).toBeUndefined();
+    expect((await runFrom(general, '203.0.113.7')).err).toBeInstanceOf(ApiError);
+
+    // An anonymous flood from that address does not spend a signed-in user's
+    // budget, even if a user id were ever to look like an address.
+    expect((await runFrom(general, '203.0.113.7', '203.0.113.7')).err).toBeUndefined();
+    expect(await redis.get(progressiveKeys('general_burst', 'ip:203.0.113.7').cooldown)).toBe('1');
+    expect(await redis.get(progressiveKeys('general_burst', 'u:203.0.113.7').cooldown)).toBeNull();
+  });
+
+  it('keeps the login limiter per address even when a session is present (§6.1)', async () => {
+    const { login } = createRateLimiters(ctxWith(2, 30));
+
+    // Credential stuffing is an address-shaped attack: the limiter must not be
+    // escapable by presenting a (valid) session for a different account.
+    expect((await runFrom(login, '203.0.113.7', 'alice')).err).toBeUndefined();
+    expect((await runFrom(login, '203.0.113.7', 'bob')).err).toBeUndefined();
+    expect((await runFrom(login, '203.0.113.7')).err).toBeInstanceOf(ApiError);
+    expect(await redis.get(progressiveKeys('login_ip', 'ip:203.0.113.7').cooldown)).toBe('1');
   });
 });
 

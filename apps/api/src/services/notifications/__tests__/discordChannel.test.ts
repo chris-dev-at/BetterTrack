@@ -326,6 +326,13 @@ describe('Discord channel (V4-P10)', () => {
     const setup = createDiscordSetupService({
       enabled: true,
       webhooks: repo,
+      // Locale lookup for the probe text (#1723) — irrelevant to the envelope
+      // assertion below, so an absent row (English fallback) is enough.
+      users: {
+        async findById() {
+          return undefined;
+        },
+      },
       encryptionKey: ENCRYPTION,
       logger,
       channel: {

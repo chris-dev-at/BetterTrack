@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
+import { adminListPageSchema } from './common';
 import { portfolioVisibilitySchema } from './portfolio';
 import { notificationChannelsConfigurableSchema, notificationMatrixSchema } from './settings';
 import { vaultMediaSetSchema } from './vault';
@@ -336,13 +337,33 @@ export const bulkUserActionRequestSchema = z
 export type BulkUserActionRequest = z.infer<typeof bulkUserActionRequestSchema>;
 
 /**
+ * What a bulk action did to ONE row. A batch never collapses into a bare 500:
+ * a suspension commits durably before its credential/session cleanup runs, so a
+ * row whose cleanup threw is reported as `cleanup_failed` (and audited as
+ * needing repair) while the rest of the batch still completes.
+ */
+export const BULK_USER_OUTCOMES = ['disabled', 'repaired', 'skipped', 'cleanup_failed'] as const;
+export const bulkUserActionOutcomeSchema = z.object({
+  userId: z.string().uuid(),
+  outcome: z.enum(BULK_USER_OUTCOMES),
+});
+export type BulkUserActionOutcome = z.infer<typeof bulkUserActionOutcomeSchema>;
+
+/**
  * Result of a bulk action: how many were actually changed vs. skipped (self,
- * last active admin, or already in the target state).
+ * last active admin, or unknown id). `repaired`, `failed` and `results` are
+ * additive detail beside those two counts — the operator list renders the
+ * tallies, so a client that only reads `disabled`/`skipped` stays valid.
  */
 export const bulkUserActionResponseSchema = z.object({
   action: bulkUserActionSchema,
   disabled: z.number().int(),
   skipped: z.number().int(),
+  /** Already-disabled rows whose credential/session cleanup was re-run. */
+  repaired: z.number().int().optional(),
+  /** Rows durably suspended whose cleanup did not complete (audited as such). */
+  failed: z.number().int().optional(),
+  results: z.array(bulkUserActionOutcomeSchema).optional(),
 });
 export type BulkUserActionResponse = z.infer<typeof bulkUserActionResponseSchema>;
 
@@ -583,7 +604,15 @@ export const createInviteResponseSchema = z.object({
 });
 export type CreateInviteResponse = z.infer<typeof createInviteResponseSchema>;
 
-export const adminInviteListResponseSchema = z.object({ invites: z.array(adminInviteSchema) });
+/**
+ * `GET /admin/invites`. Bounded since V5-P2 (#1814): nothing prunes invites, so
+ * an instance that has been running for a year answered with every row it had
+ * ever written. `page` carries the window the same way the users list does.
+ */
+export const adminInviteListResponseSchema = z.object({
+  invites: z.array(adminInviteSchema),
+  page: adminListPageSchema,
+});
 export type AdminInviteListResponse = z.infer<typeof adminInviteListResponseSchema>;
 
 // --- Registration access tokens (§6.12, §13.4 V4-P4a) ------------------------
@@ -635,8 +664,10 @@ export const createRegistrationTokenResponseSchema = z.object({
 });
 export type CreateRegistrationTokenResponse = z.infer<typeof createRegistrationTokenResponseSchema>;
 
+/** `GET /admin/registration-tokens`. Bounded since V5-P2 (#1814). */
 export const registrationTokenListResponseSchema = z.object({
   tokens: z.array(registrationTokenSchema),
+  page: adminListPageSchema,
 });
 export type RegistrationTokenListResponse = z.infer<typeof registrationTokenListResponseSchema>;
 
@@ -661,8 +692,10 @@ export const registrationRequestSchema = z.object({
 });
 export type RegistrationRequest = z.infer<typeof registrationRequestSchema>;
 
+/** `GET /admin/registration-requests`. Bounded since V5-P2 (#1814). */
 export const registrationRequestListResponseSchema = z.object({
   requests: z.array(registrationRequestSchema),
+  page: adminListPageSchema,
 });
 export type RegistrationRequestListResponse = z.infer<typeof registrationRequestListResponseSchema>;
 

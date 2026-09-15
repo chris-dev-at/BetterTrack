@@ -1,5 +1,6 @@
 import type { Request, RequestHandler } from 'express';
 
+import type { RequestCostKey } from '../../config/env';
 import { tooManyRequests } from '../../errors';
 import {
   createProgressiveLimiter,
@@ -8,19 +9,81 @@ import {
 } from '../../services/security/progressiveLimiter';
 import type { AppContext } from '../context';
 
-const keyByIp = (req: Request): string => req.ip ?? 'unknown';
-const keyByUserOrIp = (req: Request): string => req.authUser?.id ?? req.ip ?? 'unknown';
+/**
+ * The two limiter key spaces, derived in ONE place so nothing reconstructs them
+ * by hand. Anything that needs to read or clear a limiter's Redis state for a
+ * principal composes `progressiveKeys(namespace, limiterKeyForUser(id))` rather
+ * than pasting the prefix.
+ */
+export const limiterKeyForUser = (userId: string): string => `u:${userId}`;
+export const limiterKeyForIp = (ip: string): string => `ip:${ip}`;
+
+/**
+ * The Redis namespace of the per-API-key limiter, exported so nothing repeats
+ * the literal. Anything that clears a key's live limiter state — an admin tier
+ * change, for instance — composes `resetProgressiveLimiter(redis,
+ * API_KEY_LIMITER_NAMESPACE, keyId)` rather than pasting `'api_key'` (#1730).
+ */
+export const API_KEY_LIMITER_NAMESPACE = 'api_key';
+
+const keyByIp = (req: Request): string => limiterKeyForIp(req.ip ?? 'unknown');
+
+/**
+ * Authenticated traffic is metered PER USER; only an anonymous caller falls back
+ * to its address (§10). Both cookie sessions and bearer principals resolve
+ * `req.authUser` before the limiters mount (see `app.ts` — bearer → session →
+ * general), so every signed-in request lands in its own bucket:
+ *
+ *   * two accounts behind one address (a household, an office, CGNAT) never
+ *     share a counter or a cooldown — one of them cannot lock the other out;
+ *   * one account across two addresses (phone on cellular + laptop on wifi)
+ *     DOES share its counter, which is the point: the budget belongs to the
+ *     user, not to the network path.
+ *
+ * The `u:` / `ip:` prefixes keep the two key spaces disjoint by construction, so
+ * no user id can ever be confused with an address inside a Redis namespace.
+ *
+ * A BEARER request resolves `req.authUser` too, but it never reaches this key
+ * generator on the `general` pair: those guards skip it entirely so the key
+ * spends its own per-key tier instead of the owner's browser allowance (#1730).
+ */
+const keyByUserOrIp = (req: Request): string =>
+  req.authUser ? limiterKeyForUser(req.authUser.id) : keyByIp(req);
 
 export interface RateLimiters {
   login: RequestHandler;
   /** Public native Google LINK callbacks, isolated from the shared login-IP budget. */
   googleLinkCallback: RequestHandler;
+  /**
+   * The interactive per-user (else per-IP) budget. Bearer requests are handed
+   * through untouched — they meter on {@link RateLimiters.apiKey} instead.
+   */
   general: RequestHandler;
+  /**
+   * Cost-metered guard for one expensive endpoint (§10 COST TABLE, #1643).
+   * Mounted per route with the endpoint's declared weight KEY — the units
+   * themselves live in `config/env.ts` and are never inlined at a call site.
+   *
+   * `multiplier` prices a route whose work scales with its own input (#1755):
+   * the declared weight is then the price of ONE unit of that work and this
+   * reads how many the request asks for, off the raw body — the meter still runs
+   * before `validateBody`, so a malformed body cannot buy a free pass. A
+   * multiplier must be bounded by the route's own contract (a caller may not
+   * name its own price) and must not throw.
+   */
+  cost: (endpoint: RequestCostKey, multiplier?: (req: Request) => number) => RequestHandler;
   /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
   apiKey: RequestHandler;
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
+  /**
+   * Ordinary social interaction writes, per user (#1855) — friend circles and
+   * the V5-P8 comment/reaction surface. Its own namespace, so it neither spends
+   * nor inherits the anti-probing budget {@link RateLimiters.social} holds for
+   * friend-request creation.
+   */
+  socialWrite: RequestHandler;
   /** Authenticated feedback capture, per author. */
   feedback: RequestHandler;
   /** Support-thread replies, per author — independent of the capture budget. */
@@ -46,8 +109,11 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     enabled,
     general,
     generalBurst,
+    expensive,
+    requestCosts,
     search,
     social,
+    socialWrite,
     feedback,
     feedbackThread,
     vault,
@@ -62,10 +128,16 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
    * burst window in front of the generous steady-state window and either one
    * trips the same 429. A denial short-circuits, so the caller's later windows
    * aren't counted while it's already being turned away.
+   *
+   * `cost` is the number of allowance UNITS one request spends (§10 COST
+   * TABLE); it defaults to 1, which is the plain request-count behaviour every
+   * limiter but `expensive` uses. A function is evaluated per request, for a
+   * route whose work scales with its input (#1755).
    */
   const guard = (
     limiters: readonly ProgressiveLimiter[],
     keyGenerator: (req: Request) => string,
+    cost: number | ((req: Request) => number) = 1,
   ): RequestHandler => {
     return (req, res, next) => {
       if (!enabled) {
@@ -73,9 +145,10 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
         return;
       }
       const key = keyGenerator(req);
+      const units = typeof cost === 'function' ? cost(req) : cost;
       void (async () => {
         for (const limiter of limiters) {
-          const decision = await limiter.consume(key);
+          const decision = await limiter.consume(key, units);
           if (!decision.allowed) {
             // The SPA's fetch chokepoint reads Retry-After to drive its toast.
             res.setHeader('Retry-After', String(decision.retryAfterSec));
@@ -91,7 +164,11 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   /**
    * Per-key guard for bearer requests: keyed by `req.apiKey.id` and skipped
    * entirely for cookie sessions, so a personal token gets its own automation
-   * budget (§6.13) independent of the per-user `general` counter.
+   * budget (§6.13). That budget is genuinely independent of the per-user
+   * `general` counter: `general` skips any request carrying `req.apiKey`
+   * ({@link skipBearer} below), so a bearer request is metered here and ONLY
+   * here. Before #1730 both ran, and `general` (~600/min) silently capped every
+   * tier above it while spending the owner's interactive browser allowance.
    *
    * The (limit, window) come from the key's resolved rate tier (§13.5 V5-P10),
    * carried on `req.apiKey.rateLimit`; the escalation ladder + decay stay the
@@ -110,7 +187,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
       const schedule: ProgressiveSchedule = tier
         ? { ...baseSchedule, windowSec: tier.windowSec, limit: tier.limit }
         : baseSchedule;
-      const limiter = createProgressiveLimiter(ctx.redis, 'api_key', schedule);
+      const limiter = createProgressiveLimiter(ctx.redis, API_KEY_LIMITER_NAMESPACE, schedule);
       void (async () => {
         const decision = await limiter.consume(req.apiKey!.id);
         if (!decision.allowed) {
@@ -122,6 +199,26 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
       })().catch(next);
     };
   };
+
+  /**
+   * Hand a bearer request straight through: it is metered by `apiKeyGuard` on
+   * its own key budget instead (#1730). Both guards are mounted app-wide on
+   * `/api/v1` — `general` first, `apiKey` immediately after — so nothing is left
+   * unmetered by this skip; the request simply spends the tier it was sold
+   * rather than the account's interactive allowance. Deliberately narrow: only
+   * the request-count `general` pair skips. The COST dimension stays account-
+   * wide, because an expensive endpoint's WORK budget belongs to the account
+   * that pays for it no matter which credential asked.
+   */
+  const skipBearer =
+    (handler: RequestHandler): RequestHandler =>
+    (req, res, next) => {
+      if (req.apiKey) {
+        next();
+        return;
+      }
+      handler(req, res, next);
+    };
 
   const loginLimiter = createProgressiveLimiter(ctx.redis, 'login_ip', loginIp);
   const googleLinkCallbackLimiter = createProgressiveLimiter(
@@ -136,8 +233,12 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   // (its own namespace, the general ladder + decay) and fronts every /api/v1
   // route, since `general` is mounted app-wide before any per-router limiter.
   const generalBurstLimiter = createProgressiveLimiter(ctx.redis, 'general_burst', generalBurst);
+  // Cost dimension (#1643): its own namespace, so an endpoint's WORK budget is
+  // never spent by — and never spends — the request-count windows above.
+  const expensiveLimiter = createProgressiveLimiter(ctx.redis, 'expensive', expensive);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
+  const socialWriteLimiter = createProgressiveLimiter(ctx.redis, 'social_write', socialWrite);
   const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
   const feedbackThreadLimiter = createProgressiveLimiter(
     ctx.redis,
@@ -150,7 +251,20 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   return {
     login: guard([loginLimiter], keyByIp),
     googleLinkCallback: guard([googleLinkCallbackLimiter], keyByIp),
-    general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
+    general: skipBearer(guard([generalBurstLimiter, generalLimiter], keyByUserOrIp)),
+    // Cost-metered endpoints (§10 COST TABLE): keyed exactly like `general` —
+    // per user, falling back to the address only for anonymous callers — so one
+    // account's expensive traffic can never close another's. A route mounts
+    // this IN ADDITION to the app-wide `general` guard; whichever dimension
+    // runs out first produces the same 429 envelope.
+    cost: (endpoint, multiplier) =>
+      guard(
+        [expensiveLimiter],
+        keyByUserOrIp,
+        multiplier === undefined
+          ? requestCosts[endpoint]
+          : (req) => requestCosts[endpoint] * multiplier(req),
+      ),
     apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.
@@ -158,6 +272,10 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     search: guard([searchLimiter], keyByUserOrIp),
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
+    // Friend circles and the V5-P8 comment/reaction writes, per user (#1855).
+    // A capacity budget in its own namespace: exhausting it never closes the
+    // friend-request rail above, and exhausting that rail never closes this one.
+    socialWrite: guard([socialWriteLimiter], keyByUserOrIp),
     // Text-only feedback creation is deliberately small-volume: five accepted
     // POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),

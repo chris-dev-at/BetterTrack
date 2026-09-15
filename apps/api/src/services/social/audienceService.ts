@@ -9,6 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type {
+  AudienceReachSummary,
   FriendConglomerateRow,
   FriendIdeaRow,
   FriendPortfolioRow,
@@ -72,7 +73,7 @@ export interface AudienceServiceDeps {
   /** Resolves the owner's followers (+ their auto-follow prefs) for `follow.published` fan-out (#438/#439). */
   follows?: Pick<UserFollowsRepository, 'listFollowerPrefs'>;
   /** Item bookmarks (#439) — auto-added on publish for opted-in followers, purged with the subject. */
-  itemFollows?: Pick<ItemFollowsRepository, 'follow' | 'clearForSubject'>;
+  itemFollows?: Pick<ItemFollowsRepository, 'follow' | 'clearForSubject' | 'clearForOwner'>;
   /** Reachability gate for `follow.published` — is the owner's public profile live (#438). */
   profile?: Pick<ProfileRepository, 'isProfilePublic'>;
   /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
@@ -186,11 +187,15 @@ export interface AudienceService {
     kind: ShareKind,
     subjectIds: readonly string[],
   ): Promise<Map<string, ShareAudience>>;
-  /** Audience + named-friend count per subject (missing = private/0) — the "who sees this" summary. */
+  /**
+   * Audience + reach per subject (missing = private/0) — the "who sees this"
+   * summary: the named-friend count, and for a `group` share the circle's name
+   * and LIVE roster size (§13.5 V5-P8).
+   */
   audienceSummariesForSubjects(
     kind: ShareKind,
     subjectIds: readonly string[],
-  ): Promise<Map<string, { audience: ShareAudience; friendCount: number }>>;
+  ): Promise<Map<string, AudienceReachSummary>>;
   /**
    * The owner's own `public_link` items — the exact set a public profile composes
    * (V3-P6). Reuses the audience model: a non-public item is structurally absent.
@@ -223,6 +228,15 @@ export interface AudienceService {
   subjectOwner(kind: ShareKind, subjectId: string): Promise<string | undefined>;
   /** Drop a subject's audience row AND its item-follow bookmarks on subject deletion (hygiene; joins already gate). */
   clearForSubject(kind: ShareKind, subjectId: string): Promise<void>;
+  /**
+   * The account-teardown sweep (#1724): the same purge as `clearForSubject`, run
+   * across EVERY shareable subject one owner holds. Deleting the `users` row
+   * cascades away only what the departing user authored — other users' comments,
+   * reactions and item-follows on their subjects are polymorphic and would be
+   * orphaned, unreadable and (for a reaction) unremovable. Called BEFORE the row
+   * delete, while the subject rows still resolve.
+   */
+  clearForOwner(ownerId: string): Promise<void>;
   /**
    * Whether — and how — a viewer can currently see one subject as an item-follow
    * target (#439): first the friend-mode enforcement join (friendship AND the
@@ -765,10 +779,22 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     subjectOwner: (kind, subjectId) => repo.getSubjectOwner(kind, subjectId),
 
     async clearForSubject(kind, subjectId) {
-      // Deleting a subject drops its audience row AND purges every bookmark of
-      // it (#439) — reads already degrade gracefully, this is pure hygiene.
+      // Deleting a subject drops its audience row, its whole comment thread and
+      // every reaction on it (§13.5 V5-P8 — polymorphic subject columns have no
+      // FK to cascade, and an orphaned comment can never be moderated again),
+      // AND purges every bookmark of it (#439).
       await repo.clearForSubject(kind, subjectId);
       await itemFollows?.clearForSubject(kind, subjectId);
+    },
+
+    async clearForOwner(ownerId) {
+      // Same two seams as clearForSubject, by owner instead of by subject: the
+      // comment thread + reactions in the audience repository's transaction, then
+      // the item-follow bookmarks (#1724). Neither is best-effort — the caller
+      // runs this before the users row goes, so a failure aborts the deletion
+      // rather than leaving residue nothing can reach.
+      await repo.clearForOwner(ownerId);
+      await itemFollows?.clearForOwner(ownerId);
     },
 
     async authorizeItemFollowRead(viewerId, kind, subjectId) {

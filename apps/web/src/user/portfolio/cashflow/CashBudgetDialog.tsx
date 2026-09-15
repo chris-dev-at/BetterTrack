@@ -72,6 +72,20 @@ export function CashBudgetDialog({
   const options = useMemo(() => tags.filter((tag) => !taken.has(tag.id)), [tags, taken]);
 
   const [tagId, setTagId] = useState(existing?.tagId ?? options[0]?.id ?? '');
+  // `options` is recomputed per period mode, so the tag held in state can fall
+  // OUT of the list the moment the mode is toggled (Food is recurring-budgeted,
+  // Rent is month-budgeted: each mode offers exactly the other one). The
+  // controlled `<select>` would then render blank while Save posted a tag the
+  // user never picked, arriving as "already budgeted". Derive what is actually
+  // shown instead of trying to keep the state in sync from an effect: the
+  // select's value and the submitted value are then the same thing by
+  // construction. Edit mode keeps `existing.tagId` — its tag is fixed and no
+  // picker is rendered.
+  const selectedTagId = isEdit
+    ? tagId
+    : options.some((tag) => tag.id === tagId)
+      ? tagId
+      : (options[0]?.id ?? '');
   const [amount, setAmount] = useState(existing ? String(existing.amount) : '');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -84,7 +98,7 @@ export function CashBudgetDialog({
       // would default it too (packages/contracts/src/cash.ts).
       return createCashBudget({
         portfolioId,
-        tagId,
+        tagId: selectedTagId,
         period: periodMode === THIS_MONTH ? month : null,
         amount: value,
         currency: 'EUR',
@@ -109,7 +123,7 @@ export function CashBudgetDialog({
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
-    if (!isEdit && tagId === '') {
+    if (!isEdit && selectedTagId === '') {
       setFormError(t('cashflow.budgets.dialog.tagRequired'));
       return;
     }
@@ -147,7 +161,7 @@ export function CashBudgetDialog({
               disabled={noOptions}
               id={tagFieldId}
               onChange={(e) => setTagId(e.target.value)}
-              value={tagId}
+              value={selectedTagId}
             >
               {options.map((tag) => (
                 <option key={tag.id} value={tag.id}>

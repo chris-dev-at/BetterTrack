@@ -39,6 +39,25 @@ user. Ready exports still expire through the existing 24-hour cleanup job; the
 volume only makes their short lifetime survive process/container boundaries.
 As with every named volume, `docker compose down -v` deletes it.
 
+One archive's packaged (uncompressed) bytes are capped at 128 MiB by default,
+and a build over the cap fails terminally — retrying it unchanged cannot help.
+An account holding a lot of server-resident vault ciphertext can legitimately
+exceed that, so the cap is a knob: set `BT_EXPORT_MAX_CONTENT_BYTES` (bytes, at
+most 1 GiB) in `infra/.env` to raise it, and the same account exports without a
+code change. Set it once — the shared API/worker environment anchor forwards it
+to both processes, which must agree because the worker builds the archive and
+the API serves it. Leaving it blank keeps the built-in 128 MiB default. The
+refusal happens pre-flight — the ciphertext sizes are summed before any blob is
+read — so an over-cap account never allocates.
+
+Raising that cap is a worker-memory decision, not only a size one: the archive
+is assembled whole in memory, so size the worker container above the value you
+set (several GiB of RSS if you go near the top of the range). Note also that the
+whole archive is separately capped at 1 GiB, and vault ciphertext does not
+compress, so a content cap set at the very top of the documented range trips the
+archive limit first — treat 1 GiB as the ceiling of the range, not a usable
+working value.
+
 Render both effective production topologies after editing Compose. The
 committed example supplies inert interpolation values; substitute `infra/.env`
 to validate one deployment's configured values:
@@ -397,10 +416,12 @@ identifying operational trails. A daily worker job (`data.retentionCleanup`,
 04:50 Europe/Vienna) purges past-cutoff rows in bounded batches, so shortening a
 window takes effect on the next run rather than in one long statement.
 
-| Variable                      | Default | Notes                                                        |
-| ----------------------------- | ------- | ------------------------------------------------------------ |
-| `BT_AUDIT_RETENTION_DAYS`     | `400`   | Age at which `audit_log` rows are purged. `0` = keep forever |
-| `BT_EMAIL_LOG_RETENTION_DAYS` | `180`   | Age at which `email_log` rows are purged. `0` = keep forever |
+| Variable                        | Default | Notes                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BT_AUDIT_RETENTION_DAYS`       | `400`   | Age at which `audit_log` rows are purged. `0` = keep forever                                                                                                                                                                                                                                                                              |
+| `BT_EMAIL_LOG_RETENTION_DAYS`   | `180`   | Age at which `email_log` rows are purged. `0` = keep forever                                                                                                                                                                                                                                                                              |
+| `BT_PROBLEM_RETENTION_DAYS`     | `90`    | Age (since last occurrence) at which `problems` rows are purged. `0` = keep forever                                                                                                                                                                                                                                                       |
+| `BT_USAGE_EVENT_RETENTION_DAYS` | `180`   | Age at which raw `usage_events` rows are purged (the `usage_daily` rollup and the `usage_activations` marker are kept). `0` = keep forever. Values between `1` and `29` are REFUSED at boot: DAU/WAU/MAU and top assets read the raw rows over a 30-day window, so a shorter one would report a traffic collapse that is only the setting |
 
 - Blank or unset uses the default; an explicit `0` disables that branch of the
   purge entirely (nothing is ever deleted from that table).
@@ -555,6 +576,36 @@ a failed probe keeps Stooq serving and starts another cooldown. A still-fresh
 cached quote can delay the probe and visible switch until the next upstream
 refresh.
 
+## Outbound webhooks and this deployment's own network
+
+A user's webhook receiver may sit on the operator's LAN — that is deliberate, a
+self-hosted stack is often the only thing on its network. What a receiver may
+NEVER reach is this deployment's own service network: `db`, `redis`,
+`prometheus`, `grafana` and the exporters publish no host ports precisely so
+they are unreachable, and a receiver URL pointing at one of them is refused both
+when it is saved and again on every delivery attempt (the worker re-checks after
+DNS resolution, so a rebind cannot slip through).
+
+By default nothing is configured. The api and worker derive that network from
+their own container interfaces, which on the shipped compose bridge is exactly
+right, whatever address pool Docker picked.
+
+`BT_OUTBOUND_DEPLOYMENT_SUBNETS` overrides the derivation and is forwarded to
+both processes by the shared API/worker environment anchor:
+
+| Value                          | Meaning                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| blank / unset (**normal**)     | Derive from the process's own private interfaces                               |
+| `172.18.0.0/16,fd00:beef::/64` | Refuse exactly these ranges                                                    |
+| `none`                         | This deployment has no internal network — refuse nothing beyond the base rules |
+
+Set it when the derivation is wrong for your topology. The derived prefix is the
+interface's own, so an api running with **host networking** on a flat
+`10.0.0.0/8` LAN derives all of `10/8` and refuses every receiver on it; naming
+the real service network here restores them. A malformed value (a bare address,
+a bad prefix, or `none` mixed with CIDRs) is refused at boot rather than quietly
+ignored — restart the api and worker after changing it.
+
 ## Observability (Prometheus + Grafana)
 
 Full monitoring ships **inside the deploy stack** — PROJECTPLAN.md §13.5 V5-P2
@@ -589,6 +640,20 @@ an authenticated path (owner directive 2026-07-19) — see **`docs/monitoring.md
   BullMQ queue depth + job outcomes, provider calls, market cache hit rate, and
   websocket connections. Data persists in the `grafanadata` volume.
 
+### Error tracking is the admin Problems page — `BT_SENTRY_DSN` is refused
+
+External Sentry is retired (§16 2026-07-17). Captured errors — unhandled request
+errors, permanently-failed jobs, worker/provider failures, and now **unhandled
+rejections and uncaught exceptions in either process** — land in the `problems`
+table, PII-scrubbed, and are read at **admin → Problems**. Refused captures (the
+rate cap) are published on that page too, including the ones the **worker**
+process refused, so "the page is quiet" always means quiet and never blind.
+
+Nothing enables an external tracker any more. `BT_SENTRY_DSN` left in an old
+`.env` is **refused at boot**: the SDK is never initialised, no event leaves the
+box, an error line is logged and a problem row is captured naming the variable.
+Remove it — there is nothing to point it at.
+
 ### Exposure guarantee (localhost/LAN by default)
 
 By default neither service is reachable from a public origin — the §16
@@ -601,11 +666,15 @@ Prometheus. That opt-in is off by default and password-gated; see
 - The API metrics listener binds `0.0.0.0` **inside** the api container so
   Prometheus can scrape it, but its port is **never** published to a host port,
   so it is unreachable from outside the docker network.
-- Prometheus (`:9090`) and Grafana (`:3001`) publish host ports bound to
-  **`BT_OBS_BIND_HOST`** (default `127.0.0.1` = localhost only). They are **not**
-  added to any port overlay (`docker-compose.ports.yml` /
-  `docker-compose.subdomains.yml`) and are **not** routed by the `web`/nginx
-  front proxy — verifiable in `infra/docker-compose.yml` and `infra/nginx/`.
+- Grafana (`:3001`) publishes a host port bound to **`BT_OBS_BIND_HOST`** and
+  Prometheus (`:9090`) one bound to **`BT_PROMETHEUS_BIND_HOST`** (both default
+  `127.0.0.1` = localhost only). The two binds are deliberately separate:
+  Grafana has a login, Prometheus has none, so the LAN recipe below moves
+  Grafana only and Prometheus stays on loopback unless it is pointed elsewhere
+  on purpose (`docs/monitoring.md`). Neither service is added to any port
+  overlay (`docker-compose.ports.yml` / `docker-compose.subdomains.yml`) and
+  neither is routed by the `web`/nginx front proxy — verifiable in
+  `infra/docker-compose.yml` and `infra/nginx/`.
 
 ### Reaching Grafana
 
@@ -620,10 +689,35 @@ Prometheus. That opt-in is off by default and password-gated; see
 - **From your LAN** — set `BT_OBS_BIND_HOST` in `infra/.env` to the host's LAN
   IP (e.g. `192.168.1.10`), `docker compose up -d`, then open
   `http://192.168.1.10:3001`. **Never** set it to `0.0.0.0` on a public host.
+  This moves Grafana only; Prometheus — which has no login — keeps its own
+  loopback bind (`BT_PROMETHEUS_BIND_HOST`), so use Grafana's _Explore_ view or
+  an SSH tunnel for raw PromQL.
+  Safe on its own — Grafana's own login still guards it — but **not** together
+  with `BT_GRAFANA_ANON_ENABLED=true`, which is server-wide and would publish
+  every dashboard to the LAN with no credential. The grafana service refuses to
+  start on that pair; see
+  [the one unsafe combination](monitoring.md#the-one-unsafe-combination-lan-bind-and-anonymous-access).
 
-Log in with `BT_GRAFANA_ADMIN_USER` / `BT_GRAFANA_ADMIN_PASSWORD` from
-`infra/.env` — change the default before first boot. Sign-up and anonymous
-access are disabled. See `infra/.env.production.example` for every knob.
+Log in as `BT_GRAFANA_ADMIN_USER` (default `admin`). There is **no default
+password on any of these interfaces**: when `BT_GRAFANA_ADMIN_PASSWORD` is
+unset, blank, `admin` or still the `.env` placeholder, the grafana service
+generates a random one on first boot into its persistent volume — read it with
+
+```
+docker compose -f infra/docker-compose.yml exec grafana cat /var/lib/grafana/.bettertrack-admin-password
+```
+
+That command is the credential on every stack, including one whose volume
+predates this bootstrap: the entrypoint applies the file to the existing
+`grafana.db` admin user, so an already-booted stack stops answering to
+`admin`/`admin` on the first restart after the upgrade — no manual step.
+
+Setting `BT_GRAFANA_ADMIN_PASSWORD` to a real value uses that instead (and is
+what arms external access); it is applied to the existing account on the next
+restart. Sign-up is disabled, and so is anonymous access unless the admin-proxy
+recipe turns it on with `BT_GRAFANA_ANON_ENABLED` — which belongs to a loopback
+bind only, never to the LAN bind above. See `docs/monitoring.md` for that
+combination, for rotation, and `infra/.env.production.example` for every knob.
 
 ## Troubleshooting
 

@@ -1,11 +1,12 @@
+import { eq } from 'drizzle-orm';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { monitoringStatusResponseSchema } from '@bettertrack/contracts';
+import { AUTH_ERROR_CODES, monitoringStatusResponseSchema } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../config/env';
-import type { AppSettingRow } from '../data/schema';
+import { users, type AppSettingRow } from '../data/schema';
 import type { AppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createGrafanaProxyMiddleware } from '../http/grafanaProxy';
 import type { AppContext } from '../http/context';
@@ -326,6 +327,65 @@ describe('admin monitoring routes + proxy (wired through the app)', () => {
       const res = await agent.get('/api/v1/admin/monitoring/grafana/d/abc');
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('MONITORING_NOT_EXPOSED');
+    });
+
+    it('403s the proxy for an admin forced into a password change, like every /api/v1 route', async () => {
+      // The proxy mount terminates the request four `app.use` calls before the
+      // global `enforcePasswordChange`, so the guard has to be repeated on it.
+      // Without that, a password-locked admin — 403'd everywhere else — still
+      // served the whole proxied Grafana, its own admin UI included (§6.12).
+      const admin = await harness.seedAdmin();
+      const agent = await harness.loginAdmin(admin);
+
+      // The proxy is reachable for this admin; only the exposure gate refuses it.
+      expect((await agent.get('/api/v1/admin/monitoring/grafana/d/abc')).body.error.code).toBe(
+        'MONITORING_NOT_EXPOSED',
+      );
+
+      // Force the password change WITHOUT touching the security generation, so
+      // the live session survives and only the guard can decide the outcome.
+      await harness.db
+        .update(users)
+        .set({ mustChangePassword: true })
+        .where(eq(users.id, admin.id));
+
+      const locked = await agent.get('/api/v1/admin/monitoring/grafana/d/abc');
+      expect(locked.status).toBe(403);
+      expect(locked.body.error.code).toBe(AUTH_ERROR_CODES.passwordChangeRequired);
+      // The same admin is refused identically on an ordinary admin route.
+      expect((await agent.get('/api/v1/admin/monitoring/status')).status).toBe(403);
+    });
+
+    it('403s the /auth-shaped proxy sub-paths too — the mount carries no exemptions', async () => {
+      // The guard on this mount must be the EXEMPTION-FREE variant. The global
+      // `enforcePasswordChange` matches its `/auth/…` allowlist against a
+      // MOUNT-relative path, and this mount is five segments deep — so under it
+      // those exemptions pointed at Grafana's own sub-paths: `…/grafana/auth/login`
+      // skipped the guard outright, and `…/grafana/auth/invite/../../d/abc` — which
+      // the proxy's `new URL(req.originalUrl, …)` collapses back onto
+      // `…/grafana/d/abc` — reached the real dashboard.
+      const admin = await harness.seedAdmin();
+      const agent = await harness.loginAdmin(admin);
+      await harness.db
+        .update(users)
+        .set({ mustChangePassword: true })
+        .where(eq(users.id, admin.id));
+
+      // The dot-segment form (`…/auth/invite/../../d/abc`) cannot be driven from
+      // here — supertest's client collapses it before it leaves — so the guard's
+      // indifference to path shape is asserted directly in
+      // `http/middleware/__tests__/passwordChangeGuards.test.ts`.
+      for (const path of [
+        '/api/v1/admin/monitoring/grafana/auth/login',
+        '/api/v1/admin/monitoring/grafana/auth/logout',
+        '/api/v1/admin/monitoring/grafana/auth/change-password',
+        '/api/v1/admin/monitoring/grafana/auth/accept-invite',
+        '/api/v1/admin/monitoring/grafana/auth/invite/abc',
+      ]) {
+        const res = await agent.get(path);
+        expect(res.status, path).toBe(403);
+        expect(res.body.error?.code, path).toBe(AUTH_ERROR_CODES.passwordChangeRequired);
+      }
     });
   });
 

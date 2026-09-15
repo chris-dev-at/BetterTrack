@@ -1,11 +1,14 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
   PROBLEM_KINDS,
   PROBLEM_STATUSES,
+  problemContextSchema,
   type Problem,
+  type ProblemContext,
   type ProblemKind,
+  type ProblemListResponse,
   type ProblemStatus,
 } from '@bettertrack/contracts';
 
@@ -40,6 +43,13 @@ type KindFilter = ProblemKind | 'all';
 type StatusFilter = ProblemStatus | 'all';
 
 const DEFAULT_STATUS: StatusFilter = 'open';
+
+/**
+ * Rows per request. The list is paged rather than "the newest 50, forever":
+ * nothing but a resolve ever took a row out of the default view, so before
+ * paging every row past the first page was unreachable AND unresolvable.
+ */
+const PAGE_SIZE = 25;
 
 function readKind(raw: string | null): KindFilter {
   return raw !== null && (PROBLEM_KINDS as readonly string[]).includes(raw)
@@ -89,27 +99,87 @@ export function ProblemsPage() {
     [setParams],
   );
 
+  // How many PAGE_SIZE windows the operator has opened. A filter change resets
+  // it — a page of `error` rows must never be shown under a `job` filter.
+  const [pageCount, setPageCount] = useState(1);
+  useEffect(() => {
+    setPageCount(1);
+  }, [kind, status]);
+
+  /**
+   * Every window currently on screen, re-read together and merged by id
+   * (#1848).
+   *
+   * The previous shape kept a growing `rows` array and spliced each response in
+   * by numeric offset. But the offset is a position in a MUTATING, time-ordered
+   * set: one capture arriving shifts every row down by one, so the live tick's
+   * re-read of `offset=25` returned a window starting one row earlier and the
+   * splice rendered that row TWICE under the same React key. A resolve shrank
+   * the set and dropped the row at the page boundary instead. And page 1 was
+   * frozen the moment "Load more" was clicked — `current.slice(0, offset)` was
+   * never re-read, so a problem a colleague had resolved kept offering
+   * "Resolve" forever.
+   *
+   * Re-reading the pages that are still shown fixes all three at once, and the
+   * id-keyed merge (rather than a single `limit: PAGE_SIZE * pageCount` read)
+   * keeps the request bounded by the contract's `limit` cap of 200 no matter
+   * how far the operator pages. A row that moves between two windows during the
+   * read is rendered once, at its first sighting.
+   */
   const resource = useResource(
-    (signal) =>
-      api.listProblems(
-        {
-          ...(kind === 'all' ? {} : { kind }),
-          ...(status === 'all' ? {} : { status }),
-        },
-        signal,
-      ),
-    [kind, status],
+    async (signal) => {
+      const filter = {
+        ...(kind === 'all' ? {} : { kind }),
+        ...(status === 'all' ? {} : { status }),
+      };
+      const windows = await Promise.all(
+        Array.from({ length: pageCount }, (_, index) =>
+          api.listProblems({ ...filter, limit: PAGE_SIZE, offset: index * PAGE_SIZE }, signal),
+        ),
+      );
+      const head = windows[0]!;
+      const tail = windows[windows.length - 1]!;
+      const seen = new Set<string>();
+      const problems: Problem[] = [];
+      for (const window of windows) {
+        for (const problem of window.problems) {
+          if (seen.has(problem.id)) continue;
+          seen.add(problem.id);
+          problems.push(problem);
+        }
+      }
+      return {
+        ...tail,
+        problems,
+        // The drop tally is a trailing-window counter, identical in every
+        // concurrent response — read it once rather than summing it per window.
+        droppedCaptures: head.droppedCaptures,
+        droppedCapturesTotal: head.droppedCapturesTotal,
+      } satisfies ProblemListResponse;
+    },
+    [kind, status, pageCount],
   );
   const { data, loading, error, reload } = resource;
 
+  // The rendered list IS the last read of the pages on screen; nothing is
+  // accumulated locally, so nothing can drift out of step with the server.
+  const rows = data?.problems ?? [];
+
   const live = useLiveRefresh(reload);
 
-  const resolve = useAdminMutation((id: string) => api.resolveProblem(id), {
+  // Both actions address one problem row, which the retention sweep or a second
+  // operator can retire between the list read and the click — a banner, not a
+  // forced sign-out (V5-P13c audit of every `useAdminMutation` call site). The
+  // reload behind them re-reads every window on screen, so the acted-on row and
+  // the counts settle together.
+  const resolve = useAdminMutation(async (id: string) => void (await api.resolveProblem(id)), {
     errorKey: 'admin.problems.actionError',
+    notFound: 'surface',
     onSuccess: reload,
   });
-  const reopen = useAdminMutation((id: string) => api.reopenProblem(id), {
+  const reopen = useAdminMutation(async (id: string) => void (await api.reopenProblem(id)), {
     errorKey: 'admin.problems.actionError',
+    notFound: 'surface',
     onSuccess: reload,
   });
 
@@ -173,8 +243,20 @@ export function ProblemsPage() {
               {t('admin.problems.openCount', { count: data.openCount })}
             </span>
           ) : null}
+          {data && data.total > rows.length ? (
+            <span className={cx(TEXT_MICRO, 'pb-2')}>
+              {t('admin.problems.shownCount', { shown: rows.length, total: data.total })}
+            </span>
+          ) : null}
         </div>
       </Panel>
+
+      {/* The capture budget refused rows in this window: what is listed below
+          is then a TRUNCATED incident, and reading it as the whole one is the
+          exact mistake this banner exists to prevent. */}
+      {data && data.droppedCaptures > 0 ? (
+        <Alert tone="info">{t('admin.problems.dropped', { count: data.droppedCaptures })}</Alert>
+      ) : null}
 
       {resolve.error ? <Alert tone="error">{resolve.error}</Alert> : null}
       {reopen.error ? <Alert tone="error">{reopen.error}</Alert> : null}
@@ -195,13 +277,11 @@ export function ProblemsPage() {
           </Alert>
         ) : null}
 
-        {data && data.problems.length === 0 ? (
-          <EmptyState>{t('admin.problems.empty')}</EmptyState>
-        ) : null}
+        {data && rows.length === 0 ? <EmptyState>{t('admin.problems.empty')}</EmptyState> : null}
 
-        {data && data.problems.length > 0 ? (
+        {rows.length > 0 ? (
           <ul className="flex flex-col gap-3">
-            {data.problems.map((problem) => (
+            {rows.map((problem) => (
               <ProblemRow
                 busy={resolve.isPending(problem.id) || reopen.isPending(problem.id)}
                 key={problem.id}
@@ -211,9 +291,45 @@ export function ProblemsPage() {
             ))}
           </ul>
         ) : null}
+
+        {data?.hasMore ? (
+          <div className="mt-3 flex justify-center">
+            <Button
+              disabled={loading}
+              onClick={() => setPageCount((count) => count + 1)}
+              size="sm"
+              variant="secondary"
+            >
+              {t('admin.problems.loadMore')}
+            </Button>
+          </div>
+        ) : null}
       </section>
     </div>
   );
+}
+
+/** Context keys the row renders itself, so they are not repeated in the JSON. */
+const RENDERED_CONTEXT_KEYS = new Set(['method', 'route', 'status', 'requestId', 'stack']);
+
+/**
+ * Split the stored context into the request facts the row renders as their own
+ * lines, the stack it collapses, and whatever else is left for the JSON block.
+ * Parsed through the contract schema rather than cast: `context` is `jsonb`, so
+ * an older row (captured before the request facts existed) simply has none.
+ */
+function readContext(context: unknown): {
+  detail: ProblemContext | null;
+  rest: Record<string, unknown> | null;
+} {
+  const parsed = problemContextSchema.safeParse(context);
+  if (!parsed.success) return { detail: null, rest: null };
+  // The known keys get their own lines; `rest` is everything a non-request
+  // capture kind (job/provider/import) carries, shown as JSON below.
+  const rest = Object.fromEntries(
+    Object.entries(parsed.data).filter(([key]) => !RENDERED_CONTEXT_KEYS.has(key)),
+  );
+  return { detail: parsed.data, rest: Object.keys(rest).length > 0 ? rest : null };
 }
 
 function ProblemRow({
@@ -226,6 +342,8 @@ function ProblemRow({
   onMutate: (id: string, next: ProblemStatus) => void;
 }) {
   const t = useT();
+  const { detail, rest } = readContext(problem.context);
+  const stack = detail?.stack ?? null;
 
   return (
     <li>
@@ -240,6 +358,12 @@ function ProblemRow({
                 <Badge tone={problem.status === 'open' ? 'amber' : 'green'}>
                   {t(`admin.problems.status.${problem.status}`)}
                 </Badge>
+                {/* A problem an admin cleared that then happened again: the
+                    capture reopened it, and it must READ as a regression rather
+                    than as one more open row. */}
+                {problem.regressed ? (
+                  <Badge tone="red">{t('admin.problems.regressed')}</Badge>
+                ) : null}
                 <span className="text-[13px] font-medium text-neutral-100">{problem.title}</span>
               </div>
               {problem.message ? (
@@ -271,6 +395,38 @@ function ProblemRow({
 
           <KeyValueList
             rows={[
+              // The request facts first: for an unhandled 500 they are what
+              // names the broken endpoint, and `requestId` is the handle back
+              // to the log line for the same request.
+              ...(detail?.route
+                ? [
+                    {
+                      label: t('admin.problems.route'),
+                      value: (
+                        <span className={TEXT_MONO}>
+                          {detail.method ? `${detail.method} ` : ''}
+                          {detail.route}
+                        </span>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(typeof detail?.status === 'number'
+                ? [
+                    {
+                      label: t('admin.problems.httpStatus'),
+                      value: <span className={TEXT_NUM}>{detail.status}</span>,
+                    },
+                  ]
+                : []),
+              ...(detail?.requestId
+                ? [
+                    {
+                      label: t('admin.problems.requestId'),
+                      value: <span className={TEXT_MONO}>{detail.requestId}</span>,
+                    },
+                  ]
+                : []),
               {
                 label: t('admin.problems.occurrencesLabel'),
                 value: <span className={TEXT_NUM}>{problem.occurrenceCount}</span>,
@@ -290,13 +446,27 @@ function ProblemRow({
             ]}
           />
 
-          {problem.context != null ? (
+          {/* Collapsed, never inline: the stack is the thing to hand a
+              developer, and expanded by default it would bury every other row
+              on the page. */}
+          {stack ? (
+            <details className="text-[12px]">
+              <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
+                {t('admin.problems.stack')}
+              </summary>
+              <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
+                {stack}
+              </pre>
+            </details>
+          ) : null}
+
+          {rest !== null || (detail === null && problem.context != null) ? (
             <details className="text-[12px]">
               <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
                 {t('admin.problems.context')}
               </summary>
               <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
-                {JSON.stringify(problem.context, null, 2)}
+                {JSON.stringify(rest ?? problem.context, null, 2)}
               </pre>
             </details>
           ) : null}

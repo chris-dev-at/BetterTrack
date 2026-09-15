@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
-import type { ShareAudience, ShareKind, UpdateAlertSharingRequest } from '@bettertrack/contracts';
+import type {
+  MySharedResponse,
+  ShareAudience,
+  ShareKind,
+  UpdateAlertSharingRequest,
+} from '@bettertrack/contracts';
 
 import { listMyShared } from '../../lib/socialApi';
 import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
@@ -23,6 +28,7 @@ import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
 import { Alert, Spinner } from '../components/ui';
 import { useMutationFeedback } from '../hooks/useMutationFeedback';
+import { CommentThread } from './CommentThread';
 
 const MY_SHARED_STALE_MS = 30_000;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -33,15 +39,87 @@ interface PickerTarget {
   label: string;
 }
 
+/** The circle a `group` share reaches, or `null` when it reaches nobody. */
+type ShareGroup = { id: string; name: string; memberCount: number } | null;
+
+const SHARE_KINDS = ['portfolio', 'conglomerate', 'watchlist', 'idea'] as const;
+
+/**
+ * Parse the `#thread-<kind>-<subjectId>` anchor a `comment.created` notification
+ * deep-links to (written by `NotificationBell`) back into its target. Unknown or
+ * garbled hashes resolve to `null` — a stale deep link opens the page, never a
+ * dialog on nothing.
+ */
+function threadFromHash(hash: string): { kind: ShareKind; subjectId: string } | null {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!raw.startsWith('thread-')) return null;
+  const rest = raw.slice('thread-'.length);
+  const kind = SHARE_KINDS.find((candidate) => rest.startsWith(`${candidate}-`));
+  if (!kind) return null;
+  const subjectId = rest.slice(kind.length + 1);
+  return subjectId.length > 0 ? { kind, subjectId } : null;
+}
+
+/** Resolve a deep-linked target to the item's own name, or `null` if it is gone. */
+function labelForTarget(
+  data: MySharedResponse,
+  target: { kind: ShareKind; subjectId: string },
+): string | null {
+  const row =
+    target.kind === 'portfolio'
+      ? data.portfolios.find((p) => p.portfolioId === target.subjectId)
+      : target.kind === 'conglomerate'
+        ? data.conglomerates.find((c) => c.conglomerateId === target.subjectId)
+        : target.kind === 'watchlist'
+          ? data.watchlists.find((w) => w.watchlistId === target.subjectId)
+          : data.ideas.find((i) => i.ideaId === target.subjectId);
+  return row?.name ?? null;
+}
+
 /**
  * The per-item "who can see this" summary (V3-P6) — the audience read straight off
  * the single audience model, so it never disagrees with what is actually shared.
  * A private item is dimmed (outline only); every shared tier is a tinted chip —
  * gold for the public link, analytical blue for the friend tiers — with the named
  * count for `specific_friends`.
+ *
+ * A `group` share names the CIRCLE and its live roster size (§13.5 V5-P8): a flat
+ * "Friend group" made a share seen by two people look exactly like one seen by
+ * eighteen. A group that reaches nobody — deleted, or emptied — takes the dimmed
+ * private treatment, because that is precisely what its reach now is. The friction
+ * ladder assumes the owner knows their own reach; this badge is where they read it.
  */
-function WhoSeesThis({ audience, friendCount }: { audience: ShareAudience; friendCount: number }) {
+function WhoSeesThis({
+  audience,
+  friendCount,
+  group,
+}: {
+  audience: ShareAudience;
+  friendCount: number;
+  group: ShareGroup;
+}) {
   const t = useT();
+  if (audience === 'group') {
+    // `group` is null for a share whose circle was deleted: `group_id` nulls out
+    // and the enforcement layer then admits nobody (fail-closed).
+    const reachesNobody = group === null || group.memberCount === 0;
+    const label =
+      group === null
+        ? t('sharing.badge.groupDeleted')
+        : group.memberCount === 0
+          ? t('sharing.badge.groupEmpty', { name: group.name })
+          : `${group.name} · ${group.memberCount}`;
+    return (
+      <Badge
+        data-testid="who-sees-this"
+        data-reach={reachesNobody ? 'nobody' : 'group'}
+        outline={reachesNobody}
+        tone={reachesNobody ? 'neutral' : 'blue'}
+      >
+        {label}
+      </Badge>
+    );
+  }
   const label =
     audience === 'specific_friends' && friendCount > 0
       ? `${t('sharing.badge.specific_friends')} · ${friendCount}`
@@ -49,7 +127,7 @@ function WhoSeesThis({ audience, friendCount }: { audience: ShareAudience; frien
   const tone: BadgeTone =
     audience === 'private' ? 'neutral' : audience === 'public_link' ? 'gold' : 'blue';
   return (
-    <Badge outline={audience === 'private'} tone={tone}>
+    <Badge data-testid="who-sees-this" outline={audience === 'private'} tone={tone}>
       {label}
     </Badge>
   );
@@ -59,33 +137,48 @@ interface SharedRowProps {
   name: string;
   audience: ShareAudience;
   friendCount: number;
+  group: ShareGroup;
   detail?: string;
   onShare: () => void;
   shareLabel: string;
   shareDisabled?: boolean;
+  onComments: () => void;
+  commentsLabel: string;
 }
 
 function SharedRow({
   name,
   audience,
   friendCount,
+  group,
   detail,
   onShare,
   shareLabel,
   shareDisabled = false,
+  onComments,
+  commentsLabel,
 }: SharedRowProps) {
   return (
     <li className="bt-shared-item-row flex flex-col items-stretch justify-between gap-3 py-3 sm:flex-row sm:items-center">
       <div className="flex min-w-0 flex-col gap-1">
         <span className="bt-row-title truncate">{name}</span>
         <div className="flex flex-wrap items-center gap-2">
-          <WhoSeesThis audience={audience} friendCount={friendCount} />
+          <WhoSeesThis audience={audience} friendCount={friendCount} group={group} />
           {detail ? <span className="bt-meta">{detail}</span> : null}
         </div>
       </div>
-      <Button disabled={shareDisabled} onClick={onShare} size="sm">
-        {shareLabel}
-      </Button>
+      <div className="flex flex-none flex-wrap items-center gap-2">
+        {/* The owner's way into the thread they moderate. Always present, even
+            on a private item: a comment posted while the item was shared must
+            not become unreachable when the audience narrows. */}
+        <Button onClick={onComments} size="sm" variant="quiet">
+          <span aria-hidden="true">💬</span>
+          {commentsLabel}
+        </Button>
+        <Button disabled={shareDisabled} onClick={onShare} size="sm">
+          {shareLabel}
+        </Button>
+      </div>
     </li>
   );
 }
@@ -209,7 +302,10 @@ function AlertSharingControl() {
 export function MySharedItemsPage() {
   const t = useT();
   const queryClient = useQueryClient();
+  const { hash } = useLocation();
   const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const [thread, setThread] = useState<PickerTarget | null>(null);
+  const appliedHash = useRef<string | null>(null);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: MY_SHARED_KEY,
@@ -260,6 +356,18 @@ export function MySharedItemsPage() {
     if (picker?.kind === 'portfolio' && !portfolioMetadataReady) setPicker(null);
   }, [picker?.kind, portfolioMetadataReady]);
 
+  // `comment.created` deep-links here as `#thread-<kind>-<subjectId>` (V5-P8).
+  // Applied once per hash so closing the dialog doesn't immediately reopen it,
+  // and only once the list has loaded — the item's own name titles the dialog.
+  useEffect(() => {
+    if (appliedHash.current === hash) return;
+    const target = threadFromHash(hash);
+    if (!target || !data) return;
+    const label = labelForTarget(data, target);
+    appliedHash.current = hash;
+    if (label !== null) setThread({ ...target, label });
+  }, [hash, data]);
+
   const onChanged = () => {
     void queryClient.invalidateQueries({ queryKey: MY_SHARED_KEY });
   };
@@ -289,6 +397,7 @@ export function MySharedItemsPage() {
     data.ideas.length === 0;
 
   const shareLabel = t('sharing.shareButton');
+  const commentsLabel = t('social.myShared.comments');
 
   return (
     <div className="bt-phone-surface bt-my-shared-page flex flex-col">
@@ -321,6 +430,7 @@ export function MySharedItemsPage() {
                 name={p.name}
                 audience={p.audience}
                 friendCount={p.friendCount}
+                group={p.group}
                 onShare={() =>
                   setPicker({
                     kind: 'portfolio',
@@ -330,6 +440,10 @@ export function MySharedItemsPage() {
                 }
                 shareLabel={shareLabel}
                 shareDisabled={!portfolioMetadataReady}
+                onComments={() =>
+                  setThread({ kind: 'portfolio', subjectId: p.portfolioId, label: p.name })
+                }
+                commentsLabel={commentsLabel}
               />
             ))}
           </ul>
@@ -346,11 +460,16 @@ export function MySharedItemsPage() {
                 name={c.name}
                 audience={c.audience}
                 friendCount={c.friendCount}
+                group={c.group}
                 detail={t('social.item.positions', { count: c.positionCount })}
                 onShare={() =>
                   setPicker({ kind: 'conglomerate', subjectId: c.conglomerateId, label: c.name })
                 }
                 shareLabel={shareLabel}
+                onComments={() =>
+                  setThread({ kind: 'conglomerate', subjectId: c.conglomerateId, label: c.name })
+                }
+                commentsLabel={commentsLabel}
               />
             ))}
           </ul>
@@ -367,11 +486,16 @@ export function MySharedItemsPage() {
                 name={w.name}
                 audience={w.audience}
                 friendCount={w.friendCount}
+                group={w.group}
                 detail={t('social.item.assets', { count: w.itemCount })}
                 onShare={() =>
                   setPicker({ kind: 'watchlist', subjectId: w.watchlistId, label: w.name })
                 }
                 shareLabel={shareLabel}
+                onComments={() =>
+                  setThread({ kind: 'watchlist', subjectId: w.watchlistId, label: w.name })
+                }
+                commentsLabel={commentsLabel}
               />
             ))}
           </ul>
@@ -388,9 +512,12 @@ export function MySharedItemsPage() {
                 name={i.name}
                 audience={i.audience}
                 friendCount={i.friendCount}
+                group={i.group}
                 detail={i.hasThesis ? t('social.item.ideaThesis') : undefined}
                 onShare={() => setPicker({ kind: 'idea', subjectId: i.ideaId, label: i.name })}
                 shareLabel={shareLabel}
+                onComments={() => setThread({ kind: 'idea', subjectId: i.ideaId, label: i.name })}
+                commentsLabel={commentsLabel}
               />
             ))}
           </ul>
@@ -405,6 +532,21 @@ export function MySharedItemsPage() {
           <span aria-hidden="true">→</span>
         </Link>
       </div>
+
+      {/* The owner's moderation surface (§13.5 V5-P8): the SAME thread the
+          audience sees, opened on the owner's own item. `canDelete` arrives
+          from the server, which grants the item owner every comment — so the
+          delete affordance simply appears on all of them here. One dialog at a
+          time keeps this compact and costs one thread read, not one per row. */}
+      {thread ? (
+        <Dialog
+          phoneSheet
+          title={t('social.myShared.commentsTitle', { name: thread.label })}
+          onClose={() => setThread(null)}
+        >
+          <CommentThread defaultExpanded kind={thread.kind} subjectId={thread.subjectId} />
+        </Dialog>
+      ) : null}
 
       {picker && (picker.kind !== 'portfolio' || portfolioMetadataReady) ? (
         <AudiencePicker

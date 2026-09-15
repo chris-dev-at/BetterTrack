@@ -1102,6 +1102,18 @@ export const portfolioHistoryResponseSchema = z
      * (the intraday grid on 1D/1W/1M, the downsampled daily grid on 6M/1Y/5Y,
      * full daily on MAX — issue #556). */
     performance: z.array(portfolioPerformancePointSchema),
+    /**
+     * Money-weighted (Modified Dietz) return of the served window, percent
+     * (#1669): `(V_end − V_start − ΣF) / (V_start + Σ w·F)` over the same
+     * points and external flows the `performance` curve is built from — MAX
+     * since inception, shorter ranges from the window's first plotted point,
+     * 1D/1W/1M at the intraday flow instants. The `performance` curve stays the
+     * time-weighted return on every range; this is the headline companion
+     * that states what the money earned. `null` when the window has no capital
+     * (denominator ≤ 0). Additive and optional: absent means "not computed"
+     * (an older server, a client-side twin), never 0.
+     */
+    moneyWeightedPct: z.number().nullable().optional(),
     assets: z.array(portfolioHistoryOverlaySchema).optional(),
   })
   .strict();
@@ -1264,10 +1276,21 @@ export const cashMovementSchema = z
      * flat tag set (absent until a surface serves it, `[]` = untagged);
      * `originalCurrency` is set only when the row entered from a non-EUR feed and
      * its magnitude was carried over 1:1 — `amountEur` stays authoritative and
-     * the ledger never converts.
+     * the ledger never converts; `dedupHash` is the statement-import idempotency
+     * key (`UNIQUE(portfolio, dedup_hash)`), present only on rows an import
+     * landed.
+     *
+     * `dedupHash` rides the OWNER's own ledger read for one reason: the paranoid
+     * capture (`apps/web/src/user/vault/ui/migration.ts`) drains the ledger
+     * through exactly this DTO, and enable hard-deletes the server cleartext —
+     * a key the DTO cannot carry is destroyed by the round trip, after which a
+     * re-imported statement books every row a second time (NULLs never collide
+     * in the unique index). It is a hash of the caller's own row returned only
+     * to that caller, so it widens no one's visibility.
      */
     tags: z.array(z.string().uuid()).optional(),
     originalCurrency: z.string().nullable().optional(),
+    dedupHash: z.string().nullable().optional(),
   })
   .strict();
 export type CashMovement = z.infer<typeof cashMovementSchema>;

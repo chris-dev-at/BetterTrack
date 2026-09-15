@@ -197,15 +197,24 @@ export function createMirrorInviteCleanupJob(
  *    contradicts the full state its own latest op carries.
  * (c) and (d) are the crash window (a) structurally cannot see: the origin
  * commits its local effect BEFORE it appends, and an update leaves the link
- * intact while a delete takes the link with it. Each scan reads one page and
- * resumes where it stopped, so a backlog past the row limit drains.
- * Every finding is logged onto the admin Problems page (V5-P2) — the (0)
- * repairs as a healed anomaly, (a)/(b) as anomalies for an admin to act on. The
+ * intact while a delete takes the link with it.
+ * Findings are logged onto the admin Problems page (V5-P2) — the (0) repairs as
+ * a healed anomaly, (a)–(d) as anomalies for an admin to act on — as ONE row per
+ * anomaly class carrying the count, not one row per finding. The
  * `webhookJobs`/`apiKeyJobs`/`mirrorInviteCleanup` daily-sweep pattern.
  * Idempotency keys: repair convergence is `(chain_id, status,
  * active_owner_count)`; surfaced findings fold on `(problem_kind,
- * normalized_title, message)` in the Problems repository.
+ * normalized_title, message)` in the Problems repository. (a)–(d) are paged in
+ * the service (a keyset cursor per detector), so a set larger than one run's
+ * bound is walked across runs instead of being cut off at a fixed first page.
  */
+
+/**
+ * How many findings of one class a Problems row names individually. The rest
+ * are counted, not listed: the row is a signal to go look, and an unbounded
+ * example list would just re-create the storm inside a single context blob.
+ */
+export const MIRROR_SWEEP_ITEMISED_EXAMPLES = 5;
 
 export const MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID = 'mirror.consistencySweep';
 /** Daily at 05:05 Europe/Vienna — off-peak, just after the invite sweep. */
@@ -226,62 +235,97 @@ export function createMirrorConsistencySweepJob(
     async handler(_job, ctx) {
       const result = await deps.mirror.runConsistencySweep();
 
-      // captureError folds by (kind, normalized title, message) and rate-caps, so
-      // a storm of identical residuals costs one Problems row with an occurrence
-      // count — the title names the anomaly class, the context carries specifics.
-      const surface = (title: string, message: string, context: ProblemCaptureContext): void => {
-        const err = new Error(message);
-        err.name = title;
-        deps.problems.captureError(err, context);
+      /**
+       * One Problems row per anomaly CLASS, never one per finding. `captureError`
+       * folds on `(kind, normalized title, message)`, so the message must be
+       * id-free — the previous per-row message embedded the row and portfolio
+       * ids, which normalize inconsistently (a hex group that is all digits
+       * collapses, a mixed one does not), so a storm of N residuals could spend
+       * N distinct fingerprints and exhaust the whole minute's `error` budget,
+       * taking unrelated application errors down with it. The findings ride in
+       * the context: a bounded list of examples plus the counts that say how
+       * many were NOT named individually, and how many this run's page bound
+       * left for the next run.
+       */
+      const surface = <T>(spec: {
+        title: string;
+        message: string;
+        rows: readonly T[];
+        deferred: number;
+        example: (row: T) => ProblemCaptureContext;
+      }): void => {
+        if (spec.rows.length === 0) return;
+        const examples = spec.rows.slice(0, MIRROR_SWEEP_ITEMISED_EXAMPLES).map(spec.example);
+        const context: ProblemCaptureContext = {
+          found: spec.rows.length,
+          itemised: examples.length,
+          notItemised: spec.rows.length - examples.length,
+          deferredToLaterRuns: spec.deferred,
+          examples,
+        };
+        const err = new Error(spec.message);
+        err.name = spec.title;
+        deps.problems.captureError(err, context, { occurrences: spec.rows.length });
       };
 
-      for (const r of result.ownerlessRepaired) {
-        surface(
-          'mirror: ownerless chain repaired',
-          `chain ${r.chainId} had no active owner — applied §7 succession (${r.outcome})`,
-          { chainId: r.chainId, outcome: r.outcome, newOwnerUserId: r.newOwnerUserId },
-        );
-      }
-      for (const r of result.danglingOriginRows) {
-        surface(
-          'mirror: origin row without op',
-          `mirror row ${r.mirrorId} (${r.kind}) in portfolio ${r.portfolioId} has no op`,
-          { chainId: r.chainId, portfolioId: r.portfolioId, mirrorId: r.mirrorId, kind: r.kind },
-        );
-      }
-      for (const r of result.orphanedLocalRows) {
-        surface(
-          'mirror: orphaned synced transaction',
-          `transaction ${r.localId} in synced portfolio ${r.portfolioId} has no mirror link`,
-          { portfolioId: r.portfolioId, localId: r.localId },
-        );
-      }
-      for (const r of result.divergentMissingRows) {
-        surface(
-          'mirror: entry missing from a caught-up copy',
-          `entry ${r.mirrorId} is alive at seq ${r.opSeq} (${r.opKind}) but portfolio ${r.portfolioId} no longer has it`,
-          {
-            chainId: r.chainId,
-            portfolioId: r.portfolioId,
-            mirrorId: r.mirrorId,
-            opKind: r.opKind,
-            opSeq: r.opSeq,
-          },
-        );
-      }
-      for (const r of result.divergentTransactionRows) {
-        surface(
-          'mirror: synced transaction diverges from its op',
-          `transaction ${r.localId} in portfolio ${r.portfolioId} contradicts entry ${r.mirrorId}'s op at seq ${r.opSeq}`,
-          {
-            chainId: r.chainId,
-            portfolioId: r.portfolioId,
-            mirrorId: r.mirrorId,
-            localId: r.localId,
-            opSeq: r.opSeq,
-          },
-        );
-      }
+      surface({
+        title: 'mirror: ownerless chain repaired',
+        message: 'active chains had no owner and were repaired by §7 succession',
+        rows: result.ownerlessRepaired,
+        deferred: 0,
+        example: (r) => ({
+          chainId: r.chainId,
+          outcome: r.outcome,
+          newOwnerUserId: r.newOwnerUserId,
+        }),
+      });
+      surface({
+        title: 'mirror: origin row without op',
+        message: 'origin mirror rows exist whose mirror id has no op (design §2 (a) residual)',
+        rows: result.danglingOriginRows,
+        deferred: result.deferred.danglingOriginRows,
+        example: (r) => ({
+          chainId: r.chainId,
+          portfolioId: r.portfolioId,
+          mirrorId: r.mirrorId,
+          kind: r.kind,
+        }),
+      });
+      surface({
+        title: 'mirror: orphaned synced transaction',
+        message: 'transactions in synced copies have no mirror link (design §2 (b) residual)',
+        rows: result.orphanedLocalRows,
+        deferred: result.deferred.orphanedLocalRows,
+        example: (r) => ({ portfolioId: r.portfolioId, localId: r.localId }),
+      });
+      surface({
+        title: 'mirror: entry missing from a caught-up copy',
+        message:
+          'entries the oplog keeps alive are missing from copies that already applied past them (design §2 (c) residual)',
+        rows: result.divergentMissingRows,
+        deferred: result.deferred.divergentMissingRows,
+        example: (r) => ({
+          chainId: r.chainId,
+          portfolioId: r.portfolioId,
+          mirrorId: r.mirrorId,
+          opKind: r.opKind,
+          opSeq: r.opSeq,
+        }),
+      });
+      surface({
+        title: 'mirror: synced transaction diverges from its op',
+        message:
+          'synced transactions contradict the full state their own latest op carries (design §2 (d) residual)',
+        rows: result.divergentTransactionRows,
+        deferred: result.deferred.divergentTransactionRows,
+        example: (r) => ({
+          chainId: r.chainId,
+          portfolioId: r.portfolioId,
+          mirrorId: r.mirrorId,
+          localId: r.localId,
+          opSeq: r.opSeq,
+        }),
+      });
 
       ctx.logger.info(
         {
@@ -290,6 +334,7 @@ export function createMirrorConsistencySweepJob(
           orphanedLocalRows: result.orphanedLocalRows.length,
           divergentMissingRows: result.divergentMissingRows.length,
           divergentTransactionRows: result.divergentTransactionRows.length,
+          deferred: result.deferred,
         },
         'mirror.consistencySweep complete',
       );

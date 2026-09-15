@@ -6,6 +6,9 @@ import type { Logger } from '../../logger';
 import * as schema from '../../data/schema';
 import { createAuditRepository } from '../../data/repositories/auditRepository';
 import { createEmailLogRepository } from '../../data/repositories/emailLogRepository';
+import { createNotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
+import { createProblemRepository } from '../../data/repositories/problemRepository';
+import { createUsageAnalyticsRepository } from '../../data/repositories/usageAnalyticsRepository';
 import { createUserRepository, type UserRepository } from '../../data/repositories/userRepository';
 import {
   pinQuickAuthMarkerKey,
@@ -19,6 +22,8 @@ import {
   DATA_RETENTION_CLEANUP_CRON,
   DATA_RETENTION_CLEANUP_SCHEDULER_ID,
   DATA_RETENTION_CLEANUP_TZ,
+  DIGEST_QUEUE_RETENTION_DAYS,
+  type DataRetentionCleanupJobDeps,
 } from '../definitions/retentionJobs';
 import type { JobContext } from '../types';
 
@@ -36,6 +41,9 @@ beforeEach(async () => {
 const noUsers: Pick<UserRepository, 'listByIds'> = { listByIds: async () => [] };
 const noVaultStaging = { cleanupExpiredEnableStaging: async () => 0 };
 const noVaultCandidates = { cleanupExpiredServerCandidates: async () => 0 };
+const noProblems = { deleteOlderThan: async () => 0 };
+const noUsageEvents = { deleteEventsOlderThan: async () => 0 };
+const noDigestQueue = { deleteDeliveredOlderThan: async () => 0 };
 
 function ctx(jobLogger: Logger = logger): JobContext {
   return {
@@ -43,6 +51,7 @@ function ctx(jobLogger: Logger = logger): JobContext {
     deadLetter: {} as JobContext['deadLetter'],
     redis: harness.ctx.redis,
     logger: jobLogger,
+    isFeatureEnabled: async () => true,
   };
 }
 
@@ -53,7 +62,12 @@ describe('data.retentionCleanup', () => {
       emailLog: { deleteOlderThan: vi.fn() },
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
     });
@@ -103,7 +117,12 @@ describe('data.retentionCleanup', () => {
       emailLog,
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
       batchSize: 1,
@@ -137,7 +156,12 @@ describe('data.retentionCleanup', () => {
       emailLog: { deleteOlderThan: emailDelete },
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 180,
       now: () => NOW,
@@ -157,7 +181,12 @@ describe('data.retentionCleanup', () => {
       emailLog: { deleteOlderThan: vi.fn() },
       vaultStaging: { cleanupExpiredEnableStaging },
       vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       batchSize: 2,
@@ -174,9 +203,12 @@ describe('data.retentionCleanup', () => {
         emailLogPruned: 0,
         abandonedVaultStagesExamined: 3,
         expiredVaultCandidatesDisposed: 0,
+        problemsPruned: 0,
+        usageEventsPruned: 0,
+        digestQueuePruned: 0,
         deferredToNextRun: false,
       },
-      'expired audit and email-log rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
+      'expired audit, email-log, problem, usage-event and delivered digest-queue rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
     );
   });
 
@@ -197,7 +229,12 @@ describe('data.retentionCleanup', () => {
       emailLog: { deleteOlderThan: vi.fn() },
       vaultStaging: noVaultStaging,
       vaultCandidates: { cleanupExpiredServerCandidates },
+      digestQueue: noDigestQueue,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       batchSize: 2,
@@ -217,6 +254,92 @@ describe('data.retentionCleanup', () => {
     );
   });
 
+  /**
+   * §13.5 V5-P2 arc (d): the capture's rate cap bounds how fast `problems`
+   * grows, never how big it gets, and raw `usage_events` — a per-user viewing
+   * history — had no time-based sweep at all. Both now age out on the existing
+   * daily cron, and only the rows past the window may go.
+   */
+  it('prunes problems past their window and leaves the recent ones', async () => {
+    const repo = createProblemRepository(harness.db);
+    const seen = (daysAgo: number, fingerprint: string) => ({
+      fingerprint,
+      kind: 'error' as const,
+      title: 'Error',
+      message: fingerprint,
+      context: null,
+      seenAt: new Date(NOW.getTime() - daysAgo * DAY_MS),
+      occurrences: 1,
+    });
+    await repo.upsert(seen(91, 'stale-open'));
+    await repo.upsert(seen(400, 'ancient'));
+    await repo.upsert(seen(89, 'recent'));
+
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
+      problems: repo,
+      usageEvents: noUsageEvents,
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      problemRetentionDays: 90,
+      usageEventRetentionDays: 0,
+      batchSize: 1,
+      now: () => NOW,
+    });
+
+    const summary = await job.handler({} as never, ctx());
+
+    expect((await harness.db.select().from(schema.problems)).map((row) => row.fingerprint)).toEqual(
+      ['recent'],
+    );
+    expect(summary).toMatchObject({ problemsPruned: 2 });
+  });
+
+  it('prunes raw usage events past their window and keeps the rollup', async () => {
+    const user = await harness.seedUser({ email: 'usage@bt.test', username: 'usage_user' });
+    const day = (daysAgo: number) =>
+      new Date(NOW.getTime() - daysAgo * DAY_MS).toISOString().slice(0, 10);
+    await harness.db.insert(schema.usageEvents).values([
+      { userId: user.id, feature: 'assets.view', assetId: 'AAPL', day: day(181), hits: 3 },
+      { userId: user.id, feature: 'assets.view', assetId: 'MSFT', day: day(400), hits: 1 },
+      { userId: user.id, feature: 'assets.view', assetId: 'SAP', day: day(179), hits: 2 },
+    ]);
+    await harness.db
+      .insert(schema.usageDaily)
+      .values([{ day: day(400), feature: '*', events: 1, activeUsers: 1 }]);
+
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
+      problems: noProblems,
+      usageEvents: createUsageAnalyticsRepository(harness.db, harness.db),
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 180,
+      batchSize: 1,
+      now: () => NOW,
+    });
+
+    const summary = await job.handler({} as never, ctx());
+
+    expect((await harness.db.select().from(schema.usageEvents)).map((row) => row.assetId)).toEqual([
+      'SAP',
+    ]);
+    // The aggregate rollup the analytics page reads is deliberately untouched.
+    expect(await harness.db.select().from(schema.usageDaily)).toHaveLength(1);
+    expect(summary).toMatchObject({ usageEventsPruned: 2 });
+  });
+
   it('stays silent when no sweep found anything to dispose', async () => {
     const info = vi.fn();
     const job = createDataRetentionCleanupJob({
@@ -224,7 +347,12 @@ describe('data.retentionCleanup', () => {
       emailLog: { deleteOlderThan: vi.fn() },
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       now: () => NOW,
@@ -265,7 +393,12 @@ describe('data.retentionCleanup — legacy remembered-device bindings', () => {
       emailLog: { deleteOlderThan: vi.fn().mockResolvedValue(0) },
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
       users,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       now: () => NOW,
@@ -370,5 +503,150 @@ describe('data.retentionCleanup — legacy remembered-device bindings', () => {
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(LIVE_DEVICE))).toBeNull();
     // The index the sweep resurrected after deletion cleared it is gone again.
     expect(await harness.ctx.redis.exists(indexKey)).toBe(0);
+  });
+});
+
+/**
+ * The digest queue (§13.5 V5-P3) was the one operational table with no sweep
+ * (#1696): a claim only stamps `delivered_at`, so every delivered row — each
+ * carrying a fully rendered title/body — stayed forever, one row per
+ * notification × outbound channel plus one per quiet-hours deferral. These
+ * prove the drain is bounded, cut on the DELIVERY instant, and that the pending
+ * set (the live work list) is untouchable.
+ */
+describe('data.retentionCleanup — delivered digest-queue rows (#1696)', () => {
+  /** A queue row `deliveredDaysAgo` days old, or still pending when null. */
+  function queueRow(userId: string, title: string, deliveredDaysAgo: number | null) {
+    return {
+      userId,
+      type: 'friend.request',
+      channel: 'email' as const,
+      cadence: 'daily' as const,
+      period: 'd:2026-01-01',
+      title,
+      body: 'alice sent you a friend request.',
+      // Created long before the window in every case: age alone must not decide.
+      createdAt: new Date(NOW.getTime() - 400 * DAY_MS),
+      deliveredAt:
+        deliveredDaysAgo === null ? null : new Date(NOW.getTime() - deliveredDaysAgo * DAY_MS),
+    };
+  }
+
+  async function queueTitles(): Promise<string[]> {
+    const rows = await harness.db.select().from(schema.notificationDigestQueue);
+    return rows.map((row) => row.title).sort();
+  }
+
+  function sweepWith(digestQueue: DataRetentionCleanupJobDeps['digestQueue']) {
+    return createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: async () => 0 },
+      emailLog: { deleteOlderThan: async () => 0 },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      digestQueue,
+      users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      now: () => NOW,
+    });
+  }
+
+  it('prunes rows delivered past the window and never a row still pending delivery', async () => {
+    const user = await harness.seedUser({ email: 'digest@bt.test', username: 'digestsweep' });
+    await harness.db.insert(schema.notificationDigestQueue).values([
+      queueRow(user.id, 'expired-1', DIGEST_QUEUE_RETENTION_DAYS + 1),
+      queueRow(user.id, 'expired-2', DIGEST_QUEUE_RETENTION_DAYS + 120),
+      queueRow(user.id, 'inside-window', DIGEST_QUEUE_RETENTION_DAYS - 1),
+      // A quiet-hours deferral queued 400 days ago and not yet released: older
+      // than any cutoff, but sweeping it would silently drop a notification.
+      {
+        ...queueRow(user.id, 'still-pending', null),
+        cadence: 'instant' as const,
+        period: 'deferred',
+        deliverAfter: new Date(NOW.getTime() + DAY_MS),
+      },
+    ]);
+
+    const summary = await sweepWith(createNotificationDigestRepository(harness.db)).handler(
+      {} as never,
+      ctx(),
+    );
+
+    expect(summary).toMatchObject({ digestQueuePruned: 2 });
+    expect(await queueTitles()).toEqual(['inside-window', 'still-pending']);
+  });
+
+  it('bounds the table: delivered periods past the horizon do not accumulate', async () => {
+    const user = await harness.seedUser({ email: 'grow@bt.test', username: 'digestgrowth' });
+    const repo = createNotificationDigestRepository(harness.db);
+    const job = sweepWith(repo);
+
+    // Twelve daily periods × three outbound channels, all delivered past the
+    // horizon, arriving over twelve runs. Without a sweep this is monotonic.
+    for (let period = 0; period < 12; period += 1) {
+      await harness.db.insert(schema.notificationDigestQueue).values(
+        (['email', 'push', 'webpush'] as const).map((channel) => ({
+          ...queueRow(user.id, `p${period}-${channel}`, DIGEST_QUEUE_RETENTION_DAYS + 1 + period),
+          channel,
+        })),
+      );
+      await job.handler({} as never, ctx());
+    }
+    expect(await queueTitles()).toEqual([]);
+
+    // …while the still-fresh period of the last run survives it untouched.
+    await harness.db.insert(schema.notificationDigestQueue).values([queueRow(user.id, 'fresh', 1)]);
+    await job.handler({} as never, ctx());
+    expect(await queueTitles()).toEqual(['fresh']);
+  });
+
+  it('drains in bounded batches under the per-run ceiling, leaving the rest eligible', async () => {
+    const limits: number[] = [];
+    let remaining = 10;
+    const table = {
+      deleteDeliveredOlderThan: async (cutoff: Date, limit: number) => {
+        expect(cutoff.getTime()).toBe(NOW.getTime() - DIGEST_QUEUE_RETENTION_DAYS * DAY_MS);
+        limits.push(limit);
+        const deleted = Math.min(limit, remaining);
+        remaining -= deleted;
+        return deleted;
+      },
+    };
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: async () => 0 },
+      emailLog: { deleteOlderThan: async () => 0 },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      digestQueue: table,
+      users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      batchSize: 2,
+      maxRowsPerRun: 4,
+      now: () => NOW,
+    });
+
+    // One capped run: fixed-size batches, the ceiling stops it, the remainder is
+    // deferred rather than dropped — and the next runs converge.
+    expect(await job.handler({} as never, ctx())).toMatchObject({
+      digestQueuePruned: 4,
+      deferredToNextRun: 1,
+    });
+    expect(limits).toEqual([2, 2]);
+    expect(remaining).toBe(6);
+
+    await job.handler({} as never, ctx());
+    await job.handler({} as never, ctx());
+    const last = await job.handler({} as never, ctx());
+    expect(remaining).toBe(0);
+    expect(last).toMatchObject({ deferredToNextRun: 0 });
   });
 });

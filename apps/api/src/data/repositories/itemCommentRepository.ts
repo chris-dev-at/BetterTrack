@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { ShareKind } from '@bettertrack/contracts';
 
@@ -34,10 +34,12 @@ export interface CommentSubjectRef {
   deletedAt: Date | null;
 }
 
-/** Identity-only thread discovery used before participant privacy locks. */
-export interface CommentParticipantRow {
-  id: string;
-  authorId: string;
+/** One bounded thread read: page size, optional cursor, optional actor snapshot. */
+export interface CommentPageOptions {
+  limit: number;
+  /** Id of the oldest comment of the previous page; its key is resolved in SQL. */
+  before?: string;
+  authorIds?: readonly string[];
 }
 
 export function createItemCommentRepository(db: Database) {
@@ -57,16 +59,48 @@ export function createItemCommentRepository(db: Database) {
     },
 
     /**
-     * Every LIVE comment on one item, oldest-first, joined to the author
-     * identity. `authorIds` is the transition-locked participant snapshot; an
-     * author who was not admitted by that snapshot is never enriched here.
+     * ONE bounded page of LIVE comments on an item, NEWEST-first, joined to the
+     * author identity — a thread is never read whole (§13.5 V5-P8 anti-bloat +
+     * scale). `before` is the ID of the oldest row of the previous page and its
+     * ordering key is resolved IN SQL, so paging walks backwards on the composite
+     * (created_at, id) key at the database's own microsecond precision. Carrying
+     * the timestamp in the cursor instead would truncate it to milliseconds on
+     * the JS `Date` round trip and silently drop every row sitting between the
+     * truncated value and the boundary row's real key. `authorIds` is the
+     * transition-locked participant snapshot; an author who was not admitted by
+     * that snapshot is never enriched here. The caller reverses the page when it
+     * wants oldest-first render order.
+     *
+     * The cursor row is looked up within this same thread and WITHOUT the
+     * tombstone filter (a soft-deleted boundary row must still anchor the walk).
+     * A cursor naming no such row resolves to NULL, which makes the comparison
+     * NULL and yields an empty page — fail-closed, never a silent full read.
+     *
+     * `item_comments_thread_idx` (migration 0111) carries this exact filter and
+     * ordering, so the page is a bounded index scan that stops after `limit`
+     * entries. Before it existed only (kind, subject_id) was indexed and the
+     * database sorted the whole live thread per page (#1725).
      */
     async listForItem(
       kind: ShareKind,
       subjectId: string,
-      authorIds?: readonly string[],
+      options: CommentPageOptions,
     ): Promise<CommentRow[]> {
-      if (authorIds?.length === 0) return [];
+      const { limit, before, authorIds } = options;
+      if (authorIds?.length === 0 || limit <= 0) return [];
+      const cursorKey =
+        before === undefined
+          ? undefined
+          : db
+              .select({ createdAt: itemComments.createdAt, id: itemComments.id })
+              .from(itemComments)
+              .where(
+                and(
+                  eq(itemComments.id, before),
+                  eq(itemComments.kind, kind),
+                  eq(itemComments.subjectId, subjectId),
+                ),
+              );
       return db
         .select({
           id: itemComments.id,
@@ -84,22 +118,38 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
             authorIds ? inArray(itemComments.authorId, [...authorIds]) : undefined,
+            cursorKey
+              ? // drizzle parenthesizes an embedded query builder itself, giving
+                // Postgres its `row_constructor < (subquery)` comparison form.
+                sql`(${itemComments.createdAt}, ${itemComments.id}) < ${cursorKey}`
+              : undefined,
           ),
         )
-        .orderBy(asc(itemComments.createdAt));
+        .orderBy(desc(itemComments.createdAt), desc(itemComments.id))
+        .limit(limit);
     },
 
     /**
-     * Live comment ids + author ids only. Thread reads use this non-content
-     * discovery query to acquire optional author/reaction locks before loading a
-     * body or profile identity.
+     * The DISTINCT live authors of one item's thread — ids only, no content.
+     * Thread reads use this non-content discovery query to acquire optional
+     * author/reaction locks before loading a body or profile identity. Distinct
+     * by author, so it is bounded by the item's audience rather than by how many
+     * comments the thread has accumulated.
+     *
+     * `limit` is a HARD ceiling on that id list, because the caller turns it
+     * into a lock set: a list this scan cannot bound would become a transaction
+     * holding one `users` row lock per entry (#1829). A caller that receives
+     * `limit` rows must treat the answer as truncated and fail closed — see
+     * `commentService.withLockedActors`. Since #1829 this runs ONLY when the
+     * bounded probe below has already found a participant that needs filtering.
      */
     async listParticipantsForItem(
       kind: ShareKind,
       subjectId: string,
-    ): Promise<CommentParticipantRow[]> {
-      return db
-        .select({ id: itemComments.id, authorId: itemComments.authorId })
+      limit: number,
+    ): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ authorId: itemComments.authorId })
         .from(itemComments)
         .where(
           and(
@@ -107,11 +157,74 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
           ),
-        );
+        )
+        .limit(limit);
+      return rows.map((row) => row.authorId);
     },
 
-    /** Count of LIVE comments on one item (drives the collapsed-count UI). */
-    async countForItem(kind: ShareKind, subjectId: string): Promise<number> {
+    /**
+     * Does ANY live comment on this item come from an account that is not in the
+     * `normal` privacy mode? The one question a thread read has to answer before
+     * it can skip the participant enumeration above and the per-participant
+     * privacy locks that follow it (#1829).
+     *
+     * Driven from `users`, not from the thread: `users_privacy_mode_restricted_idx`
+     * (migration 0113) is partial on exactly this predicate, so it holds one
+     * entry per paranoid account — normally none — and the probe stops at an
+     * empty index scan without touching `item_comments` at all. Asking the same
+     * question from the comment side would mean walking the thread's rows on
+     * every 30 s poll, which is the cost this replaces.
+     *
+     * `privacy_mode` is `NOT NULL` and both participant columns cascade from
+     * `users`, so "not normal" here is exactly the guard's own rule (an id whose
+     * account row is gone cannot appear in a thread).
+     */
+    async hasRestrictedParticipant(kind: ShareKind, subjectId: string): Promise<boolean> {
+      const rows = await db
+        .select({ one: sql<number>`1` })
+        .from(users)
+        .where(
+          and(
+            ne(users.privacyMode, 'normal'),
+            exists(
+              db
+                .select({ one: sql<number>`1` })
+                .from(itemComments)
+                .where(
+                  and(
+                    eq(itemComments.authorId, users.id),
+                    eq(itemComments.kind, kind),
+                    eq(itemComments.subjectId, subjectId),
+                    isNull(itemComments.deletedAt),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    },
+
+    /**
+     * Count of LIVE comments on one item — the collapsed-count UI and the paged
+     * thread's `commentCount` both read it, so neither has to load bodies.
+     * `authorIds` applies the SAME participant snapshot the page read uses, so a
+     * count can never disclose a comment the page itself filters out.
+     *
+     * The thread read calls this only when its own page cannot prove the total
+     * (a page that filled, or an older page — see `buildThread`); an ordinary
+     * thread's poll never reaches here. When it is reached, the partial
+     * `item_comments_thread_idx` proves `deleted_at IS NULL` from the index, so
+     * the unfiltered form is an index-only scan over the thread's live entries;
+     * the `authorIds` form filters on a column the index does not carry, so it
+     * still checks the heap per candidate row.
+     */
+    async countForItem(
+      kind: ShareKind,
+      subjectId: string,
+      authorIds?: readonly string[],
+    ): Promise<number> {
+      if (authorIds?.length === 0) return 0;
       const [row] = await db
         .select({ n: sql<number>`count(*)::int` })
         .from(itemComments)
@@ -120,6 +233,7 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.kind, kind),
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
+            authorIds ? inArray(itemComments.authorId, [...authorIds]) : undefined,
           ),
         );
       return row?.n ?? 0;
@@ -144,14 +258,32 @@ export function createItemCommentRepository(db: Database) {
      * Soft-delete one LIVE comment, stamping who removed it. Returns whether a
      * row transitioned (a second delete is a no-op → false). The caller has
      * already proven the deleter may moderate (author or item owner).
+     *
+     * The tombstone keeps thread continuity — a paged cursor still anchors on
+     * the row, and `deleted_by` keeps the moderation auditable — but the CONTENT
+     * goes (#1780): the body is cleared and `purgeDependents` removes the
+     * comment's reactions, both inside ONE transaction with the tombstone stamp.
+     * Retaining the exact text an owner moderated away, with no purge and no
+     * retention sweep, is not what a tombstone is for; and the reaction rows,
+     * which every read filters out through the tombstone, would otherwise be
+     * permanently unreachable AND unremovable — the schema's promised
+     * `comment_id` FK cascade only fires on a ROW delete the API never performs.
      */
-    async softDelete(commentId: string, deletedBy: string): Promise<boolean> {
-      const rows = await db
-        .update(itemComments)
-        .set({ deletedAt: new Date(), deletedBy })
-        .where(and(eq(itemComments.id, commentId), isNull(itemComments.deletedAt)))
-        .returning({ id: itemComments.id });
-      return rows.length > 0;
+    async softDelete(
+      commentId: string,
+      deletedBy: string,
+      purgeDependents?: (tx: Database) => Promise<void>,
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .update(itemComments)
+          .set({ deletedAt: new Date(), deletedBy, body: '' })
+          .where(and(eq(itemComments.id, commentId), isNull(itemComments.deletedAt)))
+          .returning({ id: itemComments.id });
+        if (rows.length === 0) return false;
+        await purgeDependents?.(tx);
+        return true;
+      });
     },
   };
 }

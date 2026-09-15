@@ -202,6 +202,61 @@ describe('FI mode: progressive capital-income tax (#635)', () => {
     expect(years[0]!.de).toBeUndefined();
   });
 
+  it('#1512: a frozen FI sell keeps its FIFO basis in the manual-regime report', async () => {
+    const { agent, pid, asset } = await setupFi();
+
+    // Lots 100 @ 10 then 100 @ 20; selling 100 @ 30 under FI consumes the
+    // FIRST lot: realized 2,000 (the moving average, basis 15, would say 1,500).
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-03-01T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 20,
+      executedAt: '2026-03-02T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 100,
+      price: 30,
+      executedAt: '2026-04-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+
+    // The literal manual regime: no derivation, every frozen row renders as
+    // recorded — INCLUDING the basis it was frozen under. Before #1512 the
+    // report's manual-mode branch listed DE and FIFO-custom by hand and fell
+    // through to the moving average for FI.
+    const switched = await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'manual_per_trade' });
+    expect(switched.status, JSON.stringify(switched.body)).toBe(200);
+
+    const report = await agent.get(`/api/v1/portfolios/${pid}/reports/tax-years/2026`);
+    expect(report.status, JSON.stringify(report.body)).toBe(200);
+    expect(report.body.positions).toHaveLength(1);
+    expect(report.body.positions[0].sells).toHaveLength(1);
+    expect(report.body.positions[0].sells[0]).toMatchObject({
+      taxMode: 'country_specific',
+      taxCountry: 'FI',
+      taxAmountEur: 600,
+      realizedPnlEur: 2000,
+      costBasisEur: 1000,
+    });
+    expect(report.body.positions[0].realizedPnlEur).toBe(2000);
+    expect(report.body.summary).toMatchObject({ year: 2026, realizedPnlEur: 2000 });
+    // Negative space: the moving-average figure must not appear anywhere.
+    expect(JSON.stringify(report.body)).not.toContain('1500');
+  });
+
   it('switching AT→FI re-derives the year progressively', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

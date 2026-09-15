@@ -69,6 +69,23 @@ describe('conditionalGet middleware', () => {
     expect(res.status).toBe(304);
   });
 
+  it('refuses a wildcard If-None-Match on a live-today resource (#1762)', async () => {
+    // RFC 7232 §3.2 makes `*` match any existing representation, which on a
+    // liveToday route would 304 across every fresh intraday quote, forever —
+    // the one thing the module guarantees cannot happen. The guard wins.
+    const app = buildApp({ liveToday: true });
+    const res = await request(app)
+      .get('/r')
+      .set('If-None-Match', '*' as string);
+    expect(res.status).toBe(200);
+    expect(res.body.value).toBe('world');
+    // The real (body-derived) validator still gates a 304 on the same route.
+    const byEtag = await request(app)
+      .get('/r')
+      .set('If-None-Match', res.headers.etag as string);
+    expect(byEtag.status).toBe(304);
+  });
+
   it('returns 200 when If-None-Match is stale', async () => {
     const res = await request(buildApp())
       .get('/r')
@@ -106,6 +123,45 @@ describe('conditionalGet middleware', () => {
       .set('x-last-modified', when.toISOString())
       .set('If-Modified-Since', when.toUTCString());
     expect(res.status).toBe(304);
+  });
+
+  it('answers 200 when the validator is newer than If-Modified-Since by less than a second (#1762)', async () => {
+    // The client holds 12:00:03; the resource changed at 12:00:03.400. Flooring
+    // the validator before the compare (what shipped) makes those equal and
+    // answers 304 with the pre-change body — the exact staleness the flooring
+    // was commented as preventing. An exact compare answers 200.
+    const app = buildApp({ liveToday: false });
+    const res = await request(app)
+      .get('/r')
+      .set('x-last-modified', '2026-07-10T12:00:03.400Z')
+      .set('If-Modified-Since', new Date('2026-07-10T12:00:03.000Z').toUTCString());
+    expect(res.status).toBe(200);
+    expect(res.body.value).toBe('world');
+  });
+
+  it('never turns its own advertised Last-Modified into a stale 304 (#1762)', async () => {
+    // What goes out is an HTTP-date (whole seconds). Echoing exactly that back
+    // may only produce a 304 while the validator is unchanged: a sub-second
+    // advance inside the advertised second still answers 200.
+    const app = buildApp({ liveToday: false });
+    const first = await request(app).get('/r').set('x-last-modified', '2026-07-10T12:00:03.400Z');
+    const advertised = first.headers['last-modified'] as string;
+    expect(advertised).toBe(new Date('2026-07-10T12:00:03.000Z').toUTCString());
+
+    const moved = await request(app)
+      .get('/r')
+      .set('x-last-modified', '2026-07-10T12:00:03.900Z')
+      .set('If-Modified-Since', advertised);
+    expect(moved.status).toBe(200);
+
+    // A whole-second watermark — what the catalog write triggers guarantee — is
+    // advertised losslessly, so an unchanged one still revalidates to a 304.
+    const whole = await request(app).get('/r').set('x-last-modified', '2026-07-10T12:00:04.000Z');
+    const unchanged = await request(app)
+      .get('/r')
+      .set('x-last-modified', '2026-07-10T12:00:04.000Z')
+      .set('If-Modified-Since', whole.headers['last-modified'] as string);
+    expect(unchanged.status).toBe(304);
   });
 
   it('never lets If-Modified-Since mask a live-today resource', async () => {

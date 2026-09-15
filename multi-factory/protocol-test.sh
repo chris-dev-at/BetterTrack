@@ -14,7 +14,22 @@ check(){
 expect_ok(){ if "$2"; then ok "$1"; else bad "$1"; fi; }
 expect_fail(){ if "$2"; then bad "$1"; else ok "$1"; fi; }
 
+# Hermetic environment. The suite also runs INSIDE a factory container (the
+# autorun.sh --self-test deploy hook), where compose exports MF_MODELS_FILE,
+# MF_REQUEUE_MAX, MF_LIMIT_NAPS_MAX, the composer caps and CC_* for the live
+# fleet. Every one of those silently overrides a fixture: an inherited
+# MF_MODELS_FILE alone reddened 42 checks here. Own the whole namespace.
+unset MF_MODELS_FILE MF_ROLE_TIMEOUT MF_REQUEUE_MAX MF_MERGE_LOOKAHEAD \
+  MF_LIMIT_NAPS_MAX MF_COMPOSER_COOLDOWN MF_COMPOSER_BACKOFF_MAX \
+  MF_COMPOSER_PROTOCOL_ATTEMPTS MF_COMPOSER_PROTOCOL_COOLDOWN \
+  MF_COMPOSER_PROTOCOL_BACKOFF_MAX MF_COMPOSER_MAX_TURNS MF_COMPOSER_TIMEOUT \
+  MF_SOL_COMPOSER_TIMEOUT MF_SOL_COMPOSER_MAX_TURNS COMPOSER_BATCH \
+  CC_ROLE CC_SLOT CC_EFFORT CC_ISSUE CC_MAX_TURNS CC_TIMEOUT 2>/dev/null || true
+# claudex-test.sh drives autorun.sh with a stubbed docker; without this the
+# start path would re-enter this very suite.
+export MF_SKIP_SELF_TEST=1
 export MFSTATE=$T/state STATE=$T/cstate REPO_DIR=$T/repo LOG=$T/provider.log
+export MF_MODELS_FILE=$MFSTATE/control/models.json
 export REPO=stub/repo WORKERS=1 MF_DRY_RUN=0
 mkdir -p "$MFSTATE/control" "$MFSTATE/assignments" "$MFSTATE/status" \
   "$MFSTATE/merge-queue" "$MFSTATE/logs" "$MFSTATE/ci-fix" "$MFSTATE/triage" \
@@ -24,12 +39,22 @@ mkdir -p "$MFSTATE/control" "$MFSTATE/assignments" "$MFSTATE/status" \
 # including 124, which is exactly what the provider wrapper must observe.
 cat >"$T/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
+[ -n "${TIMEOUT_ARGS_FILE:-}" ] && printf '%s\n' "$1" >>"$TIMEOUT_ARGS_FILE"
 shift
 exec "$@"
+STUB
+# Claude stub for the assembled-command checks: records argv, then returns the
+# structured result line cc() reads its verdict from.
+cat >"$T/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$CLAUDE_ARGS_FILE"
+printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","num_turns":3,"total_cost_usd":0.5}'
+exit 0
 STUB
 cat >"$T/bin/codex" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$CODEX_ARGS_FILE"
+[ -n "${CODEX_CALLS_FILE:-}" ] && printf 'call\n' >>"$CODEX_CALLS_FILE"
 case "$CODEX_CASE" in
   ok)
     printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":9,"cached_input_tokens":2,"output_tokens":3}}'
@@ -46,17 +71,72 @@ case "$CODEX_CASE" in
     printf '%s\n' '{"type":"error","message":"provider rejected request"}'
     printf '%s\n' '{"type":"turn.completed","usage":{}}'
     exit 0;;
+  limit)
+    printf '%s\n' '{"type":"error","message":"You have hit your usage limit"}'
+    exit 0;;
 esac
 STUB
-cat >"$T/bin/agy" <<'STUB'
+# opencode stub. The defining trait being pinned here: `opencode run` exits 0
+# even when the run failed, so every non-timeout case below returns 0 and the
+# outcome has to be read out of the event stream.
+cat >"$T/bin/opencode" <<'STUB'
 #!/usr/bin/env bash
-case "$AGY_CASE" in
-  ok) echo ok; exit 0;;
-  nonzero) echo "agy failed"; exit 9;;
+printf '%s\n' "$*" >"$OPENCODE_ARGS_FILE"
+step_finish(){ # $1=reason $2=input $3=output $4=reasoning $5=cache-write $6=cache-read $7=cost
+  printf '{"type":"step_finish","part":{"type":"step-finish","reason":"%s","tokens":{"total":%s,"input":%s,"output":%s,"reasoning":%s,"cache":{"write":%s,"read":%s}},"cost":%s}}\n' \
+    "$1" "$(( $2 + $3 + $6 ))" "$2" "$3" "$4" "$5" "$6" "$7"
+}
+case "$OPENCODE_CASE" in
+  ok)
+    printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+    printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE_OK"}}'
+    step_finish stop 9986 18 0 0 128 0
+    exit 0;;
+  multistep)
+    printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+    printf '%s\n' '{"type":"tool_use","part":{"type":"tool","tool":"read"}}'
+    step_finish tool-calls 9996 85 0 0 128 0
+    printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+    step_finish stop 190 42 7 3 10112 0
+    exit 0;;
+  paidsteps)
+    step_finish stop 100 50 0 0 0 0.0125
+    exit 0;;
+  nocost)
+    printf '%s\n' '{"type":"step_finish","part":{"type":"step-finish","reason":"stop","tokens":{"total":150,"input":100,"output":50,"reasoning":0,"cache":{"write":0,"read":0}}}}'
+    exit 0;;
+  nousage)
+    printf '%s\n' '{"type":"text","part":{"type":"text","text":"truncated"}}'
+    exit 0;;
+  errorjson)
+    printf '%s\n' '{"type":"error","error":{"name":"UnknownError","data":{"message":"provider rejected request"}}}'
+    step_finish stop 10 5 0 0 0 0
+    exit 0;;
+  modelnotfound)
+    printf '%s\n' '{"type":"error","error":{"name":"UnknownError","data":{"message":"Model not found: openrouter/stealth/ox-alpha."}}}'
+    exit 0;;
+  limitonce)
+    if [ -s "$OPENCODE_LIMIT_FLAG" ]; then
+      printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+      step_finish stop 10 5 0 0 0 0
+      exit 0
+    fi
+    printf 'x' >"$OPENCODE_LIMIT_FLAG"
+    printf '%s\n' '{"type":"error","error":{"name":"APIError","data":{"message":"429 too many requests"}}}'
+    exit 0;;
+  timeout)
+    exit 124;;
 esac
 STUB
-chmod +x "$T/bin/timeout" "$T/bin/codex" "$T/bin/agy"
+chmod +x "$T/bin/timeout" "$T/bin/codex" "$T/bin/claude" "$T/bin/opencode"
 export PATH=$T/bin:$PATH CODEX_ARGS_FILE=$T/codex.args
+export OPENCODE_ARGS_FILE=$T/opencode.args OPENCODE_LIMIT_FLAG=$T/opencode.limit
+# cc_opencode fails closed without a credential, so give the stub run one.
+export MF_OPENCODE_HOME=$T/opencode-home MF_OPENCODE_CONFIG=$T/opencode-config.json
+mkdir -p "$MF_OPENCODE_HOME/share/opencode"
+printf '%s\n' '{"openrouter":{"type":"api","key":"test-key-not-a-real-credential"}}' \
+  >"$MF_OPENCODE_HOME/share/opencode/auth.json"
+printf '%s\n' '{}' >"$MF_OPENCODE_CONFIG"
 
 log(){ :; }; notify(){ :; }
 ledger_record(){ LAST_LEDGER_RES=$4; LAST_LEDGER_OUTCOME=$6; }
@@ -179,10 +259,198 @@ check "actual failed ledger row is not laundered to a zero estimate" null \
 check "actual failed ledger row reports unavailable coverage" unavailable \
   "$(jq -r .coverage <<<"$INCOMPLETE_ANALYTICS")"
 
-AGY_CASE=ok; export AGY_CASE
-cc_gemini gemini-test prompt; check "Gemini rc=0 succeeds" 0 "$?"
-AGY_CASE=nonzero; export AGY_CASE
-cc_gemini gemini-test prompt; check "Gemini nonzero rc is preserved" 1 "$?"
+echo "— usage-limit naps are bounded (MF_LIMIT_NAPS_MAX)"
+# Without the cap a quota-dead provider napped forever: the worker looked alive
+# while doing nothing. The bound is "nap at most MAX times, then fail the role
+# run and let the normal retry/triage path take over".
+CODEX_CASE=limit; export CODEX_CASE
+CODEX_CALLS_FILE=$T/codex-nap-calls; export CODEX_CALLS_FILE
+: >"$CODEX_CALLS_FILE"
+MF_LIMIT_NAPS_MAX=2 cc_codex gpt-5.6-sol low prompt
+check "a quota-dead provider fails the role run instead of napping forever" 1 "$?"
+check "the run spends its nap budget and no more" 3 \
+  "$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
+check "a napped limit is ledgered as a retry, never as success" retry "$LAST_LEDGER_OUTCOME"
+: >"$CODEX_CALLS_FILE"
+MF_LIMIT_NAPS_MAX=0 cc_codex gpt-5.6-sol low prompt
+check "a zero nap budget fails on the first usage limit" 1 "$?"
+check "a zero nap budget spends exactly one invocation" 1 \
+  "$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
+unset CODEX_CALLS_FILE
+
+echo "— composer role caps reach the assembled claude command (#1623)"
+# mf_cc sets CC_MAX_TURNS/CC_TIMEOUT for the composer; this is the other half —
+# cc() must actually put them on the command line, or the cap is decoration.
+CAPS_ARGS=$T/claude-args
+CAPS_TIMEOUT=$T/claude-timeout
+rm -f "$CAPS_ARGS" "$CAPS_TIMEOUT"
+CLAUDE_ARGS_FILE=$CAPS_ARGS TIMEOUT_ARGS_FILE=$CAPS_TIMEOUT \
+  LEDGER=$T/caps-ledger.jsonl FACTORY_NAME=multi LOG=$T/caps.log \
+  bash -c '. ../factory/lib.sh
+    CC_ROLE=composer CC_EFFORT=xhigh CC_MAX_TURNS=60 CC_TIMEOUT=1800 \
+      cc claude-opus-5 prompt' >/dev/null 2>&1
+check "the capped claude run passes --max-turns to the CLI" 1 \
+  "$(grep -c -- '--max-turns 60' "$CAPS_ARGS")"
+check "the capped claude run keeps its effort flag" 1 \
+  "$(grep -c -- '--effort xhigh' "$CAPS_ARGS")"
+check "the capped claude run is wrapped in its role timeout" 1800 "$(<"$CAPS_TIMEOUT")"
+rm -f "$CAPS_ARGS" "$CAPS_TIMEOUT"
+CLAUDE_ARGS_FILE=$CAPS_ARGS TIMEOUT_ARGS_FILE=$CAPS_TIMEOUT \
+  LEDGER=$T/caps-ledger.jsonl FACTORY_NAME=multi LOG=$T/caps.log \
+  bash -c '. ../factory/lib.sh; CC_ROLE=writer cc claude-opus-4-8 prompt' >/dev/null 2>&1
+check "an uncapped role's command line carries no turn cap" 0 \
+  "$(grep -c -- '--max-turns' "$CAPS_ARGS")"
+check "an uncapped role is not wrapped in a timeout" 0 \
+  "$([ -s "$CAPS_TIMEOUT" ] && echo 1 || echo 0)"
+unset CAPS_ARGS CAPS_TIMEOUT
+
+echo "— opencode transport, event-stream outcome and free-preview ledger"
+OPENCODE_CASE=ok; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "opencode step_finish reason=stop succeeds" 0 "$?"
+check "opencode success ledger outcome" ok "$LAST_LEDGER_OUTCOME"
+grep -q -- "--dir $REPO_DIR" "$OPENCODE_ARGS_FILE" \
+  && ok "opencode runs against REPO_DIR (no --cd equivalent needed)" \
+  || bad "opencode should pass --dir \$REPO_DIR"
+grep -q -- '--format json' "$OPENCODE_ARGS_FILE" \
+  && ok "opencode requests the parseable event stream" \
+  || bad "opencode should run with --format json"
+grep -q -- '--variant' "$OPENCODE_ARGS_FILE" \
+  && bad "empty effort must not add --variant" \
+  || ok "empty effort leaves the provider default variant"
+check "opencode telemetry tags provider" opencode \
+  "$(jq -r .provider <<<"$LAST_LEDGER_RES")"
+check "opencode telemetry tags OpenRouter family" openrouter \
+  "$(jq -r .provider_family <<<"$LAST_LEDGER_RES")"
+check "opencode telemetry tags its own harness" opencode-cli \
+  "$(jq -r .harness <<<"$LAST_LEDGER_RES")"
+check "opencode billing is free-preview, never subscription" free-preview \
+  "$(jq -r .billing <<<"$LAST_LEDGER_RES")"
+check "opencode preview run costs nothing" 0 \
+  "$(jq -r .total_cost_usd <<<"$LAST_LEDGER_RES")"
+check "opencode zero cost is attributed to the provider, not assumed" provider-reported \
+  "$(jq -r .opencode_cost_source <<<"$LAST_LEDGER_RES")"
+check "opencode input excludes cached reads" 9986 \
+  "$(jq -r .usage.input_tokens <<<"$LAST_LEDGER_RES")"
+check "opencode retains cached input" 128 \
+  "$(jq -r .usage.cache_read_input_tokens <<<"$LAST_LEDGER_RES")"
+check "opencode output tokens are recorded" 18 \
+  "$(jq -r .usage.output_tokens <<<"$LAST_LEDGER_RES")"
+check "opencode never invents an API-equivalent estimate" null \
+  "$(jq -r .api_equivalent_usd <<<"$LAST_LEDGER_RES")"
+check "opencode output semantics are declared unverified, not guessed" unverified \
+  "$(jq -r .output_tokens_semantics <<<"$LAST_LEDGER_RES")"
+
+cc_opencode openrouter/stealth/ox-alpha xhigh prompt >/dev/null
+grep -q -- '--variant xhigh' "$OPENCODE_ARGS_FILE" \
+  && ok "effort is passed through as opencode's --variant" \
+  || bad "effort should map to --variant"
+
+OPENCODE_CASE=multistep; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "multi-step run succeeds on the LAST step_finish reason" 0 "$?"
+check "multi-step input tokens sum across steps" 10186 \
+  "$(jq -r .usage.input_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step output tokens sum across steps" 127 \
+  "$(jq -r .usage.output_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step cached reads sum across steps" 10240 \
+  "$(jq -r .usage.cache_read_input_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step cache writes sum across steps" 3 \
+  "$(jq -r .usage.cache_creation_input_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step reasoning subset is kept separately" 7 \
+  "$(jq -r .usage.reasoning_output_tokens <<<"$LAST_LEDGER_RES")"
+
+# If the preview ever starts billing, the ledger must follow the provider's own
+# number rather than keeping a hardcoded zero.
+OPENCODE_CASE=paidsteps; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a non-zero provider cost is recorded, not flattened to free" 0.0125 \
+  "$(jq -r .total_cost_usd <<<"$LAST_LEDGER_RES")"
+
+OPENCODE_CASE=nocost; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a zero we assumed is labelled as assumed" assumed-free-preview \
+  "$(jq -r .opencode_cost_source <<<"$LAST_LEDGER_RES")"
+check "an assumed-free run still records its measured tokens" 100 \
+  "$(jq -r .usage.input_tokens <<<"$LAST_LEDGER_RES")"
+
+# The headline behaviour: opencode exits 0 on hard failures, so rc must never be
+# the success signal on its own.
+OPENCODE_CASE=errorjson; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "opencode error event overrides rc=0 + reason=stop" 1 "$?"
+check "opencode error event ledger outcome" fail "$LAST_LEDGER_OUTCOME"
+
+OPENCODE_CASE=modelnotfound; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "unknown model / rejected credential fails" 1 "$?"
+check "unknown model is a hard failure, never a retry" fail "$LAST_LEDGER_OUTCOME"
+
+OPENCODE_CASE=nousage; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a run with no step_finish is incomplete, not success" 1 "$?"
+check "absent telemetry is declared, not faked as zeros" false \
+  "$(jq -r .opencode_usage_reported <<<"$LAST_LEDGER_RES")"
+check "absent telemetry emits no usage object at all" null \
+  "$(jq -r '.usage // "null"' <<<"$LAST_LEDGER_RES" | sed 's/^null$/null/')"
+
+OPENCODE_CASE=timeout; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "opencode rc=124 is a timeout failure" 1 "$?"
+
+OPENCODE_CASE=limitonce; export OPENCODE_CASE
+: >"$OPENCODE_LIMIT_FLAG"; rm -f "$OPENCODE_LIMIT_FLAG"
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a 429 sleeps and resumes instead of failing the role" 0 "$?"
+
+OPENCODE_CASE=ok; export OPENCODE_CASE
+cc_opencode 'openrouter/ox|injected' "" prompt
+check "a pipe in the model selector is refused" 1 "$?"
+cc_opencode openrouter/stealth/ox-alpha "" prompt >/dev/null
+OPENCODE_LEDGER_RES=$LAST_LEDGER_RES
+MF_OPENCODE_HOME=$T/no-such-opencode-home \
+  cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a missing credential fails closed before invoking the CLI" 1 "$?"
+
+rm -f "$T/opencode-ledger.jsonl"
+OPENCODE_LEDGER_RES=$OPENCODE_LEDGER_RES LEDGER=$T/opencode-ledger.jsonl FACTORY_NAME=multi WORKER_ID=9 \
+  bash -c '. ../factory/lib.sh; ledger_record 12 writer openrouter/stealth/ox-alpha "$OPENCODE_LEDGER_RES" 4 ok'
+OPENCODE_ROW=$(<"$T/opencode-ledger.jsonl")
+check "opencode ledger row keeps preview spend at zero" 0 "$(jq -r .cost_usd <<<"$OPENCODE_ROW")"
+check "opencode ledger row records the provider" opencode "$(jq -r .provider <<<"$OPENCODE_ROW")"
+check "opencode ledger row records the OpenRouter family" openrouter \
+  "$(jq -r .provider_family <<<"$OPENCODE_ROW")"
+check "opencode ledger row records its harness" opencode-cli \
+  "$(jq -r .harness <<<"$OPENCODE_ROW")"
+check "opencode ledger row records free-preview billing" free-preview \
+  "$(jq -r .billing <<<"$OPENCODE_ROW")"
+check "opencode ledger row records the cost provenance" provider-reported \
+  "$(jq -r .opencode_cost_source <<<"$OPENCODE_ROW")"
+check "opencode ledger row exposes cached input alias" 128 \
+  "$(jq -r .cached_input_tokens <<<"$OPENCODE_ROW")"
+check "opencode ledger row never fabricates an API-equivalent price" null \
+  "$(jq -r .api_equivalent_usd <<<"$OPENCODE_ROW")"
+check "opencode ledger row never claims OpenAI pricing" null \
+  "$(jq -r .api_equivalent_pricing <<<"$OPENCODE_ROW")"
+OPENCODE_ANALYTICS=$(
+  OPENCODE_ROW_FILE=$T/opencode-ledger.jsonl node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    import { ledgerProvider, ledgerProviderFamily, ledgerHarness }
+      from "./control/usage-analytics.mjs";
+    const row = JSON.parse(readFileSync(process.env.OPENCODE_ROW_FILE, "utf8"));
+    process.stdout.write(JSON.stringify({
+      p: ledgerProvider(row),
+      f: ledgerProviderFamily(row),
+      h: ledgerHarness(row),
+      legacy: ledgerProvider({ model: "openrouter/stealth/ox-alpha" }),
+    }));
+  '
+)
+check "analytics resolves the opencode provider" opencode "$(jq -r .p <<<"$OPENCODE_ANALYTICS")"
+check "analytics resolves the OpenRouter family" openrouter "$(jq -r .f <<<"$OPENCODE_ANALYTICS")"
+check "analytics resolves the opencode harness" opencode-cli "$(jq -r .h <<<"$OPENCODE_ANALYTICS")"
+check "analytics infers opencode from a legacy model-only row" opencode \
+  "$(jq -r .legacy <<<"$OPENCODE_ANALYTICS")"
 
 echo "— composer issue contracts"
 RUN=run-1
@@ -575,7 +843,7 @@ composer_record_protocol_failure(){
 composer_tx_reset(){
   rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests" \
     "$CONTROL/.composer-request-claim" "$CONTROL/composer-request-archive"
-  rm -f "$CONTROL"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff} \
+  rm -f "$CONTROL"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff,protocol-attempt} \
     "$CONTROL/composer-quarantine" "$CONTROL/composer-request.json" \
     "$CONTROL/.composer-request-active.json"
   mkdir -p "$CONTROL/composer-manifests"
@@ -608,6 +876,9 @@ mf_cc(){
   case "$COMPOSER_TX_CASE" in
     none)
       printf 'NONE\n' >"$manifest"
+      COMPOSER_TX_AFTER='[]'
+      ;;
+    silent)
       COMPOSER_TX_AFTER='[]'
       ;;
     valid)
@@ -664,25 +935,53 @@ check "NONE outcome restart reconciles without model replay" 1 "$COMPOSER_TX_CAL
 check "NONE outcome restart persists before clearing" 0 \
   "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
 
+# Issues WERE created under an invalid artifact contract. Since #1623 that is a
+# `created` outcome: the artifacts are quarantined, the ordinary cooldown is
+# booked, and the corrective retry never fires — replaying a run that already
+# filed issues only buys duplicates. The outcome write is therefore what has to
+# be fail-closed here, not the protocol write.
 composer_tx_reset
 COMPOSER_TX_CASE=invalid
-PROTOCOL_WRITE_FAIL=1
+OUTCOME_WRITE_FAIL=1
 TX_RC=0
 composer_step run || TX_RC=$?
-check "invalid artifact protocol write failure is fail-closed" 2 "$TX_RC"
+check "created-but-quarantined outcome write failure is fail-closed" 2 "$TX_RC"
 check "invalid artifact is quarantined before failed persistence" 913 \
   "$(<"$CONTROL/composer-quarantine")"
-check "invalid artifact write failure retains the fence" 1 \
+check "created-but-quarantined write failure retains the fence" 1 \
   "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
-PROTOCOL_WRITE_FAIL=0
+check "created-but-quarantined write failure invokes the model once" 1 "$COMPOSER_TX_CALLS"
+OUTCOME_WRITE_FAIL=0
 MF_MASTER_SESSION=tx-invalid-restart
 TX_RC=0
 composer_step run || TX_RC=$?
-check "invalid artifact restart finishes as a protocol failure" 1 "$TX_RC"
-check "invalid artifact restart never replays the model" 1 "$COMPOSER_TX_CALLS"
-check "invalid artifact restart persists protocol cooldown" 1 \
+check "created-but-quarantined restart never replays the model" 1 "$COMPOSER_TX_CALLS"
+check "created-but-quarantined restart books the ordinary cooldown" 1 \
+  "$([ -f "$CONTROL/.composer-last" ] && echo 1 || echo 0)"
+check "created-but-quarantined restart arms no protocol retry" 0 \
+  "$([ -e "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
+check "created-but-quarantined restart clears only after persistence" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+
+# A run that creates NOTHING and returns no manifest is the real protocol
+# failure, and its state write stays fail-closed.
+composer_tx_reset
+COMPOSER_TX_CASE=silent
+PROTOCOL_WRITE_FAIL=1
+TX_RC=0
+composer_step run || TX_RC=$?
+check "silent-run protocol write failure is fail-closed" 2 "$TX_RC"
+check "silent-run write failure retains the fence" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+PROTOCOL_WRITE_FAIL=0
+MF_MASTER_SESSION=tx-silent-restart
+TX_RC=0
+composer_step run || TX_RC=$?
+check "silent-run restart finishes as a protocol failure" 1 "$TX_RC"
+check "silent-run restart never replays the model" 1 "$COMPOSER_TX_CALLS"
+check "silent-run restart persists protocol cooldown" 1 \
   "$([ -f "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
-check "invalid artifact restart clears only after persistence" 0 \
+check "silent-run restart clears only after persistence" 0 \
   "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
 
 composer_tx_reset
@@ -775,7 +1074,7 @@ MF_COMPOSER_COOLDOWN=0
 MF_COMPOSER_PROTOCOL_COOLDOWN=120
 MF_COMPOSER_PROTOCOL_BACKOFF_MAX=900
 MF_COMPOSER_PROTOCOL_ATTEMPTS=2
-rm -f "$MFSTATE/control"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff}
+rm -f "$MFSTATE/control"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff,protocol-attempt}
 echo '[]' >"$TICK_ISSUES"
 COMPOSER_CALLS=0
 runnable_issues(){ :; }
@@ -785,18 +1084,20 @@ role_diff(){ echo hard; }
 with_pack(){ printf '%s' "$1"; }
 fetch_issues(){ :; }
 composer_step run
-check "one malformed composer run uses only its designed attempts" 2 "$COMPOSER_CALLS"
+check "a malformed composer run costs exactly one model invocation" 1 "$COMPOSER_CALLS"
 check "composer protocol failure records separate cooldown" 120 \
   "$(cat "$MFSTATE/control/.composer-protocol-backoff")"
+check "the corrective attempt number is persisted across ticks" 1 \
+  "$(cat "$MFSTATE/control/.composer-protocol-attempt")"
 composer_step run
-check "next 15-second-style tick does not call composer again" 2 "$COMPOSER_CALLS"
+check "next 15-second-style tick does not call composer again" 1 "$COMPOSER_CALLS"
 backdate_protocol(){
   local ts=$(( $(date +%s) - $2 ))
   touch -d "@$ts" "$1" 2>/dev/null || touch -t "$(date -r "$ts" +%Y%m%d%H%M.%S)" "$1"
 }
 backdate_protocol "$MFSTATE/control/.composer-protocol-last" 121
 composer_step run
-check "composer retries only after protocol cooldown" 4 "$COMPOSER_CALLS"
+check "composer retries only after protocol cooldown" 2 "$COMPOSER_CALLS"
 check "repeated protocol failure backs off independently" 240 \
   "$(cat "$MFSTATE/control/.composer-protocol-backoff")"
 
@@ -839,7 +1140,8 @@ rm -rf "$MFSTATE/control/.composer-request-claim" \
 rm -f "$MFSTATE/control/composer-request.json" \
   "$MFSTATE/control/.composer-request-active.json" \
   "$MFSTATE/control/.composer-protocol-last" \
-  "$MFSTATE/control/.composer-protocol-backoff"
+  "$MFSTATE/control/.composer-protocol-backoff" \
+  "$MFSTATE/control/.composer-protocol-attempt"
 MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
   2 "$REQUEST_BRIEF" exact-two >/dev/null
 MF_MASTER_SESSION=test-master-session
@@ -1122,7 +1424,8 @@ rm -rf "$MFSTATE/control/.composer-request-claim"
 rm -f "$MFSTATE/control/.composer-request-active.json" \
   "$MFSTATE/control/composer-request.json" \
   "$MFSTATE/control/.composer-protocol-last" \
-  "$MFSTATE/control/.composer-protocol-backoff"
+  "$MFSTATE/control/.composer-protocol-backoff" \
+  "$MFSTATE/control/.composer-protocol-attempt"
 MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
   2 "$REQUEST_BRIEF" none-retained >/dev/null
 COMPOSER_CALLS=0
@@ -1141,19 +1444,22 @@ mf_cc(){
 composer_step run
 NONE_RC=$?
 check "NONE fails closed for an exact-count owner request" 2 "$NONE_RC"
-check "NONE receives only the bounded corrective attempt" 2 "$COMPOSER_CALLS"
+check "NONE spends one model invocation per tick" 1 "$COMPOSER_CALLS"
 check "NONE retains active request for owner review" 1 \
   "$([ -f "$MFSTATE/control/.composer-request-active.json" ] && echo 1 || echo 0)"
 check "NONE never archives the exact-count request" 0 \
   "$(find "$MFSTATE/control/composer-request-archive" -type f -name 'none-retained-*' | wc -l | tr -d ' ')"
 
-# A partial first attempt cannot be laundered by creating an exact second
-# manifest: all artifacts remain quarantined and the request stays active.
+# A partial first attempt used to get a second in-tick turn, which is exactly
+# how a run that had already filed issues could file more. Since #1623 the first
+# attempt IS the outcome: its artifacts are quarantined, the brief is retained
+# for owner review, and there is no second attempt to launder anything with.
 rm -rf "$MFSTATE/control/.composer-request-claim"
 rm -f "$MFSTATE/control/.composer-request-active.json" \
   "$MFSTATE/control/composer-request.json" \
   "$MFSTATE/control/.composer-protocol-last" \
   "$MFSTATE/control/.composer-protocol-backoff" \
+  "$MFSTATE/control/.composer-protocol-attempt" \
   "$MFSTATE/control/composer-quarantine"
 COMPOSER_REQUEST_LOADED=0
 COMPOSER_REQUEST_ID=
@@ -1195,18 +1501,17 @@ mf_cc(){
 composer_step run
 PARTIAL_RC=$?
 check "partial request remains a fail-closed protocol error" 2 "$PARTIAL_RC"
-check "partial request uses only the bounded attempts" 2 "$COMPOSER_CALLS"
+check "partial request never gets a second, duplicating attempt" 1 "$COMPOSER_CALLS"
 check "later exact manifest cannot launder earlier artifacts" partial-retained \
   "$(jq -r .id "$MFSTATE/control/.composer-request-active.json")"
-check "all partial/retry artifacts stay quarantined" "803
-804
-805" "$(<"$MFSTATE/control/composer-quarantine")"
+check "the partial attempt's artifacts stay quarantined" "803" \
+  "$(<"$MFSTATE/control/composer-quarantine")"
 check "partial request is never archived" 0 \
   "$(find "$MFSTATE/control/composer-request-archive" -type f -name 'partial-retained-*' | wc -l | tr -d ' ')"
 composer_request_prepare
 SAME_SESSION_RC=$?
 check "bounded failure disables same-session automatic replay" 2 "$SAME_SESSION_RC"
-check "bounded failure records a durable blocked reason" protocol-failure \
+check "bounded failure records a durable blocked reason" artifact-contract-invalid \
   "$(<"$MFSTATE/control/.composer-request-claim/blocked")"
 
 # A restarted/concurrent master gets a different session token. It must neither

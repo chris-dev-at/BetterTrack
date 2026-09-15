@@ -158,6 +158,43 @@ test('a hidden tab with polling off does not refetch on return either', () => {
   expect(onReload).not.toHaveBeenCalled();
 });
 
+/**
+ * #1848: `refreshNow`'s doc promises "refresh now AND restart the interval",
+ * but the interval effect only depended on `[seconds, paused]`, so it never
+ * re-phased. Pressing Refresh at t=29 s of a 30 s cadence fired a second full
+ * cockpit refetch one second later — the exact hammering W1's rule forbids.
+ */
+test('a manual refresh re-phases the interval instead of stacking a second read', () => {
+  const onReload = renderProbe();
+
+  act(() => {
+    vi.advanceTimersByTime(29_000);
+  });
+  expect(onReload).not.toHaveBeenCalled();
+
+  act(() => {
+    screen.getByRole('button', { name: 'now' }).click();
+  });
+  expect(onReload).toHaveBeenCalledTimes(1);
+
+  // The old phase's tick would have landed here, one second after the manual
+  // read. It must not.
+  act(() => {
+    vi.advanceTimersByTime(1_000);
+  });
+  expect(onReload).toHaveBeenCalledTimes(1);
+
+  // A full cadence after the manual read, and not before, the timer fires again.
+  act(() => {
+    vi.advanceTimersByTime(28_999);
+  });
+  expect(onReload).toHaveBeenCalledTimes(1);
+  act(() => {
+    vi.advanceTimersByTime(1);
+  });
+  expect(onReload).toHaveBeenCalledTimes(2);
+});
+
 test('the manual refresh still works with polling switched off', () => {
   const onReload = renderProbe('/admin/health?live=off');
 

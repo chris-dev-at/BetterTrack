@@ -8,10 +8,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   notificationListResponseSchema,
   SOURCE_TAG_STANDING_ORDER,
+  STANDING_ORDER_QUOTE_REFUSAL_VECTORS,
+  STANDING_ORDER_QUOTE_VECTOR_CURRENCY,
   standingOrderListResponseSchema,
   standingOrderRunListResponseSchema,
 } from '@bettertrack/contracts';
 
+import { newId } from '../../../data/ids';
 import * as schema from '../../../data/schema';
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
@@ -26,7 +29,10 @@ import {
   createProviderRegistry,
 } from '../../../providers';
 import type { DispatchableEvent } from '../../notifications/notificationDispatcher';
-import { createStandingOrderService } from '../standingOrderService';
+import {
+  createStandingOrderService,
+  STANDING_ORDER_MAX_QUOTE_AGE_MS,
+} from '../standingOrderService';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
@@ -43,19 +49,25 @@ let harness: TestHarness;
 let marketData: ReturnType<typeof createStubMarketData>;
 // `asOf` is the provider's market timestamp: buys accept it only within the
 // four-day booking ceiling, so tests scanning far from the default reset it.
-const quote = { mode: 'ok' as 'ok' | 'fail', price: 100, asOf: '2026-04-01T00:00:00.000Z' };
+const quote = {
+  mode: 'ok' as 'ok' | 'fail',
+  price: 100,
+  currency: 'EUR',
+  asOf: '2026-04-01T00:00:00.000Z',
+};
 let portfolioNow: number | undefined;
 
 beforeEach(async () => {
   quote.mode = 'ok';
   quote.price = 100;
+  quote.currency = 'EUR';
   quote.asOf = '2026-04-01T00:00:00.000Z';
   portfolioNow = undefined;
   marketData = createStubMarketData({
     quote: () => {
       if (quote.mode === 'fail') throw new Error('provider down');
       return {
-        value: { price: quote.price, currency: 'EUR', asOf: quote.asOf },
+        value: { price: quote.price, currency: quote.currency, asOf: quote.asOf },
         stale: false,
         asOf: 0,
       };
@@ -406,6 +418,166 @@ describe('standing orders — pause / resume', () => {
     });
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toEqual([]);
     expect(await runPeriodKeys()).toEqual([]);
+  });
+});
+
+/**
+ * A service whose portfolio lock runs `mutate` in exactly the window the daily
+ * scan leaves open (#1836): after `listActive` snapshotted the row, before the
+ * locked claim re-reads it. Everything else is the harness's real wiring, so
+ * the booking below goes through the real repositories.
+ */
+function serviceWithLockHook(mutate: (orderId: string) => Promise<void>) {
+  const repo = createStandingOrderRepository(harness.db);
+  return createStandingOrderService({
+    repo: {
+      ...repo,
+      async withActivePortfolioLock(portfolioId, orderId, periodKey, action) {
+        await mutate(orderId);
+        return repo.withActivePortfolioLock(portfolioId, orderId, periodKey, action);
+      },
+    },
+    portfolioRepo: createPortfolioRepository(harness.db),
+    assetRepo: createAssetRepository(harness.db),
+    transactionRepo: createTransactionRepository(harness.db),
+    cashMovementRepo: createCashMovementRepository(harness.db),
+    cashSourceRepo: createCashSourceRepository(harness.db),
+    marketData,
+    snapshots: { async invalidate() {} },
+    notify: {
+      async emit() {
+        return true;
+      },
+    },
+  });
+}
+
+describe('standing orders — an edit between the scan snapshot and the claim', () => {
+  it('books the amount and note in force at the claim, not the snapshotted ones', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-deduct',
+      amount: 3000,
+      label: 'rent',
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.id as string;
+    await depositCash(agent, pid, 5000);
+
+    const repo = createStandingOrderRepository(harness.db);
+    let edited = false;
+    const service = serviceWithLockHook(async (orderId) => {
+      expect(orderId).toBe(id);
+      const patched = await repo.update(user.id, orderId, { amount: 30, label: 'rent (cut)' });
+      expect(patched?.amount).toBe(30);
+      edited = true;
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(edited).toBe(true);
+    expect(result).toMatchObject({ booked: 1, deferred: 0, skippedArchived: 0, failed: 0 });
+    const rows = await cashRows(pid, SOURCE_TAG_STANDING_ORDER);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]!.amountEur)).toBe(-30);
+    expect(rows[0]!.note).toBe('rent (cut)');
+    expect((await runPeriodKeys(id)).map((r) => r.key)).toEqual(['2026-04-01']);
+  });
+
+  it('books the buy quantity in force at the claim, not the snapshotted one', async () => {
+    const { user, agent, pid } = await setup();
+    const assetId = await seedAsset('EDIT');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 10,
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.id as string;
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = serviceWithLockHook(async (orderId) => {
+      const patched = await repo.update(user.id, orderId, { amount: 2 });
+      expect(patched?.amount).toBe(2);
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(result).toMatchObject({ booked: 1, deferred: 0, skippedArchived: 0, failed: 0 });
+    const txns = await txnRows(pid);
+    expect(txns).toHaveLength(1);
+    expect(Number(txns[0]!.quantity)).toBe(2);
+    expect(Number(txns[0]!.price)).toBe(100);
+    expect(txns[0]!.source).toBe(SOURCE_TAG_STANDING_ORDER);
+    expect((await runPeriodKeys(id)).map((r) => r.key)).toEqual(['2026-04-01']);
+  });
+
+  it('does not book a period an end date pulled back behind it has retired', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const id = created.body.id as string;
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = serviceWithLockHook(async (orderId) => {
+      const patched = await repo.update(user.id, orderId, { endDate: '2026-04-01' });
+      expect(patched?.endDate).toBe('2026-04-01');
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-02T12:00:00Z') });
+
+    expect(result).toMatchObject({
+      booked: 0,
+      skippedDuplicate: 0,
+      deferred: 0,
+      skippedArchived: 1,
+      failed: 0,
+    });
+    // Only Apr 1 — Apr 2 is neither booked nor claimed, so nothing was burnt.
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
+    expect((await runPeriodKeys(id)).map((r) => r.key)).toEqual(['2026-04-01']);
+  });
+
+  it('judges affordability against the fresh amount, not the snapshotted one', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-deduct',
+      amount: 10,
+      label: 'netflix',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const id = created.body.id as string;
+    await depositCash(agent, pid, 50);
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = serviceWithLockHook(async (orderId) => {
+      const patched = await repo.update(user.id, orderId, { amount: 200 });
+      expect(patched?.amount).toBe(200);
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    // The snapshotted €10 was covered; the €200 in force is not — so the period
+    // defers (and retries) instead of overdrawing the portfolio.
+    expect(result).toMatchObject({ booked: 0, deferred: 1, skippedArchived: 0, failed: 0 });
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toEqual([]);
+    expect(await runPeriodKeys(id)).toEqual([]);
   });
 });
 
@@ -892,8 +1064,48 @@ describe('standing orders — source tag round-trips through the P0c filter', ()
   });
 });
 
+// The premise the Forecast's standing-order factor projects on (#1892): a
+// recurring buy is NOT a reallocation of cash the book already holds, so the
+// projection adds `quantity × unit price` to the net-worth curve. That rule
+// lives in `bookRow`'s explicitly empty `cashMovements: []`, and the web twin
+// pins its own half (`standingOrderRowKind` in `projection.test.ts`); a web test
+// cannot import this service, so the server's half is pinned here. Growing a
+// cash leg on a buy has to fail on one side or the other.
+describe('standing orders — a booked buy never touches cash', () => {
+  it('writes the BUY with no cash leg, so net worth rises by the purchase value', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('NWC');
+
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 3,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+
+    const txns = await txnRows(pid);
+    expect(txns).toHaveLength(1);
+    expect(Number(txns[0]!.quantity)).toBe(3);
+    expect(Number(txns[0]!.price)).toBe(100);
+    // No cash row of ANY source — the buy debited nothing.
+    expect(await cashRows(pid)).toHaveLength(0);
+
+    // And the recorded figure the Forecast continues forward moves by the full
+    // 3 × 100, with cash still at zero.
+    const portfolio = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(portfolio.status).toBe(200);
+    expect(portfolio.body.totals.cashEur).toBe(0);
+    expect(portfolio.body.totals.marketValueEur).toBe(300);
+    expect(portfolio.body.totals.totalValueEur).toBe(300);
+  });
+});
+
 describe('standing orders — provider failure on a buy', () => {
-  it('notifies only after a quote failure remains deferred past its anchor', async () => {
+  it('notifies on the anchor day itself, then dedupes the later retry (#1793)', async () => {
     const { agent, pid } = await setup();
     const assetId = await seedAsset('BBB');
     const created = await createOrder(agent, {
@@ -912,11 +1124,57 @@ describe('standing orders — provider failure on a buy', () => {
     expect(failed.deferred).toBe(1);
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await runPeriodKeys()).toHaveLength(0); // no claim was made
-    expect(await standingOrderNotifications(agent)).toEqual([]);
+    // The period is named on the day it was owed, not a day later (#1793) —
+    // the old `due < today` gate never opened at all for a daily cadence.
+    const anchorDayNotice = [
+      expect.objectContaining({
+        type: 'standing_order.skipped',
+        payload: expect.objectContaining({
+          standingOrderId: created.body.id,
+          periodKey: '2026-04-01',
+          outcome: 'deferred',
+        }),
+      }),
+    ];
+    expect(await standingOrderNotifications(agent)).toEqual(anchorDayNotice);
 
-    // Still unbooked on Apr 2: it is now past the Apr 1 anchor, so one stable
-    // deferred notice lands. Repeated later-day failures dedupe by period.
+    // Still unbooked on Apr 2: the same (period, outcome) key, so the repeat
+    // failure dedupes into the one stable notice rather than nagging daily.
     expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual(anchorDayNotice);
+
+    quote.mode = 'ok';
+    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(1);
+    expect(await txnRows(pid)).toHaveLength(1);
+    // A further run does not double-book the recovered period.
+    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(0);
+    expect(await txnRows(pid)).toHaveLength(1);
+  });
+
+  it('announces a daily buy’s deferral on the only day it is ever due (#1793)', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('DLY');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 1,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    // A daily order's due occurrence IS today on every scan, so the old
+    // `due < today` gate never opened: the provider could be down for a week
+    // and not one deferred notice would ever be sent.
+    quote.mode = 'fail';
+    expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+      booked: 0,
+      deferred: 1,
+      failed: 0,
+    });
+    expect(await txnRows(pid)).toEqual([]);
+    expect(await runPeriodKeys()).toEqual([]);
     expect(await standingOrderNotifications(agent)).toEqual([
       expect.objectContaining({
         type: 'standing_order.skipped',
@@ -927,13 +1185,6 @@ describe('standing orders — provider failure on a buy', () => {
         }),
       }),
     ]);
-
-    quote.mode = 'ok';
-    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(1);
-    expect(await txnRows(pid)).toHaveLength(1);
-    // A further run does not double-book the recovered period.
-    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(0);
-    expect(await txnRows(pid)).toHaveLength(1);
   });
 
   it('polls a definitive quote and defers one past the four-day age ceiling', async () => {
@@ -964,11 +1215,9 @@ describe('standing orders — provider failure on a buy', () => {
     // reachable staleness guard is `pollQuote` + the age ceiling, not the
     // never-set-on-poll `stale` flag.
     expect(marketData.calls).toMatchObject({ quote: 0, poll: 1 });
-    expect(await standingOrderNotifications(agent)).toEqual([]);
-
-    // Still frozen past the anchor: the standard SO3 deferred notice lands.
-    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
-    expect(await standingOrderNotifications(agent)).toEqual([
+    // The SO3 deferred notice lands on the anchor day (#1793) and dedupes when
+    // the symbol is still frozen the next day.
+    const frozenNotice = [
       expect.objectContaining({
         type: 'standing_order.skipped',
         payload: expect.objectContaining({
@@ -977,7 +1226,11 @@ describe('standing orders — provider failure on a buy', () => {
           outcome: 'deferred',
         }),
       }),
-    ]);
+    ];
+    expect(await standingOrderNotifications(agent)).toEqual(frozenNotice);
+
+    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual(frozenNotice);
 
     // The market reopens: a current close books — dated at the scan instant,
     // with the quote's own timestamp recorded on `lastRunAt` (AC 4).
@@ -1046,7 +1299,7 @@ describe('standing orders — provider failure on a buy', () => {
     expect(order.body.lastRunAt).toBe('2026-12-31T21:00:00.000Z');
   });
 
-  it('dates a manual-asset buy at the scan instant, not its historic value-point day', async () => {
+  it('dates a manual-asset buy at the scan instant while recording its valuation day', async () => {
     const { agent, pid } = await setup();
     const createdAsset = await agent
       .post('/api/v1/custom-assets')
@@ -1112,8 +1365,194 @@ describe('standing orders — provider failure on a buy', () => {
     expect(transaction?.executedAt.toISOString()).toBe(scanAt);
     expect(invalidatedDays).toEqual(['2026-04-01']);
     const order = await agent.get(`/api/v1/standing-orders/${createdOrder.body.id as string}`);
-    expect(order.body.lastRunAt).toBe(scanAt);
+    // The exemption from the age ceiling is not an exemption from stating the
+    // age (#1793): `lastRunAt` is the market stamp for every other buy, so here
+    // it is the owner's own value-point day — 14 months before this booking.
+    // Recording `scanAt` made a 2025 valuation indistinguishable from a fresh
+    // quote, on the one surface that reports when a buy was priced.
+    expect(order.body.lastRunAt).toBe('2025-01-15T00:00:00.000Z');
+    expect(order.body.lastRunAt).not.toBe(scanAt);
+    expect(Date.parse(scanAt) - Date.parse(order.body.lastRunAt as string)).toBeGreaterThan(
+      STANDING_ORDER_MAX_QUOTE_AGE_MS,
+    );
     redis.disconnect();
+  });
+});
+
+describe('standing orders — unbookable quotes (#1712)', () => {
+  /**
+   * The refusal table is the SHARED contract vector list, so this suite and the
+   * vault twin's (`apps/web/src/user/vault/standingOrders/materialize.test.ts`)
+   * assert the same bad quotes are refused on both sides.
+   */
+  it.each([...STANDING_ORDER_QUOTE_REFUSAL_VECTORS])(
+    'refuses $name and leaves the period unclaimed',
+    async (vector) => {
+      const { agent, pid } = await setup();
+      const assetId = await seedAsset('REFUSE');
+      const created = await createOrder(agent, {
+        portfolioId: pid,
+        kind: 'buy-asset',
+        assetId,
+        amount: 3,
+        cadence: 'monthly',
+        anchorDay: 1,
+        startDate: '2026-04-01',
+      });
+      expect(created.status).toBe(201);
+      expect(created.body.currency).toBe(STANDING_ORDER_QUOTE_VECTOR_CURRENCY);
+
+      quote.price = vector.price;
+      quote.currency = vector.currency;
+      expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+        booked: 0,
+        deferred: 1,
+        bookingFailed: 0,
+        failed: 0,
+      });
+      // No money row, and — the point — no claim: the period is retryable, not
+      // tombstoned behind a booking that never happened.
+      expect(await txnRows(pid)).toEqual([]);
+      expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+
+      // A sound quote on the very next scan books that same period.
+      quote.price = 100;
+      quote.currency = STANDING_ORDER_QUOTE_VECTOR_CURRENCY;
+      expect(await run('2026-04-01T13:00:00Z')).toMatchObject({ booked: 1, deferred: 0 });
+      const [transaction] = await txnRows(pid);
+      expect(Number(transaction?.price)).toBe(100);
+      expect((await runPeriodKeys(created.body.id as string)).map((row) => row.key)).toEqual([
+        '2026-04-01',
+      ]);
+    },
+  );
+
+  it('refuses a quote the ASSET row does not agree with, and notifies past the anchor', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('DUALLIST');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 3,
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    // The failover chain answers from a secondary listing in another currency.
+    // The order's stored currency alone cannot catch this — the stored price is
+    // a bare number later converted at `assets.currency`, so the joined asset
+    // currency is what the guard has to consult.
+    await harness.db
+      .update(schema.assets)
+      .set({ currency: 'USD' })
+      .where(eq(schema.assets.id, assetId));
+    quote.currency = 'USD';
+    quote.price = 128.4;
+
+    expect(await run('2026-04-01T12:00:00Z')).toMatchObject({ booked: 0, deferred: 1, failed: 0 });
+    expect(await txnRows(pid)).toEqual([]);
+    expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+
+    // The standard SO3 deferred notice lands on the anchor day, exactly like a
+    // provider outage: the period is still owed, never silently booked wrong.
+    const refusalNotice = [
+      expect.objectContaining({
+        type: 'standing_order.skipped',
+        payload: expect.objectContaining({
+          standingOrderId: created.body.id,
+          periodKey: '2026-04-01',
+          outcome: 'deferred',
+        }),
+      }),
+    ];
+    expect(await standingOrderNotifications(agent)).toEqual(refusalNotice);
+
+    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual(refusalNotice);
+    expect(await txnRows(pid)).toEqual([]);
+  });
+});
+
+describe('standing orders — vault move-in during a scan (#1712)', () => {
+  it('provisions no cash source for a portfolio that moved into a vault mid-scan', async () => {
+    const { user, agent } = await setup();
+    const portfolio = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Move-in race' });
+    expect(portfolio.status).toBe(201);
+    const pid = portfolio.body.portfolio.id as string;
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      label: 'salary',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    const [vault] = await harness.db
+      .insert(schema.vaults)
+      .values({
+        userId: user.id,
+        name: 'Race vault',
+        headerDocId: newId(),
+        commonDocId: newId(),
+        media: ['server'],
+        retirementProofPublicKey: 'race-retirement-key',
+        keyFingerprint: 'race-key-fingerprint',
+      })
+      .returning();
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = createStandingOrderService({
+      // The move-in commits in the gap between the scan's optimistic candidate
+      // list and the booking: it purges the portfolio's cleartext cash sources
+      // and binds the portfolio to the vault, exactly as the transition does.
+      repo: {
+        ...repo,
+        async listActive() {
+          const orders = await repo.listActive();
+          await harness.db
+            .delete(schema.portfolioCashSources)
+            .where(eq(schema.portfolioCashSources.portfolioId, pid));
+          await harness.db
+            .update(schema.portfolios)
+            .set({ vaultId: vault!.id })
+            .where(eq(schema.portfolios.id, pid));
+          return orders;
+        },
+      },
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit() {
+          return true;
+        },
+      },
+    });
+
+    expect(
+      await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') }),
+    ).toMatchObject({ scanned: 1, booked: 0, skippedArchived: 1, failed: 0 });
+    expect(await cashRows(pid)).toEqual([]);
+    expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+    // The pre-check used to run `getOrCreateMain` outside the lock, leaving a
+    // fresh cleartext row inside a portfolio that is now vault-owned.
+    const sources = await harness.db
+      .select()
+      .from(schema.portfolioCashSources)
+      .where(eq(schema.portfolioCashSources.portfolioId, pid));
+    expect(sources).toEqual([]);
   });
 });
 
@@ -1255,7 +1694,20 @@ describe('standing orders — catch-up after downtime', () => {
       orderLabel: 'Daily bill',
       occurredAt: '2026-04-03T00:00:00.000Z',
     } as const;
-    expect(emitted).toEqual([aggregate, aggregate]);
+    // The Apr 4 period itself deferred (no cash), and a daily cadence is due on
+    // its own day — so the deferred notice rides along with the aggregate on
+    // every scan instead of being suppressed forever (#1793). Both are keyed by
+    // order+period+outcome, so the same pair repeats byte-identically.
+    const deferredToday = {
+      type: 'standing_order.skipped',
+      userId: user.id,
+      standingOrderId: created.body.id,
+      periodKey: '2026-04-04',
+      outcome: 'deferred',
+      orderLabel: 'Daily bill',
+      occurredAt: '2026-04-04T00:00:00.000Z',
+    } as const;
+    expect(emitted).toEqual([aggregate, deferredToday, aggregate, deferredToday]);
   });
 });
 

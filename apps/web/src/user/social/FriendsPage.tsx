@@ -223,6 +223,15 @@ function MirrorInvitesSection() {
                 className="bt-band__row flex flex-wrap items-center justify-between gap-3"
               >
                 <span className="bt-meta flex items-center gap-2">
+                  {/* The inviter's own curated face, from the payload: an invite is
+                      exactly the case the viewer's graph cannot resolve locally —
+                      the inviter is not yet a co-member and need not be a friend.
+                      A null/retired id degrades to the deterministic avatar. */}
+                  <Avatar
+                    name={invite.fromUsername ?? t('common.unknown')}
+                    iconId={invite.profileIcon}
+                    size="sm"
+                  />
                   {t('mirrorchain.invites.incomingLabel', {
                     inviter: invite.fromUsername ?? t('common.unknown'),
                   })}
@@ -249,6 +258,9 @@ function MirrorInvitesSection() {
                 className="bt-band__row flex flex-wrap items-center justify-between gap-3"
               >
                 <span className="bt-meta flex items-center gap-2">
+                  {/* The other party again — on an outgoing row that is the
+                      invitee, which is the icon the payload carries here. */}
+                  <Avatar name={invite.toUsername} iconId={invite.profileIcon} size="sm" />
                   {t('mirrorchain.invites.outgoingLabel', { invitee: invite.toUsername })}
                   <span className="bt-row-title">{invite.chainName}</span>
                 </span>
@@ -669,6 +681,13 @@ function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
       setRemoveTarget(null);
       void queryClient.invalidateQueries({ queryKey: ['social', 'friends'] });
       void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
+      // The unfriend transaction also drops the ex-friend from every circle
+      // (`socialService.removeFriend` → `groups.removeMutualMemberships`), and
+      // `FriendGroupsSection` sits on this same page reading that key. Without
+      // this the circle card keeps listing the ex-friend — with a Remove button
+      // and a memberCount that includes them — for the whole page visit: an
+      // owner surface claiming a reach the server no longer grants.
+      void queryClient.invalidateQueries({ queryKey: ['social', 'groups'] });
     },
   });
 

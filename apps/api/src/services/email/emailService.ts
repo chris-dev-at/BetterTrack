@@ -6,6 +6,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  commentCreatedEmail,
   earningsReminderEmail,
   deferredNotificationEmail,
   digestEmail,
@@ -49,7 +50,13 @@ import type { MailTransport } from './transport';
 
 export interface EmailAuditTarget {
   actorId?: string | null;
-  targetType: 'user' | 'invite';
+  /**
+   * `registration_request` is a decision mail for an application that has no
+   * account: it keeps the failure audit on the request row (where the decision
+   * itself is recorded) instead of pointing a `user` target at an id no account
+   * will ever have.
+   */
+  targetType: 'user' | 'invite' | 'registration_request';
   targetId: string;
   ip?: string | null;
 }
@@ -149,6 +156,18 @@ export interface EmailService {
     to: string;
     userId: string;
     actorUsername: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /**
+   * Notification email: a comment landed on an item `userId` shares (V5-P8).
+   * Carries the commenter + the item name and a link to the owner's My items
+   * surface, never the comment text.
+   */
+  sendCommentCreated(params: {
+    to: string;
+    userId: string;
+    actorUsername: string;
+    itemName: string;
     locale?: string;
   }): Promise<EmailSendResult>;
   /** Notification email: friend activity on a shared item `userId` follows (#368). */
@@ -265,6 +284,10 @@ export interface EmailService {
     userId: string;
     title: string;
     body: string;
+    /** The notification's type — selects its deep link (#1816). */
+    type?: string;
+    /** The notification's deep-link ids, as the queue row stored them. */
+    data?: Record<string, string> | null;
     locale?: string;
   }): Promise<EmailSendResult>;
 }
@@ -303,9 +326,46 @@ type EmailTemplateKind =
   | 'alert_triggered'
   | 'earnings_reminder'
   | 'chat_message'
+  | 'comment_created'
   | 'feedback_notification'
   | 'mirror_notification'
-  | 'digest';
+  | 'digest'
+  // A quiet-hours release is ONE held-back notification, not a digest: logging
+  // it as `digest` told an operator looking for a user's price-alert e-mail that
+  // no alert was sent and a stray digest fired instead (#1816). `email_log.template`
+  // is varchar(64), so the new kind needs no migration.
+  | 'deferred';
+
+/**
+ * The link a DEFERRED notification e-mail carries (#1816). §6.10 requires every
+ * type to deep-link to its target; deferring used to downgrade every type to the
+ * app root, so the types whose instant e-mail has a specific target keep it here
+ * — resolved from the type + the deep-link ids the queue row stored. Everything
+ * else (and a deferred digest SUMMARY, whose type is synthetic) keeps the app
+ * root, byte-identical to the instant e-mail for those types.
+ */
+export function deferredNotificationUrl(
+  appOrigin: string,
+  type: string | undefined,
+  data: Record<string, string> | null | undefined,
+): string {
+  const base = appOrigin.replace(/\/$/, '');
+  switch (type) {
+    case 'standing_order.skipped': {
+      const id = data?.standingOrderId;
+      return id
+        ? `${base}/workbench/forecasts#standing-order-${encodeURIComponent(id)}`
+        : appOrigin;
+    }
+    case 'comment.created':
+      return `${base}/people/shared`;
+    case 'feedback.status_changed':
+    case 'feedback.reply_created':
+      return `${base}/control/feedback`;
+    default:
+      return appOrigin;
+  }
+}
 
 /** Coarse, secret-free error tag for logs/audit. Never the raw SMTP response. */
 function errorCode(err: unknown): string {
@@ -490,6 +550,19 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         { userId },
       ),
 
+    sendCommentCreated: ({ to, userId, actorUsername, itemName, locale }) =>
+      deliver(
+        'comment_created',
+        to,
+        commentCreatedEmail({
+          actorUsername,
+          itemName,
+          threadUrl: `${config.appOrigin}/people/shared`,
+          locale,
+        }),
+        { userId },
+      ),
+
     sendFriendActivity: ({ to, userId, body, locale }) =>
       deliver(
         'friend_activity',
@@ -620,11 +693,16 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         userId,
       }),
 
-    sendDeferred: ({ to, userId, title, body, locale }) =>
+    sendDeferred: ({ to, userId, title, body, type, data, locale }) =>
       deliver(
-        'digest',
+        'deferred',
         to,
-        deferredNotificationEmail({ title, body, appUrl: config.appOrigin, locale }),
+        deferredNotificationEmail({
+          title,
+          body,
+          appUrl: deferredNotificationUrl(config.appOrigin, type, data),
+          locale,
+        }),
         { userId },
       ),
   };

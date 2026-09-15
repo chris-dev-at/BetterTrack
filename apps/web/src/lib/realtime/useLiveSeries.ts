@@ -17,6 +17,7 @@ import {
   framesToPoints,
   liveChartStepSeconds,
   mergePoints,
+  trimToWindow,
   type LivePoint,
 } from './liveSeries';
 import { useRealtime } from './RealtimeProvider';
@@ -49,6 +50,14 @@ export interface LiveSeriesState {
   generation: number;
   /** True while the socket stream is the source; false ⇒ the 60 s poll fallback. */
   streaming: boolean;
+  /**
+   * True when the SERVER shed Live Mode on this connection (`feature.disabled`,
+   * §13.5 V5-P2 arc (c)) rather than the stream merely being absent. The socket
+   * can stay up through it, so nothing else distinguishes "no frames are coming"
+   * from "frames are healthy but slow" — surfaces must label the chart delayed
+   * instead of presenting the last frame as a live price.
+   */
+  unavailable: boolean;
   /** Earliest instant the backfill honestly covers (epoch ms), or null. */
   coverageFrom: number | null;
   /** Freshest known exchange session — drives the chart's "Market closed" state. */
@@ -101,7 +110,7 @@ export function useLiveSeries(
   enabled: boolean,
   fallbackQuote?: QuoteResponse,
 ): LiveSeriesState {
-  const { connected, on, watchLive, unwatchLive } = useRealtime();
+  const { connected, featureDisabled, on, watchLive, unwatchLive } = useRealtime();
   const [points, setPoints] = useState<LivePoint[]>([]);
   const [generation, setGeneration] = useState(0);
   const [streaming, setStreaming] = useState(false);
@@ -115,6 +124,10 @@ export function useLiveSeries(
   const visible = useDocumentVisible();
   const active = enabled && assetId !== undefined;
   const rateMs = LIVE_RATE_MS[rate];
+  // Either switch ends this stream: `liveMode` releases the watches and leaves
+  // the socket up, `realtime` is the last frame before the server closes it.
+  const shed = featureDisabled.liveMode || featureDisabled.realtime;
+  const unavailable = active && shed;
 
   // The densify grid for the CURRENT window+rate, recomputed each render but read
   // through a ref: the generation-bumping effects commit it into `chartStep`
@@ -126,6 +139,9 @@ export function useLiveSeries(
   // effect's job, which bumps generation exactly once per switch).
   const stepRef = useRef(liveChartStepSeconds(LIVE_WINDOW_MS[window], rateMs));
   stepRef.current = liveChartStepSeconds(LIVE_WINDOW_MS[window], rateMs);
+  // Same reasoning for the retention span the trim effect below reads.
+  const windowSecRef = useRef(Math.floor(LIVE_WINDOW_MS[window] / 1000));
+  windowSecRef.current = Math.floor(LIVE_WINDOW_MS[window] / 1000);
   const [chartStep, setChartStep] = useState(() =>
     liveChartStepSeconds(LIVE_WINDOW_MS[window], rateMs),
   );
@@ -209,6 +225,19 @@ export function useLiveSeries(
     };
   }, [enabled, assetId, window, rate, rateMs, connected, visible, watchLive]);
 
+  // A server-side release (§13.5 V5-P2 arc (c): the `liveMode`/`realtime` kill
+  // switch, and every other path that emits `feature.disabled` before shedding —
+  // paranoid invalidation, asset retirement). No `live.frame` is coming, yet the
+  // socket stays connected and the watch's own lifecycle deps never move, so
+  // without this the hook would hold `streaming: true` forever and keep the last
+  // tick on screen as a current price. Treat it exactly like a refused watch:
+  // drop the stream and release the poll fallback below.
+  useEffect(() => {
+    if (!shed) return;
+    setStreaming(false);
+    setStreamRejected(true);
+  }, [shed]);
+
   // Poll fallback (§4.5): while enabled but not streaming, the caller's 60 s
   // cache-served quote feeds the series as a slow tick — its own generation so
   // entering/leaving fallback is one clean rebuild.
@@ -255,10 +284,26 @@ export function useLiveSeries(
     return () => unwatchLive(watched);
   }, [enabled, assetId, visible, unwatchLive]);
 
+  // Bound the retained series to the live window. A generation lives as long as
+  // the (asset, window, rate) and the connection do — hours on an untouched tab —
+  // while the chart only renders `[now − window, now]`, so without this both the
+  // merged series and its densified resampling grow with the SESSION rather than
+  // with the window (a 10 min window at 1 s held ~28 800 slots after 8 h, all
+  // reallocated per tick). The trim runs in chunks (see LIVE_RETENTION_SLACK) and
+  // each one is a generation bump: the chart's sanctioned rebuild point, so the
+  // shortened series never reaches PriceChart's append-only path.
+  useEffect(() => {
+    const trimmed = trimToWindow(points, windowSecRef.current);
+    if (trimmed === points) return;
+    setPoints(trimmed);
+    setGeneration((g) => g + 1);
+    setChartStep(stepRef.current);
+  }, [points]);
+
   // Uniform-density resampling the chart draws. Recomputes only when the source
   // points grow (a tail append) or the committed grid changes (a rebuild) — both
   // in lock-step with `generation`, so it never re-grids the old series mid-flight.
   const chartPoints = useMemo(() => densify(points, chartStep), [points, chartStep]);
 
-  return { points, chartPoints, generation, streaming, coverageFrom, marketState };
+  return { points, chartPoints, generation, streaming, unavailable, coverageFrom, marketState };
 }

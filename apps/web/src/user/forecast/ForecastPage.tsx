@@ -10,22 +10,29 @@ import { StatCard } from '../../ui';
 import { Alert, Button, Spinner, TextField } from '../components/ui';
 
 import {
+  clampForecastReturnPct,
   compoundInterest,
   dividendPlan,
   savingsPlanContribution,
+  savingsPlanYears,
   withdrawalHorizon,
+  withdrawalRate,
   FORECAST_CALC_MAX_YEARS,
   FORECAST_CALC_MIN_YEARS,
+  FORECAST_RETURN_MAX_PCT,
+  FORECAST_RETURN_MIN_PCT,
   type CompoundInterestInput,
   type DividendPlanInput,
   type SavingsContributionInput,
+  type SavingsYearsInput,
   type WithdrawalHorizonInput,
+  type WithdrawalRateInput,
 } from './calc';
 import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
-import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
+import { clientSeriesTwrCagrPct } from '../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
@@ -39,6 +46,13 @@ import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
  *      anti-bloat rule, each standalone AND pre-fillable from the current
  *      portfolio (value + historical average return). The tab shell owns the
  *      one prefill fetch; each card reads the resolved `prefill` view.
+ *
+ * §6.14 names FIVE calculator modes, not four: the savings plan also solves for
+ * the years needed, and the withdrawal plan also solves for the sustainable
+ * withdrawal rate. Those two are alternate SOLVE TARGETS of the two cards above
+ * — same subject, inverted unknown — so they fold into their sibling card behind
+ * a {@link SolveSwitch} rather than becoming a fifth and sixth top-level card,
+ * which is what the anti-bloat rule (§13.5) requires of them.
  */
 
 // ─── Prefill wiring ──────────────────────────────────────────────────────────
@@ -47,10 +61,18 @@ interface Prefill {
   /** The active portfolio's total value in EUR, headline `totalValueEur`. */
   portfolioValueEur: number | null;
   /**
-   * Historical CAGR of the active portfolio (%/yr) — inception-window, `perf`
-   * mode. Normal accounts read the server's analytics `primary` series (the
-   * holdings-only sum); see {@link usePortfolioPrefill} for the paranoid
-   * substitute and why it is a different series.
+   * Historical annualised TIME-WEIGHTED return of the active portfolio (%/yr)
+   * over its inception window (#1759). Not the value curve's CAGR: that number
+   * counts every deposit the user made as performance, and a calculator
+   * prefilled with it compounds their own contributions forward as if they were
+   * market growth. See {@link usePortfolioPrefill} for the per-mode source.
+   *
+   * It is handed to the solvers verbatim, and that is now correct in the one
+   * way it was not (#1892): an annualised return is an EFFECTIVE annual rate,
+   * which is exactly the convention `calc.ts` and the projection now share. The
+   * cards used to divide it nominally by their compounding steps, so the same
+   * prefill answered €492,680 in the compound-interest card against the
+   * projection's €466,096 — one tab, one rate, two answers.
    */
   averageReturnPctPerYear: number | null;
 }
@@ -61,24 +83,25 @@ function round2(value: number): number {
 
 /**
  * Resolve the active portfolio (default one, or first available), then fetch
- * its headline value + inception CAGR. The tab never blocks on this — cards
+ * its headline value + inception return. The tab never blocks on this — cards
  * degrade to their standalone inputs when the fetch is missing or a field is
  * `null`.
  *
- * The prefilled return has ONE source per account mode, and they are not the
- * same series:
+ * The prefilled return is the portfolio's TIME-WEIGHTED return in both account
+ * modes (#1759) — the same net-worth curve the projection starts from, measured
+ * so that the user's own deposits are not read back as performance. It has one
+ * source per mode:
  *
- * - **normal** — `analytics/…/series` `primary.stats.cagrPct`, i.e. the
- *   server's `getAssetValueSeries` summed over the visible assets: HOLDINGS
- *   only. This is the number the tab has always prefilled, so it stays exactly
- *   that (same endpoint, same query key, unrounded) rather than becoming a
- *   net-worth CAGR because the store happens to expose history.
- * - **paranoid** — there is no analytics endpoint (and the client engine
- *   derives no per-asset series), so the only value curve a decrypted vault can
- *   state is its NET-WORTH series (`getPortfolioHistory` = holdings + cash).
- *   Idle cash therefore damps this figure relative to the normal one; it is a
- *   starting point the user edits, and the projection's starting value is a
- *   net-worth figure too (see docs/paranoid-design.md §8).
+ * - **normal** — `analytics/…/series` `twr`, which the server derives from the
+ *   §6.9 overview curve. It replaced `primary.stats.cagrPct`, the CAGR of the
+ *   holdings VALUE series: every buy lifted that curve, so a monthly saver was
+ *   prefilled with a rate made mostly of their own money.
+ * - **paranoid** — there is no analytics endpoint, so the decrypted vault's own
+ *   performance curve (`getPortfolioHistory().performance`, server-parity TWR)
+ *   answers the same question locally.
+ *
+ * Both are net-worth figures, so idle cash damps them; that matches the
+ * projection, whose starting value is net worth too (docs/paranoid-design.md §8).
  */
 function usePortfolioPrefill(): {
   prefill: Prefill;
@@ -124,20 +147,20 @@ function usePortfolioPrefill(): {
     enabled: portfolioId !== null && paranoid,
     staleTime: 60_000,
   });
-  // Same shaping as the analytics header (`clientSeriesCagrPct` trims the zero
-  // edges first), so the prefill and the curve it samples never disagree.
-  const historyCagr =
-    historyQuery.data == null ? null : clientSeriesCagrPct(historyQuery.data.points);
+  // The vault's own since-inception TWR — the local answer to the question the
+  // server's `twr` block answers for a normal account.
+  const historyTwr =
+    historyQuery.data == null ? null : clientSeriesTwrCagrPct(historyQuery.data.performance);
 
   const modeQuery = paranoid ? historyQuery : analyticsQuery;
   return {
     prefill: {
       portfolioValueEur: portfolioQuery.data?.totals.totalValueEur ?? null,
       averageReturnPctPerYear: paranoid
-        ? historyCagr == null
+        ? historyTwr == null
           ? null
-          : round2(historyCagr)
-        : (analyticsQuery.data?.primary.stats.cagrPct ?? null),
+          : round2(historyTwr)
+        : (analyticsQuery.data?.twr?.cagrPct ?? null),
     },
     isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || modeQuery.isLoading,
     isError: portfoliosQuery.isError || portfolioQuery.isError || modeQuery.isError,
@@ -220,6 +243,84 @@ function PrefillButton({ label, disabled, onClick }: PrefillButtonProps) {
   );
 }
 
+// ─── Solve-target switch ─────────────────────────────────────────────────────
+
+interface SolveSwitchProps<T extends string> {
+  /** Group label — what the two buttons choose between. */
+  label: string;
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  onChange: (next: T) => void;
+}
+
+/**
+ * Picks which unknown a card solves for. The same `bt-seg` segmented control the
+ * standing-order dialog uses, so a second calculator mode costs one row inside
+ * the card it belongs to instead of another card in the tab.
+ */
+function SolveSwitch<T extends string>({ label, value, options, onChange }: SolveSwitchProps<T>) {
+  return (
+    <div className="bt-seg mb-3" role="group" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+          aria-pressed={option.value === value}
+          className={cx(
+            'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
+            option.value === value ? 'is-active' : 'bt-muted hover:bt-soft',
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Rate field ──────────────────────────────────────────────────────────────
+
+interface RateFieldProps {
+  t: TranslateFn;
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}
+
+/**
+ * Every percent-per-year field in the suite, held to the one bound the whole
+ * Forecast tab uses ({@link clampForecastReturnPct}). The `min`/`max` attributes
+ * only tell the browser; these are bare number inputs outside any form, so a
+ * typed or pasted `-2000` reaches state verbatim and the MATH is what clamps it
+ * (each solver in `./calc` does that itself). The notice mirrors the
+ * projection's own clamp alert — a card that silently answers a different
+ * question than the one typed is the defect, not the bounded answer.
+ */
+function RateField({ t, label, value, onChange }: RateFieldProps) {
+  const entered = safeNumber(value);
+  const isClamped = entered !== clampForecastReturnPct(entered);
+  return (
+    <div className="flex flex-col gap-1">
+      <TextField
+        type="number"
+        inputMode="decimal"
+        min={FORECAST_RETURN_MIN_PCT}
+        max={FORECAST_RETURN_MAX_PCT}
+        step="any"
+        label={label}
+        value={value}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
+      />
+      {isClamped ? (
+        <p role="alert" className="text-xs bt-gold-note">
+          {t('forecast.calculators.ratePctClamped')}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // ─── Compound interest card ──────────────────────────────────────────────────
 
 function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
@@ -256,12 +357,11 @@ function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn
           value={monthlyContribution}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setMonthlyContribution(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.compound.ratePct')}
           value={ratePctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setRatePctPerYear(e.target.value)}
+          onChange={setRatePctPerYear}
         />
         <TextField
           type="number"
@@ -311,27 +411,63 @@ function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn
   );
 }
 
-// ─── Savings plan card (solve for monthly contribution) ──────────────────────
+// ─── Savings plan card (solve for monthly contribution, or for years) ────────
+
+/** Which unknown the savings card solves for — §6.14's two savings-plan modes. */
+type SavingsSolveTarget = 'contribution' | 'years';
 
 function SavingsPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
+  const [solveFor, setSolveFor] = useState<SavingsSolveTarget>('contribution');
   const [target, setTarget] = useState('100000');
   const [principal, setPrincipal] = useState('10000');
+  const [monthlyContribution, setMonthlyContribution] = useState('500');
   const [ratePctPerYear, setRatePctPerYear] = useState('5');
   const [years, setYears] = useState('15');
   const [compoundingPerYear, setCompoundingPerYear] = useState('12');
 
-  const input: SavingsContributionInput = {
+  const solvingYears = solveFor === 'years';
+  const shared = {
     target: safeNumber(target),
     principal: safeNumber(principal),
     ratePctPerYear: safeNumber(ratePctPerYear),
-    years: safeNumber(years),
     compoundingPerYear: Math.max(1, safeNumber(compoundingPerYear, 12)),
   };
-  const result = savingsPlanContribution(input);
+  // Only the active target is solved: the two modes take a different unknown
+  // (years in, contribution out — or the reverse), so the idle branch's input
+  // field is not even rendered.
+  const contributionInput: SavingsContributionInput = { ...shared, years: safeNumber(years) };
+  const yearsInput: SavingsYearsInput = {
+    ...shared,
+    monthlyContribution: safeNumber(monthlyContribution),
+  };
+  const contributionResult = solvingYears ? null : savingsPlanContribution(contributionInput);
+  const yearsResult = solvingYears ? savingsPlanYears(yearsInput) : null;
+  const feasible = solvingYears ? yearsResult!.feasible : contributionResult!.feasible;
+  // An unreachable target is a real answer, not a missing one: it says so in
+  // words rather than degrading to a blank or an em-dash (`savingsPlanYears`
+  // returns `{ years: null }` there, and `formatMoney`-style fallbacks would
+  // read as "we could not compute this").
+  const yearsValue =
+    yearsResult === null
+      ? null
+      : yearsResult.years === null || !Number.isFinite(yearsResult.years)
+        ? t('forecast.savings.notReachable')
+        : t('forecast.savings.yearsValue', {
+            years: Math.max(0, Math.round(yearsResult.years * 10) / 10),
+          });
   const canPrefill = prefill.portfolioValueEur !== null || prefill.averageReturnPctPerYear !== null;
 
   return (
     <>
+      <SolveSwitch
+        label={t('forecast.savings.solve.label')}
+        value={solveFor}
+        onChange={setSolveFor}
+        options={[
+          { value: 'contribution', label: t('forecast.savings.solve.contribution') },
+          { value: 'years', label: t('forecast.savings.solve.years') },
+        ]}
+      />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <TextField
           type="number"
@@ -347,20 +483,29 @@ function SavingsPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
           value={principal}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setPrincipal(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.savings.ratePct')}
           value={ratePctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setRatePctPerYear(e.target.value)}
+          onChange={setRatePctPerYear}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
-          label={t('forecast.savings.years')}
-          value={years}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setYears(e.target.value)}
-        />
+        {solvingYears ? (
+          <TextField
+            type="number"
+            inputMode="decimal"
+            label={t('forecast.savings.monthlyContributionInput')}
+            value={monthlyContribution}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setMonthlyContribution(e.target.value)}
+          />
+        ) : (
+          <TextField
+            type="number"
+            inputMode="decimal"
+            label={t('forecast.savings.years')}
+            value={years}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setYears(e.target.value)}
+          />
+        )}
         <TextField
           type="number"
           inputMode="decimal"
@@ -383,13 +528,17 @@ function SavingsPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
         }}
       />
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <StatCard
-          label={t('forecast.savings.monthlyContribution')}
-          value={formatMoney(result.monthlyContribution)}
-        />
+        {solvingYears ? (
+          <StatCard label={t('forecast.savings.yearsNeeded')} value={yearsValue!} />
+        ) : (
+          <StatCard
+            label={t('forecast.savings.monthlyContribution')}
+            value={formatMoney(contributionResult!.monthlyContribution)}
+          />
+        )}
         <StatCard
           label={t('forecast.savings.feasible')}
-          value={result.feasible ? t('common.yes') : t('common.no')}
+          value={feasible ? t('common.yes') : t('common.no')}
         />
       </div>
     </>
@@ -423,19 +572,17 @@ function DividendCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
           value={positionValue}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setPositionValue(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.dividend.yieldPct')}
           value={yieldPctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setYieldPctPerYear(e.target.value)}
+          onChange={setYieldPctPerYear}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.dividend.growthPct')}
           value={growthPctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setGrowthPctPerYear(e.target.value)}
+          onChange={setGrowthPctPerYear}
         />
         <TextField
           type="number"
@@ -476,30 +623,63 @@ function DividendCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
 
 // ─── Withdrawal plan card ────────────────────────────────────────────────────
 
+/** Which unknown the withdrawal card solves for — §6.14's two withdrawal modes. */
+type WithdrawalSolveTarget = 'horizon' | 'rate';
+
 function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
+  const [solveFor, setSolveFor] = useState<WithdrawalSolveTarget>('horizon');
   const [balance, setBalance] = useState('100000');
   const [monthlyWithdrawal, setMonthlyWithdrawal] = useState('500');
+  const [horizonYears, setHorizonYears] = useState('20');
   const [annualReturnPct, setAnnualReturnPct] = useState('5');
 
-  const input: WithdrawalHorizonInput = {
+  const solvingRate = solveFor === 'rate';
+  const horizonInput: WithdrawalHorizonInput = {
     balance: safeNumber(balance),
     monthlyWithdrawal: safeNumber(monthlyWithdrawal),
     annualReturnPct: safeNumber(annualReturnPct),
   };
-  const result = withdrawalHorizon(input);
+  // The horizon is collected in YEARS and handed over in months, so it takes the
+  // one `clampYears` bound the rest of the suite uses rather than a second
+  // months-shaped idiom. The bound is also what keeps the answer a number: the
+  // annuity factor is `(1 + rm)^N`, which overflows to `Infinity` — and then to
+  // `Infinity/Infinity = NaN` — for an unbounded horizon at a positive rate.
+  const rateInput: WithdrawalRateInput = {
+    balance: safeNumber(balance),
+    months: clampYears(horizonYears) * 12,
+    annualReturnPct: safeNumber(annualReturnPct),
+  };
+  const result = solvingRate ? null : withdrawalHorizon(horizonInput);
+  const rateResult = solvingRate ? withdrawalRate(rateInput) : null;
   const canPrefill = prefill.portfolioValueEur !== null || prefill.averageReturnPctPerYear !== null;
 
-  const horizonValue = result.sustainable
-    ? t('forecast.withdrawal.sustainable')
-    : result.months === null
-      ? t('forecast.withdrawal.notComputable')
-      : t('forecast.withdrawal.monthsValue', {
-          months: Math.max(0, Math.round(result.months * 10) / 10),
-          years: Math.max(0, Math.round((result.months / 12) * 10) / 10),
-        });
+  // A non-finite horizon is treated exactly like `null`. The card interpolates
+  // its months into copy rather than routing them through `formatMoney`, so a
+  // `NaN` that slipped past this guard would render as the literal "NaN months"
+  // — the one place in the suite where a bad figure is not even an em-dash.
+  const horizonValue =
+    result === null
+      ? null
+      : result.sustainable
+        ? t('forecast.withdrawal.sustainable')
+        : result.months === null || !Number.isFinite(result.months)
+          ? t('forecast.withdrawal.notComputable')
+          : t('forecast.withdrawal.monthsValue', {
+              months: Math.max(0, Math.round(result.months * 10) / 10),
+              years: Math.max(0, Math.round((result.months / 12) * 10) / 10),
+            });
 
   return (
     <>
+      <SolveSwitch
+        label={t('forecast.withdrawal.solve.label')}
+        value={solveFor}
+        onChange={setSolveFor}
+        options={[
+          { value: 'horizon', label: t('forecast.withdrawal.solve.horizon') },
+          { value: 'rate', label: t('forecast.withdrawal.solve.rate') },
+        ]}
+      />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <TextField
           type="number"
@@ -508,19 +688,30 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
           value={balance}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setBalance(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
-          label={t('forecast.withdrawal.monthlyWithdrawal')}
-          value={monthlyWithdrawal}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setMonthlyWithdrawal(e.target.value)}
-        />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        {solvingRate ? (
+          <TextField
+            type="number"
+            inputMode="decimal"
+            min={FORECAST_CALC_MIN_YEARS}
+            max={FORECAST_CALC_MAX_YEARS}
+            label={t('forecast.withdrawal.horizonYears')}
+            value={horizonYears}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setHorizonYears(e.target.value)}
+          />
+        ) : (
+          <TextField
+            type="number"
+            inputMode="decimal"
+            label={t('forecast.withdrawal.monthlyWithdrawal')}
+            value={monthlyWithdrawal}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setMonthlyWithdrawal(e.target.value)}
+          />
+        )}
+        <RateField
+          t={t}
           label={t('forecast.withdrawal.annualReturnPct')}
           value={annualReturnPct}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setAnnualReturnPct(e.target.value)}
+          onChange={setAnnualReturnPct}
         />
       </div>
       <PrefillButton
@@ -536,15 +727,24 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
         }}
       />
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <StatCard label={t('forecast.withdrawal.horizonLabel')} value={horizonValue} />
-        <StatCard
-          label={t('forecast.withdrawal.statusLabel')}
-          value={
-            result.sustainable
-              ? t('forecast.withdrawal.statusSustainable')
-              : t('forecast.withdrawal.statusDepletes')
-          }
-        />
+        {solvingRate ? (
+          <StatCard
+            label={t('forecast.withdrawal.rateLabel')}
+            value={formatMoney(rateResult!.monthlyWithdrawal)}
+          />
+        ) : (
+          <>
+            <StatCard label={t('forecast.withdrawal.horizonLabel')} value={horizonValue!} />
+            <StatCard
+              label={t('forecast.withdrawal.statusLabel')}
+              value={
+                result!.sustainable
+                  ? t('forecast.withdrawal.statusSustainable')
+                  : t('forecast.withdrawal.statusDepletes')
+              }
+            />
+          </>
+        )}
       </div>
     </>
   );

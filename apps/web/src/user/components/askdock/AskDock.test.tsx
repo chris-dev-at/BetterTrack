@@ -1,12 +1,19 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 
-import { ASK_DOCK_ID, AskDock } from './AskDock';
+vi.mock('../../../lib/aiApi', () => ({
+  AI_CAPABILITY_QUERY_KEY: ['ai', 'capability'],
+  useAiCapability: vi.fn(),
+}));
+
+import { useAiCapability } from '../../../lib/aiApi';
+import { ASK_DOCK_ATTRIBUTE, ASK_DOCK_ID, AskDock } from './AskDock';
 import { resetAskDockCache, toggleAskDock, useAskDockState } from './askDockStore';
-import { ASK_DOCK_MIN_WIDTH, useAskDockEligible } from './useAskDockEligible';
+import { ASK_DOCK_MIN_WIDTH, useAskDockAvailable } from './useAskDockEligible';
 
 const STORAGE_KEY = 'bt.askdock';
 
@@ -24,8 +31,8 @@ function persisted(): unknown {
  */
 function RailAskRow() {
   const { open } = useAskDockState();
-  const eligible = useAskDockEligible();
-  if (!eligible) return <a href="/ask">Ask BetterTrack</a>;
+  const available = useAskDockAvailable();
+  if (!available) return <a href="/ask">Ask BetterTrack</a>;
   return (
     <button aria-controls={ASK_DOCK_ID} aria-expanded={open} onClick={toggleAskDock} type="button">
       Ask BetterTrack
@@ -33,21 +40,40 @@ function RailAskRow() {
   );
 }
 
+/** The shell's gated mount: no local AI provider ⇒ the panel is never mounted. */
+function AskDockMount() {
+  const available = useAskDockAvailable();
+  if (!available) return null;
+  return <AskDock />;
+}
+
 /** A click target on the "page" underneath, to prove outside clicks still land. */
 const pageClick = vi.fn();
 
 function renderShell(extra?: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/portfolio']}>
-      <RailAskRow />
-      <button onClick={pageClick} type="button">
-        Page button
-      </button>
-      {extra}
-      <AskDock />
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/portfolio']}>
+        <RailAskRow />
+        <button onClick={pageClick} type="button">
+          Page button
+        </button>
+        {extra}
+        <AskDockMount />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
+
+/** The capability descriptor the panel keys its whole existence off (§6.18). */
+const AI_AVAILABLE = {
+  available: true,
+  model: 'llama3.1:8b',
+  dailyCap: 20,
+  used: 0,
+  remaining: 20,
+};
 
 function setViewportWidth(width: number) {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: width, writable: true });
@@ -63,6 +89,7 @@ const sizeButton = () => screen.getByRole('button', { name: /^(Maximize|Restore 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(useAiCapability).mockReturnValue({ data: AI_AVAILABLE } as never);
   localStorage.clear();
   resetAskDockCache();
   setViewportWidth(1280); // a desktop viewport: the panel is eligible
@@ -125,6 +152,38 @@ describe('AskDock — the rail row toggles the floating panel', () => {
     expect(container.querySelector('.bt-scrim')).toBeNull();
     expect(document.querySelector('[aria-modal="true"]')).toBeNull();
     expect(document.body.style.overflow).not.toBe('hidden');
+  });
+
+  /**
+   * The install card (§7.1) is `position: fixed` in the same corner on the same
+   * layer, and the dock paints over it. The attribute is what lets the
+   * stylesheet move that card out of the way — and it must be published only
+   * while the panel is really on screen, since the card also renders on the
+   * sign-in screen, where no dock exists at all.
+   */
+  test('publishes its presence for the corner it shares, and withdraws it', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    expect(document.documentElement.hasAttribute(ASK_DOCK_ATTRIBUTE)).toBe(false);
+
+    await user.click(trigger());
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute(ASK_DOCK_ATTRIBUTE)).toBe('open'),
+    );
+
+    await user.click(trigger());
+    await waitFor(() =>
+      expect(document.documentElement.hasAttribute(ASK_DOCK_ATTRIBUTE)).toBe(false),
+    );
+  });
+
+  test('stays silent about the corner at a width where no panel renders', async () => {
+    setViewportWidth(ASK_DOCK_MIN_WIDTH - 1);
+    renderShell();
+    toggleAskDock();
+
+    await waitFor(() => expect(panel()).toBeNull());
+    expect(document.documentElement.hasAttribute(ASK_DOCK_ATTRIBUTE)).toBe(false);
   });
 
   test('the open state persists and is restored on mount', async () => {
@@ -387,6 +446,23 @@ describe('AskDock — AI only', () => {
 
     await user.type(input, 'what is my exposure?');
     expect(input).toHaveValue('');
+  });
+});
+
+describe('AskDock — with no local AI provider configured', () => {
+  test('the AI panel does not exist and the rail row stays a link to /ask (§6.18)', () => {
+    vi.mocked(useAiCapability).mockReturnValue({
+      data: { ...AI_AVAILABLE, available: false },
+    } as never);
+    // Even a persisted "open, pinned" panel stays gone: availability is the gate.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ open: true, pinned: true }));
+    resetAskDockCache();
+
+    renderShell();
+
+    expect(screen.getByRole('link', { name: 'Ask BetterTrack' })).toHaveAttribute('href', '/ask');
+    expect(screen.queryByRole('button', { name: 'Ask BetterTrack' })).toBeNull();
+    expect(panel()).toBeNull();
   });
 });
 

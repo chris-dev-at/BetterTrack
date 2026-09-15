@@ -14,6 +14,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { ListPagination, useOffsetSnapBack } from '../components/ListPagination';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
@@ -175,7 +176,12 @@ function RegistrationModeSection({ resource }: { resource: ReadHandle<AppSetting
       setBaseline(result.registrationMode);
       setSaved(true);
     },
-    { errorKey: 'admin.registration.modeSaveError' },
+    {
+      errorKey: 'admin.registration.modeSaveError',
+      // Same `PATCH /admin/settings` route as SettingsPage: no row id, so a 404
+      // is the closed admin session, not a missing setting (V5-P13c).
+      notFound: 'session',
+    },
   );
 
   const dirty = baseline !== null && selected !== baseline;
@@ -299,7 +305,12 @@ function ApprovalQueueSection({
   onDecided: () => void;
 }) {
   const t = useT();
-  const requests = useResource((signal) => api.listRegistrationRequests(signal), []);
+  // Bounded read (#1814): the queue used to arrive whole, however long it was.
+  const [offset, setOffset] = useState(0);
+  const requests = useResource(
+    (signal) => api.listRegistrationRequests({ offset }, signal),
+    [offset],
+  );
   const decide = useAdminMutation(
     (id: string, decision: 'approve' | 'reject') =>
       decision === 'approve'
@@ -319,13 +330,18 @@ function ApprovalQueueSection({
   );
   const hintKey = activityHintKey(active, 'admin.settings.approvals.inactive');
   const rows = requests.data?.requests ?? [];
+  const page = requests.data?.page ?? null;
+  // Deciding the only application on page 2 empties that window (#1848).
+  useOffsetSnapBack(page, rows.length, setOffset);
 
   return (
     <Panel padded={false}>
       <PanelHeader
         title={t('admin.settings.approvals.title')}
         description={`${t('admin.settings.approvals.description')}${hintKey ? ` ${t(hintKey)}` : ''}`}
-        actions={rows.length > 0 ? <Badge tone="sky">{rows.length}</Badge> : undefined}
+        // The badge counts the QUEUE, not the page (#1848): 60 pending under a
+        // page of 25 read "25" directly above a footer saying "1–25 of 60".
+        actions={page && page.total > 0 ? <Badge tone="sky">{page.total}</Badge> : undefined}
       />
 
       {decide.error ? (
@@ -400,6 +416,7 @@ function ApprovalQueueSection({
           </tbody>
         </DataTable>
       )}
+      <ListPagination page={page} rowCount={rows.length} onOffset={setOffset} />
       <div className={cx('px-4 py-2.5', EDGE_TOP)}>
         <p className={TEXT_MUTED}>{t('admin.registration.decisionEffect')}</p>
       </div>
@@ -414,7 +431,9 @@ function ApprovalQueueSection({
  */
 function RegistrationTokensSection({ active }: { active: SectionActivity }) {
   const t = useT();
-  const tokens = useResource((signal) => api.listRegistrationTokens(signal), []);
+  // Bounded read (#1814): exhausted and revoked tokens are never pruned.
+  const [offset, setOffset] = useState(0);
+  const tokens = useResource((signal) => api.listRegistrationTokens({ offset }, signal), [offset]);
 
   const [label, setLabel] = useState('');
   const [maxUses, setMaxUses] = useState('1');
@@ -432,11 +451,19 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
         ...(days !== undefined && Number.isFinite(days) ? { expiresInDays: days } : {}),
       });
       setCreatedUrl(res.registerUrl);
+      // The new token is the newest row, so page 1 is where it will be.
+      setOffset(0);
       setLabel('');
       setMaxUses('1');
       setExpiresInDays('');
     },
-    { errorKey: 'admin.registration.createTokenError', onSuccess: tokens.reload },
+    {
+      errorKey: 'admin.registration.createTokenError',
+      // `POST /admin/registration-tokens` mints a row rather than addressing one,
+      // so nothing here can be "already gone" — a 404 is auth loss.
+      notFound: 'session',
+      onSuccess: tokens.reload,
+    },
   );
 
   const revoke = useAdminMutation((id: string) => api.revokeRegistrationToken(id), {
@@ -453,6 +480,9 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
 
   const hintKey = activityHintKey(active, 'admin.settings.tokens.inactive');
   const rows = tokens.data?.tokens ?? [];
+  const page = tokens.data?.page ?? null;
+  // Revoking the last token on a page empties that window (#1848).
+  useOffsetSnapBack(page, rows.length, setOffset);
 
   function onCreate(event: FormEvent) {
     event.preventDefault();
@@ -606,6 +636,7 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
           </tbody>
         </DataTable>
       )}
+      <ListPagination page={page} rowCount={rows.length} onOffset={setOffset} />
       <div className={cx('px-4 py-2.5', EDGE_TOP)}>
         <p className={TEXT_MUTED}>{t('admin.registration.tokenUrlOnce')}</p>
       </div>

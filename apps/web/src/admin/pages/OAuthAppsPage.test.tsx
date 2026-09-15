@@ -11,8 +11,8 @@ import type {
 vi.mock('../../lib/adminApi');
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
-import { I18nProvider } from '../../i18n';
-import { AuthProvider } from '../AuthContext';
+import { I18nProvider, localizedMessage } from '../../i18n';
+import { AuthProvider, useAuth } from '../AuthContext';
 import { OAuthAppsPage } from './OAuthAppsPage';
 
 const admin: MeResponse = {
@@ -61,10 +61,17 @@ beforeEach(() => {
   vi.mocked(api.listFirstPartyApps).mockResolvedValue({ clients: [app] });
 });
 
+/** The console's auth status, so a sign-out on auth loss is observable. */
+function AuthStatus() {
+  const { status } = useAuth();
+  return <span data-testid="status">{status}</span>;
+}
+
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
       <AuthProvider>
+        <AuthStatus />
         <OAuthAppsPage />
       </AuthProvider>
     </I18nProvider>,
@@ -106,9 +113,10 @@ test('keeps a deletion failure visible in its confirmation dialog', async () => 
 
   await user.click(confirm);
 
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-    'Revoke active grants before deleting this app.',
-  );
+  // Catalog copy, not the server's envelope (#1814).
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert).toHaveTextContent(localizedMessage('en', 'common.genericError'));
+  expect(alert).not.toHaveTextContent('Revoke active grants before deleting this app.');
   expect(confirm).toBeEnabled();
 
   await user.click(confirm);
@@ -158,4 +166,19 @@ test('retries a failed app-list read', async () => {
     await screen.findByText('No first-party apps yet. Register one above.'),
   ).toBeInTheDocument();
   expect(api.listFirstPartyApps).toHaveBeenCalledTimes(2);
+});
+
+test('a closed admin session window signs the console out instead of a create banner', async () => {
+  const envelope = 'Not found';
+  vi.mocked(api.createFirstPartyApp).mockRejectedValue(new ApiError(404, 'NOT_FOUND', envelope));
+  const user = userEvent.setup();
+  renderPage();
+
+  await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+  await user.type(screen.getByLabelText('App name'), 'BetterTrack Desktop');
+  await user.type(screen.getByLabelText('Redirect URI'), 'https://desktop.test/callback');
+  await user.click(screen.getByRole('button', { name: 'Register app' }));
+
+  await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('anonymous'));
+  expect(screen.queryByText(envelope)).not.toBeInTheDocument();
 });

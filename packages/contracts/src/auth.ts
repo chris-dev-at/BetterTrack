@@ -547,16 +547,19 @@ export type PinQuickAuthResponse = z.infer<typeof pinQuickAuthResponseSchema>;
 /**
  * `POST /auth/remembered-device` response — the identity the client stores in its
  * remember-me record, AND the exact shape the record may hold: user id, username,
- * and an avatar URL (always `null` today — the app has no avatar system yet, so
- * the chooser renders a lettered placeholder). Deliberately carries no token or
- * scope: the device binding lives in the httpOnly `bt_rdid` cookie, never here.
- * Only PIN users may be remembered — the endpoint 400s a PIN-less account.
+ * and the user's curated profile icon id (§13.5 V5-P0 (c)), `null` when they never
+ * picked one — the chooser then falls back to the lettered tile. The id is
+ * constrained to the finite {@link PROFILE_ICON_IDS} vocabulary, so an unknown id
+ * can never reach the renderer; uploads (and therefore avatar *URLs*) stay
+ * deliberately deferred. Carries no token or scope: the device binding lives in
+ * the httpOnly `bt_rdid` cookie, never here. Only PIN users may be remembered —
+ * the endpoint 400s a PIN-less account.
  */
 export const rememberedDeviceResponseSchema = z
   .object({
     userId: z.string().uuid(),
     username: z.string(),
-    avatarUrl: z.string().nullable(),
+    profileIcon: profileIconIdSchema.nullable(),
   })
   .strict();
 export type RememberedDeviceResponse = z.infer<typeof rememberedDeviceResponseSchema>;

@@ -10,6 +10,8 @@ vi.mock('../../lib/socialApi', () => ({
   setAudience: vi.fn(),
 }));
 
+import { FRIEND_GROUPS_MAX } from '@bettertrack/contracts';
+
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 import { AudiencePicker } from './AudiencePicker';
@@ -471,7 +473,7 @@ describe('AudiencePicker — friend groups (V5-P8)', () => {
 
   test('the group rung shows its confirm and cannot submit until a group is chosen', async () => {
     vi.mocked(listGroups).mockResolvedValue({
-      groups: [{ id: GROUP, name: 'Family', memberCount: 3, members: [] }],
+      groups: [{ id: GROUP, name: 'Family', memberCount: 3, members: [], shareCount: 0 }],
     });
     vi.mocked(setAudience).mockResolvedValue({
       state: {
@@ -510,6 +512,77 @@ describe('AudiencePicker — friend groups (V5-P8)', () => {
       groupId: GROUP,
       acknowledgePublic: undefined,
       confirmWiden: true,
+    });
+  });
+
+  describe('the widening confirmation names the circle it means', () => {
+    const WORK = '00000000-0000-0000-0000-0000000000f2';
+
+    function withCircles(current: { audience: 'group' | 'specific_friends'; groupId?: string }) {
+      vi.mocked(listGroups).mockResolvedValue({
+        groups: [
+          { id: GROUP, name: 'Family', memberCount: 3, members: [], shareCount: 0 },
+          { id: WORK, name: 'Work', memberCount: 18, members: [], shareCount: 0 },
+        ],
+      });
+      vi.mocked(getAudience).mockResolvedValue({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: current.audience,
+        friendIds: [],
+        groupId: current.groupId ?? null,
+        link: { active: false, createdAt: null },
+      });
+    }
+
+    test('a group → group swap names both circles, not "Friend group" twice', async () => {
+      // Three people to eighteen is a genuine widening (contracts classifies it
+      // so); asking the owner to acknowledge it while refusing to name either
+      // circle makes the acknowledgment meaningless.
+      withCircles({ audience: 'group', groupId: GROUP });
+      const user = userEvent.setup();
+      renderPicker();
+
+      await waitFor(() => expect(screen.getByRole('radio', { name: /work/i })).toBeEnabled());
+      await user.click(screen.getByRole('radio', { name: /work/i }));
+
+      expect(
+        screen.getByText(
+          /change access from group “Family” \(3 members\) to group “Work” \(18 members\)/i,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/from Friend group to Friend group/i)).toBeNull();
+    });
+
+    test('a specific-friends → group change names the target circle', async () => {
+      withCircles({ audience: 'specific_friends' });
+      const user = userEvent.setup();
+      renderPicker();
+
+      await waitFor(() =>
+        expect(screen.getByRole('radio', { name: /friend group/i })).toBeEnabled(),
+      );
+      await user.click(screen.getByRole('radio', { name: /friend group/i }));
+      await user.click(screen.getByRole('radio', { name: /work/i }));
+
+      expect(
+        screen.getByText(/change access from Specific friends to group “Work” \(18 members\)/i),
+      ).toBeInTheDocument();
+    });
+
+    test('a group → specific-friends change names the source circle', async () => {
+      withCircles({ audience: 'group', groupId: WORK });
+      const user = userEvent.setup();
+      renderPicker();
+
+      await waitFor(() =>
+        expect(screen.getByRole('radio', { name: /specific friends/i })).toBeEnabled(),
+      );
+      await user.click(screen.getByRole('radio', { name: /specific friends/i }));
+
+      expect(
+        screen.getByText(/change access from group “Work” \(18 members\) to Specific friends/i),
+      ).toBeInTheDocument();
     });
   });
 });
@@ -611,5 +684,43 @@ describe('AudiencePicker — specific-friends searchable multi-select (V3-P6)', 
       acknowledgePublic: undefined,
       confirmWiden: true,
     });
+  });
+});
+
+describe('AudiencePicker — the friend-group list is bounded (#1780)', () => {
+  const groupsAt = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`,
+      name: `Circle ${i}`,
+      memberCount: 1,
+      members: [],
+      shareCount: 0,
+    }));
+
+  test('names the ceiling when the caller holds the maximum number of circles', async () => {
+    vi.mocked(listGroups).mockResolvedValue({ groups: groupsAt(FRIEND_GROUPS_MAX) });
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /friend group/i }));
+
+    // The read is capped at the same ceiling the server enforces, so the list IS
+    // the caller's whole set — say so rather than showing a silently short list.
+    expect(
+      screen.getByText(
+        `This is all ${FRIEND_GROUPS_MAX} of your groups — the maximum. Manage them on the People page.`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('stays compact below the ceiling — no extra line', async () => {
+    vi.mocked(listGroups).mockResolvedValue({ groups: groupsAt(2) });
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /friend group/i }));
+
+    expect(screen.getByText('Circle 0')).toBeInTheDocument();
+    expect(screen.queryByText(/the maximum/i)).not.toBeInTheDocument();
   });
 });

@@ -3,6 +3,7 @@ import type { SearchResponse, SearchResultItem } from '@bettertrack/contracts';
 import type { AssetRepository, CatalogSearchMatch } from '../../data/repositories/assetRepository';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { CatalogEnrichment } from './catalogEnrichment';
+import { unlimitedEnrichmentBudget, type SearchEnrichmentBudget } from './enrichmentBudget';
 
 /**
  * Local-first search (PROJECTPLAN.md §6.2): `GET /search?q=` answers from the
@@ -42,6 +43,16 @@ export interface SearchOptions {
    * catalog-only pass before explicitly admitting provider work.
    */
   allowEnrichment?: boolean;
+  /**
+   * The caller already carries its own admission ceiling, so it is not charged
+   * the per-user interactive budget (#1709). The one such caller is the import
+   * resolver: `IMPORT_ENRICHMENT_QUERY_BUDGET` (16 queries + a wait budget, per
+   * import) bounds exactly the same fan-out for a flow that is itself gated by
+   * the expensive `importCreate` limiter, and double-charging it would let a
+   * minute of ordinary searching silently leave an import's instruments
+   * unresolved.
+   */
+  budgetedByCaller?: boolean;
 }
 
 /** Cap on returned rows — the UI shows a short list, not a browse page (§6.2). */
@@ -64,6 +75,12 @@ export interface SearchServiceDeps {
   enrichment: CatalogEnrichment;
   /** Mixed global/custom catalog filtering under the account transition lock. */
   paranoid?: Pick<ParanoidModeGuard, 'runAllowedWithOptional'>;
+  /**
+   * Per-user ceiling on interactive provider fallbacks (#1709). Omitted ⇒
+   * unlimited, which is only ever right for a caller that carries its own
+   * budget (the import path) or a test that asserts the fallback itself.
+   */
+  enrichmentBudget?: SearchEnrichmentBudget;
 }
 
 const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
@@ -85,6 +102,7 @@ const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
 
 export function createSearchService(deps: SearchServiceDeps): SearchService {
   const { assetRepo, enrichment, paranoid } = deps;
+  const enrichmentBudget = deps.enrichmentBudget ?? unlimitedEnrichmentBudget;
 
   async function withCatalogVisibility<T>(
     userId: string,
@@ -103,14 +121,30 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
     options?: SearchOptions,
   ): Promise<SearchResponse> {
     const query = normalizeQuery(rawQuery);
-    const matches = await assetRepo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT, {
-      includeCustomAssets,
-    });
+    const { matches, marketMatchTotal } = await assetRepo.searchCatalog(
+      userId,
+      query,
+      SEARCH_RESULT_LIMIT,
+      { includeCustomAssets },
+    );
     const results = matches.map(toResultItem);
 
-    const marketMatches = matches.filter((m) => m.ownerId === null).length;
+    // Measured against the CATALOG, not the display window (#1794). The window
+    // is twenty rows in which market rows and the caller's own custom rows
+    // compete under one ranking (§6.2), so counting market rows inside it makes
+    // "the catalog is thin" mean "this caller owns a lot of custom assets
+    // matching this word": twenty custom "Gold bar #N" rows push every seeded
+    // gold row out of the window and every keystroke then charges the budget
+    // and fans out to providers for rows Postgres already holds.
+    const thin = options?.allowEnrichment !== false && marketMatchTotal < CATALOG_MISS_THRESHOLD;
+    // The budget is spent per DISTINCT query per user per window (#1709). The
+    // enrichment coalesces on the query itself, so distinct misses are exactly
+    // the provider fan-out — and the global-catalog growth behind it — that no
+    // other layer bounds. A spent budget only removes the background work: the
+    // local results below still stand, and `enriching: false` stops the client
+    // refetch loop instead of leaving it spinning.
     const enriching =
-      options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD
+      thin && (options?.budgetedByCaller === true || (await enrichmentBudget.admit(userId, query)))
         ? // Fire-and-forget: resolves after the coalescing decision, never
           // waits on a provider (§6.2). False when it ran recently, so a
           // refetching client doesn't spin forever.
@@ -128,8 +162,26 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
 
     searchWithFreshness: (userId, rawQuery) =>
       withCatalogVisibility(userId, async (includeCustomAssets) => {
-        const result = await searchCatalog(userId, rawQuery, includeCustomAssets);
+        // WATERMARK FIRST, BODY SECOND (#1810). The stamp is monotonic and
+        // instance-wide, so whichever read runs second decides the direction of
+        // the error a concurrent catalog write introduces — and only one
+        // direction is safe. Body-first advertises a `Last-Modified` the body
+        // does not contain: a background enrichment committing between the two
+        // reads stamps W1, the response ships pre-enrichment results with
+        // `enriching: true` under W1, and the client's next
+        // `If-Modified-Since: W1` is answered 304 with an empty body because
+        // nothing has moved the stamp since. The §6.2 poll loop then revalidates
+        // into 304s forever — on a quiet self-hosted instance, until some
+        // unrelated catalog write happens — while the body it keeps still says
+        // "Searching providers…". `middleware/conditional` compares the date
+        // EXACTLY, so there is no flooring left to absorb this.
+        //
+        // Reading the watermark first can only UNDER-advertise: the body may
+        // carry rows newer than the stamp, so the next conditional request
+        // revalidates once more and gets a 200. A needless 200 is the cheap
+        // failure; a 304 that hides a result the server already has is not.
         const freshness = await assetRepo.catalogWatermark(userId, { includeCustomAssets });
+        const result = await searchCatalog(userId, rawQuery, includeCustomAssets);
         return { ...result, freshness };
       }),
 

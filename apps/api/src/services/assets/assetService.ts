@@ -225,6 +225,39 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
     return { values, failed };
   }
 
+  /**
+   * The currency a provider's price series for `row` is actually denominated in
+   * (§5.4).
+   *
+   * The points come from the provider, in the provider's own normalised
+   * currency; the stored row carries the catalog's belief about the instrument,
+   * which for a provider-discovered row begins life as a search projection and
+   * can be a plain default (#1875). Labelling the series with the row therefore
+   * states a denomination the numbers may not be in — the same defect as
+   * converting a quote through it.
+   *
+   * `getMeta` is the authoritative path (`normalizeCurrency`) and is cached for
+   * a day (§5.3 `META_TTL_SECONDS`), so this costs at most one upstream call
+   * per asset per day. Best-effort: an unreachable provider falls back to the
+   * stored row, which is what this endpoint has always answered.
+   */
+  async function denominationOf(row: AssetRow): Promise<string> {
+    try {
+      const meta = await marketData.getMeta({
+        providerId: row.providerId,
+        providerRef: row.providerRef,
+      });
+      return meta.value.currency;
+    } catch {
+      return row.currency;
+    }
+  }
+
+  /**
+   * The series itself. `currency` is the stored row's — the label callers that
+   * publish one replace with {@link denominationOf}; the sparkline batch drops
+   * the field entirely, so it spends no meta read on it.
+   */
   async function historyForRow(
     row: AssetRow,
     range: HistoryRange,
@@ -267,12 +300,22 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
           // the caller's per-user base; the `eurPrice` field name predates it).
           // All conversion routes through the currency keystone — no inline FX
           // math here. Best-effort: null when the spot rate is unavailable,
-          // absent when the native currency already is the base.
+          // absent when the price's own currency already is the base.
+          //
+          // The unit converted FROM is the QUOTE's currency, never the catalog
+          // row's (#1875): `cached.value.price` is denominated in
+          // `cached.value.currency`, the provider's own normalised code, while
+          // the row's currency is the catalog's belief about the instrument —
+          // for a provider-discovered row it starts as a projection that can be
+          // a plain default. Reading the row here converts a price that is
+          // already in EUR as if it were USD, and renders the result on the
+          // same line as the correct native price.
+          const quoteCurrency = cached.value.currency;
           let eurPriceEntry: { eurPrice: number | null } | undefined;
-          if (asset.currency !== fx.baseCurrency) {
+          if (quoteCurrency !== fx.baseCurrency) {
             try {
               eurPriceEntry = {
-                eurPrice: await fx.toBase(cached.value.price, asset.currency),
+                eurPrice: await fx.toBase(cached.value.price, quoteCurrency),
               };
             } catch {
               eurPriceEntry = { eurPrice: null };
@@ -332,7 +375,15 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
     },
 
     async getHistory(userId, id, range) {
-      return withVisibleAsset(userId, id, (row) => historyForRow(row, range));
+      return withVisibleAsset(userId, id, async (row) => {
+        // Both reads are issued together: the (day-cached) denomination lookup
+        // must not serialise behind the series it labels.
+        const [history, currency] = await Promise.all([
+          historyForRow(row, range),
+          denominationOf(row),
+        ]);
+        return { ...history, currency };
+      });
     },
 
     async getDailyCloses(userId, id) {

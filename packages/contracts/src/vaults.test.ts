@@ -1026,6 +1026,7 @@ describe('move-in / move-out / step-up bodies (§9, §10, §15)', () => {
       restoreSolvency: 'PORTFOLIO_VAULT_RESTORE_INSOLVENT',
       restoreProvenance: 'PORTFOLIO_VAULT_RESTORE_PROVENANCE_INVALID',
       possessionProofInvalid: 'PORTFOLIO_VAULT_POSSESSION_PROOF_INVALID',
+      captureUnservable: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
     });
   });
 });

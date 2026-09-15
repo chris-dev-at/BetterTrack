@@ -385,3 +385,42 @@ test('paranoid custody and destructive copy keeps the binding tone in EN and DE'
     );
   }
 });
+
+/**
+ * V5-P8 counters. `t()` is plain token substitution — no pluralization — so a
+ * counter that must read correctly at one AND many ships the repo's manual
+ * one/other pair (`social.count.*` set the convention). A single "{{count}}
+ * comments" string renders "1 comments" / "1 Kommentare".
+ */
+test('renders the V5-P8 counters with a singular and a plural form in EN and DE', () => {
+  const cases = [
+    {
+      key: 'social.comments.count',
+      en: ['1 comment', '2 comments'],
+      de: ['1 Kommentar', '2 Kommentare'],
+    },
+    {
+      key: 'social.groups.memberCount',
+      en: ['1 member', '2 members'],
+      de: ['1 Mitglied', '2 Mitglieder'],
+    },
+    {
+      key: 'sharing.groupMemberCount',
+      en: ['1 member', '2 members'],
+      de: ['1 Mitglied', '2 Mitglieder'],
+    },
+  ] as const;
+
+  for (const { key, en, de } of cases) {
+    for (const [locale, expected] of [
+      ['en', en],
+      ['de', de],
+    ] as const) {
+      const one = localizedMessage(locale, `${key}.one`).replace('{{count}}', '1');
+      const other = localizedMessage(locale, `${key}.other`).replace('{{count}}', '2');
+      expect(one, `${locale}: ${key}.one`).not.toBe(`${key}.one`);
+      expect(one).toBe(expected[0]);
+      expect(other).toBe(expected[1]);
+    }
+  }
+});

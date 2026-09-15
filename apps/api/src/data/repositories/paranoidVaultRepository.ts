@@ -13,6 +13,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { driverError } from '../driverError';
 import {
   withExclusiveParanoidTransitionTestLock,
   withLockedPrivacyModes,
@@ -115,9 +116,20 @@ export async function withParanoidRehydrationTransaction<T>(
   userId: string,
   run: (tx: Database) => Promise<T>,
 ): Promise<T> {
-  return withExclusiveParanoidTransitionTestLock(db, userId, () =>
-    db.transaction((tx) => run(tx as unknown as Database)),
-  );
+  try {
+    return await withExclusiveParanoidTransitionTestLock(db, userId, () =>
+      db.transaction((tx) => run(tx as unknown as Database)),
+    );
+  } catch (error) {
+    // The restore's strongest refusals are database-side: the PL/pgSQL asset
+    // identity guard RAISEs the reason a cross-account reconnect is rejected,
+    // and callers (plus the ops problem fold) read it off the escaping error.
+    // drizzle ≥0.44 would otherwise hand them a `DrizzleQueryError` whose
+    // message is the failing SQL and its bound parameters — the refusal gone,
+    // the restored row's contents in its place. Unwrap it back to the driver
+    // error before it leaves the data layer.
+    throw driverError(error);
+  }
 }
 
 /** Opaque active/candidate blob fields; no caller may inspect the payload. */

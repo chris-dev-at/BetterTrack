@@ -12,6 +12,14 @@ vi.mock('../../lib/socialApi', () => ({
   listFriends: vi.fn(),
   listGroups: vi.fn(),
   setAudience: vi.fn(),
+  // The owner's comment surface mounts the same CommentThread the viewer pages
+  // do (#1677), so its client calls have to exist on the mocked module.
+  getCommentThread: vi.fn(),
+  getCommentThreadSummary: vi.fn(),
+  postComment: vi.fn(),
+  deleteComment: vi.fn(),
+  toggleItemReaction: vi.fn(),
+  toggleCommentReaction: vi.fn(),
 }));
 
 vi.mock('../../lib/alertsApi', () => ({
@@ -25,7 +33,10 @@ vi.mock('../../lib/portfolioApi', () => ({
 }));
 
 import {
+  deleteComment,
   getAudience,
+  getCommentThread,
+  getCommentThreadSummary,
   listFriends,
   listGroups,
   listMyShared,
@@ -45,7 +56,13 @@ const EMPTY: MySharedResponse = { portfolios: [], conglomerates: [], watchlists:
 
 const WITH_PORTFOLIO: MySharedResponse = {
   portfolios: [
-    { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'all_friends', friendCount: 0 },
+    {
+      portfolioId: PORTFOLIO_ID,
+      name: 'Main',
+      audience: 'all_friends',
+      friendCount: 0,
+      group: null,
+    },
   ],
   conglomerates: [],
   watchlists: [],
@@ -87,11 +104,11 @@ function portfolioList(mirror = false): Awaited<ReturnType<typeof listPortfolios
   };
 }
 
-function renderPage() {
+function renderPage(initialEntry = '/people/shared') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <MutationFeedbackProvider>
           <MySharedItemsPage />
         </MutationFeedbackProvider>
@@ -117,6 +134,20 @@ beforeEach(() => {
   // to know which shared portfolios are synced copies of an active chain — the
   // default is an empty list so the notice stays off for these tests.
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(getCommentThreadSummary).mockResolvedValue({
+    kind: 'portfolio',
+    subjectId: PORTFOLIO_ID,
+    commentCount: 0,
+    reactions: [],
+  });
+  vi.mocked(getCommentThread).mockResolvedValue({
+    kind: 'portfolio',
+    subjectId: PORTFOLIO_ID,
+    commentCount: 0,
+    comments: [],
+    nextCursor: null,
+    reactions: [],
+  });
 });
 
 describe('MySharedItemsPage', () => {
@@ -212,7 +243,13 @@ describe('MySharedItemsPage', () => {
   test('lists shared portfolios and watchlists with a who-sees-this summary and opens the AudiencePicker', async () => {
     vi.mocked(listMyShared).mockResolvedValue({
       portfolios: [
-        { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'all_friends', friendCount: 0 },
+        {
+          portfolioId: PORTFOLIO_ID,
+          name: 'Main',
+          audience: 'all_friends',
+          friendCount: 0,
+          group: null,
+        },
       ],
       conglomerates: [],
       watchlists: [
@@ -222,6 +259,7 @@ describe('MySharedItemsPage', () => {
           audience: 'public_link',
           itemCount: 3,
           friendCount: 0,
+          group: null,
         },
       ],
       ideas: [],
@@ -255,6 +293,7 @@ describe('MySharedItemsPage', () => {
           positionCount: 3,
           audience: 'specific_friends',
           friendCount: 1,
+          group: null,
         },
       ],
       watchlists: [],
@@ -285,7 +324,13 @@ describe('MySharedItemsPage', () => {
   test('lists all three kinds including a never-shared blueprint + watchlist, each settable (#384)', async () => {
     vi.mocked(listMyShared).mockResolvedValue({
       portfolios: [
-        { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'private', friendCount: 0 },
+        {
+          portfolioId: PORTFOLIO_ID,
+          name: 'Main',
+          audience: 'private',
+          friendCount: 0,
+          group: null,
+        },
       ],
       conglomerates: [
         {
@@ -294,6 +339,7 @@ describe('MySharedItemsPage', () => {
           positionCount: 3,
           audience: 'private',
           friendCount: 0,
+          group: null,
         },
       ],
       watchlists: [
@@ -303,6 +349,7 @@ describe('MySharedItemsPage', () => {
           itemCount: 2,
           audience: 'private',
           friendCount: 0,
+          group: null,
         },
       ],
       ideas: [],
@@ -343,8 +390,20 @@ describe('MySharedItemsPage', () => {
     const SECONDARY_ID = '00000000-0000-0000-0000-000000000002';
     vi.mocked(listMyShared).mockResolvedValue({
       portfolios: [
-        { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'all_friends', friendCount: 0 },
-        { portfolioId: SECONDARY_ID, name: 'Trading', audience: 'private', friendCount: 0 },
+        {
+          portfolioId: PORTFOLIO_ID,
+          name: 'Main',
+          audience: 'all_friends',
+          friendCount: 0,
+          group: null,
+        },
+        {
+          portfolioId: SECONDARY_ID,
+          name: 'Trading',
+          audience: 'private',
+          friendCount: 0,
+          group: null,
+        },
       ],
       conglomerates: [],
       watchlists: [],
@@ -381,8 +440,20 @@ describe('MySharedItemsPage', () => {
     const SECONDARY_ID = '00000000-0000-0000-0000-000000000002';
     vi.mocked(listMyShared).mockResolvedValue({
       portfolios: [
-        { portfolioId: PORTFOLIO_ID, name: 'Vaulted Main', audience: 'private', friendCount: 0 },
-        { portfolioId: SECONDARY_ID, name: 'Plain Trading', audience: 'private', friendCount: 0 },
+        {
+          portfolioId: PORTFOLIO_ID,
+          name: 'Vaulted Main',
+          audience: 'private',
+          friendCount: 0,
+          group: null,
+        },
+        {
+          portfolioId: SECONDARY_ID,
+          name: 'Plain Trading',
+          audience: 'private',
+          friendCount: 0,
+          group: null,
+        },
       ],
       conglomerates: [],
       watchlists: [],
@@ -415,6 +486,7 @@ describe('MySharedItemsPage', () => {
           hasThesis: true,
           audience: 'private',
           friendCount: 0,
+          group: null,
         },
       ],
     });
@@ -545,6 +617,7 @@ test('at 390 px shared-item actions remain reachable and open a phone sheet', as
         hasThesis: false,
         audience: 'private',
         friendCount: 0,
+        group: null,
       },
     ],
   });
@@ -564,4 +637,159 @@ test('at 390 px shared-item actions remain reachable and open a phone sheet', as
     'bt-dialog__panel--phone-sheet',
   );
   expect(container.querySelector('.bt-my-shared-page')).toBeInTheDocument();
+});
+
+/**
+ * The owner's half of V5-P8 (#1677). A `group` share used to render a flat
+ * "Friend group" chip: a circle of eighteen looked exactly like a deleted one
+ * that reaches nobody, which is precisely the reach the friction ladder assumes
+ * the owner knows.
+ */
+describe('the group badge names the circle and its reach', () => {
+  function withGroup(group: { id: string; name: string; memberCount: number } | null) {
+    return {
+      portfolios: [
+        {
+          portfolioId: PORTFOLIO_ID,
+          name: 'Main',
+          audience: 'group' as const,
+          friendCount: 0,
+          group,
+        },
+      ],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [],
+    };
+  }
+
+  test('shows the group name and its current member count', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(
+      withGroup({ id: '00000000-0000-0000-0000-0000000000f1', name: 'Family', memberCount: 2 }),
+    );
+    renderPage();
+
+    const badge = await screen.findByTestId('who-sees-this');
+    expect(badge).toHaveTextContent('Family · 2');
+    expect(badge).toHaveAttribute('data-reach', 'group');
+    expect(badge).not.toHaveClass('bt-badge--outline');
+  });
+
+  test('renders an emptied circle visibly differently from a populated one', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(
+      withGroup({ id: '00000000-0000-0000-0000-0000000000f1', name: 'Family', memberCount: 0 }),
+    );
+    const { unmount } = renderPage();
+    const empty = await screen.findByTestId('who-sees-this');
+    const emptyText = empty.textContent;
+    expect(emptyText).toBe('Family · reaches nobody');
+    expect(empty).toHaveAttribute('data-reach', 'nobody');
+    expect(empty).toHaveClass('bt-badge--outline');
+    unmount();
+
+    vi.mocked(listMyShared).mockResolvedValue(
+      withGroup({ id: '00000000-0000-0000-0000-0000000000f1', name: 'Family', memberCount: 2 }),
+    );
+    renderPage();
+    const populated = await screen.findByTestId('who-sees-this');
+    expect(populated.textContent).not.toBe(emptyText);
+    expect(populated).not.toHaveClass('bt-badge--outline');
+  });
+
+  test('renders a deleted group as reaching nobody, not as a plain friend group', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(withGroup(null));
+    renderPage();
+
+    const badge = await screen.findByTestId('who-sees-this');
+    expect(badge).toHaveTextContent('Friend group deleted · reaches nobody');
+    expect(badge).toHaveAttribute('data-reach', 'nobody');
+    expect(badge).toHaveClass('bt-badge--outline');
+  });
+});
+
+/**
+ * My items is the ONLY surface from which the item owner can reach the thread
+ * they moderate: every friend-shared page inner-joins friendship, and nobody is
+ * their own friend (#1677).
+ */
+describe('the owner opens and moderates the thread of their own item', () => {
+  const SHARED = {
+    portfolios: [
+      {
+        portfolioId: PORTFOLIO_ID,
+        name: 'Main',
+        audience: 'all_friends' as const,
+        friendCount: 0,
+        group: null,
+      },
+    ],
+    conglomerates: [],
+    watchlists: [],
+    ideas: [],
+  };
+
+  function thread(canDelete: boolean) {
+    return {
+      kind: 'portfolio' as const,
+      subjectId: PORTFOLIO_ID,
+      commentCount: 1,
+      comments: [
+        {
+          id: '00000000-0000-0000-0000-0000000000b1',
+          author: { id: 'bob', username: 'bob', profileIcon: null },
+          body: 'abusive',
+          createdAt: '2026-01-02T10:00:00.000Z',
+          canDelete,
+          reactions: [],
+        },
+      ],
+      nextCursor: null,
+      reactions: [],
+    };
+  }
+
+  test('opens the thread expanded and deletes a comment the server says it may', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(SHARED);
+    vi.mocked(getCommentThread).mockResolvedValue(thread(true));
+    vi.mocked(deleteComment).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Comments/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Comments on Main' });
+    // Expanded on open: the user already asked for the thread.
+    expect(await within(dialog).findByText('abusive')).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    expect(deleteComment).toHaveBeenCalledWith('00000000-0000-0000-0000-0000000000b1');
+  });
+
+  test('offers no delete affordance when the server withholds it', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(SHARED);
+    vi.mocked(getCommentThread).mockResolvedValue(thread(false));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Comments/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Comments on Main' });
+    expect(await within(dialog).findByText('abusive')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
+  test('a comment.created deep link opens that item’s thread straight away', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(SHARED);
+    vi.mocked(getCommentThread).mockResolvedValue(thread(true));
+    renderPage(`/people/shared#thread-portfolio-${PORTFOLIO_ID}`);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Comments on Main' });
+    expect(await within(dialog).findByText('abusive')).toBeInTheDocument();
+  });
+
+  test('a deep link naming an item the caller no longer owns opens no dialog', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(SHARED);
+    renderPage('/people/shared#thread-portfolio-00000000-0000-0000-0000-00000000dead');
+
+    expect(await screen.findByText('Main')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
 });

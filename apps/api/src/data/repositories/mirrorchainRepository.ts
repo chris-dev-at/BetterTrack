@@ -13,15 +13,17 @@ import {
   notExists,
   or,
   sql,
+  type SQL,
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
-import type {
-  MirrorMemberRole,
-  MirrorMemberStatus,
-  MirrorOpKind,
-  MirrorOpPayload,
-  MirrorRowKind,
+import {
+  MIRROR_LEDGER_OP_KINDS,
+  type MirrorMemberRole,
+  type MirrorMemberStatus,
+  type MirrorOpKind,
+  type MirrorOpPayload,
+  type MirrorRowKind,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
@@ -64,14 +66,6 @@ export interface CreateChainInput {
   createdBy: string;
   createdByUsername: string;
 }
-
-/**
- * The op kinds whose apply REMOVES the entity's `mirror_rows` link on every copy
- * (`applyLedgerOp`'s delete arms). After one of these, a caught-up copy having
- * no link is the correct state — every other latest-op kind means the entity is
- * alive and its absence on a caught-up copy is divergence.
- */
-const MIRROR_ENTITY_REMOVING_OP_KINDS = ['tx.delete', 'dividend.delete', 'cash.delete'] as const;
 
 /** A logical entity the oplog keeps alive that a caught-up copy no longer has. */
 export interface MirrorDivergentRow {
@@ -140,8 +134,21 @@ export type AppendRefusal =
 
 export type CheckedAppendResult = { ops: MirrorChainOpRow[] } | AppendRefusal;
 
-/** Ops whose presence as an entity's latest op make it terminally deleted (§3). */
-const TERMINAL_OP_KINDS: readonly MirrorOpKind[] = ['tx.delete', 'dividend.delete'];
+/**
+ * Ops whose presence as an entity's latest op make it terminally deleted (§3) —
+ * every later op targeting that `mirror_id` is refused `409 MIRROR_ROW_DELETED`.
+ *
+ * DERIVED from the op-kind list rather than written out: the hand-written table
+ * this replaces listed `tx.delete` and `dividend.delete` only, so `cash.delete`
+ * (added with the V5 cash edit/delete replication, §16 2026-07-31) was never
+ * terminal and an edit racing a delete was acknowledged and then dropped on
+ * replay. Deriving it means a `*.delete` kind is terminal the moment it exists.
+ * `mirrorService`'s pre-check imports THIS constant, so the door guard and the
+ * in-transaction guard cannot drift apart.
+ */
+export const TERMINAL_OP_KINDS: readonly MirrorOpKind[] = MIRROR_LEDGER_OP_KINDS.filter((kind) =>
+  kind.endsWith('.delete'),
+);
 
 /** Internal control-flow error: rolls the append transaction back on refusal. */
 class AppendRefusedError extends Error {
@@ -210,7 +217,120 @@ export type MirrorChainDisplayRow = Pick<
   'id' | 'name' | 'status' | 'lastSeq' | 'createdAt'
 >;
 
+/**
+ * Keyset position in the (a) residual scan: the `mirror_rows` primary key,
+ * ordered `(mirror_id, portfolio_id, kind)`. A sweep run resumes past the last
+ * row it reported so no residual stays invisible behind a fixed first page.
+ */
+export interface MirrorRowCursor {
+  mirrorId: string;
+  portfolioId: string;
+  kind: MirrorRowKind;
+}
+
+/**
+ * Keyset position in the (c) and (d) divergence scans, whose total order is the
+ * `(chain_id, mirror_id, portfolio_id)` triple they both sort by. Same contract
+ * as {@link MirrorRowCursor}: a run resumes past the last row it reported, so a
+ * backlog past one page drains instead of the head being re-reported forever.
+ */
+export interface MirrorDivergentCursor {
+  chainId: string;
+  mirrorId: string;
+  portfolioId: string;
+}
+
+/**
+ * The terminal-delete kinds as a SQL value list. Derived from
+ * {@link TERMINAL_OP_KINDS} rather than written out again, so scan (c)'s
+ * "an entity the oplog keeps ALIVE" definition and the §3 append guards cannot
+ * disagree about which kinds end an entity's life. Each kind is BOUND, not
+ * spliced, so no JavaScript string reaches the SQL text.
+ */
+const terminalOpKindList = () =>
+  sql.join(
+    TERMINAL_OP_KINDS.map((kind) => sql`${kind}`),
+    sql`, `,
+  );
+
+/**
+ * The (d) money-divergence predicate, shared by the paged list and its count.
+ *
+ * Parenthesised as ONE group: it is a disjunction, so a keyset `and …` appended
+ * after an unbracketed `a or b or c` would bind to the last arm only and page
+ * the scan by accident.
+ */
+const divergentTransactionPredicate = () =>
+  sql`(
+        t.side::text is distinct from (l.payload ->> 'side')
+     or t.quantity is distinct from round((l.payload ->> 'quantity')::numeric, 8)
+     or t.price is distinct from round((l.payload ->> 'price')::numeric, 6)
+     or t.fee is distinct from coalesce(round((l.payload ->> 'fee')::numeric, 6), 0)
+     or date_trunc('milliseconds', t.executed_at)
+        is distinct from date_trunc('milliseconds', (l.payload ->> 'executedAt')::timestamptz)
+  )`;
+
+/**
+ * Keyset resume for (c)/(d) as a row-value comparison on the same triple the
+ * scans `ORDER BY`, so the tuple order and the sort order are one order. The
+ * portfolio column differs between the two scans (the member row for (c), the
+ * mirror row for (d)), so the caller passes it in.
+ */
+const afterDivergent = (after: MirrorDivergentCursor | null, portfolioColumn: SQL) =>
+  after
+    ? sql`and (l.chain_id, l.mirror_id, ${portfolioColumn}) > (${after.chainId}::uuid, ${after.mirrorId}::uuid, ${after.portfolioId}::uuid)`
+    : sql.empty();
+
 export function createMirrorchainRepository(db: Database) {
+  /** The (a) residual predicate, shared by the paged list and its total count. */
+  const danglingOriginRowFilter = () =>
+    and(
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(portfolios)
+          .where(and(eq(portfolios.id, mirrorRows.portfolioId), isNull(portfolios.vaultId))),
+      ),
+      notExists(
+        db
+          .select({ one: sql`1` })
+          .from(mirrorChainOps)
+          .where(
+            and(
+              eq(mirrorChainOps.chainId, mirrorRows.chainId),
+              eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
+            ),
+          ),
+      ),
+    );
+
+  /**
+   * Keyset resume for (a) on the primary key's columns, as a row-value
+   * comparison so the tuple order and the `ORDER BY` are the same order.
+   */
+  const afterMirrorRow = (after: MirrorRowCursor | null) =>
+    after
+      ? sql`(${mirrorRows.mirrorId}, ${mirrorRows.portfolioId}, ${mirrorRows.kind}::text) > (${after.mirrorId}::uuid, ${after.portfolioId}::uuid, ${after.kind})`
+      : undefined;
+
+  /** The (b) residual predicate, shared by the paged list and its total count. */
+  const orphanedSyncedTransactionFilter = () =>
+    and(
+      isNull(portfolios.vaultId),
+      notExists(
+        db
+          .select({ one: sql`1` })
+          .from(mirrorRows)
+          .where(
+            and(
+              eq(mirrorRows.kind, 'transaction'),
+              eq(mirrorRows.portfolioId, transactions.portfolioId),
+              eq(mirrorRows.localId, transactions.id),
+            ),
+          ),
+      ),
+    );
+
   return {
     // --- Chains -------------------------------------------------------------
 
@@ -1061,40 +1181,43 @@ export function createMirrorchainRepository(db: Database) {
      * (a) Origin-only mirror-linked rows whose `mirror_id` has **no op** (design
      * §2): the submit path's origin-commit-then-append crash window. Such a row
      * exists only on the origin copy and silently diverges (later full-state
-     * updates no-op on copies that lack it) until surfaced. Bounded by `limit`,
-     * resumable past it via `offset` — the ORDER BY is a total order over the
-     * table's primary key, so successive sweep runs walk the residual set
-     * instead of re-reporting whichever rows the seq scan happened to hit first.
-     * Vaulted portfolio rows are never surfaced to the server-side sweep.
+     * updates no-op on copies that lack it) until surfaced. Vaulted portfolio
+     * rows are never surfaced to the server-side sweep.
+     *
+     * Bounded by `limit` and PAGED: findings are surfaced, never repaired, so an
+     * unordered `LIMIT n` would hand every run the same arbitrary page and leave
+     * everything past it permanently invisible — and a single chain with more
+     * residuals than the limit would starve all the others. The total order is
+     * the primary key's columns, and `after` resumes past the last row a
+     * previous run reported.
      */
-    async listDanglingOriginRows(limit: number, offset = 0): Promise<MirrorRowRow[]> {
-      return db
-        .select()
+    async listDanglingOriginRows(
+      limit: number,
+      after: MirrorRowCursor | null = null,
+    ): Promise<MirrorRowRow[]> {
+      return (
+        db
+          .select()
+          .from(mirrorRows)
+          .where(and(danglingOriginRowFilter(), afterMirrorRow(after)))
+          // `kind` is compared as text in the cursor tuple, so it must SORT as
+          // text too — an enum orders by declaration order, which is not the same.
+          .orderBy(
+            asc(mirrorRows.mirrorId),
+            asc(mirrorRows.portfolioId),
+            asc(sql`${mirrorRows.kind}::text`),
+          )
+          .limit(limit)
+      );
+    },
+
+    /** How many rows (a) matches in total — what a paged run reports as deferred. */
+    async countDanglingOriginRows(): Promise<number> {
+      const [row] = await db
+        .select({ n: sql<number>`count(*)::int` })
         .from(mirrorRows)
-        .where(
-          and(
-            exists(
-              db
-                .select({ one: sql`1` })
-                .from(portfolios)
-                .where(and(eq(portfolios.id, mirrorRows.portfolioId), isNull(portfolios.vaultId))),
-            ),
-            notExists(
-              db
-                .select({ one: sql`1` })
-                .from(mirrorChainOps)
-                .where(
-                  and(
-                    eq(mirrorChainOps.chainId, mirrorRows.chainId),
-                    eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
-                  ),
-                ),
-            ),
-          ),
-        )
-        .orderBy(asc(mirrorRows.portfolioId), asc(mirrorRows.kind), asc(mirrorRows.mirrorId))
-        .limit(limit)
-        .offset(offset);
+        .where(danglingOriginRowFilter());
+      return row?.n ?? 0;
     },
 
     /**
@@ -1102,12 +1225,12 @@ export function createMirrorchainRepository(db: Database) {
      * `mirror_rows` link pointing at them (design §2): the tax-immutable
      * correction path's re-create-then-re-point crash residual — a safe-to-delete
      * local-only duplicate. Forks are excluded (only `status='active'` copies).
-     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`,
-     * resumable past it via `offset` under a total ORDER BY (see (a)).
+     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`
+     * and paged on the transaction id for the same reason as (a) above.
      */
     async listOrphanedSyncedTransactions(
       limit: number,
-      offset = 0,
+      after: string | null = null,
     ): Promise<{ id: string; portfolioId: string }[]> {
       return db
         .selectDistinct({ id: transactions.id, portfolioId: transactions.portfolioId })
@@ -1121,25 +1244,27 @@ export function createMirrorchainRepository(db: Database) {
         )
         .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
         .where(
+          and(orphanedSyncedTransactionFilter(), after ? gt(transactions.id, after) : undefined),
+        )
+        .orderBy(asc(transactions.id))
+        .limit(limit);
+    },
+
+    /** How many rows (b) matches in total — what a paged run reports as deferred. */
+    async countOrphanedSyncedTransactions(): Promise<number> {
+      const [row] = await db
+        .select({ n: sql<number>`count(distinct ${transactions.id})::int` })
+        .from(transactions)
+        .innerJoin(
+          mirrorChainMembers,
           and(
-            isNull(portfolios.vaultId),
-            notExists(
-              db
-                .select({ one: sql`1` })
-                .from(mirrorRows)
-                .where(
-                  and(
-                    eq(mirrorRows.kind, 'transaction'),
-                    eq(mirrorRows.portfolioId, transactions.portfolioId),
-                    eq(mirrorRows.localId, transactions.id),
-                  ),
-                ),
-            ),
+            eq(mirrorChainMembers.portfolioId, transactions.portfolioId),
+            eq(mirrorChainMembers.status, 'active'),
           ),
         )
-        .orderBy(asc(transactions.portfolioId), asc(transactions.id))
-        .limit(limit)
-        .offset(offset);
+        .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
+        .where(orphanedSyncedTransactionFilter());
+      return row?.n ?? 0;
     },
 
     /**
@@ -1163,8 +1288,15 @@ export function createMirrorchainRepository(db: Database) {
      * scan names that copy. That is deliberate: the copy really has lost a row
      * the oplog keeps alive for everyone else, and only a human can decide
      * whether the delete or the entry should win.
+     *
+     * Bounded by `limit` and keyset-paged on the `ORDER BY` triple exactly as
+     * (a) and (b) are, so a backlog past one page drains over successive runs
+     * instead of the same page being re-reported forever.
      */
-    async listDivergentMissingRows(limit: number, offset = 0): Promise<MirrorDivergentRow[]> {
+    async listDivergentMissingRows(
+      limit: number,
+      after: MirrorDivergentCursor | null = null,
+    ): Promise<MirrorDivergentRow[]> {
       const result = await db.execute(sql`
         with latest as (
           select distinct on (o.chain_id, o.mirror_id)
@@ -1186,23 +1318,50 @@ export function createMirrorchainRepository(db: Database) {
          and m.portfolio_id is not null
          and m.applied_seq >= l.seq
         join portfolios p on p.id = m.portfolio_id and p.vault_id is null
-        where l.kind not in (${sql.join(
-          MIRROR_ENTITY_REMOVING_OP_KINDS.map((kind) => sql`${kind}`),
-          sql`, `,
-        )})
+        where l.kind not in (${terminalOpKindList()})
           and not exists (
             select 1 from mirror_rows r
             where r.chain_id = l.chain_id
               and r.mirror_id = l.mirror_id
               and r.portfolio_id = m.portfolio_id
           )
+          ${afterDivergent(after, sql`m.portfolio_id`)}
         order by l.chain_id, l.mirror_id, m.portfolio_id
-        limit ${limit} offset ${offset}
+        limit ${limit}
       `);
       return executedRows<MirrorDivergentRow>(result).map((row) => ({
         ...row,
         opSeq: Number(row.opSeq),
       }));
+    },
+
+    /** How many rows (c) matches in total — what a paged run reports as deferred. */
+    async countDivergentMissingRows(): Promise<number> {
+      const result = await db.execute(sql`
+        with latest as (
+          select distinct on (o.chain_id, o.mirror_id)
+            o.chain_id, o.mirror_id, o.seq, o.kind
+          from mirror_chain_ops o
+          where o.mirror_id is not null
+          order by o.chain_id, o.mirror_id, o.seq desc
+        )
+        select count(*)::int as "n"
+        from latest l
+        join mirror_chain_members m
+          on m.chain_id = l.chain_id
+         and m.status = 'active'
+         and m.portfolio_id is not null
+         and m.applied_seq >= l.seq
+        join portfolios p on p.id = m.portfolio_id and p.vault_id is null
+        where l.kind not in (${terminalOpKindList()})
+          and not exists (
+            select 1 from mirror_rows r
+            where r.chain_id = l.chain_id
+              and r.mirror_id = l.mirror_id
+              and r.portfolio_id = m.portfolio_id
+          )
+      `);
+      return Number(executedRows<{ n: number }>(result)[0]?.n ?? 0);
     },
 
     /**
@@ -1229,9 +1388,12 @@ export function createMirrorchainRepository(db: Database) {
      * `new Date(payload.executedAt)` — millisecond resolution. Truncating only
      * the column would report a `…:00.123456Z` submission forever.
      */
+     *
+     * Bounded by `limit` and keyset-paged on the `ORDER BY` triple, as (a)–(c).
+     */
     async listDivergentTransactionRows(
       limit: number,
-      offset = 0,
+      after: MirrorDivergentCursor | null = null,
     ): Promise<MirrorDivergentTransactionRow[]> {
       const result = await db.execute(sql`
         with latest as (
@@ -1257,19 +1419,41 @@ export function createMirrorchainRepository(db: Database) {
          and m.applied_seq >= l.seq
         join portfolios p on p.id = r.portfolio_id and p.vault_id is null
         join transactions t on t.id = r.local_id
-        where t.side::text is distinct from (l.payload ->> 'side')
-           or t.quantity is distinct from round((l.payload ->> 'quantity')::numeric, 8)
-           or t.price is distinct from round((l.payload ->> 'price')::numeric, 6)
-           or t.fee is distinct from coalesce(round((l.payload ->> 'fee')::numeric, 6), 0)
-           or date_trunc('milliseconds', t.executed_at)
-              is distinct from date_trunc('milliseconds', (l.payload ->> 'executedAt')::timestamptz)
+        where ${divergentTransactionPredicate()}
+          ${afterDivergent(after, sql`r.portfolio_id`)}
         order by l.chain_id, l.mirror_id, r.portfolio_id
-        limit ${limit} offset ${offset}
+        limit ${limit}
       `);
       return executedRows<MirrorDivergentTransactionRow>(result).map((row) => ({
         ...row,
         opSeq: Number(row.opSeq),
       }));
+    },
+
+    /** How many rows (d) matches in total — what a paged run reports as deferred. */
+    async countDivergentTransactionRows(): Promise<number> {
+      const result = await db.execute(sql`
+        with latest as (
+          select distinct on (o.chain_id, o.mirror_id)
+            o.chain_id, o.mirror_id, o.seq, o.kind, o.payload
+          from mirror_chain_ops o
+          where o.mirror_id is not null and o.kind in ('tx.create', 'tx.update')
+          order by o.chain_id, o.mirror_id, o.seq desc
+        )
+        select count(*)::int as "n"
+        from latest l
+        join mirror_rows r
+          on r.chain_id = l.chain_id and r.mirror_id = l.mirror_id and r.kind = 'transaction'
+        join mirror_chain_members m
+          on m.chain_id = l.chain_id
+         and m.portfolio_id = r.portfolio_id
+         and m.status = 'active'
+         and m.applied_seq >= l.seq
+        join portfolios p on p.id = r.portfolio_id and p.vault_id is null
+        join transactions t on t.id = r.local_id
+        where ${divergentTransactionPredicate()}
+      `);
+      return Number(executedRows<{ n: number }>(result)[0]?.n ?? 0);
     },
   };
 }

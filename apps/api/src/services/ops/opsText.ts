@@ -1,6 +1,6 @@
 import { ADMIN_OPS_ERROR_MAX_LENGTH } from '@bettertrack/contracts';
 
-import { redactString } from '../observability/scrubber';
+import { REDACTED_ID, boundScrubInput, redactIdentifiers } from '../observability/scrubber';
 
 /**
  * The single place free text is cleaned before it leaves the operations cockpit
@@ -16,22 +16,25 @@ import { redactString } from '../observability/scrubber';
  * or an address in half and leave the readable half on screen, which is worse
  * than either alone — a half-token is still a lead, and a half-address still
  * identifies a person.
+ *
+ * What the scrubber READS is bounded first, though, and separately: a
+ * dead-lettered `failedReason` has no size limit at write time, this runs once
+ * per projected row (25 per read) on the API's single event loop, and the
+ * cockpit is the surface an operator hammers precisely while an incident is
+ * live. {@link boundScrubInput} cuts at a separator so that cheaper read cannot
+ * cost redaction strength (#1853).
  */
 
 /**
- * Canonical UUIDs (v1–v5 and the nil UUID) anywhere in a string.
- *
- * A job failure very often names the row it failed on — "portfolio
- * 550e8400-… not found" — and that identifier is a user's object, not
- * diagnostic information. The operator needs to know WHICH QUEUE is failing and
- * WHY, which survives redaction intact. Deliberately not applied to the
- * projection's own `jobId` field: a BullMQ job id is our own scheduling handle,
- * not a user's object, and losing it would cost the operator the one thing that
- * makes two identical error strings distinguishable.
+ * The identifier pass lives in the scrubber ({@link redactIdentifiers}, #1847),
+ * because the Problems capture renders the same failure text and a second copy
+ * here is exactly how the two surfaces came to disagree about one string. This
+ * module keeps only its cap. Deliberately not applied to the projection's own
+ * `jobId` field: a BullMQ job id is our own scheduling handle, not a user's
+ * object, and losing it would cost the operator the one thing that makes two
+ * identical error strings distinguishable.
  */
-const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-
-export const REDACTED_ID = '[redacted-id]';
+export { REDACTED_ID };
 
 /**
  * Redact identifiers from a free-text operational string, then bound it.
@@ -41,7 +44,7 @@ export const REDACTED_ID = '[redacted-id]';
  * 500 the whole cockpit read on a long message.
  */
 export function scrubOpsError(value: string): string {
-  const redacted = redactString(value).replace(UUID_RE, REDACTED_ID);
+  const redacted = redactIdentifiers(boundScrubInput(value));
   return redacted.length > ADMIN_OPS_ERROR_MAX_LENGTH
     ? `${redacted.slice(0, ADMIN_OPS_ERROR_MAX_LENGTH - 1)}…`
     : redacted;

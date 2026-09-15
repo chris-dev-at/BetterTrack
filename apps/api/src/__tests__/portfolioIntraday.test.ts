@@ -3,6 +3,7 @@ import type { Application } from 'express';
 import { describe, expect, it } from 'vitest';
 
 import type { CachedResult, HistoryInterval, PricePoint, Quote } from '@bettertrack/contracts';
+import { portfolioHistoryResponseSchema } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createStubMarketData } from '../testing/marketDataStubs';
@@ -208,6 +209,11 @@ describe('intraday portfolio series (#556)', () => {
     expect(performance.length).toBe(points.length);
     expect(typeof performance[0]!.time).toBe('string');
     expect(performance[0]!.pct).toBeCloseTo(0, 9); // window opens at 0 %
+    // #1669: the money-weighted figure rides the intraday path too. With no
+    // flow inside the 1D window it is V_end / V_start − 1 — the curve's own
+    // last point.
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.moneyWeightedPct).toBeCloseTo(performance[performance.length - 1]!.pct, 6);
 
     // Stitching: the last intraday point equals the daily series' fresh "today"
     // value (no gap, no double-count) — compare against the MAX range's tail.

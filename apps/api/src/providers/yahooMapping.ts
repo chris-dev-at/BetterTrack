@@ -1,7 +1,9 @@
+import { DIVIDEND_FORWARD_YIELD_MAX } from '@bettertrack/contracts';
 import type {
   AssetFundamentals,
   AssetType,
   CurrencyCode,
+  DividendAmountBasis,
   DividendEvent,
   DividendEvents,
   EarningsEvent,
@@ -21,6 +23,7 @@ import type {
   YahooIncomeStatementRow,
   YahooNewsResult,
   YahooQuoteSummaryResult,
+  YahooSummaryDetail,
 } from './yahooClient';
 
 /**
@@ -238,33 +241,58 @@ const EXCHANGE_CURRENCY: Record<string, CurrencyCode> = {
 };
 
 /**
+ * What {@link currencyForSearchResult} could work out about a hit's currency.
+ *
+ * `guessed` is the load-bearing half (#1875). A search projection's currency is
+ * either DERIVED from something the symbol actually states — an FX pair naming
+ * its quote currency, a crypto pair, a venue suffix, a known exchange code — or
+ * it is the bare US default, which is not a reading of anything. The two must
+ * be distinguishable downstream, because `assets.currency` is money: the
+ * catalog stores it, `portfolioService` converts a PERSISTED cash movement
+ * through it, and nothing in the read path can later tell a derivation from a
+ * default. A defaulted code is a placeholder for the badge; only the catalog's
+ * authoritative `getMeta` resolution may turn it into a stored denomination
+ * (`services/search/catalogEnrichment.ts`).
+ */
+export interface SearchResultCurrency {
+  /** The code to show, and — when `guessed` is false — to store. */
+  code: CurrencyCode;
+  /** True when no rule matched and `code` is the bare US default, not a reading. */
+  guessed: boolean;
+}
+
+/**
  * Best-effort currency for a search hit (§6.2 — results show a currency badge).
  * Yahoo's `search()` does not return a currency, so we derive it from the
  * symbol shape: FX pairs (`EURUSD=X`) and crypto (`BTC-EUR`) name their quote
- * currency directly; otherwise the venue suffix / exchange code fixes it. The
- * authoritative currency is re-fetched via {@link normalizeCurrency} from
- * `getMeta`/`getQuote` once the asset is actually selected, so an imperfect
- * guess here only affects the picker badge, never a stored amount.
+ * currency directly; otherwise the venue suffix / exchange code fixes it.
+ *
+ * When none of those rules matches there is nothing to derive from — Yahoo's
+ * primary market is the US, so the code answers `USD` and flags it `guessed`.
+ * `^IBEX` is the shape that matters: no `=X`, no `-`, no dot suffix, and `MCE`
+ * is not in {@link EXCHANGE_CURRENCY}, so a EUR index defaults to USD. The flag
+ * is what stops that placeholder being stored as a fact.
  */
 export function currencyForSearchResult(
   symbol: string,
   exchange: string | null | undefined,
-): CurrencyCode {
+): SearchResultCurrency {
   const sym = (symbol ?? '').trim();
+  const derived = (code: CurrencyCode): SearchResultCurrency => ({ code, guessed: false });
 
   // FX pair, e.g. `EURUSD=X` (USD per EUR) → quote currency is the trailing 3.
   if (sym.endsWith('=X')) {
     const pair = sym.slice(0, -2).toUpperCase();
-    if (pair.length === 6 && /^[A-Z]{6}$/.test(pair)) return pair.slice(3) as CurrencyCode;
+    if (pair.length === 6 && /^[A-Z]{6}$/.test(pair)) return derived(pair.slice(3) as CurrencyCode);
     // Short form like `EUR=X` is quoted against USD.
-    if (/^[A-Z]{3}$/.test(pair)) return 'USD';
+    if (/^[A-Z]{3}$/.test(pair)) return derived('USD');
   }
 
   // Crypto / pair form `BTC-USD`, `ETH-EUR`.
   const dashIdx = sym.lastIndexOf('-');
   if (dashIdx > 0) {
     const quote = sym.slice(dashIdx + 1).toUpperCase();
-    if (/^[A-Z]{3}$/.test(quote)) return quote as CurrencyCode;
+    if (/^[A-Z]{3}$/.test(quote)) return derived(quote as CurrencyCode);
   }
 
   // Venue suffix after the final dot.
@@ -272,15 +300,15 @@ export function currencyForSearchResult(
   if (dotIdx >= 0) {
     const suffix = sym.slice(dotIdx + 1).toUpperCase();
     const bySuffix = SUFFIX_CURRENCY[suffix];
-    if (bySuffix) return bySuffix;
+    if (bySuffix) return derived(bySuffix);
   }
 
   // Exchange-code fallback (US listings have no suffix).
   const byExchange = exchange ? EXCHANGE_CURRENCY[exchange.toUpperCase()] : undefined;
-  if (byExchange) return byExchange;
+  if (byExchange) return derived(byExchange);
 
-  // Default: Yahoo's primary market is the US.
-  return 'USD';
+  // Nothing to read it off: the US default, marked as the guess it is.
+  return { code: 'USD', guessed: true };
 }
 
 // ── Market-intelligence mapping (§13.5 V5-P5) ────────────────────────────────
@@ -319,6 +347,79 @@ function byIsoDate(a: { date?: string | null }, b: { date?: string | null }): nu
   return (a.date ?? '').localeCompare(b.date ?? '');
 }
 
+/** Ascending over a nullable ISO fiscal period end (nulls sort first, stable). */
+function byPeriodEnd(a: { periodEnd?: string | null }, b: { periodEnd?: string | null }): number {
+  return (a.periodEnd ?? '').localeCompare(b.periodEnd ?? '');
+}
+
+/**
+ * How far a candidate reading may sit from the cross-check and still count as
+ * confirmed. The two readings of one reported number (fraction vs percent) are
+ * exactly 100× apart, so any factor below 10 can confirm at most one of them;
+ * 5 leaves room for the cross-check's own imprecision — a previous close that
+ * moved, or a trailing rate inflated by a special dividend — without ever
+ * admitting both.
+ */
+const YIELD_UNIT_TOLERANCE = 5;
+
+/** The first finite, strictly positive number among the candidates, else null. */
+function firstPositive(...values: Array<number | null | undefined>): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * Determine the unit of Yahoo's `dividendYield` and return it in the contract's
+ * convention — a FRACTION (`0.015` ≈ 1.5 %) — or null when the unit cannot be
+ * determined (#1790).
+ *
+ * Yahoo has shipped both conventions over the years, and the previous guard
+ * (accept `[0, DIVIDEND_FORWARD_YIELD_MAX]`, drop the rest) cannot tell them
+ * apart below 1.0 — worse, it INVERTS on a percent-reporting build: `0.44` (a
+ * 0.44 % payer) passes and renders "44 %", while `2.5` (a normal 2.5 % payer)
+ * exceeds the bound and disappears. A range says nothing about a unit.
+ *
+ * **The mechanism is a cross-check against the payload's own arithmetic.** The
+ * same `summaryDetail` module carries an annual dividend per share and the last
+ * close, so `perShare / price` is a reference yield in the contract's fraction
+ * convention. Both operands come from that one module, so they share a
+ * denomination (and any minor-unit scale cancels in the ratio) — no assumption
+ * that `chart.meta.currency` and `summaryDetail.currency` agree. The reported
+ * number is then read both ways — as a fraction, and as percent (÷100) — and the
+ * reading the reference confirms within {@link YIELD_UNIT_TOLERANCE} wins.
+ *
+ * Nothing is published on a guess: no per-share rate, no price, a reference that
+ * confirms neither reading, or a confirmed reading outside the contract's range
+ * all yield null. An absent block, never a wrong number. The one figure that
+ * needs no evidence is 0 — the same number in either unit.
+ */
+function determineForwardYield(detail: YahooSummaryDetail): number | null {
+  const raw = detail.dividendYield;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return null;
+  if (raw === 0) return 0;
+
+  // Prefer the forward-annualized regular rate: it is what a FORWARD yield is
+  // built from, and it is not inflated by a special the way the trailing sum is.
+  const perShare = firstPositive(detail.dividendRate, detail.trailingAnnualDividendRate);
+  const price = firstPositive(detail.previousClose, detail.regularMarketPreviousClose);
+  if (perShare === null || price === null) return null;
+  const reference = perShare / price;
+  if (!Number.isFinite(reference) || reference <= 0) return null;
+
+  const confirmed = ([raw, raw / 100] as const)
+    .filter((candidate) => candidate > 0 && candidate <= DIVIDEND_FORWARD_YIELD_MAX)
+    .map((candidate) => ({ candidate, ratio: candidate / reference }))
+    .filter(({ ratio }) => ratio >= 1 / YIELD_UNIT_TOLERANCE && ratio <= YIELD_UNIT_TOLERANCE)
+    // Both readings can never pass the same tolerance (they are 100× apart and
+    // the tolerance is below 10), but sort anyway so the result never depends on
+    // that argument holding.
+    .sort((a, b) => Math.abs(Math.log(a.ratio)) - Math.abs(Math.log(b.ratio)));
+
+  return confirmed[0]?.candidate ?? null;
+}
+
 /**
  * Map Yahoo's `chart(events:'div')` history + `quoteSummary` calendar/detail into
  * the {@link DividendEvents} contract. Per-share amounts are scaled out of any
@@ -352,22 +453,50 @@ export function mapDividendEvents(
       : [];
 
   const detail = summary.summaryDetail ?? {};
-  const forwardYield = typeof detail.dividendYield === 'number' ? detail.dividendYield : null;
-  const trailingRaw =
-    typeof detail.trailingAnnualDividendRate === 'number'
-      ? detail.trailingAnnualDividendRate
-      : typeof detail.dividendRate === 'number'
-        ? detail.dividendRate
-        : null;
-  const trailingAmount = trailingRaw != null ? trailingRaw * scale : null;
 
-  return { currency, history, upcoming, forwardYield, trailingAmount };
+  const forwardYield = determineForwardYield(detail);
+
+  // DECISION (#1741): the two annual-per-share figures Yahoo can supply are
+  // DIFFERENT bases — `trailingAnnualDividendRate` is a realized TTM sum (it
+  // includes special dividends), `dividendRate` is the forward-annualized
+  // regular rate (it does not) — and right after a special payout they differ by
+  // a large factor. Rather than pick one and lose the other, the number now
+  // travels WITH its basis, so a projection can state what it used. The
+  // preference order is unchanged (realized TTM when Yahoo has it, the
+  // forward-annualized rate otherwise): this publishes the basis, it does not
+  // re-pick the number.
+  const trailing: { raw: number; basis: DividendAmountBasis } | null =
+    typeof detail.trailingAnnualDividendRate === 'number'
+      ? { raw: detail.trailingAnnualDividendRate, basis: 'trailing-12m' }
+      : typeof detail.dividendRate === 'number'
+        ? { raw: detail.dividendRate, basis: 'forward-annualized' }
+        : null;
+
+  return {
+    currency,
+    history,
+    upcoming,
+    forwardYield,
+    trailingAmount: trailing ? trailing.raw * scale : null,
+    trailingAmountBasis: trailing?.basis ?? null,
+  };
 }
 
 /**
  * Map Yahoo's `quoteSummary` calendar + earnings history into the
- * {@link EarningsEvents} contract: the earliest upcoming date (flagged
- * estimated) as `next`, and reported quarters as `recent` (ascending by date).
+ * {@link EarningsEvents} contract: the earliest calendar date (flagged
+ * estimated) as `next`, and reported quarters as `recent` (ascending).
+ *
+ * The two halves speak about different dates, and since #1790 the contract keeps
+ * them apart. `calendarEvents.earnings.earningsDate` is an ANNOUNCEMENT date, so
+ * it maps to `date` (`periodEnd` null) — and it is not filtered here for being
+ * in the past: this mapper is pure and has no clock, and the read paths that
+ * label it "next" own that guard (`marketIntelService.earningsCalendar`,
+ * `earningsReminder`, the asset page). `earningsHistory.history[].quarter` is a
+ * fiscal PERIOD END, so it maps to `periodEnd` with a null `date` — the
+ * announcement date of a past report is simply not in this payload, and
+ * inventing one by reusing the period end is what made a June-quarter report
+ * render as if it had been announced on 28 Jun.
  */
 export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEvents {
   const cal = summary.calendarEvents?.earnings ?? {};
@@ -380,6 +509,7 @@ export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEve
   const next: EarningsEvent | null = nextDate
     ? {
         date: nextDate,
+        periodEnd: null,
         epsEstimate: typeof cal.earningsAverage === 'number' ? cal.earningsAverage : null,
         epsActual: null,
         estimated,
@@ -388,13 +518,14 @@ export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEve
 
   const recent: EarningsEvent[] = (summary.earningsHistory?.history ?? [])
     .map((h) => ({
-      date: toIsoOrNull(h.quarter),
+      date: null,
+      periodEnd: toIsoOrNull(h.quarter),
       epsEstimate: typeof h.epsEstimate === 'number' ? h.epsEstimate : null,
       epsActual: typeof h.epsActual === 'number' ? h.epsActual : null,
       // History rows are reported actuals, not estimates.
       estimated: false,
     }))
-    .sort(byIsoDate);
+    .sort(byPeriodEnd);
 
   return { next, recent };
 }

@@ -17,7 +17,7 @@
 #   completion — every later fixer AND every later reviewer until done
 #
 #   { "difficulties": { "<diff>": {
-#         "writer":     {"provider":"claude|claudex|codex|gemini","model":"...","effort":"..."},
+#         "writer":     {"provider":"claude|claudex|codex|opencode","model":"...","effort":"..."},
 #         "reviewer1":  { ... }, "completion": { ... },
 #         "provider":"...", "model":"...", "effort":"..."   # flat legacy form (v1)
 #     } },
@@ -48,13 +48,25 @@
 # reviewFloor is always a difficulty name, never a pin. The composer route
 # gate (mf_composer_route_allowed) still applies to a pinned composer.
 #
-# Providers (all subscription auth, never committed — see autorun.sh auth sync):
+# Providers (auth is never committed — see autorun.sh auth sync):
 #   claude → claude CLI  (CLAUDE_CODE_OAUTH_TOKEN env; effort low|medium|high|xhigh|max)
 #   claudex→ claude CLI through third-party CCR + Codex OAuth
 #                         (independent ~/.codex + ~/.claude-code-router per container)
 #   codex  → codex CLI   (~/.codex/auth.json; effort is model-dependent)
-#   gemini → agy CLI     (Antigravity; ~/.gemini oauth; effort baked into model name,
-#                         e.g. "Gemini 3.1 Pro (High)")
+#   opencode→ opencode CLI (Bun binary; API-KEY auth, NOT a subscription — the key
+#                         lives in $MF_OPENCODE_HOME/share/opencode/auth.json, synced
+#                         per container by autorun.sh exactly like the codex
+#                         copies. Model strings are opencode's "provider/model" form,
+#                         e.g. openrouter/stealth/ox-alpha; effort maps to --variant.)
+#
+# ⚠ opencode DATA-EXPOSURE WARNING (owner-accepted for development, 2026-08-22):
+# the intended model (OpenRouter `stealth/ox-alpha`) is a free preview served by an
+# anonymous provider that RETAINS prompts and completions. A factory container is not
+# the owner's hard-isolated opencode sandbox: it holds a real checkout plus GH_TOKEN
+# with push rights. cc_opencode scrubs every OTHER provider's credential from the
+# child env (nothing here needs them), but GH_TOKEN stays because factory roles use
+# `gh`. Treat every byte an opencode role can read as disclosed to a third party, and
+# re-evaluate before any production/secret-bearing checkout is exposed to it.
 #
 # Legacy tier labels still resolve (tier:sonnet→easy, tier:opus→intermediate,
 # tier:fable→max) so old issues keep working.
@@ -129,11 +141,22 @@ diff_default_cfg(){
   esac
 }
 
+# PROVIDER REGISTRATION POINTS (keep these five in sync — nothing else needs to
+# change to add a provider):
+#   1. the provider comment block at the top of this file
+#   2. the allowlist in diff_cfg_from_json      (flat/legacy difficulty entries)
+#   3. the allowlist in diff_slot_cfg_from_json (writer/reviewer1/completion slots)
+#   4. the allowlist in role_pin_cfg_from_json  (roles.<role> object pins)
+#   5. a cc_<provider> runner + one arm in mf_cc's dispatch case
+# A provider missing from 2–4 is treated as an UNKNOWN provider: slots/flat
+# entries stay explicit ("invalid|<provider>|") and fail closed, while a role pin
+# is logged and ignored so the role falls back to difficulty routing. That is the
+# designed behaviour for typos and must be preserved.
 diff_cfg_from_json(){ # $1=file $2=difficulty — invalid provider is explicit
   jq -r --arg d "$2" '
     .difficulties[$d]? // empty
     | if ((.provider=="claude" or .provider=="claudex"
-           or .provider=="codex" or .provider=="gemini")
+           or .provider=="codex" or .provider=="opencode")
           and ((.model // "") | type=="string" and length>0
                and (contains("|") | not) and (test("[\\r\\n]") | not))
           and ((.effort // "") | type=="string"
@@ -152,7 +175,7 @@ diff_slot_cfg_from_json(){ # $1=file $2=difficulty $3=slot — invalid provider 
     | .[$s]? // empty
     | if (type=="object"
           and (.provider=="claude" or .provider=="claudex"
-               or .provider=="codex" or .provider=="gemini")
+               or .provider=="codex" or .provider=="opencode")
           and ((.model // "") | type=="string" and length>0
                and (contains("|") | not) and (test("[\\r\\n]") | not))
           and ((.effort // "") | type=="string"
@@ -235,7 +258,7 @@ role_pin_cfg_from_json(){ # $1=file $2=role
     .roles[$r]? // empty
     | if (type=="object"
           and (.provider=="claude" or .provider=="claudex"
-               or .provider=="codex" or .provider=="gemini")
+               or .provider=="codex" or .provider=="opencode")
           and ((.model // "") | type=="string" and length>0
                and (contains("|") | not) and (test("[\\r\\n]") | not))
           and ((.effort // "") | type=="string"
@@ -273,14 +296,34 @@ mf_uses_claude(){ # 0 when ANY difficulty slot or role pin routes to the claude 
 }
 
 # ---- provider runners --------------------------------------------------------------
-# All four keep cc()'s contract: block through capacity/limit windows (retry
+# All five keep cc()'s contract: block through capacity/limit windows (retry
 # forever with LIMIT_SLEEP naps), return 0 on a clean run, 1 only on a genuine
 # task failure. Every run lands in the usage ledger (subscription runs at $0).
 
 CODEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient|(^|[^0-9])429([^0-9]|$)'
 CLAUDEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient (credit|balance|funds)|model .*overloaded|service (at )?capacity|(^|[^0-9])(429|529)([^0-9]|$)'
 CLAUDEX_ROUTER_RE='CCR (management|gateway|runtime|bootstrap|router)|x-target-provider|router authentication|authentication (is )?(unavailable|failed)|oauth (token )?(expired|invalid|refresh failed|error)|unauthori[sz]ed|forbidden|(^|[^0-9])(401|403)([^0-9]|$)'
-AGY_LIMIT_RE='quota|rate.?limit|too many requests|RESOURCE_EXHAUSTED|model is overloaded|capacity|(^|[^0-9])(429|529)([^0-9]|$)'
+OPENCODE_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient (credit|balance|funds)|(out of|no) credits|overloaded|(at )?capacity|(^|[^0-9])(429|529|503)([^0-9]|$)'
+# opencode reports "provider is not configured here" and "that model does not
+# exist" with the SAME "Model not found: <provider>/<model>." text. Both mean the
+# route cannot run in this container — a configuration fault, never a transient
+# one — so they must fail fast instead of burning the generic retry budget.
+OPENCODE_CONFIG_RE='model not found|no such model|providermodelnotfounderror|not authenticated|unauthori[sz]ed|invalid api key|(^|[^0-9])(401|403)([^0-9]|$)'
+
+MF_OPENCODE_BIN=${MF_OPENCODE_BIN:-opencode}
+# One writable per-container tree holding opencode's XDG data/cache/config. It is
+# NOT $HOME/.local/share/opencode: pointing the three XDG vars at a single mounted
+# directory keeps the whole opencode footprint inside one bind mount and leaves
+# the rest of the container HOME untouched (autorun.sh mounts it, see compose.yml).
+MF_OPENCODE_HOME=${MF_OPENCODE_HOME:-/home/factory/.opencode}
+# opencode-factory.json is bind-mounted read-only and is the ONLY durable place a
+# model route can be declared. opencode rebuilds its models.dev cache on every cold
+# start and discards anything seeded there, and that in-container fetch has been
+# observed returning a SHORT catalog (176 vs 367 entries) that omits preview models.
+# A model missing from the catalog fails with exactly the same "Model not found"
+# text an expired key produces, so every model routed to this provider must also
+# appear in that file's provider.<opencode-provider>.models block.
+MF_OPENCODE_CONFIG=${MF_OPENCODE_CONFIG:-/work/mf/opencode-factory.json}
 
 MF_CCR_ENSURE_SCRIPT=${MF_CCR_ENSURE_SCRIPT:-/work/mf/ccr-ensure.mjs}
 MF_CCR_PROBE_SCRIPT=${MF_CCR_PROBE_SCRIPT:-/work/mf/claudex-direct-probe.mjs}
@@ -587,11 +630,71 @@ codex_failure_signal(){
   ' 2>/dev/null
 }
 
+# ---- opencode stream parsing --------------------------------------------------------
+# CRITICAL: `opencode run` exits 0 even when the run failed outright — a bad
+# model, an unconfigured provider and a provider-side error all produce rc=0 plus
+# a {"type":"error"} line on stdout. rc is therefore only usable for 124 (our own
+# timeout) and for "the binary did not run at all"; the outcome must come from the
+# --format json event stream. Verified against opencode 1.4.3.
+#
+# Event shapes that matter:
+#   {"type":"step_start", ...}
+#   {"type":"tool_use", ...}
+#   {"type":"text", "part":{"text":"…"}}
+#   {"type":"step_finish","part":{"reason":"tool-calls"|"stop",
+#      "tokens":{"total":N,"input":N,"output":N,"reasoning":N,
+#                "cache":{"write":N,"read":N}},"cost":0}}
+#   {"type":"error","error":{"name":"…","data":{"message":"…"}}}
+# One step_finish is emitted per LLM step; the LAST one's reason is the outcome
+# ("stop" = the model finished on its own). Token fields are PER STEP, so they sum.
+# Non-JSON lines (opencode's stderr traces, merged in by mf_capture_command) are
+# skipped by fromjson? and never affect the state.
+opencode_jsonl_state(){
+  jq -Rrs '
+    [split("\n")[] | fromjson? | select(type=="object")] as $events
+    | if ($events|length) == 0 then "incomplete"
+      elif any($events[]; ((.type // "") == "error") or (.error? != null))
+      then "error"
+      elif ([$events[] | select((.type // "") == "step_finish")]
+            | last | .part.reason? // "") == "stop"
+      then "completed"
+      else "incomplete"
+      end
+  ' 2>/dev/null
+}
+
+opencode_failure_signal(){
+  jq -Rrs '
+    [split("\n")[] | . as $line
+     | (try fromjson catch null) as $event
+     | if $event == null then $line
+       elif ($event | type) != "object" then $line
+       elif (($event.type // "") == "error") or ($event.error? != null)
+       then [
+         ($event.error.data.message? // ""),
+         ($event.error.name? // ""),
+         (if ($event.error? | type) == "string" then $event.error else "" end),
+         ($event.message? // "")
+       ] | join(" ")
+       else empty
+       end]
+    | join("\n")
+  ' 2>/dev/null
+}
+
+# The opencode credential store this container will use. Kept as a function so
+# MF_OPENCODE_HOME can be redirected in tests without touching the runner.
+mf_opencode_auth_file(){ printf '%s/share/opencode/auth.json\n' "$MF_OPENCODE_HOME"; }
+
+# Fail closed on a missing credential rather than letting opencode report the
+# indistinguishable "Model not found" and burn the retry budget on it.
+mf_opencode_ready(){ [ -s "$(mf_opencode_auth_file)" ]; }
+
 cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
   local model=$1 effort=$2 prompt=$3 selector raw_model
   local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--}
   local max_turns=${CC_MAX_TURNS:-}
-  local tries=0 transient_tries=0 rebootstrap_done=0
+  local tries=0 transient_tries=0 rebootstrap_done=0 limit_naps=0
   local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
   local empty_res='{"provider":"claudex","provider_family":"openai","harness":"claude-code","billing":"subscription","total_cost_usd":0,"claudex_usage_schema":1,"claudex_telemetry_complete":false,"api_equivalent_usd":null,"api_equivalent_pricing":"claude-code-local-estimate","api_equivalent_source":"claude-code-total_cost_usd","api_equivalent_coverage":"missing-telemetry"}'
 
@@ -681,7 +784,12 @@ cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
     fi
     if grep -qiE "$CLAUDEX_LIMIT_RE" <<<"$signal"; then
       ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
-      notify "ClaudeX/Codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+      limit_naps=$((limit_naps+1))
+      if [ "$limit_naps" -gt "${MF_LIMIT_NAPS_MAX:-8}" ]; then
+        notify "ClaudeX/Codex usage limit persisted through ${MF_LIMIT_NAPS_MAX:-8} naps — failing this role run (provider likely quota-dead)"
+        return 1
+      fi
+      notify "ClaudeX/Codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume ($limit_naps/${MF_LIMIT_NAPS_MAX:-8})"
       sleep "$LIMIT_SLEEP"
       continue
     fi
@@ -715,7 +823,12 @@ cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
       fi
       if [ "$probe_rc" = 75 ]; then
         ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
-        notify "ClaudeX/Codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+        limit_naps=$((limit_naps+1))
+        if [ "$limit_naps" -gt "${MF_LIMIT_NAPS_MAX:-8}" ]; then
+          notify "ClaudeX/Codex usage limit persisted through ${MF_LIMIT_NAPS_MAX:-8} naps — failing this role run (provider likely quota-dead)"
+          return 1
+        fi
+        notify "ClaudeX/Codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume ($limit_naps/${MF_LIMIT_NAPS_MAX:-8})"
         sleep "$LIMIT_SLEEP"
         continue
       fi
@@ -744,7 +857,7 @@ cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
 
 cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
   local model=$1 effort=$2 prompt=$3
-  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0 transient_tries=0
+  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0 transient_tries=0 limit_naps=0
   local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
   while true; do
     local out rc start dur res state signal capture
@@ -816,7 +929,12 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
     fi
     if grep -qiE "$CODEX_LIMIT_RE" <<<"$signal"; then
       ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
-      notify "codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+      limit_naps=$((limit_naps+1))
+      if [ "$limit_naps" -gt "${MF_LIMIT_NAPS_MAX:-8}" ]; then
+        notify "codex usage limit persisted through ${MF_LIMIT_NAPS_MAX:-8} naps — failing this role run (provider likely quota-dead)"
+        return 1
+      fi
+      notify "codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume ($limit_naps/${MF_LIMIT_NAPS_MAX:-8})"
       sleep "$LIMIT_SLEEP"; continue
     fi
     # Transient transport/stream drop: bounded in-place retry with short spacing,
@@ -839,42 +957,177 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
   done
 }
 
-cc_gemini(){ # $1=model (agy model string, effort baked in) $2=prompt
-  local model=$1 prompt=$2
-  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0
+cc_opencode(){ # $1=model ("provider/model", e.g. openrouter/stealth/ox-alpha)
+               # $2=variant/effort (optional, → --variant) $3=prompt
+  local model=$1 effort=$2 prompt=$3
+  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0 transient_tries=0 limit_naps=0
   local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
+  # Every early-exit path still records a ledger row so a failed opencode role is
+  # visible in cost reporting instead of silently missing. No usage key here: the
+  # run produced no telemetry, and emitting zeros would look like a measurement.
+  local empty_res='{"provider":"opencode","provider_family":"openrouter","harness":"opencode-cli","billing":"free-preview","total_cost_usd":0,"opencode_usage_schema":1,"opencode_usage_reported":false,"opencode_telemetry_complete":false,"opencode_cost_source":"absent","api_equivalent_usd":null,"api_equivalent_pricing":null,"api_equivalent_coverage":"not-applicable-free-preview"}'
+
+  if [ "${MF_DRY_RUN:-0}" = 1 ]; then
+    log "DRY: opencode $model skipped"
+    return 0
+  fi
+  # opencode model strings are "provider/model" and the model half may itself
+  # contain a slash (stealth/ox-alpha). Allow slashes, reject anything that could
+  # break out of the argument or the ledger's pipe-delimited route string.
+  if ! [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]; then
+    log "  ↳ invalid opencode model selector"
+    ledger_record "$issue" "$role" "$model" "$empty_res" 0 fail
+    return 1
+  fi
+  if ! command -v "$MF_OPENCODE_BIN" >/dev/null 2>&1; then
+    log "  ↳ opencode binary not installed in this container — see factory/Dockerfile"
+    ledger_record "$issue" "$role" "$model" "$empty_res" 0 fail
+    return 1
+  fi
+  if ! mf_opencode_ready; then
+    log "  ↳ opencode credential missing ($(mf_opencode_auth_file)) — refusing to run"
+    ledger_record "$issue" "$role" "$model" "$empty_res" 0 fail
+    return 1
+  fi
+
   while true; do
-    local out rc start dur capture
+    local out rc start dur res state signal capture
     start=$(date +%s)
-    capture=$(mktemp "${TMPDIR:-/tmp}/mf-agy.XXXXXX") || return 1
-    if ( cd "$REPO_DIR" && mf_capture_command "$capture" timeout "$MF_ROLE_TIMEOUT" \
-      agy -p "$prompt" --model "$model" --dangerously-skip-permissions \
-      --print-timeout "${MF_ROLE_TIMEOUT}s" </dev/null ); then rc=0; else rc=$?; fi
+    capture=$(mktemp "${TMPDIR:-/tmp}/mf-opencode.XXXXXX") || return 1
+    chmod 600 "$capture" 2>/dev/null || true
+    # opencode needs NONE of the other providers' credentials, so strip them: a
+    # model whose prompts are retained by a third party must not be able to read
+    # them out of its own environment. GH_TOKEN deliberately stays — factory roles
+    # drive `gh` — and is the accepted residual exposure (see the header warning).
+    local -a cmd=(
+      timeout "$MF_ROLE_TIMEOUT"
+      env
+      -u ANTHROPIC_API_KEY
+      -u ANTHROPIC_AUTH_TOKEN
+      -u ANTHROPIC_BASE_URL
+      -u ANTHROPIC_API_BASE_URL
+      -u ANTHROPIC_MODEL
+      -u ANTHROPIC_SMALL_FAST_MODEL
+      -u CLAUDE_AGENT_API_BASE_URL
+      -u CLAUDE_CODE_OAUTH_TOKEN
+      -u CLAUDE_CODE_OAUTH_REFRESH_TOKEN
+      -u CLAUDE_CODE_USE_BEDROCK
+      -u CLAUDE_CODE_USE_FOUNDRY
+      -u CLAUDE_CODE_USE_VERTEX
+      -u OPENAI_API_KEY
+      -u CODEX_API_KEY
+      "XDG_DATA_HOME=$MF_OPENCODE_HOME/share"
+      "XDG_CACHE_HOME=$MF_OPENCODE_HOME/cache"
+      "XDG_CONFIG_HOME=$MF_OPENCODE_HOME/config"
+      "OPENCODE_CONFIG=$MF_OPENCODE_CONFIG"
+      CI=1
+      "$MF_OPENCODE_BIN" run
+      --dir "$REPO_DIR"
+      --format json
+      --model "$model"
+      --dangerously-skip-permissions
+    )
+    # opencode calls reasoning effort a "variant" and validates it per provider;
+    # an empty effort means "provider default", same as every other runner here.
+    [ -n "$effort" ] && cmd+=(--variant "$effort")
+    cmd+=("$prompt")
+    if mf_capture_command "$capture" "${cmd[@]}" </dev/null; then rc=0; else rc=$?; fi
     out=$(<"$capture"); rm -f "$capture"
     dur=$(( $(date +%s) - start ))
-    if [ "$rc" = 0 ] && ! grep -qiE 'not logged into antigravity' <<<"$out"; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" ok
-      log "  ↳ ok (agy $model, ${dur}s)"
+    state=$(opencode_jsonl_state <<<"$out")
+    signal=$(opencode_failure_signal <<<"$out")
+    # Ox Alpha is free during the OpenRouter preview and opencode reports cost:0
+    # per step. Record the provider's OWN number when it gives one, and label a
+    # zero that we assumed rather than measured — never invent per-token pricing
+    # for a provider whose rates we do not know.
+    res=$(jq -Rrs '
+      [split("\n")[] | fromjson?
+        | select(type=="object" and .type=="step_finish")
+        | .part | select(type=="object")] as $steps
+      | {i:  ($steps | map(.tokens.input        // 0) | add // 0),
+         o:  ($steps | map(.tokens.output       // 0) | add // 0),
+         r:  ($steps | map(.tokens.reasoning    // 0) | add // 0),
+         cr: ($steps | map(.tokens.cache.read   // 0) | add // 0),
+         cw: ($steps | map(.tokens.cache.write  // 0) | add // 0),
+         cost: ($steps | map(select((.cost|type)=="number") | .cost) | add // 0),
+         reported: (($steps|length) > 0),
+         complete: (($steps|length) > 0
+                    and all($steps[]; ((.tokens.input|type)=="number")
+                                       and ((.tokens.output|type)=="number"))),
+         cost_reported: (($steps|length) > 0
+                         and all($steps[]; (.cost|type)=="number"))}
+      | {provider:"opencode", provider_family:"openrouter",
+         harness:"opencode-cli", billing:"free-preview",
+         total_cost_usd: (if .cost_reported then .cost else 0 end),
+         opencode_usage_schema:1,
+         opencode_usage_reported:.reported,
+         opencode_telemetry_complete:.complete,
+         opencode_cost_source:
+           (if .cost_reported then "provider-reported"
+            elif .reported then "assumed-free-preview"
+            else "absent" end),
+         # Verified on opencode 1.4.3: tokens.total == input + output + cache.read,
+         # so input EXCLUDES cached reads (same convention as the codex runner).
+         input_tokens_semantics:"exclusive",
+         # NOT verified: every sample so far had reasoning=0, so whether output
+         # already contains the reasoning tokens is unknown. Say so instead of
+         # guessing — a wrong label here silently double-counts or loses tokens.
+         output_tokens_semantics:"unverified",
+         api_equivalent_usd:null,
+         api_equivalent_pricing:null,
+         api_equivalent_coverage:"not-applicable-free-preview"}
+        + (if $steps|length > 0 then
+            {usage:{input_tokens:($steps | map(.tokens.input // 0) | add // 0),
+                    cache_read_input_tokens:($steps | map(.tokens.cache.read // 0) | add // 0),
+                    cache_creation_input_tokens:($steps | map(.tokens.cache.write // 0) | add // 0),
+                    output_tokens:($steps | map(.tokens.output // 0) | add // 0),
+                    reasoning_output_tokens:($steps | map(.tokens.reasoning // 0) | add // 0)}}
+           else {} end)' \
+      <<<"$out" 2>/dev/null) \
+      || res=$empty_res
+    [ -n "$res" ] || res=$empty_res
+
+    if [ "$rc" = 0 ] && [ "$state" = completed ]; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" ok
+      log "  ↳ ok (opencode $model, ${dur}s)"
       return 0
     fi
-    if grep -qiE "$AGY_LIMIT_RE" <<<"$out"; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" retry
-      notify "antigravity usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+    if [ "$rc" = 124 ]; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
+      log "  ↳ opencode run timed out after ${MF_ROLE_TIMEOUT}s"
+      return 1
+    fi
+    if grep -qiE "$OPENCODE_LIMIT_RE" <<<"$signal"; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
+      limit_naps=$((limit_naps+1))
+      if [ "$limit_naps" -gt "${MF_LIMIT_NAPS_MAX:-8}" ]; then
+        notify "opencode/OpenRouter usage limit persisted through ${MF_LIMIT_NAPS_MAX:-8} naps — failing this role run (provider likely quota-dead)"
+        return 1
+      fi
+      notify "opencode/OpenRouter usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume ($limit_naps/${MF_LIMIT_NAPS_MAX:-8})"
       sleep "$LIMIT_SLEEP"; continue
     fi
-    if [ "$rc" = 124 ]; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" fail
-      log "  ↳ agy run timed out after ${MF_ROLE_TIMEOUT}s"
+    # Config faults (missing credential, unknown model, revoked key) never heal by
+    # retrying, and the limit branch above already claimed the recoverable ones.
+    if grep -qiE "$OPENCODE_CONFIG_RE" <<<"$signal"; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
+      log "  ↳ opencode route unavailable (model unknown or credential rejected) — not retrying"
       return 1
+    fi
+    if [ "$(cc_classify "$signal")" = transient ] && [ "$transient_tries" -lt "${CC_TRANSIENT_MAX:-3}" ]; then
+      transient_tries=$((transient_tries+1))
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
+      log "  ↳ transient transport error — retry $transient_tries/${CC_TRANSIENT_MAX:-3}"
+      sleep "${CC_TRANSIENT_SLEEP:-45}"; continue
     fi
     tries=$((tries+1))
     if [ "$tries" -lt "$max_attempts" ]; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" retry
-      log "  ↳ agy failed (rc=$rc) — retry $tries/$max_attempts"
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
+      log "  ↳ opencode failed (rc=$rc, jsonl=$state) — retry $tries/$max_attempts"
       sleep "${MF_PROVIDER_RETRY_SLEEP:-60}"; continue
     fi
-    ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" fail
-    log "  ↳ genuine agy task failure (rc=$rc)"
+    ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
+    log "  ↳ genuine opencode task failure (rc=$rc, jsonl=$state)"
     return 1
   done
 }
@@ -891,6 +1144,9 @@ mf_composer_route_allowed(){ # $1=provider $2=model
     codex)
       [ "$model" = gpt-5.6-sol ]
       ;;
+    # opencode is deliberately absent: composition sets the whole milestone's
+    # direction, so it stays on the owner-vetted top-tier routes. An opencode
+    # composer pin is refused loudly by mf_cc rather than silently downgraded.
     *)
       return 1
       ;;
@@ -932,6 +1188,7 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config (pin or per-role s
   # to the role default; an unusable pin is logged and ignored.
   local role=$1 d=$2 prompt=$3 slot cfg provider model effort route
   local sol_composer=0 sol_timeout=1200 sol_max_turns=40
+  local composer_timeout=0 composer_max_turns=0
   slot=${CC_SLOT:-}
   mf_slot_valid "${slot:-x}" || slot=$(mf_role_slot "$role")
   cfg=$(role_pin_cfg "$role")
@@ -963,15 +1220,37 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config (pin or per-role s
 
 $(mf_sol_composer_instructions)"
   fi
+  # The composer is the priciest role in the fleet, and until now only the Sol
+  # branch was capped: a Claude composer inherited MF_ROLE_TIMEOUT=7200 with no
+  # turn cap at all. MF_COMPOSER_TIMEOUT/MF_COMPOSER_MAX_TURNS bound every
+  # composer run the same way the Sol caps bound Sol; Sol keeps its own tighter
+  # numbers where both apply.
+  if [ "$role" = composer ]; then
+    composer_timeout=${MF_COMPOSER_TIMEOUT:-1800}
+    composer_max_turns=${MF_COMPOSER_MAX_TURNS:-60}
+    case "$composer_timeout" in ''|*[!0-9]*) composer_timeout=1800;; esac
+    case "$composer_max_turns" in ''|*[!0-9]*) composer_max_turns=60;; esac
+    [ "$composer_timeout" -ge 60 ] && [ "$composer_timeout" -le 7200 ] || composer_timeout=1800
+    [ "$composer_max_turns" -ge 1 ] && [ "$composer_max_turns" -le 400 ] || composer_max_turns=60
+  fi
   log "$role @ $route → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
     claude)
-      CC_ROLE="$role" CC_EFFORT="$effort" \
-        mf_with_claude_profile cc "$model" "$prompt"
+      if [ "$composer_timeout" -gt 0 ]; then
+        CC_ROLE="$role" CC_EFFORT="$effort" \
+          CC_TIMEOUT=$composer_timeout CC_MAX_TURNS=$composer_max_turns \
+          mf_with_claude_profile cc "$model" "$prompt"
+      else
+        CC_ROLE="$role" CC_EFFORT="$effort" \
+          mf_with_claude_profile cc "$model" "$prompt"
+      fi
       ;;
     claudex)
       if [ "$sol_composer" -eq 1 ]; then
         MF_ROLE_TIMEOUT=$sol_timeout CC_MAX_TURNS=$sol_max_turns \
+          CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
+      elif [ "$composer_timeout" -gt 0 ]; then
+        MF_ROLE_TIMEOUT=$composer_timeout CC_MAX_TURNS=$composer_max_turns \
           CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
       else
         CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
@@ -984,7 +1263,7 @@ $(mf_sol_composer_instructions)"
         CC_ROLE=$role cc_codex "$model" "$effort" "$prompt"
       fi
       ;;
-    gemini)  CC_ROLE=$role cc_gemini "$model" "$prompt";;
+    opencode) CC_ROLE=$role cc_opencode "$model" "$effort" "$prompt";;
     *)
       log "  ↳ unsupported provider '$provider' — refusing implicit Claude fallback"
       return 1
@@ -1000,4 +1279,5 @@ mf_labels_boot(){
   gh label create diff:intermediate --color 0E8A16 --description "difficulty: intermediate — cross-cutting/stateful" --force >/dev/null 2>&1 || true
   gh label create diff:hard         --color 8250DF --description "difficulty: hard — complex engine/architecture"    --force >/dev/null 2>&1 || true
   gh label create diff:max          --color B60205 --description "difficulty: max — keystone/critical path"          --force >/dev/null 2>&1 || true
+  gh label create mf:bad-meta       --color D93F0B --description "multi-factory: armed issue with empty mf-meta touches — fix meta, remove label to re-arm" --force >/dev/null 2>&1 || true
 }

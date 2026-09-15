@@ -17,6 +17,7 @@ import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
+import { pageRange, useOffsetSnapBack } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
@@ -161,6 +162,10 @@ export function UsersPage() {
   const rows = useMemo(() => users.data?.users ?? [], [users.data]);
   const page = users.data?.page ?? null;
 
+  const setOffset = useCallback((next: number) => patchQuery({ offset: next }, true), [patchQuery]);
+  // A page that just emptied under a bulk action is not "no results" (#1848).
+  useOffsetSnapBack(page, rows.length, setOffset);
+
   // Keep the selection in sync with what's actually on screen: a bulk action
   // must never reach a row the operator can no longer see.
   useEffect(() => {
@@ -303,68 +308,69 @@ export function UsersPage() {
           onRetry={users.reload}
           retryable={users.retryable}
         />
-      ) : rows.length === 0 ? (
-        <EmptyState>
-          {filtersActive ? t('admin.users.emptySearch') : t('admin.users.empty')}
-        </EmptyState>
       ) : (
+        // The pager sits OUTSIDE the empty branch (#1848): bulk-disable the last
+        // row of page 2 and the empty state used to render with no way back —
+        // the only escape was hand-editing `?offset=` in the URL.
         <div className="flex flex-col gap-2">
-          <DataTable minWidth="56rem">
-            <thead className={cx(SURFACE_HEADER, 'border-b border-neutral-800')}>
-              <tr>
-                <Th className="w-8">
-                  <input
-                    type="checkbox"
-                    aria-label={t('admin.users.selectAll')}
-                    className="accent-sky-500"
-                    checked={allSelected}
-                    onChange={toggleAll}
+          {rows.length === 0 ? (
+            <EmptyState>
+              {filtersActive ? t('admin.users.emptySearch') : t('admin.users.empty')}
+            </EmptyState>
+          ) : (
+            <DataTable minWidth="56rem">
+              <thead className={cx(SURFACE_HEADER, 'border-b border-neutral-800')}>
+                <tr>
+                  <Th className="w-8">
+                    <input
+                      type="checkbox"
+                      aria-label={t('admin.users.selectAll')}
+                      className="accent-sky-500"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                    />
+                  </Th>
+                  <SortableTh
+                    active={sort === 'username'}
+                    direction={direction}
+                    onSort={() => onSort('username')}
+                  >
+                    {t('admin.users.columns.user')}
+                  </SortableTh>
+                  <Th>{t('admin.users.columns.role')}</Th>
+                  <Th>{t('admin.users.columns.status')}</Th>
+                  <Th>{t('admin.users.columns.privacy')}</Th>
+                  <SortableTh
+                    active={sort === 'lastLoginAt'}
+                    direction={direction}
+                    onSort={() => onSort('lastLoginAt')}
+                  >
+                    {t('admin.users.columns.lastLogin')}
+                  </SortableTh>
+                  <SortableTh
+                    active={sort === 'createdAt'}
+                    direction={direction}
+                    onSort={() => onSort('createdAt')}
+                  >
+                    {t('admin.users.columns.created')}
+                  </SortableTh>
+                  <Th className="w-16" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800">
+                {rows.map((u) => (
+                  <UserRow
+                    key={u.id}
+                    user={u}
+                    selected={selected.has(u.id)}
+                    onToggle={() => toggleOne(u.id)}
                   />
-                </Th>
-                <SortableTh
-                  active={sort === 'username'}
-                  direction={direction}
-                  onSort={() => onSort('username')}
-                >
-                  {t('admin.users.columns.user')}
-                </SortableTh>
-                <Th>{t('admin.users.columns.role')}</Th>
-                <Th>{t('admin.users.columns.status')}</Th>
-                <Th>{t('admin.users.columns.privacy')}</Th>
-                <SortableTh
-                  active={sort === 'lastLoginAt'}
-                  direction={direction}
-                  onSort={() => onSort('lastLoginAt')}
-                >
-                  {t('admin.users.columns.lastLogin')}
-                </SortableTh>
-                <SortableTh
-                  active={sort === 'createdAt'}
-                  direction={direction}
-                  onSort={() => onSort('createdAt')}
-                >
-                  {t('admin.users.columns.created')}
-                </SortableTh>
-                <Th className="w-16" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-800">
-              {rows.map((u) => (
-                <UserRow
-                  key={u.id}
-                  user={u}
-                  selected={selected.has(u.id)}
-                  onToggle={() => toggleOne(u.id)}
-                />
-              ))}
-            </tbody>
-          </DataTable>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
 
-          <Pagination
-            page={page}
-            rowCount={rows.length}
-            onOffset={(next) => patchQuery({ offset: next }, true)}
-          />
+          <Pagination page={page} rowCount={rows.length} onOffset={setOffset} />
         </div>
       )}
 
@@ -611,22 +617,25 @@ function Pagination({
 }) {
   const t = useT();
   if (!page) return null;
-  const first = page.total === 0 ? 0 : page.offset + 1;
-  const last = page.offset + rowCount;
-  const hasPrev = page.offset > 0;
-  const hasNext = last < page.total;
+  // Same clamped arithmetic as every other bounded console list (#1848): the
+  // range this footer states can never read backwards, and an empty window past
+  // the first page reports 0–0 rather than "26–25 of 25".
+  const { first, last, total, hasPrev, hasNext, prevOffset, nextOffset } = pageRange(
+    page,
+    rowCount,
+  );
 
   return (
     <div className={cx('flex flex-wrap items-center justify-between gap-3 px-1 pt-1', EDGE_TOP)}>
       <span className={cx(TEXT_MICRO, TEXT_NUM)}>
-        {t('admin.users.pagination.range', { first, last, total: page.total })}
+        {t('admin.users.pagination.range', { first, last, total })}
       </span>
       <div className="flex gap-2">
         <Button
           variant="secondary"
           size="sm"
           disabled={!hasPrev}
-          onClick={() => onOffset(Math.max(0, page.offset - page.limit))}
+          onClick={() => onOffset(prevOffset)}
         >
           {t('admin.users.pagination.previous')}
         </Button>
@@ -634,7 +643,7 @@ function Pagination({
           variant="secondary"
           size="sm"
           disabled={!hasNext}
-          onClick={() => onOffset(page.offset + page.limit)}
+          onClick={() => onOffset(nextOffset)}
         >
           {t('admin.users.pagination.next')}
         </Button>

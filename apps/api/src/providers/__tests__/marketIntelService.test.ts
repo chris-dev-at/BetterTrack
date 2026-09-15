@@ -1,15 +1,22 @@
 import type { AssetProvider } from '../AssetProvider';
-import type { AssetRef, DividendEvents } from '@bettertrack/contracts';
+import type { AssetRef, DividendEvents, EarningsEvents, SplitEvents } from '@bettertrack/contracts';
+import { earningsEventsSchema } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ApiError } from '../../errors';
+import { cacheKey, freshCacheKey, staleCacheKey } from '../cache';
 import { CircuitOpenError } from '../circuitBreaker';
 import { AssetNotFoundError, CapabilityUnavailableError } from '../errors';
-import { createMarketDataService, type MarketDataService } from '../marketDataService';
+import {
+  createMarketDataService,
+  intelCacheVariant,
+  type MarketDataService,
+} from '../marketDataService';
 import { createProviderRegistry, providerCapabilities } from '../registry';
 
+import { mapSplitEvents } from '../yahooMapping';
 import { createDeferred, sampleHistory, sampleMeta, sampleQuote } from './fakeProvider';
 
 const REF: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
@@ -20,10 +27,34 @@ const DIVIDENDS: DividendEvents = {
   upcoming: [],
   forwardYield: 0.0044,
   trailingAmount: 0.98,
+  trailingAmountBasis: 'trailing-12m',
+};
+
+/**
+ * What a post-#1790 release produces: `periodEnd` (the fiscal period reported
+ * on) travels beside `date` (the announcement date) on every row.
+ */
+const EARNINGS: EarningsEvents = {
+  next: {
+    date: '2026-07-31T00:00:00.000Z',
+    periodEnd: null,
+    epsEstimate: 1.42,
+    epsActual: null,
+    estimated: true,
+  },
+  recent: [
+    {
+      date: null,
+      periodEnd: '2026-03-28T00:00:00.000Z',
+      epsEstimate: 1.5,
+      epsActual: 1.53,
+      estimated: false,
+    },
+  ],
 };
 
 interface IntelProvider extends AssetProvider {
-  readonly calls: { dividends: number };
+  readonly calls: { dividends: number; earnings: number };
 }
 
 /** A provider that implements the base methods plus (optionally) intel. */
@@ -32,7 +63,7 @@ function makeProvider(opts: {
   withIntel?: boolean;
   dividends?: () => Promise<DividendEvents>;
 }): IntelProvider {
-  const calls = { dividends: 0 };
+  const calls = { dividends: 0, earnings: 0 };
   const base: AssetProvider = {
     id: opts.id ?? 'yahoo',
     search: () => Promise.resolve([]),
@@ -49,7 +80,10 @@ function makeProvider(opts: {
       calls.dividends += 1;
       return dividends();
     },
-    getEarningsEvents: () => Promise.resolve({ next: null, recent: [] }),
+    getEarningsEvents: () => {
+      calls.earnings += 1;
+      return Promise.resolve(EARNINGS);
+    },
     getNewsHeadlines: () => Promise.resolve([]),
     getSplitEvents: () => Promise.resolve({ history: [], upcoming: [] }),
   };
@@ -158,6 +192,105 @@ describe('MarketDataService intel caching/coalescing/breaker', () => {
   });
 });
 
+describe('MarketDataService intel payload versioning (#1741)', () => {
+  /** The key a release before the payload change wrote its dividends entry to. */
+  const V1_KEY = cacheKey('yahoo', 'AAPL', 'intel', 'dividends');
+  /** What that release stored: no `trailingAmountBasis` at all. */
+  const V1_PAYLOAD = {
+    currency: 'USD',
+    history: DIVIDENDS.history,
+    upcoming: [],
+    forwardYield: 0.0044,
+    trailingAmount: 0.98,
+  };
+
+  it('only the changed capabilities get a new variant; the rest keep their bare key', () => {
+    expect(intelCacheVariant('dividends')).toBe('dividends@v2');
+    // Bumping earnings (#1790, see below) must not move the other three: a shape
+    // change to one payload may not evict the caches of the ones that did not
+    // change.
+    expect(intelCacheVariant('earnings')).toBe('earnings@v2');
+    for (const capability of ['news', 'splits', 'fundamentals'] as const) {
+      expect(intelCacheVariant(capability)).toBe(capability);
+    }
+  });
+
+  it('an entry written before the payload change is never served — neither fresh nor stale', async () => {
+    // Both copies present, exactly as they are the moment a deploy lands: the
+    // fresh copy inside its 12 h window, the stale copy good for a week.
+    const entry = JSON.stringify({ value: V1_PAYLOAD, asOf: Date.now() });
+    await redis.set(freshCacheKey(V1_KEY), entry, 'EX', 12 * 60 * 60);
+    await redis.set(staleCacheKey(V1_KEY), entry, 'EX', 7 * 24 * 60 * 60);
+
+    const { provider, service } = serviceWith(makeProvider({ withIntel: true }));
+    const result = await service.getDividendEvents(REF);
+
+    // The v1 entry did not answer the read: the provider was asked, and what
+    // came back carries the basis the projection refuses to do without.
+    expect(provider.calls.dividends).toBe(1);
+    expect(result.stale).toBe(false);
+    expect(result.value.trailingAmountBasis).toBe('trailing-12m');
+    expect(result.value).toEqual(DIVIDENDS);
+
+    // The fresh payload was stored under the versioned key, and the v1 entry was
+    // left alone to expire on its own TTL.
+    const stored = await redis.get(
+      freshCacheKey(cacheKey('yahoo', 'AAPL', 'intel', 'dividends@v2')),
+    );
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored ?? 'null')).toMatchObject({ value: DIVIDENDS });
+  });
+});
+
+describe('MarketDataService intel payload versioning — earnings (#1790)', () => {
+  /** The key the release before the payload change wrote its earnings entry to. */
+  const V1_KEY = cacheKey('yahoo', 'AAPL', 'intel', 'earnings');
+  /**
+   * What that release stored: rows with no `periodEnd` at all. `periodEnd` is
+   * REQUIRED (nullable, on a strict object), so this payload no longer parses —
+   * and the read path reads a cached entry back verbatim, with no schema parse,
+   * so it would reach the client and blank the asset page's earnings block.
+   */
+  const V1_PAYLOAD = {
+    next: { date: '2026-01-30T00:00:00.000Z', epsEstimate: 1.1, epsActual: null, estimated: true },
+    recent: [
+      { date: '2025-10-30T00:00:00.000Z', epsEstimate: 1.0, epsActual: 1.05, estimated: false },
+    ],
+  };
+
+  it('the v1 payload is exactly what the contract now refuses', () => {
+    expect(earningsEventsSchema.safeParse(V1_PAYLOAD).success).toBe(false);
+    expect(earningsEventsSchema.safeParse(EARNINGS).success).toBe(true);
+  });
+
+  it('an entry written before the payload change is never served — neither fresh nor stale', async () => {
+    // Both copies present, exactly as they are the moment a deploy lands: the
+    // fresh copy inside its 6 h window, the stale copy good for a week.
+    const entry = JSON.stringify({ value: V1_PAYLOAD, asOf: Date.now() });
+    await redis.set(freshCacheKey(V1_KEY), entry, 'EX', 6 * 60 * 60);
+    await redis.set(staleCacheKey(V1_KEY), entry, 'EX', 7 * 24 * 60 * 60);
+
+    const { provider, service } = serviceWith(makeProvider({ withIntel: true }));
+    const result = await service.getEarningsEvents(REF);
+
+    // The v1 entry did not answer the read: the provider was asked, and every row
+    // that came back carries the `periodEnd` the client's parse requires.
+    expect(provider.calls.earnings).toBe(1);
+    expect(result.stale).toBe(false);
+    expect(result.value).toEqual(EARNINGS);
+    expect(earningsEventsSchema.safeParse(result.value).success).toBe(true);
+
+    // The fresh payload was stored under the versioned key, and the v1 entry was
+    // left alone to expire on its own TTL.
+    const stored = await redis.get(
+      freshCacheKey(cacheKey('yahoo', 'AAPL', 'intel', 'earnings@v2')),
+    );
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored ?? 'null')).toMatchObject({ value: EARNINGS });
+    expect(await redis.get(freshCacheKey(V1_KEY))).toBe(entry);
+  });
+});
+
 describe('MarketDataService intel — per-family graceful degradation (dividends/earnings/news/splits)', () => {
   type Family = {
     name: string;
@@ -226,4 +359,55 @@ describe('MarketDataService intel — per-family graceful degradation (dividends
       expect(calls).toBe(1); // answered from the negative cache, no upstream call
     },
   );
+});
+
+describe('MarketDataService intel — announced (upcoming) splits (§13.5 V5-P5 arc d)', () => {
+  // Yahoo is the only provider implementing splits today and it exposes only
+  // PAST ones, so `mapSplitEvents` always returns `upcoming: []` — nothing in a
+  // live deployment ever exercises the forward branch. The fixture below is
+  // literally the row shape that mapper emits, promoted to `upcoming` as a
+  // forward-capable provider would return it, so the branch is tested code
+  // rather than dead code.
+  const MAPPED = mapSplitEvents({
+    meta: { currency: 'USD' },
+    dividends: [],
+    splits: [
+      {
+        date: new Date('2026-09-01T00:00:00.000Z'),
+        numerator: 2,
+        denominator: 1,
+        splitRatio: '2:1',
+      },
+    ],
+  });
+  const ANNOUNCED: SplitEvents = { history: [], upcoming: MAPPED.history };
+
+  it('the mapper-shaped upcoming row survives the keystone, cached read included', () => {
+    expect(MAPPED.upcoming).toEqual([]); // the documented Yahoo limitation
+    expect(ANNOUNCED.upcoming).toEqual([
+      { date: '2026-09-01T00:00:00.000Z', numerator: 2, denominator: 1, ratio: '2:1' },
+    ]);
+  });
+
+  it('serves an announced split unchanged, on the live read and from cache', async () => {
+    const base = makeProvider({ withIntel: true });
+    let calls = 0;
+    const provider = {
+      ...base,
+      getSplitEvents: () => {
+        calls += 1;
+        return Promise.resolve(ANNOUNCED);
+      },
+    } as typeof base;
+    const { service } = serviceWith(provider);
+
+    const live = await service.getSplitEvents(REF);
+    expect(live.value).toEqual(ANNOUNCED);
+
+    // The cache round-trip (JSON in Redis) must not drop or reshape the
+    // announced rows — that is where a "temporary" forward payload would die.
+    const cached = await service.getSplitEvents(REF);
+    expect(cached.value).toEqual(ANNOUNCED);
+    expect(calls).toBe(1);
+  });
 });

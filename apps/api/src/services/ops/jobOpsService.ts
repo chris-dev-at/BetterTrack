@@ -166,7 +166,11 @@ async function readFailures(
       name: entry.name,
       // An error message, not a payload — the same class of text the Problems
       // page already shows an admin, and scrubbed the same way before it is
-      // bounded (see `scrubOpsError`).
+      // bounded (see `scrubOpsError`). Nothing caps this string at write time,
+      // and this loop runs it up to `JOB_FAILURE_PAGE_SIZE` times per read, so
+      // `scrubOpsError` bounds what the scrubber READS before it reads it
+      // (#1853) — otherwise one oversized `failedReason` stalls the whole API
+      // every time an operator opens the panel that exists to diagnose it.
       failedReason: scrubOpsError(entry.failedReason),
       attemptsMade: entry.attemptsMade,
       at: iso(entry.timestamp),

@@ -6,6 +6,7 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
+import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { Alert, Button, EmptyState, PageHeader, Spinner } from '../components/ui';
 
@@ -27,8 +28,11 @@ export function AuditPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [initialError, setInitialError] = useState<string | null>(null);
-  const [paginationError, setPaginationError] = useState<string | null>(null);
+  // Failures are recorded as a FLAG, not as a message (#1848). The message is
+  // chosen at render time from the catalogue, so it is in the reader's locale
+  // and stays right when the locale changes under an error that is on screen.
+  const [initialError, setInitialError] = useState(false);
+  const [paginationError, setPaginationError] = useState(false);
 
   const loadPage = useCallback(
     async (after: string | null, signal?: AbortSignal) => {
@@ -41,19 +45,22 @@ export function AuditPage() {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (err instanceof ApiError && err.isNotAuthorized) {
-          clearSession();
+          // Same 401-or-404 rule as `useResource`, and the same reason: on the
+          // admin origin this is normally the V5-P13c window closing, so the login
+          // screen names it instead of bouncing silently — unless the 404 named a
+          // domain outcome, which is a row talking and not this session.
+          clearSession(adminSignOutReason(err));
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {
           requireTwoFactorSetup();
           return;
         }
-        const message = err instanceof ApiError ? err.message : 'Something went wrong.';
-        if (after) {
-          setPaginationError(message);
-        } else {
-          setInitialError(message);
-        }
+        // API envelopes are authored by the server and are not locale-aware —
+        // the rule `useResource` states and this page was the console's last
+        // offender against (#1814, #1848). Nothing the server wrote is shown.
+        if (after) setPaginationError(true);
+        else setInitialError(true);
       }
     },
     [clearSession, requireTwoFactorSetup],
@@ -62,7 +69,7 @@ export function AuditPage() {
   const loadInitial = useCallback(
     async (signal?: AbortSignal) => {
       setLoading(true);
-      setInitialError(null);
+      setInitialError(false);
       await loadPage(null, signal);
       if (!signal?.aborted) setLoading(false);
     },
@@ -82,7 +89,7 @@ export function AuditPage() {
   async function loadMore() {
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
-    setPaginationError(null);
+    setPaginationError(false);
     await loadPage(cursor);
     setLoadingMore(false);
   }
@@ -104,30 +111,27 @@ export function AuditPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Audit log"
-        description="Every administrative and security-relevant action."
-      />
+      <PageHeader title={t('admin.audit.title')} description={t('admin.audit.subtitle')} />
 
       {loading ? (
-        <Spinner label="Loading audit log…" />
+        <Spinner label={t('admin.audit.loading')} />
       ) : initialError ? (
-        errorMessage(initialError, retryInitial)
+        errorMessage(t('admin.audit.loadError'), retryInitial)
       ) : entries.length === 0 ? (
-        <EmptyState>No audit entries yet.</EmptyState>
+        <EmptyState>{t('admin.audit.empty')}</EmptyState>
       ) : (
         <>
-          {paginationError ? errorMessage(paginationError, loadMore) : null}
+          {paginationError ? errorMessage(t('admin.audit.loadMoreError'), loadMore) : null}
           <div className="overflow-x-auto rounded-lg border border-neutral-800">
             <table className="w-full min-w-[48rem] text-left text-sm">
               <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
                 <tr>
-                  <th className="px-4 py-3 font-medium">When</th>
-                  <th className="px-4 py-3 font-medium">Action</th>
-                  <th className="px-4 py-3 font-medium">Actor</th>
-                  <th className="px-4 py-3 font-medium">Target</th>
-                  <th className="px-4 py-3 font-medium">IP</th>
-                  <th className="px-4 py-3 font-medium">Details</th>
+                  <th className="px-4 py-3 font-medium">{t('admin.audit.columns.when')}</th>
+                  <th className="px-4 py-3 font-medium">{t('admin.audit.columns.action')}</th>
+                  <th className="px-4 py-3 font-medium">{t('admin.audit.columns.actor')}</th>
+                  <th className="px-4 py-3 font-medium">{t('admin.audit.columns.target')}</th>
+                  <th className="px-4 py-3 font-medium">{t('admin.audit.columns.ip')}</th>
+                  <th className="px-4 py-3 font-medium">{t('admin.audit.columns.details')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800">
@@ -138,7 +142,7 @@ export function AuditPage() {
                     </td>
                     <td className="px-4 py-3 font-medium text-neutral-200">{entry.action}</td>
                     <td className="px-4 py-3 font-mono text-xs text-neutral-400">
-                      {entry.actorId ?? 'system'}
+                      {entry.actorId ?? t('admin.audit.actorSystem')}
                     </td>
                     <td className="px-4 py-3 text-neutral-400">
                       {entry.targetType ? (
@@ -172,7 +176,7 @@ export function AuditPage() {
           {cursor ? (
             <div className="flex justify-center">
               <Button variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
-                {loadingMore ? 'Loading…' : 'Load more'}
+                {loadingMore ? t('admin.audit.loadingMore') : t('admin.audit.loadMore')}
               </Button>
             </div>
           ) : null}

@@ -19,6 +19,7 @@ import {
 
 import { createFeedbackRepository } from '../data/repositories/feedbackRepository';
 import * as schema from '../data/schema';
+import { limiterKeyForUser } from '../http/middleware/rateLimit';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
@@ -988,11 +989,13 @@ describe('admin feedback inbox', () => {
       // Replies never consume the capture budget, which stays whole for the
       // owner's own `POST /feedback`.
       expect(
-        await limitedHarness.ctx.redis.get(progressiveKeys('feedback', limitedAdmin.id).count),
+        await limitedHarness.ctx.redis.get(
+          progressiveKeys('feedback', limiterKeyForUser(limitedAdmin.id)).count,
+        ),
       ).toBeNull();
 
       // The conversation budget is still a budget: exhaust it and the rail closes.
-      const threadKeys = progressiveKeys('feedback_thread', limitedAdmin.id);
+      const threadKeys = progressiveKeys('feedback_thread', limiterKeyForUser(limitedAdmin.id));
       expect(await limitedHarness.ctx.redis.get(threadKeys.count)).toBe(String(submissions.length));
       await limitedHarness.ctx.redis.set(threadKeys.count, String(threadLimit), 'EX', 3600);
       const limited = await limitedAdminAgent
@@ -1002,7 +1005,13 @@ describe('admin feedback inbox', () => {
       expect(limited.status).toBe(429);
       expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
     } finally {
-      await limitedHarness.ctx.redis.quit?.();
+      // #1456: release only what THIS harness owns. In integration mode
+      // `ctx.redis` is the worker-shared real-Redis singleton, so quitting it
+      // here closed the connection every later login reads its session through
+      // and the rest of the run answered 500. `dispose()` is the harness's own
+      // contract for exactly this: a no-op on the shared real client, and a
+      // quit on the per-harness RedisMock the PGlite path constructs.
+      await limitedHarness.dispose();
     }
   });
 

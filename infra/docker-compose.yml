@@ -60,6 +60,13 @@ x-api-worker-environment: &api-worker-environment
   BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
   BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
   BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
+  # The internal service network user-supplied outbound destinations may never
+  # dial. Blank (the normal case) makes the API/worker derive it from their own
+  # container interfaces, i.e. the compose bridge below; set it only where that
+  # derivation is wrong for the topology (host networking, a LAN that really is
+  # the operator's own network). Forwarded here so the documented override
+  # actually reaches both processes.
+  BT_OUTBOUND_DEPLOYMENT_SUBNETS: '${BT_OUTBOUND_DEPLOYMENT_SUBNETS:-}'
 
   # Email and first-admin seed inputs.
   SMTP_HOST: '${SMTP_HOST:-}'
@@ -72,15 +79,25 @@ x-api-worker-environment: &api-worker-environment
   ADMIN_SESSION_LIFETIME_HOURS: '${ADMIN_SESSION_LIFETIME_HOURS:-12}'
   BT_AUDIT_RETENTION_DAYS: '${BT_AUDIT_RETENTION_DAYS:-400}'
   BT_EMAIL_LOG_RETENTION_DAYS: '${BT_EMAIL_LOG_RETENTION_DAYS:-180}'
+  BT_PROBLEM_RETENTION_DAYS: '${BT_PROBLEM_RETENTION_DAYS:-90}'
+  BT_USAGE_EVENT_RETENTION_DAYS: '${BT_USAGE_EVENT_RETENTION_DAYS:-180}'
+
+  # Account-export content ceiling (#1812). Deliberately blank by default so the
+  # built-in 128 MiB limit in the export service stays the single source of that
+  # number; set it only to lift an account whose server-resident vault documents
+  # legitimately exceed it, since the refusal is terminal.
+  BT_EXPORT_MAX_CONTENT_BYTES: '${BT_EXPORT_MAX_CONTENT_BYTES:-}'
 
   # Provider, request-budget, and feature rollout controls.
   PROVIDER_MAX_CONCURRENCY: '${PROVIDER_MAX_CONCURRENCY:-4}'
   PROVIDER_MIN_SPACING_MS: '${PROVIDER_MIN_SPACING_MS:-250}'
+  BT_SEARCH_ENRICHMENT_BUDGET: '${BT_SEARCH_ENRICHMENT_BUDGET:-30}'
+  BT_SEARCH_ENRICHMENT_WINDOW_SEC: '${BT_SEARCH_ENRICHMENT_WINDOW_SEC:-60}'
   MARKET_FAILOVER_ENABLED: '${MARKET_FAILOVER_ENABLED:-false}'
   MARKET_INTEL_ENABLED: '${MARKET_INTEL_ENABLED:-}'
   REALTIME_ENABLED: '${REALTIME_ENABLED:-}'
-  RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
-  RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+  RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-30}'
+  RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-600}'
   # Per-IP login limiter (§16 2026-07-30). Defaults mirror the schema's
   # production values; the e2e raise lives only in playwright.config.ts.
   RATE_LIMIT_LOGIN_IP_WINDOW_SEC: '${RATE_LIMIT_LOGIN_IP_WINDOW_SEC:-60}'
@@ -338,26 +355,40 @@ services:
   # ── Observability (§13.5 V5-P2 arc (a), §16 2026-07-17) ─────────────────────
   # Self-provisioned monitoring: Prometheus scrapes the API metrics listener
   # over the internal network; Grafana auto-wires the datasource + starter
-  # dashboard on first boot (zero owner setup). Their host ports bind to
+  # dashboard on first boot (zero owner setup). Grafana's host port binds to
   # ${BT_OBS_BIND_HOST} (default 127.0.0.1 = localhost only; set a LAN IP for
-  # LAN access) and are DELIBERATELY not routed through the public web/nginx
+  # LAN access); Prometheus's binds to ${BT_PROMETHEUS_BIND_HOST}, a SEPARATE
+  # input that stays on loopback when the LAN recipe moves Grafana — Grafana has
+  # a login, Prometheus has none. Neither is routed through the public web/nginx
   # front proxy — these surfaces are never reachable from a public origin. The
   # admin panel is the only public management surface.
   prometheus:
     image: prom/prometheus:v2.53.3
     restart: unless-stopped
     logging: *bounded-logging
+    # DELIBERATELY no --web.enable-lifecycle / --web.enable-admin-api: both add
+    # unauthenticated WRITE endpoints (`POST /-/reload`, `POST /-/quit`; series
+    # deletion and snapshotting) to a server that has no login of its own, and
+    # nothing in this repo calls them — the admin Monitoring probe only GETs
+    # `/-/healthy`, which Prometheus serves either way. `checkProductionCompose`
+    # fails if either flag comes back.
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'
-      - '--web.enable-lifecycle'
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - promdata:/prometheus
     ports:
-      # localhost/LAN only — never the public origin.
-      - '${BT_OBS_BIND_HOST:-127.0.0.1}:${BT_PROMETHEUS_PORT:-9090}:9090'
+      # Loopback by default, and DELIBERATELY not ${BT_OBS_BIND_HOST}: Prometheus
+      # has no authentication of its own (apps/api/src/http/grafanaProxy.ts is
+      # explicit that it is never proxied for exactly that reason), so following
+      # the documented LAN recipe's bind would hand every metric to every device
+      # on that network with no credential. Grafana is the LAN surface; ad-hoc
+      # PromQL goes through its Explore view or an SSH tunnel. Pointing
+      # BT_PROMETHEUS_BIND_HOST off loopback publishes an unauthenticated metrics
+      # server on purpose (docs/monitoring.md).
+      - '${BT_PROMETHEUS_BIND_HOST:-127.0.0.1}:${BT_PROMETHEUS_PORT:-9090}:9090'
     depends_on:
       api:
         condition: service_healthy
@@ -367,10 +398,21 @@ services:
     restart: unless-stopped
     logging: *bounded-logging
     environment:
-      # Local-admin bootstrap. Change the default before first boot; the owner
-      # only ever reaches this over localhost/LAN, and sign-up is disabled.
+      # Local-admin bootstrap. There is DELIBERATELY no inline admin password
+      # here: a defaulted `admin`/`admin` would be reachable on every interface
+      # Grafana binds to — including the LAN bind docs/monitoring.md recommends.
+      # The entrypoint below seeds the credential file this points at instead
+      # (operator value when one is set, otherwise a random 32-char password
+      # generated once into the grafanadata volume), so a bare `docker compose
+      # up` still needs zero owner setup. `checkProductionCompose` fails if an
+      # inline GF_SECURITY_ADMIN_PASSWORD ever comes back.
       GF_SECURITY_ADMIN_USER: '${BT_GRAFANA_ADMIN_USER:-admin}'
-      GF_SECURITY_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-admin}'
+      GF_SECURITY_ADMIN_PASSWORD__FILE: '/var/lib/grafana/.bettertrack-admin-password'
+      # Read by the bootstrap only (Grafana itself never sees this name). The
+      # bootstrap trims, then lower-cases: blank, whitespace-only and the
+      # published placeholders are treated as "unset" here exactly as
+      # `isUsableGrafanaPassword` treats them in apps/api/src/config/env.ts.
+      BT_GRAFANA_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-}'
       GF_USERS_ALLOW_SIGN_UP: 'false'
       GF_SERVER_HTTP_PORT: '3000'
       # ── External access via the admin app (§13.5 V5-P2 arc (a), owner 2026-07-19) ─
@@ -387,10 +429,125 @@ services:
       # Anonymous read-only access: OFF by default (the localhost/LAN + auth-gated
       # subdomain paths use Grafana's own login). The admin-proxy path sets this
       # ON — the proxy already enforces admin auth, so an anonymous Viewer behind
-      # it renders dashboards without a second login. Safe because Grafana's port
-      # is localhost/LAN-only; external reach is admin-gated by the proxy.
+      # it renders dashboards without a second login.
+      # NOT safe on its own: this is a SERVER-WIDE setting, not a per-path one.
+      # Turned on while ${BT_OBS_BIND_HOST} is a LAN IP it makes every dashboard
+      # readable by every device on that LAN with no credential — so the
+      # entrypoint below refuses that combination (see BT_GRAFANA_ANON_LAN_ACK).
       GF_AUTH_ANONYMOUS_ENABLED: '${BT_GRAFANA_ANON_ENABLED:-false}'
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
+      # ── First-party only: no phoning home (§13.5 V5-P2 arc (a)) ────────────
+      # Stock Grafana OSS calls out on its own: anonymous usage statistics to
+      # stats.grafana.org, version + plugin update checks and feedback links
+      # against grafana.com, the grafana.com news feed on the home dashboard,
+      # and a server-side avatar proxy to secure.gravatar.com for every
+      # signed-in user. The arc's contract is zero owner setup and FIRST-PARTY
+      # ONLY — the same rule that rejects a Sentry DSN — so they are pinned off
+      # here rather than left to an owner-settable variable;
+      # `checkProductionCompose` fails on any other value so the default cannot
+      # silently regress. Note the gravatar switch is inverted: `true` = off.
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: 'false'
+      GF_NEWS_NEWS_FEED_ENABLED: 'false'
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
+      # Read by the bootstrap only (Grafana itself never sees these two names).
+      # The entrypoint compares the anonymous-access flag against the bind host
+      # and refuses the unauthenticated-LAN combination; BT_GRAFANA_ANON_LAN_ACK
+      # is the explicit, named override (unset by default = safe).
+      BT_OBS_BIND_HOST: '${BT_OBS_BIND_HOST:-127.0.0.1}'
+      BT_GRAFANA_ANON_LAN_ACK: '${BT_GRAFANA_ANON_LAN_ACK:-}'
+    # Anonymous-access guard, admin-credential bootstrap, then the image's own
+    # entrypoint. The guard runs first and refuses to start at all when
+    # anonymous access meets a non-loopback bind. The bootstrap seeds the
+    # credential file inside the persistent grafanadata volume — so its
+    # lifecycle matches grafana.db's — and hands it to the server through the
+    # image's own `__FILE` convention. It deliberately does NOT put the password
+    # in the environment: `/run.sh` refuses to start when a GF_ variable and its
+    # `__FILE` twin are both set ("but are exclusive"), which would crash-loop
+    # the container under `restart: unless-stopped`.
+    # `$$` is an escaped `$`: Compose must not interpolate these shell vars.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        # ── Anonymous access × bind host guard (§13.5 V5-P2 arc (a)) ──────────
+        # GF_AUTH_ANONYMOUS_ENABLED is server-wide. Combined with a non-loopback
+        # BT_OBS_BIND_HOST it publishes every dashboard to the LAN with no
+        # credential — the two documented conveniences must not silently compose.
+        # `printenv X || echo <default>` rather than a `$${X:-default}` default:
+        # the production-environment contract test reads every `$${…}` here as an
+        # owner-supplied Compose input that .env.production.example must document,
+        # and GF_AUTH_ANONYMOUS_ENABLED is derived, not owner-supplied.
+        anon="$$(printenv GF_AUTH_ANONYMOUS_ENABLED || echo false)"
+        bind="$$(printenv BT_OBS_BIND_HOST || echo 127.0.0.1)"
+        ack="$$(printenv BT_GRAFANA_ANON_LAN_ACK || echo '')"
+        anon="$$(printf '%s' "$$anon" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        bind="$$(printf '%s' "$$bind" | tr -d '[:space:]' | sed 's/[][]//g' | tr '[:upper:]' '[:lower:]')"
+        ack="$$(printf '%s' "$$ack" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        # `t` and `y` are in the set because go-ini's parseBool — what Grafana
+        # itself uses for auth.anonymous.enabled — accepts them; a guard that
+        # disagrees with the thing it guards must disagree the safe way.
+        case "$$anon" in true | t | 1 | yes | y | on) anon=yes ;; *) anon=no ;; esac
+        # 127.*.*.* is a glob, not an IP test, so require digits-and-dots only —
+        # the checker's /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/ classifies the same.
+        case "$$bind" in
+          localhost | ::1) loopback=yes ;;
+          127.*.*.*)
+            case "$$(printf '%s' "$$bind" | tr -d '0-9.')" in
+              '') loopback=yes ;;
+              *) loopback=no ;;
+            esac
+            ;;
+          *) loopback=no ;;
+        esac
+        case "$$ack" in true | t | 1 | yes | y | on) ack=yes ;; *) ack=no ;; esac
+        if [ "$$anon" = yes ] && [ "$$loopback" = no ] && [ "$$ack" = no ]; then
+          echo "bettertrack: refusing to start Grafana with anonymous access on the non-loopback bind $$bind." >&2
+          echo "bettertrack: BT_GRAFANA_ANON_ENABLED=true is server-wide, so every device that can reach $$bind would read every dashboard with no credential." >&2
+          echo "bettertrack: fix with ONE of — keep BT_OBS_BIND_HOST=127.0.0.1 (the admin-proxy path in docs/monitoring.md needs nothing else); set BT_GRAFANA_ANON_ENABLED=false and use Grafana's own login on the LAN; or accept an unauthenticated LAN dashboard server deliberately with BT_GRAFANA_ANON_LAN_ACK=true." >&2
+          exit 1
+        fi
+        cred=/var/lib/grafana/.bettertrack-admin-password
+        stamp=/var/lib/grafana/.bettertrack-admin-password.applied
+        db=/var/lib/grafana/grafana.db
+        supplied="$${BT_GRAFANA_ADMIN_PASSWORD:-}"
+        supplied="$$(printf '%s' "$$supplied" | sed 's/^[[:space:]]*//; s/[[:space:]]*$$//')"
+        case "$$(printf '%s' "$$supplied" | tr '[:upper:]' '[:lower:]')" in
+          '' | admin | change_me_before_first_boot) supplied='' ;;
+        esac
+        if [ -n "$$supplied" ]; then
+          (umask 077; printf '%s' "$$supplied" > "$$cred")
+        elif [ ! -s "$$cred" ]; then
+          generated="$$(head -c 4096 /dev/urandom | tr -dc 'A-Za-z0-9' | cut -c1-32)"
+          (umask 077; printf '%s' "$$generated" > "$$cred")
+          echo "bettertrack: generated a random Grafana admin password in $$cred"
+        fi
+        chmod 600 "$$cred" 2>/dev/null || true
+        # Grafana honours a bootstrap password ONLY while it CREATES the admin
+        # user. On a volume that already booted — every stack provisioned before
+        # this change — grafana.db keeps the old password, which is the default
+        # `admin`. Apply the file's credential to that existing account so the
+        # file is always the password that actually authenticates. The stamp
+        # makes it idempotent and keeps a password rotated inside the Grafana UI
+        # from being overwritten on every restart.
+        fingerprint="$$(sha256sum < "$$cred" | cut -d' ' -f1)"
+        if [ "$$fingerprint" != "$$(cat "$$stamp" 2>/dev/null || echo none)" ]; then
+          if [ -f "$$db" ]; then
+            if grafana cli --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --configOverrides="cfg:default.paths.data=/var/lib/grafana" admin reset-admin-password "$$(cat "$$cred")"; then
+              echo "bettertrack: applied $$cred to the Grafana admin user of the existing grafana.db"
+            else
+              echo "bettertrack: FAILED to apply $$cred to the existing Grafana admin user." >&2
+              echo "bettertrack: refusing to start rather than leave the previous (possibly default admin/admin) password answering on this bind." >&2
+              echo "bettertrack: recover with: docker compose exec grafana grafana cli --homepath=/usr/share/grafana admin reset-admin-password <the value in $$cred>" >&2
+              exit 1
+            fi
+          fi
+          (umask 077; printf '%s' "$$fingerprint" > "$$stamp")
+        fi
+        exec /run.sh
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

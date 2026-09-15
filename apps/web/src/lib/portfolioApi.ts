@@ -8,6 +8,10 @@ import {
   cashTransferResponseSchema,
   createCustomAssetResponseSchema,
   customAssetListResponseSchema,
+  CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST,
+  customAssetVaultSnapshotsResponseSchema,
+  serializeCustomAssetVaultSnapshotIds,
+  type CustomAssetVaultSnapshotsResponse,
   customAssetSchema,
   dividendListResponseSchema,
   portfolioHistoryResponseSchema,
@@ -646,6 +650,34 @@ export async function getRecategorizationStatus(
 /** `POST /custom-assets/recategorization/dismiss` — clear the migration flag on all assets (204). */
 export async function dismissRecategorization(): Promise<void> {
   await apiRequest<unknown>('/custom-assets/recategorization/dismiss', { method: 'POST' });
+}
+
+/**
+ * `GET /custom-assets/vault-snapshots?ids=` — #1529: the exact current state of
+ * the caller's own manual assets in vault-entity row shape (decimal strings,
+ * verbatim meta). The lossless seam the per-portfolio vault move uses on both
+ * paths; ids that are not the caller's manual assets come back as absent.
+ */
+export async function getCustomAssetVaultSnapshots(
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<CustomAssetVaultSnapshotsResponse> {
+  // Bounded requests (size, not security): the server caps value points per
+  // response, so the id list travels in small chunks and is merged here.
+  const unique = [...new Set(ids.map((id) => id.toLowerCase()))].sort();
+  const present: CustomAssetVaultSnapshotsResponse['present'] = [];
+  const absentIds: string[] = [];
+  for (let start = 0; start < unique.length; start += CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST) {
+    const chunk = unique.slice(start, start + CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST);
+    const data = await apiRequest<unknown>(
+      `/custom-assets/vault-snapshots?ids=${encodeURIComponent(serializeCustomAssetVaultSnapshotIds(chunk))}`,
+      { signal },
+    );
+    const page = customAssetVaultSnapshotsResponseSchema.parse(data);
+    present.push(...page.present);
+    absentIds.push(...page.absentIds);
+  }
+  return { present, absentIds };
 }
 
 // --- Value points ----------------------------------------------------------

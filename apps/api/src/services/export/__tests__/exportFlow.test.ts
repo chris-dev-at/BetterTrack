@@ -9,11 +9,23 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { exportRequestResponseSchema, exportStatusResponseSchema } from '@bettertrack/contracts';
+import {
+  EXPORT_PENDING_STALE_MS,
+  exportRequestResponseSchema,
+  exportStatusResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
+import { EXPORT_BUILD_STALLED } from '../../../data/repositories/exportRepository';
+import { PORTFOLIO_VAULT_FINALIZE_INTERVAL_MS } from '../../../jobs/definitions/portfolioVaultJobs';
+import { generateTotpCode } from '../../auth/totp';
 import { hashToken } from '../../crypto/tokens';
 import { collectUserExport } from '../collector';
+import {
+  EXPORT_DEFERRAL_MAX_MS,
+  EXPORT_DEFERRAL_RETRY_DELAY_MS,
+  EXPORT_DEFERRED,
+} from '../exportService';
 import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from '../manifest';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
@@ -56,6 +68,88 @@ async function seedPortfolio(userId: string, name: string): Promise<string> {
     .values({ userId, name })
     .returning({ id: schema.portfolios.id });
   return row!.id;
+}
+
+/**
+ * Everything a user of the V5-P9 expense area + the V5 cash-fusion labels owns:
+ * categories/transactions/rules/budgets, and tags/movement links/budgets/rules/
+ * rule links on the cash ledger. Every value carries `label` so a cross-user
+ * assertion can look for the OTHER user's rows by content, not just by id.
+ */
+async function seedExpenseAndCashSurface(
+  userId: string,
+  label: string,
+): Promise<Record<string, string>> {
+  const portfolioId = await seedPortfolio(userId, `${label}-Cash`);
+  const [source] = await harness.db
+    .insert(schema.portfolioCashSources)
+    .values({ portfolioId, name: `${label}-Bank`, type: 'bank', isMain: true })
+    .returning({ id: schema.portfolioCashSources.id });
+  const [movement] = await harness.db
+    .insert(schema.portfolioCashMovements)
+    .values({
+      portfolioId,
+      sourceId: source!.id,
+      kind: 'deposit',
+      amountEur: '100',
+      executedAt: new Date('2026-03-01T00:00:00.000Z'),
+      note: `${label}_MOVEMENT`,
+    })
+    .returning({ id: schema.portfolioCashMovements.id });
+  const [tag] = await harness.db
+    .insert(schema.cashTags)
+    .values({ userId, name: `${label}-Food` })
+    .returning({ id: schema.cashTags.id });
+  const [movementTag] = await harness.db
+    .insert(schema.cashMovementTags)
+    .values({ movementId: movement!.id, tagId: tag!.id })
+    .returning({ id: schema.cashMovementTags.id });
+  const [cashBudget] = await harness.db
+    .insert(schema.cashBudgets)
+    .values({ portfolioId, tagId: tag!.id, amount: '50.00' })
+    .returning({ id: schema.cashBudgets.id });
+  const [cashRule] = await harness.db
+    .insert(schema.cashRules)
+    .values({ userId, matchType: 'contains', pattern: `${label}-REWE` })
+    .returning({ id: schema.cashRules.id });
+  const [cashRuleTag] = await harness.db
+    .insert(schema.cashRuleTags)
+    .values({ ruleId: cashRule!.id, tagId: tag!.id })
+    .returning({ id: schema.cashRuleTags.id });
+  const [category] = await harness.db
+    .insert(schema.expenseCategories)
+    .values({ userId, name: `${label}-Groceries` })
+    .returning({ id: schema.expenseCategories.id });
+  const [expense] = await harness.db
+    .insert(schema.expenseTransactions)
+    .values({
+      userId,
+      categoryId: category!.id,
+      amount: '12.34',
+      bookedOn: '2026-03-02',
+      description: `${label}_EXPENSE`,
+    })
+    .returning({ id: schema.expenseTransactions.id });
+  const [expenseRule] = await harness.db
+    .insert(schema.expenseRules)
+    .values({ userId, categoryId: category!.id, matchType: 'contains', pattern: `${label}-BILLA` })
+    .returning({ id: schema.expenseRules.id });
+  const [expenseBudget] = await harness.db
+    .insert(schema.expenseBudgets)
+    .values({ userId, categoryId: category!.id, amount: '200.00' })
+    .returning({ id: schema.expenseBudgets.id });
+
+  return {
+    expenseCategories: category!.id,
+    expenseTransactions: expense!.id,
+    expenseRules: expenseRule!.id,
+    expenseBudgets: expenseBudget!.id,
+    cashTags: tag!.id,
+    cashMovementTags: movementTag!.id,
+    cashBudgets: cashBudget!.id,
+    cashRules: cashRule!.id,
+    cashRuleTags: cashRuleTag!.id,
+  };
 }
 
 async function seedPendingPortfolioMoveOut(userId: string, portfolioId: string): Promise<void> {
@@ -242,6 +336,238 @@ describe('account data export', () => {
       status: 'new',
     });
     expect(feedbackRows).not.toContainEqual(expect.objectContaining({ id: bobFeedback!.id }));
+  });
+
+  /**
+   * #1711: a user of the expense tracker used to receive a ZIP with ZERO of their
+   * hand-entered expenses, categories, rules and budgets, and none of the tags,
+   * budgets and rules they had applied to their cash movements — disclosed only
+   * as a line in `manifest.json`'s `skippedTables`. Both directions are asserted
+   * for both users, so the new reads are proved scoped as well as present.
+   */
+  it('carries the expense area and the cash-fusion labels, and only the owner’s rows', async () => {
+    const alice = await harness.seedUser({ email: 'exp-a@bettertrack.test', username: 'expa' });
+    const bob = await harness.seedUser({ email: 'exp-b@bettertrack.test', username: 'expb' });
+    const aliceIds = await seedExpenseAndCashSurface(alice.id, 'ALICE');
+    const bobIds = await seedExpenseAndCashSurface(bob.id, 'BOB');
+
+    const download = async (user: { email: string; password: string }) => {
+      const agent = await loginAgent(harness.app, user.email, user.password);
+      const requested = await agent
+        .post('/api/v1/account/export')
+        .set(...XRW)
+        .send({ password: user.password });
+      expect(requested.status).toBe(200);
+      const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+      const dl = await agent
+        .post('/api/v1/account/export/download')
+        .set(...XRW)
+        .send({ token: downloadToken })
+        .responseType('blob');
+      expect(dl.status).toBe(200);
+      return unzipText(dl.body as Buffer);
+    };
+
+    const entities = Object.keys(aliceIds);
+    for (const [user, own, other, otherLabel] of [
+      [alice, aliceIds, bobIds, 'BOB'],
+      [bob, bobIds, aliceIds, 'ALICE'],
+    ] as const) {
+      const files = await download(user);
+      for (const entity of entities) {
+        const raw = files[`data/${entity}.json`];
+        expect(raw, `missing data/${entity}.json`).toBeTruthy();
+        const rows = JSON.parse(raw!) as { id: string }[];
+        expect(rows.length, `data/${entity}.json is empty`).toBeGreaterThan(0);
+        expect(rows.map((row) => row.id)).toContain(own[entity]);
+        // Not one row belonging to the other account, by id or by content.
+        expect(rows.map((row) => row.id)).not.toContain(other[entity]);
+        expect(raw).not.toContain(otherLabel);
+      }
+    }
+  });
+
+  /**
+   * #1711: `holdings.csv` summed `numeric(20,8)` quantities as floats and filtered
+   * on a strict `!== 0`, so buy 0.1 + buy 0.2 − sell 0.3 printed a closed position
+   * as `5.551115123125783e-17`. The ZIP now applies the domain's `QTY_EPSILON`,
+   * the same rule the app's holdings view uses.
+   *
+   * The same float sum leaves the same dust on a position that is genuinely held
+   * (buy 0.1 + buy 0.2 → `0.30000000000000004`), so the third asset here pins the
+   * held case: the CSV snaps the net back to the column's own 8-decimal scale and
+   * prints `0.3`, the quantity the app shows.
+   */
+  it('leaves a fully closed position out of holdings.csv instead of printing float dust', async () => {
+    const user = await harness.seedUser({ email: 'dust@bettertrack.test', username: 'dust' });
+    const portfolioId = await seedPortfolio(user.id, 'Dust');
+    const [closed, held, fractional] = await harness.db
+      .insert(schema.assets)
+      .values([
+        {
+          providerId: 'yahoo',
+          providerRef: 'EXPORT-DUST-CLOSED',
+          type: 'stock',
+          symbol: 'DUSTC',
+          name: 'Closed position',
+          currency: 'EUR',
+          exchange: 'XETRA',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'EXPORT-DUST-HELD',
+          type: 'stock',
+          symbol: 'DUSTH',
+          name: 'Held position',
+          currency: 'EUR',
+          exchange: 'XETRA',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'EXPORT-DUST-FRACTIONAL',
+          type: 'stock',
+          symbol: 'DUSTF',
+          name: 'Held fractional position',
+          currency: 'EUR',
+          exchange: 'XETRA',
+        },
+      ])
+      .returning({ id: schema.assets.id });
+    await harness.db.insert(schema.transactions).values([
+      {
+        portfolioId,
+        assetId: closed!.id,
+        side: 'buy',
+        quantity: '0.1',
+        price: '10',
+        executedAt: new Date('2026-02-01T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: closed!.id,
+        side: 'buy',
+        quantity: '0.2',
+        price: '10',
+        executedAt: new Date('2026-02-02T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: closed!.id,
+        side: 'sell',
+        quantity: '0.3',
+        price: '11',
+        executedAt: new Date('2026-02-03T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: held!.id,
+        side: 'buy',
+        quantity: '2',
+        price: '10',
+        executedAt: new Date('2026-02-04T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: fractional!.id,
+        side: 'buy',
+        quantity: '0.1',
+        price: '10',
+        executedAt: new Date('2026-02-05T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: fractional!.id,
+        side: 'buy',
+        quantity: '0.2',
+        price: '10',
+        executedAt: new Date('2026-02-06T00:00:00.000Z'),
+      },
+    ]);
+
+    const collected = await collectUserExport(harness.db, user.id);
+    const lines = collected.csv.holdings.trim().split('\n');
+    expect(lines[0]).toBe('portfolioId,assetId,netQuantity');
+    expect(collected.csv.holdings).not.toContain(closed!.id);
+    // Dust would surface as scientific notation in the quantity column, so assert
+    // there rather than over the whole CSV: a UUID group boundary ("…b95e-1196…")
+    // matches /e-\d/ by itself, which failed this test on the ids alone.
+    for (const line of lines.slice(1)) expect(line.split(',').at(-1)).not.toMatch(/e/i);
+    expect(lines.slice(1).sort()).toEqual(
+      [`${portfolioId},${held!.id},2`, `${portfolioId},${fractional!.id},0.3`].sort(),
+    );
+  });
+
+  /**
+   * `cash_movement_tags` is scoped by the caller's CLEARTEXT portfolio ids —
+   * bound as portfolio ids, not as the resolved movement ids, because a movement
+   * set grows with the ledger and would push the statement past the postgres
+   * 65_534 bind-parameter cap on an account the row ceiling still admits. The two
+   * scopings must select the same links, so this pins the boundary the swap has
+   * to preserve on an account that owns BOTH kinds of portfolio: the vault-backed
+   * one's links stay out while the cleartext one's ride along, and the tag itself
+   * — user config either way — exports regardless of which movements it labels.
+   */
+  it('keeps a vault-backed portfolio’s cash-movement links out while carrying the cleartext ones', async () => {
+    const user = await harness.seedUser({ email: 'link@bettertrack.test', username: 'linkscope' });
+    const vaultId = '00000000-0000-7000-8000-0000000009c1';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: user.id,
+      name: 'LINK_SCOPE_VAULT',
+      media: ['server'],
+      driveConnectionId: null,
+      headerDocId: '00000000-0000-7000-8000-0000000009c2',
+      commonDocId: '00000000-0000-7000-8000-0000000009c3',
+      retirementProofPublicKey: 'link-scope-verifier',
+      keyFingerprint: 'link-scope-fingerprint',
+    });
+    const cleartextPortfolioId = await seedPortfolio(user.id, 'Link-scope cleartext');
+    const lockedPortfolioId = await seedPortfolio(user.id, 'Link-scope locked');
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId })
+      .where(eq(schema.portfolios.id, lockedPortfolioId));
+
+    const [tag] = await harness.db
+      .insert(schema.cashTags)
+      .values({ userId: user.id, name: 'Link-scope tag' })
+      .returning({ id: schema.cashTags.id });
+    const movementIds: Record<'cleartext' | 'locked', string> = {
+      cleartext: '',
+      locked: '',
+    };
+    for (const [key, portfolioId] of [
+      ['cleartext', cleartextPortfolioId],
+      ['locked', lockedPortfolioId],
+    ] as const) {
+      const [source] = await harness.db
+        .insert(schema.portfolioCashSources)
+        .values({ portfolioId, name: `${key}-bank`, type: 'bank', isMain: true })
+        .returning({ id: schema.portfolioCashSources.id });
+      const [movement] = await harness.db
+        .insert(schema.portfolioCashMovements)
+        .values({
+          portfolioId,
+          sourceId: source!.id,
+          kind: 'deposit',
+          amountEur: '25',
+          executedAt: new Date('2026-04-01T00:00:00.000Z'),
+        })
+        .returning({ id: schema.portfolioCashMovements.id });
+      movementIds[key] = movement!.id;
+      await harness.db
+        .insert(schema.cashMovementTags)
+        .values({ movementId: movement!.id, tagId: tag!.id });
+    }
+
+    const collected = await collectUserExport(harness.db, user.id);
+    expect(collected.entities.cashMovementTags).toEqual([
+      expect.objectContaining({ movementId: movementIds.cleartext, tagId: tag!.id }),
+    ]);
+    expect(collected.entities.cashMovements).toEqual([
+      expect.objectContaining({ id: movementIds.cleartext }),
+    ]);
+    expect(collected.entities.cashTags).toEqual([expect.objectContaining({ id: tag!.id })]);
   });
 
   it('omits the admin-workspace feedback columns from the submitter’s export', async () => {
@@ -537,8 +863,12 @@ describe('account data export', () => {
     expect(gone.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
-  it('defers a pending build without poisoning the job, then builds that same job after E4 clears', async () => {
-    const enqueueBuild = vi.fn(async (_jobId: string) => undefined);
+  it('defers a pending build onto the finalize sweep clock, then builds that same job after E4 clears', async () => {
+    // The deferral must NOT ride the queue's own retry ladder: 3 attempts with
+    // exponential backoff from 1 s are all spent inside ~3 s, while the sweep
+    // that clears the marker only runs every 60 s — so the old throw-and-retry
+    // dead-lettered the job and left the row `pending` forever (#1812).
+    const enqueueBuild = vi.fn(async (_jobId: string, _opts?: { delayMs?: number }) => undefined);
     harness = await createTestApp({
       env: { BT_EXPORT_DIR: EXPORT_DIR },
       exportEnqueue: enqueueBuild,
@@ -557,9 +887,7 @@ describe('account data export', () => {
     const { jobId } = exportRequestResponseSchema.parse(requested.body);
     await seedPendingPortfolioMoveOut(user.id, portfolioId);
 
-    await expect(harness.ctx.dataExport.buildExport(jobId)).rejects.toThrow(
-      'account export deferred by portfolio vault finalization',
-    );
+    await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
     const [deferred] = await harness.db
       .select()
       .from(schema.exportJobs)
@@ -570,8 +898,16 @@ describe('account data export', () => {
       filePath: null,
       fileSize: null,
     });
-    expect(enqueueBuild).toHaveBeenCalledOnce();
-    expect(enqueueBuild).toHaveBeenCalledWith(jobId);
+    // The request's own enqueue, then the deferred re-drive — the second one
+    // delayed by at least one finalize interval.
+    expect(enqueueBuild).toHaveBeenCalledTimes(2);
+    expect(enqueueBuild).toHaveBeenNthCalledWith(1, jobId);
+    expect(enqueueBuild).toHaveBeenNthCalledWith(2, jobId, {
+      delayMs: EXPORT_DEFERRAL_RETRY_DELAY_MS,
+    });
+    expect(EXPORT_DEFERRAL_RETRY_DELAY_MS).toBeGreaterThanOrEqual(
+      PORTFOLIO_VAULT_FINALIZE_INTERVAL_MS,
+    );
 
     await clearPendingPortfolioMoveOut(portfolioId);
     await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
@@ -582,6 +918,243 @@ describe('account data export', () => {
     expect(ready).toMatchObject({ status: 'ready', error: null });
     expect(ready!.filePath).toBeTruthy();
     expect(existsSync(ready!.filePath!)).toBe(true);
+  });
+
+  it('fails a deferred build into a retryable terminal state once the deferral window is spent', async () => {
+    // The other side of the deferral contract: `getStatus` must never stay
+    // `pending` forever. A finalization that never clears exhausts the window
+    // and the row becomes `failed` — which costs no daily allowance, so the
+    // user can request again immediately (#1812).
+    const enqueueBuild = vi.fn(async (_jobId: string, _opts?: { delayMs?: number }) => undefined);
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: enqueueBuild,
+    });
+    const user = await harness.seedUser({
+      email: 'stuck-export-build@bettertrack.test',
+      username: 'stuck_export_build',
+    });
+    const portfolioId = await seedPortfolio(user.id, 'TEST VECTOR stuck build portfolio');
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    await seedPendingPortfolioMoveOut(user.id, portfolioId);
+
+    // Every re-drive lands while the marker is still set, and the last one
+    // arrives past the deferral window (aged on the row, exactly as the real
+    // re-drives would arrive minutes apart).
+    await harness.ctx.dataExport.buildExport(jobId);
+    await harness.db
+      .update(schema.exportJobs)
+      .set({ createdAt: new Date(Date.now() - EXPORT_DEFERRAL_MAX_MS - 1000) })
+      .where(eq(schema.exportJobs.id, jobId));
+    await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
+
+    const status = await harness.ctx.dataExport.getStatus(user.id);
+    expect(status).toMatchObject({ status: 'failed', error: EXPORT_DEFERRED });
+    // Retryable: the failed row holds no allowance, so a fresh request is
+    // accepted (this one clears the marker first so it can actually build).
+    await clearPendingPortfolioMoveOut(portfolioId);
+    const again = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+  });
+
+  it('does not leave a permanently pending row when the build enqueue fails', async () => {
+    // The row exists and the user holds a token, but nothing will ever build
+    // it: left `pending`, the panel hides the request form and the reservation
+    // blocks a fresh request for 24 h (#1812).
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: async () => {
+        throw new Error('TEST VECTOR export queue is down');
+      },
+    });
+    const user = await harness.seedUser({
+      email: 'enqueue-down@bettertrack.test',
+      username: 'enqueue_down',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+    const created = exportRequestResponseSchema.parse(requested.body);
+    expect(created.status).toBe('failed');
+
+    const status = await agent.get('/api/v1/account/export').set(...XRW);
+    expect(exportStatusResponseSchema.parse(status.body)).toMatchObject({
+      status: 'failed',
+      error: 'BUILD_FAILED',
+    });
+    // And the daily allowance was not spent on a job that never existed.
+    const again = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+  });
+
+  it('lets a fresh request supersede a pending row that can no longer make progress', async () => {
+    // A build the queue lost leaves a `pending` row nothing will ever finish.
+    // Past the shared staleness window it must stop holding the 1/day slot,
+    // and it must stop reading as `pending` (#1812).
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: async () => undefined,
+    });
+    const user = await harness.seedUser({
+      email: 'stalled-export@bettertrack.test',
+      username: 'stalled_export',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+
+    // Inside the window the reservation still stands: one export per day.
+    const tooSoon = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(tooSoon.status).toBe(429);
+    expect(tooSoon.body.error.code).toBe('EXPORT_RATE_LIMITED');
+
+    await harness.db
+      .update(schema.exportJobs)
+      .set({ createdAt: new Date(Date.now() - EXPORT_PENDING_STALE_MS - 1000) })
+      .where(eq(schema.exportJobs.id, jobId));
+
+    const again = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    const superseded = exportRequestResponseSchema.parse(again.body);
+    expect(superseded.jobId).not.toBe(jobId);
+    // The abandoned row is retired rather than left reading as in-flight.
+    const [old] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(old).toMatchObject({ status: 'failed', error: EXPORT_BUILD_STALLED });
+  });
+
+  it('keeps the download token alive through a failed transfer and spends it only on success', async () => {
+    // The token used to be nulled and COMMITTED before a byte was streamed, on
+    // a different connection from the lock — so a socket dropped at 90 % left a
+    // complete archive on disk reachable by nobody, and "request again" was a
+    // 429 for the rest of the day (#1812).
+    const user = await harness.seedUser({
+      email: 'interrupted-download@bettertrack.test',
+      username: 'interrupted_download',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(requested.body);
+
+    await expect(
+      harness.ctx.dataExport.withDownload({ userId: user.id, token: downloadToken }, async () => {
+        throw new Error('TEST VECTOR socket closed mid-stream');
+      }),
+    ).rejects.toThrow('TEST VECTOR socket closed mid-stream');
+
+    const [afterFailure] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(afterFailure).toMatchObject({
+      status: 'ready',
+      downloadTokenHash: hashToken(downloadToken),
+    });
+
+    // Retried inside the download window — no new request, so no 1/day refusal.
+    const retried = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+
+    // A completed transfer is what spends the one-time token…
+    const [afterSuccess] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(afterSuccess!.downloadTokenHash).toBeNull();
+    // …so the replay after it still fails closed.
+    const replay = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(replay.status).toBe(404);
+    expect(replay.body.error.code).toBe('EXPORT_NOT_FOUND');
+  });
+
+  it('refuses a rate-limited request before the re-auth, leaving the recovery code unspent', async () => {
+    // Verifying a recovery code DESTROYS it (`used_at` is set on the matching
+    // update), so the cheap non-destructive 1/day gate has to run first —
+    // otherwise a 429 costs the user a single-use credential and returns
+    // nothing (#1812).
+    const user = await harness.seedUser({
+      email: 'recovery-export@bettertrack.test',
+      username: 'recovery_export',
+    });
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(user.id);
+    const { recoveryCodes } = (
+      await harness.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret))
+    ).response;
+    if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
+    const recoveryCode = recoveryCodes[0]!;
+
+    // Enrolled accounts sign in through the challenge, not the plain password.
+    const agent = request.agent(harness.app);
+    const challenge = await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(challenge.body.twoFactorRequired).toBe(true);
+    const verified = await agent
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({
+        pendingToken: challenge.body.pendingToken as string,
+        code: generateTotpCode(secret),
+      });
+    expect(verified.status, JSON.stringify(verified.body)).toBe(200);
+
+    const first = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+
+    const limited = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ recoveryCode });
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe('EXPORT_RATE_LIMITED');
+
+    // The code is untouched: it still verifies (and only now is consumed).
+    expect(await harness.ctx.twoFactor.consumeRecoveryCode(user.id, recoveryCode)).toBe(true);
   });
 
   it('does not consume a ready download token while E4 is pending, then accepts the same token', async () => {

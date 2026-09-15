@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { meResponseSchema, rememberedDeviceResponseSchema } from '@bettertrack/contracts';
 
+import { createUserRepository } from '../data/repositories/userRepository';
 import { REMEMBERED_DEVICE_COOKIE } from '../http/cookies';
 import {
   PIN_TOKEN_ACCOUNT_NAMESPACE,
@@ -70,18 +71,52 @@ async function rememberPinUser() {
 }
 
 describe('POST /auth/remembered-device — remember this device (PIN users only)', () => {
-  it('remembers a PIN user, storing only user id + username + avatar (never a token)', async () => {
+  it('remembers a PIN user, storing only user id + username + icon (never a token)', async () => {
     const { user, body } = await rememberPinUser();
 
     // The record the client stores is exactly the three allowed fields.
     const parsed = rememberedDeviceResponseSchema.parse(body);
-    expect(parsed).toEqual({ userId: user.id, username: user.username, avatarUrl: null });
+    expect(parsed).toEqual({ userId: user.id, username: user.username, profileIcon: null });
     // Assert on the RAW stored shape: no token/scope/anything else leaked in.
     expect(Object.keys(body as Record<string, unknown>).sort()).toEqual([
-      'avatarUrl',
+      'profileIcon',
       'userId',
       'username',
     ]);
+  });
+
+  it('carries the curated profile icon so the chooser can render it (§13.5 V5-P0 (c))', async () => {
+    const user = await harness.seedUser();
+    await harness.ctx.auth.setPin(user.id, PIN);
+    const agent = await loginAgent(user.email, user.password);
+    const picked = await agent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: false, profileIcon: 'fox' });
+    expect(picked.status).toBe(200);
+
+    const res = await agent.post('/api/v1/auth/remembered-device').set(...XRW);
+    expect(res.status).toBe(200);
+    expect(rememberedDeviceResponseSchema.parse(res.body).profileIcon).toBe('fox');
+  });
+
+  it('degrades an unknown stored icon id to null rather than shipping it to the renderer', async () => {
+    const user = await harness.seedUser();
+    await harness.ctx.auth.setPin(user.id, PIN);
+    // A retired curated id / hand-edited row: the column is a plain varchar, so
+    // only the service-side allow-list stands between it and the chooser.
+    await createUserRepository(harness.db).setProfileIcon(user.id, 'not-a-real-avatar');
+
+    const { record } = await harness.ctx.auth.rememberDevice(user.id);
+    expect(record.profileIcon).toBeNull();
+    // And the contract itself refuses the id, so it could not have been served.
+    expect(
+      rememberedDeviceResponseSchema.safeParse({
+        userId: user.id,
+        username: user.username,
+        profileIcon: 'not-a-real-avatar',
+      }).success,
+    ).toBe(false);
   });
 
   it('binds the device with the cookie lifetime and indexes it by user for deletion', async () => {
@@ -220,6 +255,41 @@ describe('POST /auth/pin/quick-auth — PIN-only re-auth for a remembered device
       .send({ pin: PIN });
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('REMEMBER_DEVICE_UNKNOWN');
+  });
+
+  it('the ladder is unchanged by the chooser icon: PIN gates it, the session stays ephemeral', async () => {
+    const { cookie } = await rememberPinUser();
+
+    // 1. A probe with the auto-pass window closed authenticates nothing — the PIN
+    //    is still the only way through (§6.1).
+    const probe = await request(harness.app)
+      .post('/api/v1/auth/pin/quick-auth')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({});
+    expect(probe.status).toBe(200);
+    expect(probe.body).toEqual({ pinRequired: true });
+
+    // 2. The session the correct PIN mints is ephemeral: a browser-session cookie
+    //    with neither Max-Age nor Expires.
+    const ok = await request(harness.app)
+      .post('/api/v1/auth/pin/quick-auth')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ pin: PIN });
+    expect(ok.status).toBe(200);
+    const header = (ok.headers['set-cookie'] as unknown as string[])
+      .filter((c) => c.startsWith('bt_sid='))
+      .at(-1);
+    expect(header).toBeDefined();
+    expect(header).not.toMatch(/max-age|expires/i);
+
+    // 3. A PIN-less account still cannot be remembered at all.
+    const plain = await harness.seedUser({ email: 'nopin@bt.test', username: 'nopin' });
+    const plainAgent = await loginAgent(plain.email, plain.password);
+    const refused = await plainAgent.post('/api/v1/auth/remembered-device').set(...XRW);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe('PIN_NOT_ENABLED');
   });
 
   it('the minted quick-auth session surfaces in the sessions manager', async () => {

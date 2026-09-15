@@ -1,5 +1,7 @@
 import { and, arrayContains, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 
+import type { WebhookDeliveryError } from '@bettertrack/contracts';
+
 import type { Database } from '../db';
 import {
   webhookDeliveries,
@@ -181,7 +183,12 @@ export interface RecordWebhookDeliveryInput {
   status: 'success' | 'failed';
   responseStatus: number | null;
   attempts: number;
-  error: string | null;
+  /**
+   * One of the closed set of logged reasons, never free text — the column is a
+   * user-readable log, so receiver- and socket-provided strings (an errno with
+   * its address and port, a certificate's altnames) may not reach it.
+   */
+  error: WebhookDeliveryError | null;
   createdAt?: Date;
 }
 
@@ -209,6 +216,41 @@ export function createWebhookDeliveryRepository(db: Database) {
         .onConflictDoNothing({ target: webhookDeliveries.id })
         .returning({ id: webhookDeliveries.id });
       return rows.length > 0;
+    },
+
+    /**
+     * Record a DELIVERED outcome, upserting on the delivery id. The failure
+     * path above is insert-only because its streak side-effect is not
+     * idempotent; a success has no such side-effect, and a delivery id is
+     * deterministic across replays — so a 200 that lands after an earlier
+     * attempt already wrote a `failed` row must flip that row to `success`
+     * instead of being dropped by the conflict. `attempts` keeps the highest
+     * count seen, so the flipped row still shows what the delivery cost.
+     */
+    async recordDelivered(
+      input: Omit<RecordWebhookDeliveryInput, 'status' | 'error'>,
+    ): Promise<void> {
+      await db
+        .insert(webhookDeliveries)
+        .values({
+          id: input.id,
+          subscriptionId: input.subscriptionId,
+          eventType: input.eventType,
+          status: 'success',
+          responseStatus: input.responseStatus,
+          attempts: input.attempts,
+          error: null,
+          ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+        })
+        .onConflictDoUpdate({
+          target: webhookDeliveries.id,
+          set: {
+            status: 'success',
+            responseStatus: input.responseStatus,
+            error: null,
+            attempts: sql`greatest(${webhookDeliveries.attempts}, ${input.attempts})`,
+          },
+        });
     },
 
     /** The subscription's delivery log, newest first, capped at `limit`. */

@@ -1,0 +1,26 @@
+-- V5-P8, #1725 — an index that can actually serve the comment thread (§6.9).
+--
+-- `itemCommentRepository.listForItem` reads one page as
+--
+--   WHERE kind = $1 AND subject_id = $2 AND deleted_at IS NULL
+--   ORDER BY created_at DESC, id DESC
+--   LIMIT 51
+--
+-- and the only index available was `item_comments_subject_idx` on
+-- (kind, subject_id). That can filter but it cannot supply the ordering, so
+-- Postgres fetched EVERY live comment of the thread and sorted it to hand back
+-- 51 rows — on a surface `CommentThread.tsx` polls every 30 s, once per loaded
+-- page. The response was bounded; the work was proportional to the whole
+-- conversation, which is exactly what the contract prose claimed it was not.
+--
+-- The new index carries the ordering columns in the read's own direction, so
+-- the page is a bounded index scan that stops after 51 entries. It is PARTIAL
+-- on the tombstone for two reasons: every read filters `deleted_at IS NULL`, so
+-- the removed rows are dead weight in the index; and with the predicate proven
+-- by the index itself, the thread's live `count(*)` — which the collapsed head
+-- and the first page still need — becomes an index-only scan over precisely the
+-- thread's live entries instead of a heap visit per row.
+--
+-- `item_comments_subject_idx` STAYS: subject teardown and moderation read a
+-- thread INCLUDING its tombstones, and a partial index cannot serve those.
+CREATE INDEX IF NOT EXISTS "item_comments_thread_idx" ON "item_comments" USING btree ("kind","subject_id","created_at" DESC,"id" DESC) WHERE "deleted_at" is null;

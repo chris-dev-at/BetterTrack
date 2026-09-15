@@ -36,6 +36,7 @@ function makeCtx(): JobContext {
     deadLetter: {} as JobContext['deadLetter'],
     redis: {} as JobContext['redis'],
     logger,
+    isFeatureEnabled: async () => true,
   };
 }
 

@@ -60,6 +60,7 @@ export {
   MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID,
   MIRROR_CONSISTENCY_SWEEP_CRON,
   MIRROR_CONSISTENCY_SWEEP_TZ,
+  MIRROR_SWEEP_ITEMISED_EXAMPLES,
   type MirrorReplicateJobDeps,
   type MirrorInviteCleanupJobDeps,
   type MirrorConsistencySweepJobDeps,
@@ -70,6 +71,8 @@ export {
   createWebhookDeliveryCleanupJob,
   WebhookDeliveryRetryError,
   WEBHOOK_DELIVER_ATTEMPTS,
+  WEBHOOK_DELIVER_CONCURRENCY,
+  WEBHOOK_DELIVER_LIMITER,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
   WEBHOOK_DELIVERY_DELETE_BATCH_SIZE,
   WEBHOOK_DELIVERY_MAX_ROWS_PER_RUN,
@@ -112,6 +115,7 @@ export {
 } from './digestJobs';
 
 export {
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   EXPORT_CLEANUP_SCHEDULER_ID,
@@ -150,6 +154,7 @@ export {
 
 export {
   createEarningsReminderJob,
+  earningsNotifyGate,
   EARNINGS_REMINDER_SCHEDULER_ID,
   EARNINGS_REMINDER_CRON,
   EARNINGS_REMINDER_TZ,

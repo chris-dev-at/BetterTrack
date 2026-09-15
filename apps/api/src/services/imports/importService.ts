@@ -122,14 +122,13 @@ export interface ImportServiceDeps {
   resolutionQueue?: RequestQueue;
   /**
    * Per-user AI seams for the GENERIC staging path (#964), both OPTIONAL by
-   * design and both returning `undefined` when the tier is unconfigured,
+   * design and both returning `undefined` when the assistant is unconfigured,
    * disabled, over cap, or refused.
    *
-   * A factory rather than a bound seam because both binders take the calling
-   * user's id (their daily cap, their audit trail), and because
-   * `bindHeavyTierAi` deliberately THROWS under a test runner — the wiring
-   * catches that and degrades, so no test can reach a real heavy model and no
-   * deployment without an AI provider loses the ability to import.
+   * A factory rather than a bound seam because the binder takes the calling
+   * user's id (their daily cap, their audit trail), and because binding may
+   * throw — the wiring catches that and degrades, so no deployment without an AI
+   * provider loses the ability to import.
    *
    * When both are absent the generic path is the fully deterministic pipeline:
    * headers the dictionary cannot name stay unnamed, ambiguous rows stay
@@ -242,6 +241,40 @@ const DUPLICATE_MESSAGE =
   'An identical row (same date, instrument, quantity, price) already exists.';
 
 /**
+ * The same verdict for a CASH row, which has none of instrument, quantity or
+ * price — it is compared on what it actually has, and says so. Telling someone
+ * that a deposit matched on "instrument, quantity, price" sends them looking
+ * for columns their bank statement does not contain.
+ */
+const CASH_DUPLICATE_MESSAGE =
+  'An identical cash movement (same date, direction, amount and memo) already exists.';
+
+function duplicateMessageFor(kind: NormalizedImportRow['kind']): string {
+  return kind === 'deposit' || kind === 'withdrawal' ? CASH_DUPLICATE_MESSAGE : DUPLICATE_MESSAGE;
+}
+
+/**
+ * How many entities the portfolio already holds per content hash. Cash needs
+ * the count (see {@link collectExistingHashes}); every other kind reads it as
+ * membership.
+ */
+type HashCounts = Map<string, number>;
+
+const countOf = (counts: HashCounts, hash: string): number => counts.get(hash) ?? 0;
+
+/**
+ * How long the single-row paths may reuse one batch's ledger hashes. Long
+ * enough that a bulk sweep (one PATCH per row) reads the ledger once, short
+ * enough that a preview left open goes back to live data — and it decides
+ * nothing on its own, because apply always re-derives (see
+ * `existingHashesForBatch`).
+ */
+export const IMPORT_HASH_CACHE_TTL_MS = 30_000;
+
+/** Bound on the memo — a batch × scope entry per open wizard, no more. */
+const HASH_CACHE_MAX_ENTRIES = 64;
+
+/**
  * One import may wait this long in total for background provider enrichment.
  * Local catalog reads do not spend this budget.
  */
@@ -253,6 +286,14 @@ export const IMPORT_ENRICHMENT_WAIT_BUDGET_MS = 5_000;
  * staying far below the 150-instrument file cap. A query may coalesce or hit a
  * provider cache, but it still spends one slot because it could start upstream
  * work.
+ *
+ * The INTERACTIVE half of this same decision is `BT_SEARCH_ENRICHMENT_BUDGET`
+ * (`config/env.ts`, applied in `services/search/enrichmentBudget.ts`, #1709):
+ * distinct enrichment queries per user per window, with the identical
+ * "coalesced still spends a slot" rule. Both exist because one enrichment
+ * writes into the shared global catalog and enqueues a backfill per new row;
+ * the two budgets differ only in the unit that gets a ceiling — one import
+ * versus one user-minute.
  */
 export const IMPORT_ENRICHMENT_QUERY_BUDGET = 16;
 
@@ -491,12 +532,11 @@ function guardStagedRow(line: MappedLine): MappedLine {
 /**
  * Bind an OPTIONAL AI seam, treating every failure as "not configured" (#964).
  *
- * `bindHeavyTierAi` throws by design under a test runner, a deployment may have
- * no AI provider at all, and a binder may refuse for a user over their cap.
- * All three mean the same thing to this subsystem — run deterministically — so
- * they collapse here rather than each becoming a failed upload. This is the
- * mechanism behind the standing rule that the heavy tier is optional and its
- * absence is a graceful degrade, not a 500.
+ * A deployment may have no AI provider at all, and a binder may refuse for a
+ * user over their cap. Both mean the same thing to this subsystem — run
+ * deterministically — so they collapse here rather than becoming a failed
+ * upload. This is the mechanism behind the standing rule that the AI fallback is
+ * optional and its absence is a graceful degrade, not a 500.
  */
 function safeSeam<T>(bind: () => T | undefined): T | undefined {
   try {
@@ -525,6 +565,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   // import-driven resolution chains and never retries business/search failures.
   const resolutionQueue =
     deps.resolutionQueue ?? createRequestQueue({ concurrency: 4, minSpacingMs: 0, maxRetries: 0 });
+  /** Per-instance memo behind {@link existingHashesForBatch}; never read by apply. */
+  const hashCache = new Map<string, { expiresAt: number; hashes: HashCounts }>();
 
   /**
    * The row kinds whose apply books an EXTERNAL cash movement directly, and
@@ -537,7 +579,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * whose money movement it does not even display. Scope stays where the slice
    * is: the deposits and withdrawals a bank statement is made of.
    */
-  function isCashRowKind(kind: NormalizedImportRow['kind']): boolean {
+  function isCashRowKind(kind: NormalizedImportRow['kind'] | null): boolean {
     return kind === 'deposit' || kind === 'withdrawal';
   }
 
@@ -746,7 +788,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       if (budget.remainingQueries <= 0 || budget.remainingWaitMs <= 0) return null;
 
       budget.remainingQueries -= 1;
-      const result = await search.search(userId, attempt.query);
+      // `budgetedByCaller`: the slot just spent above IS the ceiling for this
+      // fan-out (#1709), so the per-user interactive budget must not charge it
+      // a second time and leave an import's instruments unresolved.
+      const result = await search.search(userId, attempt.query, { budgetedByCaller: true });
       if (candidates) captureCandidates(candidates, attempt.query, result.results);
       const immediateHit = result.results.find(attempt.matches);
       if (immediateHit) return immediateHit;
@@ -786,6 +831,14 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * external cash movements — so a re-import of an already-applied file flags
    * every row `duplicate` and applies nothing. Derived from live data, so
    * deleting a mis-imported entity makes the row importable again.
+   *
+   * COUNTS, NOT MEMBERSHIP, and the difference only matters for cash. Two
+   * identical lines on a bank statement (`Einzahlung ;;;; 100,00` twice) are two
+   * real movements: a set says "seen it" and books one of them, so the ledger
+   * ends €100 short. The map says the ledger holds N of that hash, the file
+   * claims M, and only the first N of the M are duplicates. Trades and
+   * dividends keep set semantics (`> 0`) — collapsing two same-day fills at the
+   * same price is the intended §13.4 behaviour, pinned by its own test.
    */
   async function collectExistingHashes(
     userId: string,
@@ -805,14 +858,15 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
      * whole paged cash ledger) to answer 50 questions about cash alone.
      */
     scope: 'all' | 'trade' | 'dividend' | 'cash' = 'all',
-  ): Promise<Set<string>> {
-    const hashes = new Set<string>();
+  ): Promise<HashCounts> {
+    const hashes: HashCounts = new Map<string, number>();
+    const count = (hash: string) => hashes.set(hash, (hashes.get(hash) ?? 0) + 1);
     const txs =
       scope === 'all' || scope === 'trade'
         ? await transactionRepo.listForPortfolio(portfolioId)
         : [];
     for (const tx of txs) {
-      hashes.add(
+      count(
         contentHash({
           kind: tx.side,
           executedAt: tx.executedAt,
@@ -820,6 +874,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           quantity: tx.quantity,
           price: tx.price,
           amountEur: null,
+          reference: null,
         }),
       );
     }
@@ -828,7 +883,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         ? await tax.listDividends(userId, portfolioId)
         : { dividends: [] };
     for (const d of dividends) {
-      hashes.add(
+      count(
         contentHash({
           kind: 'dividend',
           executedAt: new Date(d.executedAt),
@@ -836,6 +891,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           quantity: null,
           price: null,
           amountEur: d.grossAmountEur,
+          reference: null,
         }),
       );
     }
@@ -845,7 +901,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       const cash = await portfolio.getCashMovements(userId, portfolioId, { cursor, limit: 200 });
       for (const m of cash.movements) {
         if (m.kind !== 'deposit' && m.kind !== 'withdrawal') continue;
-        hashes.add(
+        count(
           contentHash({
             kind: m.kind,
             executedAt: new Date(m.executedAt),
@@ -853,6 +909,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             quantity: null,
             price: null,
             amountEur: Math.abs(m.amountEur),
+            // The memo the booking carried into the ledger — the same string
+            // `applyRow` passes as the movement's `note`, so a re-import of the
+            // file that created this movement hashes onto it exactly.
+            reference: m.note,
           }),
         );
       }
@@ -860,6 +920,54 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       morePages = cursor != null;
     }
     return hashes;
+  }
+
+  /**
+   * {@link collectExistingHashes} for the SINGLE-ROW paths (a pin, a kind
+   * confirmation), memoized per batch + scope for {@link IMPORT_HASH_CACHE_TTL_MS}.
+   *
+   * The wizard's bulk affordance is one PATCH per row, and each PATCH re-read
+   * the portfolio's entire cash ledger 200 movements at a time — a page walk
+   * whose every page also costs balances, sources and the page's tag join. A
+   * twelve-row sweep paid twelve of them to answer twelve questions about the
+   * same unchanged ledger.
+   *
+   * STALENESS IS BOUNDED AND CANNOT COST MONEY. What this feeds is a PREVIEW
+   * verdict: a movement recorded elsewhere inside the window makes a row look
+   * mapped for a few seconds longer than it deserves. `applyBatch` re-derives
+   * duplicate truth from live data with no cache at all and flips such a row to
+   * `skipped_duplicate` before anything books, so the authority on what lands is
+   * never the cached answer. The entry is dropped when the batch is discarded
+   * or applied, and the map is bounded so an idle process cannot accumulate.
+   */
+  async function existingHashesForBatch(
+    userId: string,
+    batch: ImportBatchRow,
+    scope: 'trade' | 'dividend' | 'cash',
+  ): Promise<HashCounts> {
+    const key = `${batch.id}:${scope}`;
+    const now = Date.now();
+    const hit = hashCache.get(key);
+    if (hit && hit.expiresAt > now) return hit.hashes;
+    const hashes = await collectExistingHashes(userId, batch.portfolioId, scope);
+    // Oldest-first eviction: `Map` iterates in insertion order and a refreshed
+    // entry is re-inserted below, so the entry dropped is the least recently
+    // COMPUTED one.
+    hashCache.delete(key);
+    while (hashCache.size >= HASH_CACHE_MAX_ENTRIES) {
+      const oldest = hashCache.keys().next();
+      if (oldest.done) break;
+      hashCache.delete(oldest.value);
+    }
+    hashCache.set(key, { expiresAt: now + IMPORT_HASH_CACHE_TTL_MS, hashes });
+    return hashes;
+  }
+
+  /** Forget a batch's memoized ledger hashes (applied, or discarded). */
+  function forgetBatchHashes(batchId: string): void {
+    for (const scope of ['trade', 'dividend', 'cash'] as const) {
+      hashCache.delete(`${batchId}:${scope}`);
+    }
   }
 
   /** The one hash family a row of this kind could possibly duplicate. */
@@ -1007,8 +1115,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     try {
       staged = await stageGenericFile(bytes, input.filename, {
         // Both seams are looked up per user and either may be absent. A binder
-        // that throws (the heavy tier refuses under a test runner) degrades to
-        // the deterministic path rather than failing the upload.
+        // that throws degrades to the deterministic path rather than failing the
+        // upload.
         header: { ai: safeSeam(() => deps.headerAi?.(userId)) },
         rows: { ai: safeSeam(() => deps.rowAi?.(userId)) },
       });
@@ -1119,9 +1227,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       quantity: row.quantity,
       price: row.price,
       amountEur: row.amountEur,
+      reference: row.note,
     });
 
-    const duplicate = await isDuplicateHash(userId, batch, rows, row.id, hash, row.kind);
+    const duplicate = await isDuplicateHash(userId, batch, rows, row, hash, row.kind);
 
     // The write is conditional on the batch still being `pending`, because
     // everything between the check above and this line is `await`ed and an
@@ -1133,7 +1242,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       id: row.id,
       assetId: asset.id,
       flag: duplicate ? 'duplicate' : 'mapped',
-      message: duplicate ? DUPLICATE_MESSAGE : null,
+      message: duplicate ? duplicateMessageFor(row.kind) : null,
       contentHash: hash,
       resolvedBy: 'user',
     });
@@ -1147,18 +1256,39 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * holds, AND against the rows this batch will itself apply — the same two
    * questions staging asks, asked again because both answers can have changed
    * since the upload.
+   *
+   * CASH COUNTS, EVERYTHING ELSE MATCHES. For a trade or a dividend one
+   * recorded entity settles it. A cash row asks a narrower question — "is MY
+   * occurrence one the ledger already holds?" — because a statement legitimately
+   * repeats a line: with one €100 deposit recorded and two identical rows in the
+   * batch, the first row is that deposit and the second is a movement nobody has
+   * booked. The batch's own rows are ordered by `rowIndex`, so which occurrence
+   * a row is does not depend on the order the person happens to confirm them in.
    */
   async function isDuplicateHash(
     userId: string,
     batch: ImportBatchRow,
     rows: readonly ImportRowRecord[],
-    exceptRowId: string,
+    subject: ImportRowRecord,
     hash: string,
     kind: NormalizedImportRow['kind'],
   ): Promise<boolean> {
-    const existing = await collectExistingHashes(userId, batch.portfolioId, hashScopeFor(kind));
+    const existing = await existingHashesForBatch(userId, batch, hashScopeFor(kind));
+    const claimants = (flags: readonly ImportRowRecord['flag'][]) =>
+      rows.filter(
+        (r) =>
+          r.id !== subject.id &&
+          r.contentHash === hash &&
+          flags.includes(r.flag) &&
+          r.rowIndex < subject.rowIndex,
+      ).length;
+    if (isCashRowKind(kind)) {
+      // Rows staged `duplicate` count too: each one has already claimed one of
+      // the ledger's occurrences, which is precisely why it is a duplicate.
+      return claimants(['mapped', 'duplicate']) < countOf(existing, hash);
+    }
     if (existing.has(hash)) return true;
-    return rows.some((r) => r.id !== exceptRowId && r.flag === 'mapped' && r.contentHash === hash);
+    return rows.some((r) => r.id !== subject.id && r.flag === 'mapped' && r.contentHash === hash);
   }
 
   /**
@@ -1282,13 +1412,14 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       quantity: normalized.quantity,
       price: normalized.price,
       amountEur: normalized.amountEur,
+      reference: normalized.note,
     });
     if (
       flag === 'mapped' &&
-      (await isDuplicateHash(userId, batch, rows, row.id, hash, normalized.kind))
+      (await isDuplicateHash(userId, batch, rows, row, hash, normalized.kind))
     ) {
       flag = 'duplicate';
-      message = DUPLICATE_MESSAGE;
+      message = duplicateMessageFor(normalized.kind);
     }
 
     // A row that has just become a cash movement earns the same pre-tagging a
@@ -1501,7 +1632,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);
-      const seenInFile = new Set<string>();
+      /** How many occurrences of each hash this file has already staged. */
+      const seenInFile = new Map<string, number>();
 
       // The caller's own cash rules, read ONCE for the whole file (#964). The
       // staged rows below are pre-tagged from this single snapshot, which is
@@ -1578,13 +1710,23 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           quantity: row.quantity,
           price: row.price,
           amountEur: row.amountEur,
+          reference: row.note,
         });
         if (flag === 'mapped') {
-          if (existing.has(hash) || seenInFile.has(hash)) {
+          const claimed = countOf(seenInFile, hash);
+          // Cash by multiplicity, everything else by membership — see
+          // `collectExistingHashes`. A file line that matched a recorded
+          // movement has CLAIMED it, so the next identical line compares
+          // against the next one; a line beyond what the ledger holds is a
+          // movement nobody booked.
+          const duplicate = isCashRowKind(row.kind)
+            ? claimed < countOf(existing, hash)
+            : existing.has(hash) || claimed > 0;
+          if (duplicate) {
             flag = 'duplicate';
-            message = DUPLICATE_MESSAGE;
+            message = duplicateMessageFor(row.kind);
           }
-          seenInFile.add(hash);
+          seenInFile.set(hash, claimed + 1);
         }
 
         return {
@@ -1659,19 +1801,38 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       // two concurrent applies would both pass the read-check above and each
       // run the full row loop — double-booking every trade/dividend/cash row.
       // The compare-and-set picks exactly one winner; the loser is a 409, same
-      // as a sequential second apply. (Claim-first means a crash mid-loop
-      // leaves the batch `applied` with partial row results — the conservative
-      // side: a retry can re-upload, but can never book money twice.)
+      // as a sequential second apply.
+      //
+      // CLAIM-FIRST MEANS A CRASH MID-LOOP CANNOT BE RETRIED, so the run must
+      // leave behind what it did. Each row's result is written the moment that
+      // row settles (`settle` below), not accumulated and flushed at the end:
+      // the flush version booked every row's money and then, if anything threw
+      // before it ran, left the batch `applied` with EVERY row result null and
+      // every retry a 409 — money in the ledger and no record anywhere of which
+      // rows put it there. Now an interrupted apply leaves the booked rows
+      // stamped `applied` and the untouched ones with a null result, which is
+      // exactly the "what landed, what did not" the caller needs; re-uploading
+      // the file re-stages the unbooked rows and dedupes the booked ones.
       const claimed = await importRepo.claimPendingBatch(batch.id, cashSourceId);
       if (!claimed) {
         throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
       }
+      // The batch is finished either way — nothing may serve a memoized answer
+      // about a portfolio this run is about to write to.
+      forgetBatchHashes(batch.id);
 
       const rows = await importRepo.listRows(batch.id);
-      // Duplicate truth is re-derived NOW (preview flags could be stale against
-      // writes that happened since the upload).
+      // Duplicate truth is re-derived NOW, uncached (preview flags could be
+      // stale against writes that happened since the upload).
       const existing = await collectExistingHashes(userId, batch.portfolioId);
       const appliedThisRun = new Set<string>();
+      /**
+       * Ledger occurrences of a CASH hash this run has accounted for — a row
+       * matched to an existing movement and a row that booked a new one both
+       * consume exactly one, so the next identical row compares against what is
+       * left (see `collectExistingHashes`).
+       */
+      const cashClaimed = new Map<string, number>();
 
       // Chronological apply so moving-average cost/tax replays see buys before
       // the sells they cover. Within a day: cash income in, then trades in file
@@ -1693,21 +1854,20 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         return a.rowIndex - b.rowIndex;
       });
 
-      const updates: Array<{
-        id: string;
-        result: ImportRowResult;
-        resultMessage: string | null;
-        flag?: ImportRowRecord['flag'];
-      }> = [];
       const outcomeByRowId = new Map<string, ImportRowOutcome>();
 
-      const record = (
+      /**
+       * ONE ROW IS FINISHED: its result goes to the database before the loop
+       * moves on. Durability is the point (see the claim comment above) —
+       * a booked row whose result is still only in memory is a row nobody can
+       * account for if the process dies on the next line.
+       */
+      const settle = async (
         row: ImportRowRecord,
         result: ImportRowResult,
         message: string | null,
         flag?: ImportRowRecord['flag'],
       ) => {
-        updates.push({ id: row.id, result, resultMessage: message, flag });
         outcomeByRowId.set(row.id, {
           id: row.id,
           rowIndex: row.rowIndex,
@@ -1715,6 +1875,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           result,
           message,
         });
+        await importRepo.setRowResult({ id: row.id, result, resultMessage: message, flag });
       };
 
       const applyRow = async (row: ImportRowRecord): Promise<void> => {
@@ -1774,24 +1935,40 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         await replayRuleTags(batch.portfolioId, booked.movement.id, row.ruleTagIds);
       };
 
+      /** This row matches something already in the ledger (or this run). */
+      const alreadyRecorded = (row: ImportRowRecord): boolean => {
+        if (!row.contentHash) return false;
+        if (isCashRowKind(row.kind)) {
+          return countOf(cashClaimed, row.contentHash) < countOf(existing, row.contentHash);
+        }
+        return existing.has(row.contentHash) || appliedThisRun.has(row.contentHash);
+      };
+      /** Account for the ledger occurrence a cash row just matched or created. */
+      const claimCash = (row: ImportRowRecord): void => {
+        if (!row.contentHash || !isCashRowKind(row.kind)) return;
+        cashClaimed.set(row.contentHash, countOf(cashClaimed, row.contentHash) + 1);
+      };
+
       for (const row of ordered) {
         if (row.flag === 'error') {
-          record(row, 'skipped_error', row.message);
+          await settle(row, 'skipped_error', row.message);
           continue;
         }
         if (row.flag === 'unmapped') {
-          record(row, 'skipped_unmapped', row.message);
+          await settle(row, 'skipped_unmapped', row.message);
           continue;
         }
         if (row.flag === 'duplicate') {
-          record(row, 'skipped_duplicate', row.message);
+          // Staging already matched this row to a recorded movement; that
+          // occurrence is spoken for, so a later identical row compares against
+          // the next one rather than against the same one twice.
+          claimCash(row);
+          await settle(row, 'skipped_duplicate', row.message);
           continue;
         }
-        if (
-          row.contentHash &&
-          (existing.has(row.contentHash) || appliedThisRun.has(row.contentHash))
-        ) {
-          record(
+        if (alreadyRecorded(row)) {
+          claimCash(row);
+          await settle(
             row,
             'skipped_duplicate',
             'An identical row was recorded since this preview was created.',
@@ -1802,11 +1979,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
         try {
           await applyRow(row);
-          if (row.contentHash) appliedThisRun.add(row.contentHash);
-          record(row, 'applied', null);
         } catch (err) {
           if (err instanceof ApiError) {
-            record(row, 'failed', err.message);
+            await settle(row, 'failed', err.message);
             continue;
           }
           // EVERYTHING ELSE IS ALSO THIS ROW'S PROBLEM, not the batch's.
@@ -1848,15 +2023,48 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             { err, batchId: batch.id, rowId: row.id, rowIndex: row.rowIndex },
             'import: row failed with an unexpected error; reported as failed',
           );
-          record(
+          await settle(
             row,
             'failed',
             'This row hit an unexpected error, reported to the team. Nothing was booked for it.',
           );
+          continue;
+        }
+
+        // ── PAST THIS LINE THE MONEY IS BOOKED ───────────────────────────────
+        //
+        // `settle` is a plain UPDATE of the row's result, and it used to sit
+        // inside the try above. A failing UPDATE was therefore caught by the
+        // handler that assumes `applyRow` threw, and the row was reported
+        // `failed` with "Nothing was booked for it." — the exact opposite of the
+        // truth about a movement already in the ledger, on top of which the
+        // staged `contentHash` makes a re-import dedupe it away.
+        //
+        // Recording the outcome may still fail; what may not happen is the
+        // report denying the booking. The in-memory outcome is written first and
+        // is what the response counts, so the user is told `applied` either way;
+        // the durable row result is best-effort and its loss is an OPERATOR
+        // problem, captured as one.
+        if (row.contentHash) appliedThisRun.add(row.contentHash);
+        claimCash(row);
+        try {
+          await settle(row, 'applied', null);
+        } catch (err) {
+          const unexpected = err instanceof Error ? err : new Error('Unknown import row failure');
+          deps.problems?.captureError(unexpected, {
+            batchId: batch.id,
+            rowId: row.id,
+            rowIndex: row.rowIndex,
+            brokerId: batch.brokerId,
+            kind: row.kind,
+            stage: 'settle-applied',
+          });
+          deps.logger?.error?.(
+            { err, batchId: batch.id, rowId: row.id, rowIndex: row.rowIndex },
+            'import: row booked but recording its result failed; reported as applied',
+          );
         }
       }
-
-      await importRepo.setRowResults(updates);
 
       const finalBatch = await importRepo.findBatchForOwner(userId, batchId);
       const finalRows = await importRepo.listRows(batch.id);
@@ -1931,6 +2139,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       await deps.paranoid?.assertAllowed(userId, 'imports');
       const deleted = await importRepo.deleteBatchForOwner(userId, batchId);
       if (!deleted) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
+      forgetBatchHashes(batchId);
     },
   };
 }

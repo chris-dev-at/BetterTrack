@@ -1,17 +1,24 @@
 import type { DividendRecord } from '../../data/repositories/taxRepository';
 import type { TransactionRecord } from '../../data/repositories/transactionRepository';
 import {
+  costBasisStrategyForEngine,
   deCarryPots,
+  frozenTaxCountryEngine,
   settleDeYear,
-  TAX_COUNTRY_AT,
+  taxEngineForRow,
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
+  type CostBasisStrategy,
   type DePotCategory,
   type DePots,
   type DeTaxableEvent,
   type DeYearOutcome,
   type SellRealizationEur,
+  type SupportedTaxCountry,
+  type TaxRowEngine,
+  type TaxRowEngineFacts,
 } from '../../domain/tax';
+import type { LiveRegime } from './livingYear';
 
 /**
  * Country-specific row routing and DE event derivation for the living-year tax
@@ -26,15 +33,57 @@ import {
  * into the settlement modules must never fall through into the AT pool —
  * its frozen rows would silently decompose and settle at AT rates, and the
  * drift would read as legitimate locked residue forever.
+ *
+ * Delegates to the shared domain narrowing (#1512) so the paranoid client's
+ * frozen-row branch and this one cannot drift: both are the same function.
  */
-export function rowEngineCountry(
-  taxCountry: string | null,
-): typeof TAX_COUNTRY_AT | typeof TAX_COUNTRY_DE | typeof TAX_COUNTRY_FI {
-  if (taxCountry === null || taxCountry === TAX_COUNTRY_AT) return TAX_COUNTRY_AT;
-  if (taxCountry === TAX_COUNTRY_DE || taxCountry === TAX_COUNTRY_FI) return taxCountry;
-  throw new Error(
-    `Tax engine: no settlement component for frozen tax country "${taxCountry}" — ` +
-      'wire it into SUPPORTED_TAX_COUNTRIES and the living-year country modules',
+export function rowEngineCountry(taxCountry: string | null): SupportedTaxCountry {
+  return frozenTaxCountryEngine(taxCountry);
+}
+
+/** The engine vocabulary of a living regime, for the shared row classifier. */
+export function livingEngineOf(regime: LiveRegime): TaxRowEngine {
+  if (regime.kind === 'country') return regime.country;
+  return regime.kind;
+}
+
+/**
+ * Which engine one persisted row settles under against the current living
+ * regime — the server side of the #1512 single classifier. Nothing here is
+ * server-specific: it is `taxEngineForRow` over the row's frozen facts, and
+ * the client `taxRegimeForRow` is the same call. The committed
+ * `@bettertrack/domain/taxVectors` table pins both.
+ */
+export function rowTaxEngine(row: TaxRowEngineFacts, regime: LiveRegime): TaxRowEngine {
+  return taxEngineForRow(row, livingEngineOf(regime));
+}
+
+/**
+ * The cost basis a row's realized P/L is REPORTED under: the living regime's
+ * strategy for every derivable row, and the frozen engine's own basis under
+ * the literal manual regime (DE/FI = FIFO, custom = its snapshot's basis,
+ * AT/none = moving average). One call for both engines; before #1512 the
+ * server's manual-mode branch listed DE and FIFO-custom by hand and rendered
+ * a frozen FI sell at the moving average although FI freezes under FIFO.
+ */
+export function reportCostBasisStrategy(
+  row: TaxRowEngineFacts,
+  regime: LiveRegime,
+  frozenCustomCostBasis: CostBasisStrategy | null,
+): CostBasisStrategy {
+  const engine = rowTaxEngine(row, regime);
+  if (engine !== 'custom') return costBasisStrategyForEngine(engine, null);
+  // A custom engine under a custom LIVING regime means the row is derivable
+  // (a manual row would have classified as `manual`), so the living
+  // parameters apply; otherwise the row is custom-FROZEN under the literal
+  // manual regime and keeps the basis its own snapshot recorded.
+  return costBasisStrategyForEngine(
+    engine,
+    regime.kind === 'custom'
+      ? regime.params
+      : frozenCustomCostBasis === null
+        ? null
+        : { costBasis: frozenCustomCostBasis },
   );
 }
 

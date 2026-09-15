@@ -1,6 +1,9 @@
 import type { AuditRepository } from '../../data/repositories/auditRepository';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
+import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
 import type { ParanoidVaultRepository } from '../../data/repositories/paranoidVaultRepository';
+import type { ProblemRepository } from '../../data/repositories/problemRepository';
+import type { UsageAnalyticsRepository } from '../../data/repositories/usageAnalyticsRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { VaultBlobRepository } from '../../data/repositories/vaultBlobRepository';
 import { sweepLegacyRememberedDeviceBindings } from '../../services/auth/loginThrottle';
@@ -17,6 +20,15 @@ export const DATA_RETENTION_DELETE_BATCH_SIZE = 500;
  * cutoff rule.
  */
 export const DATA_RETENTION_MAX_ROWS_PER_RUN = 50_000;
+
+/**
+ * Retention window for DELIVERED digest-queue rows (#1696), matching the sibling
+ * operational sweeps (webhook deliveries, api-key request log). A delivered row
+ * is spent bookkeeping — the in-app centre holds the durable record — so the
+ * window only needs to be long enough to debug a delivery after the fact. Rows
+ * still pending delivery are never swept, whatever their age.
+ */
+export const DIGEST_QUEUE_RETENTION_DAYS = 30;
 
 export const DATA_RETENTION_CLEANUP_SCHEDULER_ID = 'data.retentionCleanup';
 /** Daily at 04:50 Europe/Vienna, after the other operational-log cleanup jobs. */
@@ -38,12 +50,36 @@ export interface DataRetentionCleanupJobDeps {
    * checks in the repository stay — this is the belt to their braces.
    */
   vaultCandidates: Pick<VaultBlobRepository, 'cleanupExpiredServerCandidates'>;
+  /**
+   * Captured problems (§13.5 V5-P2 arc (d)). The capture's rate cap bounds how
+   * FAST the table grows; only this bounds how BIG it gets, and without it the
+   * Sentry replacement becomes a write-only table.
+   */
+  problems: Pick<ProblemRepository, 'deleteOlderThan'>;
+  /**
+   * Raw usage events — one row per user × feature × asset × day, i.e. a
+   * per-user viewing history that nothing but a paranoid transition removed.
+   * The aggregate `usage_daily` rollup is untouched, so the admin analytics
+   * series outlives the raw rows it was built from.
+   */
+  usageEvents: Pick<UsageAnalyticsRepository, 'deleteEventsOlderThan'>;
+  /**
+   * Delivered digest-queue rows (§13.5 V5-P3, #1696). Every deferred item and
+   * every quiet-hours deferral leaves a row carrying the fully rendered
+   * title/body, and a claim only stamps `delivered_at` — the one operational
+   * table with no sweep, growing per notification × outbound channel forever.
+   */
+  digestQueue: Pick<NotificationDigestRepository, 'deleteDeliveredOlderThan'>;
   /** Batched account lookup for the remembered-device sweep. */
   users: Pick<UserRepository, 'listByIds'>;
   /** Whole days; `0` explicitly means retain audit rows forever. */
   auditRetentionDays: number;
   /** Whole days; `0` explicitly means retain email-log rows forever. */
   emailLogRetentionDays: number;
+  /** Whole days since `last_seen_at`; `0` means retain problems forever. */
+  problemRetentionDays: number;
+  /** Whole days; `0` means retain raw usage events forever. */
+  usageEventRetentionDays: number;
   batchSize?: number;
   maxRowsPerRun?: number;
   now?: () => Date;
@@ -100,13 +136,44 @@ export function createDataRetentionCleanupJob(
         batchSize,
         maxRowsPerRun,
       );
+      const problems =
+        deps.problemRetentionDays === 0
+          ? NOTHING_PRUNED
+          : await deleteInBatches(
+              deps.problems.deleteOlderThan.bind(deps.problems),
+              new Date(runAt - deps.problemRetentionDays * MS_PER_DAY),
+              batchSize,
+              maxRowsPerRun,
+            );
+      const usageEvents =
+        deps.usageEventRetentionDays === 0
+          ? NOTHING_PRUNED
+          : await deleteInBatches(
+              deps.usageEvents.deleteEventsOlderThan.bind(deps.usageEvents),
+              new Date(runAt - deps.usageEventRetentionDays * MS_PER_DAY),
+              batchSize,
+              maxRowsPerRun,
+            );
+      // Delivered digest-queue rows past the window (#1696). The cutoff is the
+      // delivery instant, never `created_at`: a quiet-hours deferral created
+      // long ago but released yesterday is one day old as far as retention is
+      // concerned, and a row that has not been released at all is not eligible.
+      const digestQueue = await deleteInBatches(
+        deps.digestQueue.deleteDeliveredOlderThan.bind(deps.digestQueue),
+        new Date(runAt - DIGEST_QUEUE_RETENTION_DAYS * MS_PER_DAY),
+        batchSize,
+        maxRowsPerRun,
+      );
       const devices = await sweepLegacyRememberedDeviceBindings(ctx.redis, deps.users);
 
       if (
         audit.deleted > 0 ||
         emailLog.deleted > 0 ||
         abandonedVaultStagesExamined > 0 ||
-        vaultCandidates.deleted > 0
+        vaultCandidates.deleted > 0 ||
+        problems.deleted > 0 ||
+        usageEvents.deleted > 0 ||
+        digestQueue.deleted > 0
       ) {
         ctx.logger.info(
           {
@@ -115,12 +182,21 @@ export function createDataRetentionCleanupJob(
             abandonedVaultStagesExamined,
             // The staged residue the #1491 TTL promises to bound (#1521).
             expiredVaultCandidatesDisposed: vaultCandidates.deleted,
+            problemsPruned: problems.deleted,
+            usageEventsPruned: usageEvents.deleted,
+            digestQueuePruned: digestQueue.deleted,
             // A capped run leaves eligible rows behind on purpose; the next
             // scheduled run continues, so this must be visible in the log.
             deferredToNextRun:
-              audit.capped || emailLog.capped || vaultStaging.capped || vaultCandidates.capped,
+              audit.capped ||
+              emailLog.capped ||
+              vaultStaging.capped ||
+              vaultCandidates.capped ||
+              problems.capped ||
+              usageEvents.capped ||
+              digestQueue.capped,
           },
-          'expired audit and email-log rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
+          'expired audit, email-log, problem, usage-event and delivered digest-queue rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
         );
       }
       if (devices.legacy > 0) {
@@ -136,9 +212,20 @@ export function createDataRetentionCleanupJob(
         emailLogPruned: emailLog.deleted,
         abandonedVaultStagesExamined,
         expiredVaultCandidatesDisposed: vaultCandidates.deleted,
+        problemsPruned: problems.deleted,
+        usageEventsPruned: usageEvents.deleted,
+        digestQueuePruned: digestQueue.deleted,
         legacyDeviceBindingsRetired: devices.legacy,
         deferredToNextRun:
-          audit.capped || emailLog.capped || vaultStaging.capped || vaultCandidates.capped ? 1 : 0,
+          audit.capped ||
+          emailLog.capped ||
+          vaultStaging.capped ||
+          vaultCandidates.capped ||
+          problems.capped ||
+          usageEvents.capped ||
+          digestQueue.capped
+            ? 1
+            : 0,
       };
     },
     schedule: {

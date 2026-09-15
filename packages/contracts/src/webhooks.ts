@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { feedbackStatusSchema } from './feedback';
+
 /**
  * Outbound webhooks (PROJECTPLAN.md §13.5 V5-P10, issue 1/2) — the "API as a
  * product" outbound leg. A user subscribes a URL to one or more event types;
@@ -53,6 +55,8 @@ export const WEBHOOK_EVENT_TYPES = [
   'standing_order.skipped',
   'feedback.status_changed',
   'feedback.reply_created',
+  // V5-P8: a comment landed on an item the subscriber shares.
+  'comment.created',
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -178,6 +182,10 @@ export const PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS = {
     disposition: 'allowed',
     reason: 'Feedback reply notices identify a helpdesk thread without exposing portfolio content.',
   },
+  'comment.created': {
+    disposition: 'killed',
+    reason: 'Comment threads hang off shared items, and paranoid sharing is disabled.',
+  },
 } as const satisfies Record<WebhookEventType, ParanoidWebhookEventTypeClassification>;
 
 /**
@@ -212,10 +220,27 @@ export const WEBHOOK_DELIVERY_HEADER = 'X-BetterTrack-Delivery';
 /**
  * Signature scheme: the header value is `sha256=<hex>` where the hex is the
  * HMAC-SHA256 of `` `${timestamp}.${body}` `` under the subscription secret
- * (the GitHub/Stripe convention — the timestamp is bound in, so a captured body
- * cannot be replayed with a new timestamp).
+ * (the GitHub/Stripe convention). Binding the timestamp in means an attacker
+ * cannot re-stamp a captured body: any other timestamp invalidates the MAC. It
+ * does NOT stop the captured triple (timestamp + body + signature) being
+ * replayed verbatim — that is what {@link WEBHOOK_SIGNATURE_TOLERANCE_SECONDS}
+ * bounds.
  */
 export const WEBHOOK_SIGNATURE_SCHEME = 'sha256';
+
+/**
+ * How far a delivery's `X-BetterTrack-Timestamp` may sit from the receiver's own
+ * clock before the signature is refused: ±5 minutes, symmetric so that ordinary
+ * clock skew in either direction is tolerated while an old capture is not.
+ *
+ * Published for receivers: BetterTrack's own reference verifier
+ * (`verifyWebhookSignature`) enforces exactly this window, and a receiver that
+ * re-implements the check should use the same bound. Together with the
+ * per-delivery `X-BetterTrack-Delivery` id — stable across retries, so it
+ * doubles as a dedupe key — it bounds replay of a captured delivery to this
+ * window.
+ */
+export const WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300;
 
 /** The one-time secret's recognizable prefix — greppable in leak scans. */
 export const WEBHOOK_SECRET_PREFIX = 'whsec_';
@@ -258,6 +283,102 @@ export const WEBHOOK_URL_BLOCKED_CODE = 'WEBHOOK_URL_BLOCKED';
 export const WEBHOOK_DELIVERY_REFUSED_ERROR = 'destination not allowed';
 
 /**
+ * The delivery-log `error` recorded when the destination could not be resolved
+ * for this attempt (DNS failure or an empty answer). A network condition, not a
+ * policy refusal — it is retried like any other transport failure.
+ */
+export const WEBHOOK_DELIVERY_UNRESOLVED_ERROR = 'destination unresolved';
+
+/**
+ * The transport's own marker for "the receiver did not answer within the
+ * deadline". It is NOT written to the delivery log any more: a filtered port
+ * times out where a closed one refuses instantly, so recording the difference
+ * would let the log answer questions about a network the subscriber is only
+ * allowed to POST to. Both persist as {@link WEBHOOK_DELIVERY_NETWORK_ERROR}.
+ *
+ * It stays in the accepted set because the 30-day log still holds rows written
+ * before that change, and those must keep rendering as the timeout they were.
+ */
+export const WEBHOOK_DELIVERY_TIMEOUT_ERROR = 'timeout';
+
+/**
+ * The delivery-log `error` recorded when the receiver answered with a status it
+ * refused the delivery on. The status itself is the diagnostic and is carried by
+ * `responseStatus`, so this string is deliberately constant.
+ */
+export const WEBHOOK_DELIVERY_HTTP_ERROR = 'receiver rejected the delivery';
+
+/**
+ * The delivery-log `error` recorded for EVERY transport-level failure: a refused
+ * connection, a reset, a TLS handshake that did not complete, a receiver that
+ * never answered.
+ *
+ * One constant for all of them, on purpose. The socket's own message names the
+ * address, the port, the errno and — on a TLS mismatch — the certificate's
+ * alternate names; persisting it would turn a log the subscriber may read into a
+ * scanner for whatever the guard still allows. Refused, filtered and live-but-
+ * not-HTTP therefore look identical in the log, exactly as a guard refusal does.
+ */
+export const WEBHOOK_DELIVERY_NETWORK_ERROR = 'delivery failed';
+
+/**
+ * The delivery-log `error` recorded when the subscription's signing secret would
+ * not decrypt (rotated or corrupt key) — nothing was sent, and retrying cannot
+ * help.
+ */
+export const WEBHOOK_DELIVERY_SECRET_ERROR = 'secret unavailable';
+
+/**
+ * The delivery-log `error` recorded when the subscription no longer lists the
+ * queued event type at SEND time. The queue is not instantaneous, so a user who
+ * removes an event type must have that revocation bind the deliveries already in
+ * flight — exactly as `enabled` and the destination URL are re-checked per
+ * attempt. It is the user's own change, so it never advances the auto-disable
+ * streak.
+ */
+export const WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR = 'event no longer subscribed';
+
+/**
+ * The CLOSED set of values `webhook_deliveries.error` may hold — the whole
+ * vocabulary the dispatcher is allowed to write and the API is allowed to
+ * return. Receiver- and socket-provided text is not in it and cannot get in:
+ * anything else a row still holds is mapped onto
+ * {@link WEBHOOK_DELIVERY_NETWORK_ERROR} on the way out
+ * ({@link normalizeWebhookDeliveryError}).
+ *
+ * {@link WEBHOOK_DELIVERY_TIMEOUT_ERROR} is accepted but no longer written; see
+ * its own note.
+ */
+export const WEBHOOK_DELIVERY_ERRORS = [
+  WEBHOOK_DELIVERY_HTTP_ERROR,
+  WEBHOOK_DELIVERY_REFUSED_ERROR,
+  WEBHOOK_DELIVERY_UNRESOLVED_ERROR,
+  WEBHOOK_DELIVERY_TIMEOUT_ERROR,
+  WEBHOOK_DELIVERY_SECRET_ERROR,
+  WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
+  WEBHOOK_DELIVERY_NETWORK_ERROR,
+] as const;
+export const webhookDeliveryErrorSchema = z.enum(WEBHOOK_DELIVERY_ERRORS);
+export type WebhookDeliveryError = (typeof WEBHOOK_DELIVERY_ERRORS)[number];
+
+const DELIVERY_ERRORS: ReadonlySet<string> = new Set<string>(WEBHOOK_DELIVERY_ERRORS);
+
+/**
+ * Coerce a stored `error` onto the closed set. A row written before the set
+ * existed can still hold a raw socket message (`connect ECONNREFUSED
+ * 172.18.0.4:5432`, a TLS altname list); it reads back as the structural
+ * "delivery failed" like every other transport failure, so the documented
+ * "scrubbed" contract is true for the whole 30-day window, not only for rows
+ * written from now on.
+ */
+export function normalizeWebhookDeliveryError(stored: string | null): WebhookDeliveryError | null {
+  if (stored === null) return null;
+  return DELIVERY_ERRORS.has(stored)
+    ? (stored as WebhookDeliveryError)
+    : WEBHOOK_DELIVERY_NETWORK_ERROR;
+}
+
+/**
  * A target URL: a valid absolute http(s) URL. Plain http is accepted (a
  * self-hosted LAN receiver is a first-class use case); the payload is signed
  * either way so the receiver can still authenticate it.
@@ -267,7 +388,9 @@ export const WEBHOOK_DELIVERY_REFUSED_ERROR = 'destination not allowed';
  * link-local/cloud metadata (`169.254.0.0/16`, `fe80::/10`), unspecified,
  * broadcast or another non-routable range, with
  * {@link WEBHOOK_URL_BLOCKED_CODE}. Private LAN ranges (RFC1918, `fc00::/7`)
- * stay allowed — that is the self-hosted-receiver case above.
+ * stay allowed — that is the self-hosted-receiver case above — EXCEPT the
+ * private network the deployment's own services sit on, which is refused like
+ * loopback: a receiver is a host on the operator's network, not one of ours.
  */
 export const webhookUrlSchema = z
   .string()
@@ -361,8 +484,12 @@ export const webhookDeliverySchema = z
     responseStatus: z.number().int().nullable(),
     /** How many attempts the delivery took (BullMQ retries counted). */
     attempts: z.number().int().positive(),
-    /** Short scrubbed failure reason; null on success. */
-    error: z.string().nullable(),
+    /**
+     * Why the delivery failed, as one of {@link WEBHOOK_DELIVERY_ERRORS}; null
+     * on success. A closed set, never free text: nothing the receiver or the
+     * socket produced reaches this field.
+     */
+    error: webhookDeliveryErrorSchema.nullable(),
     createdAt: z.string(),
   })
   .strict();
@@ -374,17 +501,292 @@ export const webhookDeliveryListResponseSchema = z
 export type WebhookDeliveryListResponse = z.infer<typeof webhookDeliveryListResponseSchema>;
 
 /**
- * The wire shape of a delivered payload (the POST body). `data` is the raw
- * user-scoped domain event; `id` is the unique delivery id (also the
- * `X-BetterTrack-Delivery` header) a receiver dedupes retries on. Documented for
- * receivers — the signature covers the serialized form of exactly this object.
+ * Why a logged delivery failed, as ONE discriminated value the UI can explain.
+ *
+ * The stored `error` is one of {@link WEBHOOK_DELIVERY_ERRORS} (never
+ * receiver-provided text), so the causes that record no `responseStatus` — a
+ * guard refusal, an unresolvable host, an unavailable signing secret and every
+ * transport failure — would otherwise be one indistinguishable red badge.
+ * Deriving the reason here rather than in the SPA keeps the writer (the
+ * dispatcher) and the reader on the same constants.
+ *
+ * `timeout` is only ever derived from a row written before the transport
+ * failures were collapsed; a new one reports `network` (see
+ * {@link WEBHOOK_DELIVERY_NETWORK_ERROR}).
  */
-export const webhookEventPayloadSchema = z
+export const WEBHOOK_DELIVERY_FAILURE_REASONS = [
+  /** The receiver answered, with a status it refused the delivery on. */
+  'http',
+  /** The outbound (SSRF) guard refused the destination for this attempt. */
+  'refused',
+  /** The destination hostname did not resolve. */
+  'unresolved',
+  /** The receiver did not answer within the transport deadline. */
+  'timeout',
+  /** The signing secret would not decrypt, so nothing was signed or sent. */
+  'secret',
+  /** The subscription no longer listed this event type when the job ran. */
+  'unsubscribed',
+  /** Any other transport-level failure (connection refused, TLS, reset …). */
+  'network',
+] as const;
+export const webhookDeliveryFailureReasonSchema = z.enum(WEBHOOK_DELIVERY_FAILURE_REASONS);
+export type WebhookDeliveryFailureReason = (typeof WEBHOOK_DELIVERY_FAILURE_REASONS)[number];
+
+/** The canonical `error` strings the dispatcher writes, mapped to their reason. */
+const FAILURE_REASON_BY_ERROR: Readonly<Record<string, WebhookDeliveryFailureReason>> = {
+  [WEBHOOK_DELIVERY_HTTP_ERROR]: 'http',
+  [WEBHOOK_DELIVERY_NETWORK_ERROR]: 'network',
+  [WEBHOOK_DELIVERY_REFUSED_ERROR]: 'refused',
+  [WEBHOOK_DELIVERY_UNRESOLVED_ERROR]: 'unresolved',
+  [WEBHOOK_DELIVERY_TIMEOUT_ERROR]: 'timeout',
+  [WEBHOOK_DELIVERY_SECRET_ERROR]: 'secret',
+  [WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR]: 'unsubscribed',
+};
+
+/** The failure reason of one logged delivery; `null` for a delivered one. */
+export function webhookDeliveryFailureReason(
+  delivery: Pick<WebhookDelivery, 'status' | 'responseStatus' | 'error'>,
+): WebhookDeliveryFailureReason | null {
+  if (delivery.status === 'success') return null;
+  if (delivery.responseStatus !== null) return 'http';
+  const mapped = delivery.error === null ? undefined : FAILURE_REASON_BY_ERROR[delivery.error];
+  return mapped ?? 'network';
+}
+
+/**
+ * The `data` allowlist: what each catalog event may disclose on the wire.
+ *
+ * A webhook body is a per-type HAND-PICKED projection of the domain event, never
+ * the event itself — the runtime event carries fields (private message text,
+ * third-party account uuids) that a subscriber's URL must never receive, and a
+ * `Record<string, unknown>` cannot say which. Every schema is `.strict()`, so a
+ * field that is not listed here cannot reach a receiver even if it is later
+ * added to the producing event.
+ *
+ * The reference for each entry is the payload the API's own inbox notification
+ * builds for the same event: a webhook discloses AT MOST what the bell row does.
+ * Where an integration surface legitimately needs more, the entry says so.
+ * `userId` rides every payload — it is always the subscription owner's own id
+ * (fan-out is strictly per-subscriber), so it names nobody else while letting a
+ * receiver that serves several accounts route the delivery.
+ *
+ * Strictly additive over time, exactly like {@link WEBHOOK_EVENT_TYPES}: a new
+ * catalog type must declare its payload here, and widening an existing one is a
+ * disclosure decision.
+ */
+const userId = z.string();
+const itemKind = z.enum(['portfolio', 'watchlist', 'conglomerate', 'idea']);
+
+/**
+ * The eight MIRRORCHAIN lifecycle notices share one payload: the chain, the
+ * member the notice is about, and the occurrence discriminator. `actorId`,
+ * `ownerId` and `subjectUserIds` are internal privacy principals — third-party
+ * account uuids the inbox row never carries — so none of them is on the wire.
+ */
+const mirrorPayloadSchema = z
   .object({
-    id: z.string(),
-    type: webhookEventTypeSchema,
-    createdAt: z.string(),
-    data: z.record(z.unknown()),
+    userId,
+    chainId: z.string(),
+    chainName: z.string(),
+    actorUsername: z.string(),
+    refId: z.string(),
   })
   .strict();
+
+export const WEBHOOK_EVENT_PAYLOAD_SCHEMAS = {
+  /** Inbox parity; the alert's rule/threshold is resolved at render time, not here. */
+  'alert.triggered': z.object({ userId, alertId: z.string(), assetId: z.string() }).strict(),
+  'friend.request': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), requestId: z.string() })
+    .strict(),
+  'friend.accepted': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), requestId: z.string() })
+    .strict(),
+  'portfolio.shared': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), portfolioId: z.string() })
+    .strict(),
+  'watchlist.shared': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), watchlistId: z.string() })
+    .strict(),
+  'conglomerate.shared': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), conglomerateId: z.string() })
+    .strict(),
+  'friend.activity': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      itemKind: z.enum(['portfolio', 'watchlist']),
+      itemId: z.string(),
+      activity: z.enum(['buy', 'sell', 'watchlist_add']),
+      assetSymbol: z.string(),
+    })
+    .strict(),
+  'follow.published': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      itemKind,
+      itemId: z.string(),
+      itemName: z.string(),
+    })
+    .strict(),
+  'follow.alert.created': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      alertId: z.string(),
+      assetId: z.string(),
+    })
+    .strict(),
+  'follow.alert.fired': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      alertId: z.string(),
+      assetId: z.string(),
+    })
+    .strict(),
+  /** Informational only — the credential itself never rides the event. */
+  'account.temp_password': z.object({ userId }).strict(),
+  /** Informational only — carries no download token. */
+  'account.data_export': z.object({ userId }).strict(),
+  /** Inbox parity minus the free-text company `name` (the symbol identifies it). */
+  'earnings.reminder': z
+    .object({
+      userId,
+      assetId: z.string(),
+      symbol: z.string(),
+      earningsDate: z.string(),
+      estimated: z.boolean(),
+    })
+    .strict(),
+  /**
+   * Message ids and the sender only. `bodyPreview` — the first 140 characters of
+   * the sender's private message — is deliberately ABSENT: a receiver URL may be
+   * plain `http:`, and the push channel carries no preview either. A receiver
+   * that wants the text refetches the thread through the enforcement layer.
+   */
+  'chat.message': z
+    .object({
+      userId,
+      conversationId: z.string(),
+      messageId: z.string(),
+      senderId: z.string(),
+      senderUsername: z.string(),
+    })
+    .strict(),
+  /**
+   * More than the inbox on purpose: the per-share payout and its currency are
+   * public market data (never a holding size), and a dividend integration is
+   * useless without them.
+   */
+  'dividend.event': z
+    .object({
+      userId,
+      assetId: z.string(),
+      symbol: z.string(),
+      exDate: z.string(),
+      payDate: z.string().nullable(),
+      amount: z.number().nullable(),
+      currency: z.string().nullable(),
+    })
+    .strict(),
+  /** Inbox parity minus the user's free-text `categoryName`. */
+  'budget.exceeded': z
+    .object({
+      userId,
+      budgetId: z.string(),
+      categoryId: z.string(),
+      period: z.string(),
+      amount: z.number(),
+      spent: z.number(),
+      currency: z.string(),
+    })
+    .strict(),
+  'mirror.invite': mirrorPayloadSchema,
+  'mirror.member_joined': mirrorPayloadSchema,
+  'mirror.member_left': mirrorPayloadSchema,
+  'mirror.member_removed': mirrorPayloadSchema,
+  'mirror.removed': mirrorPayloadSchema,
+  'mirror.ownership_transferred': mirrorPayloadSchema,
+  'mirror.chain_dissolved': mirrorPayloadSchema,
+  'mirror.sync_stalled': mirrorPayloadSchema,
+  /** Inbox parity minus the user's free-text `orderLabel`. */
+  'standing_order.skipped': z
+    .object({
+      userId,
+      standingOrderId: z.string(),
+      periodKey: z.string(),
+      outcome: z.enum(['deferred', 'dropped', 'booking_failed']),
+      droppedCount: z.number().int().optional(),
+    })
+    .strict(),
+  'feedback.status_changed': z
+    .object({
+      userId,
+      feedbackId: z.string(),
+      status: feedbackStatusSchema,
+      lastStatusChangeAt: z.string(),
+    })
+    .strict(),
+  'feedback.reply_created': z
+    .object({ userId, feedbackId: z.string(), messageId: z.string() })
+    .strict(),
+  /**
+   * The commenter is named by `actorUsername` only: `actorId` is another
+   * account's internal id and the inbox row omits it too.
+   */
+  'comment.created': z
+    .object({
+      userId,
+      commentId: z.string(),
+      itemKind,
+      itemId: z.string(),
+      itemName: z.string(),
+      actorUsername: z.string(),
+    })
+    .strict(),
+} as const satisfies Record<WebhookEventType, z.ZodTypeAny>;
+
+/** The `data` a delivery of event type `T` carries. */
+export type WebhookEventDataOf<T extends WebhookEventType> = z.infer<
+  (typeof WEBHOOK_EVENT_PAYLOAD_SCHEMAS)[T]
+>;
+
+type WebhookEventPayloadVariant = {
+  [T in WebhookEventType]: z.ZodObject<
+    {
+      id: z.ZodString;
+      type: z.ZodLiteral<T>;
+      createdAt: z.ZodString;
+      data: (typeof WEBHOOK_EVENT_PAYLOAD_SCHEMAS)[T];
+    },
+    'strict'
+  >;
+}[WebhookEventType];
+
+const webhookEventPayloadVariants = WEBHOOK_EVENT_TYPES.map((type) =>
+  z
+    .object({
+      id: z.string(),
+      type: z.literal(type),
+      createdAt: z.string(),
+      data: WEBHOOK_EVENT_PAYLOAD_SCHEMAS[type],
+    })
+    .strict(),
+) as unknown as [WebhookEventPayloadVariant, ...WebhookEventPayloadVariant[]];
+
+/**
+ * The wire shape of a delivered payload (the POST body): a stable delivery `id`
+ * (also the `X-BetterTrack-Delivery` header, which a receiver dedupes retries
+ * on), the event `type`, the event's `createdAt`, and the type's allowlisted
+ * `data` ({@link WEBHOOK_EVENT_PAYLOAD_SCHEMAS}). Documented for receivers — the
+ * signature covers the serialized form of exactly this object.
+ */
+export const webhookEventPayloadSchema = z.discriminatedUnion('type', webhookEventPayloadVariants);
 export type WebhookEventPayload = z.infer<typeof webhookEventPayloadSchema>;

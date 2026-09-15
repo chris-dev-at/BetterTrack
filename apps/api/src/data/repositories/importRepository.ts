@@ -225,29 +225,33 @@ export function createImportRepository(db: Database) {
 
     listRows,
 
-    /** Mark rows with their apply outcome (called row-by-row during apply). */
-    async setRowResults(
-      updates: Array<{
-        id: string;
-        result: NonNullable<ImportRowRecord['result']>;
-        resultMessage: string | null;
-        /** A fresh apply-time duplicate also flips the stored preview flag. */
-        flag?: ImportRowRecord['flag'];
-      }>,
-    ): Promise<void> {
-      if (updates.length === 0) return;
-      await db.transaction(async (tx) => {
-        for (const u of updates) {
-          await tx
-            .update(importRows)
-            .set({
-              result: u.result,
-              resultMessage: u.resultMessage,
-              ...(u.flag ? { flag: u.flag } : {}),
-            })
-            .where(eq(importRows.id, u.id));
-        }
-      });
+    /**
+     * Mark ONE row with its apply outcome, as soon as that row settles.
+     *
+     * ONE STATEMENT PER ROW, DELIBERATELY. The previous shape took the whole
+     * list and wrote it in a single transaction after the apply loop had
+     * finished, which meant the durable record of what booked did not exist
+     * while the booking was happening: anything that threw between the first
+     * movement and that flush left real money in the ledger, the batch
+     * `applied`, every row result `null` and every retry a 409. Each row's
+     * outcome is therefore committed on its own, immediately, so an interrupted
+     * apply can still say precisely which rows landed.
+     */
+    async setRowResult(update: {
+      id: string;
+      result: NonNullable<ImportRowRecord['result']>;
+      resultMessage: string | null;
+      /** A fresh apply-time duplicate also flips the stored preview flag. */
+      flag?: ImportRowRecord['flag'];
+    }): Promise<void> {
+      await db
+        .update(importRows)
+        .set({
+          result: update.result,
+          resultMessage: update.resultMessage,
+          ...(update.flag ? { flag: update.flag } : {}),
+        })
+        .where(eq(importRows.id, update.id));
     },
 
     /**

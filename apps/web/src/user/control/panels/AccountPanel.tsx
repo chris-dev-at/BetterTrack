@@ -5,8 +5,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   BASE_CURRENCIES,
-  PROFILE_ICON_IDS,
+  EXPORT_PENDING_STALE_MS,
   type BaseCurrency,
+  type ExportStatusResponse,
   type ProfileIconId,
 } from '@bettertrack/contracts';
 
@@ -23,13 +24,13 @@ import {
   requestDataExport,
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
-import { Button, Field, Icon, Input, Select } from '../../../ui/origin';
-import { Avatar } from '../../components/Avatar';
+import { Button, Field, Input, Select } from '../../../ui/origin';
+import { useAuth } from '../../AuthContext';
 import { AsyncReadState } from '../../components/AsyncReadState';
-import { ProfileIconSvg } from '../../components/profileIcons';
 import { Alert } from '../../components/ui';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
+import { ProfileIconPicker } from './ProfileIconPicker';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
@@ -45,6 +46,22 @@ const ParanoidAccountExport = lazy(() =>
 // #951 removes the old durable token cache. Clear it synchronously on mount so
 // upgrades cannot leave a previously persisted credential behind.
 const LEGACY_EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
+
+/**
+ * A `pending` job old enough that nothing will build it any more (#1812) — the
+ * queue lost the work. The server applies the same shared window when a fresh
+ * request arrives (it retires the row instead of 429-ing on it), so offering
+ * the form here matches what the request will do — as far as the two clocks
+ * agree. A browser clock running fast can offer the form slightly early and get
+ * the server's 429; the server stays authoritative, and the error surfaces
+ * normally.
+ */
+function isStalledPending(status: ExportStatusResponse): boolean {
+  if (status.status !== 'pending' || !status.requestedAt) return false;
+  const requestedAt = Date.parse(status.requestedAt);
+  if (!Number.isFinite(requestedAt)) return false;
+  return Date.now() - requestedAt >= EXPORT_PENDING_STALE_MS;
+}
 
 function clearLegacyExportToken(): void {
   try {
@@ -223,8 +240,11 @@ function ExportRow() {
   const status = useQuery({
     queryKey: EXPORT_STATUS_KEY,
     queryFn: ({ signal }) => getDataExportStatus(signal),
-    // Poll while a build is in flight; idle otherwise.
-    refetchInterval: (query) => (query.state.data?.status === 'pending' ? 3000 : false),
+    // Poll while a build is in flight; idle otherwise — and never past the
+    // point where the job can no longer make progress (#1812), or a lost build
+    // would leave this panel polling a dead row forever.
+    refetchInterval: (query) =>
+      query.state.data?.status === 'pending' && !isStalledPending(query.state.data) ? 3000 : false,
   });
 
   const mutation = useMutation({
@@ -242,7 +262,11 @@ function ExportRow() {
   // The in-memory token only unlocks the CURRENT ready job (job ids must match).
   const tokenForJob = current?.jobId && held?.jobId === current.jobId ? held.token : null;
   const isReady = current?.status === 'ready';
-  const isPending = current?.status === 'pending';
+  // A build that stopped making progress is not "in flight" any more: the form
+  // comes back, and the server lets that request supersede the dead row rather
+  // than counting it against the daily allowance (#1812).
+  const isStalled = current ? isStalledPending(current) : false;
+  const isPending = current?.status === 'pending' && !isStalled;
 
   const downloadMutation = useMutation({
     mutationFn: async () => {
@@ -320,8 +344,18 @@ function ExportRow() {
         <PanelNote>{t('settings.export.readyNoToken')}</PanelNote>
       ) : isPending ? (
         <PanelNote>{t('settings.export.pending')}</PanelNote>
+      ) : isStalled ? (
+        <PanelNote>{t('settings.export.stalled')}</PanelNote>
       ) : current?.status === 'expired' ? (
         <PanelNote>{t('settings.export.expired')}</PanelNote>
+      ) : current?.status === 'failed' ? (
+        // A refusal for size is actionable in a way a transient build failure is
+        // not: requesting the same export again cannot succeed (#1714).
+        <PanelNote>
+          {current.error === 'EXPORT_TOO_LARGE'
+            ? t('settings.export.failedTooLarge')
+            : t('settings.export.failed')}
+        </PanelNote>
       ) : null}
 
       {!isPending ? (
@@ -340,7 +374,10 @@ function ExportRow() {
           <Button className="self-start" disabled={mutation.isPending} size="sm" type="submit">
             {mutation.isPending
               ? t('settings.export.submitting')
-              : isReady || current?.status === 'expired' || current?.status === 'failed'
+              : isReady ||
+                  isStalled ||
+                  current?.status === 'expired' ||
+                  current?.status === 'failed'
                 ? t('settings.export.requestAgain')
                 : t('settings.export.request')}
           </Button>
@@ -364,18 +401,25 @@ function CleartextExportGate() {
 function ParanoidProfileIconRow() {
   const t = useT();
   const queryClient = useQueryClient();
+  const { applyProfileIcon } = useAuth();
   const [draft, setDraft] = useState<ProfileIconId | null | undefined>(undefined);
-  const [open, setOpen] = useState(false);
   const query = useQuery({
     queryKey: PROFILE_KEY,
     queryFn: ({ signal }) => getProfileSettings(signal),
   });
   const mutation = useMutation({
-    mutationFn: (profileIcon: ProfileIconId | null) =>
-      updateProfileSettings({ isPublic: false, profileIcon }),
+    // Icon only. The public-profile opt-in is NOT this row's business: sending
+    // `isPublic` here would ride a profile-visibility write along with every
+    // icon change, harmless today only because the paranoid transition already
+    // forced it off. Omitting the field leaves the column untouched server-side.
+    mutationFn: (profileIcon: ProfileIconId | null) => updateProfileSettings({ profileIcon }),
     onSuccess: (result) => {
       queryClient.setQueryData(PROFILE_KEY, result);
+      // Refreshes the identity rows' own `/auth/me` read …
       void queryClient.invalidateQueries({ queryKey: ME_KEY });
+      // … which the rail/topbar avatar does not observe: it renders the icon off
+      // the session user, so the saved choice only reaches it through this seam.
+      applyProfileIcon(result.profileIcon ?? null);
       setDraft(undefined);
     },
   });
@@ -398,79 +442,12 @@ function ParanoidProfileIconRow() {
   return (
     <>
       <Row stack>
-        <button
-          aria-controls="paranoid-profile-icon-grid"
-          aria-expanded={open}
-          className="flex items-center gap-3 text-left"
-          onClick={() => setOpen((value) => !value)}
-          style={{
-            background: 'none',
-            border: 0,
-            color: 'inherit',
-            cursor: 'pointer',
-            font: 'inherit',
-            padding: 0,
-          }}
-          type="button"
-        >
-          <Avatar iconId={current} name={query.data.username} size="sm" />
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span className="bt-cc-row__label">{t('profile.icon.title')}</span>
-            <span className="bt-cc-row__hint">
-              {current
-                ? t('profile.icon.picked', { name: t(`profile.icon.name.${current}`) })
-                : t('profile.icon.defaultHint')}
-            </span>
-          </span>
-          <Icon
-            name="chevron-right"
-            size={15}
-            style={{
-              color: 'var(--bt-faint)',
-              flex: 'none',
-              transform: open ? 'rotate(90deg)' : undefined,
-              transition: 'transform var(--bt-t-fast)',
-            }}
-          />
-        </button>
-        {open ? (
-          <div
-            aria-label={t('profile.icon.title')}
-            id="paranoid-profile-icon-grid"
-            role="radiogroup"
-          >
-            <div className="grid grid-cols-8 gap-1.5 sm:grid-cols-10">
-              {PROFILE_ICON_IDS.map((id) => (
-                <button
-                  aria-checked={current === id}
-                  aria-label={t(`profile.icon.name.${id}`)}
-                  className="flex aspect-square items-center justify-center"
-                  data-icon-id={id}
-                  key={id}
-                  onClick={() => setDraft(id)}
-                  role="radio"
-                  style={{
-                    background: current === id ? 'var(--bt-gold-soft)' : 'none',
-                    border: `1px solid ${
-                      current === id ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'
-                    }`,
-                    borderRadius: 5,
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                  type="button"
-                >
-                  <ProfileIconSvg className="h-full w-full" id={id} />
-                </button>
-              ))}
-            </div>
-            {current !== null ? (
-              <button className="bt-link mt-2 text-xs" onClick={() => setDraft(null)} type="button">
-                {t('profile.icon.clear')}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        <ProfileIconPicker
+          gridId="paranoid-profile-icon-grid"
+          onChange={setDraft}
+          username={query.data.username}
+          value={current}
+        />
       </Row>
       {dirty || mutation.isError ? (
         <Row>

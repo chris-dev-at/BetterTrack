@@ -10,6 +10,7 @@ import {
   listConglomerates,
   replaceConglomeratePositions,
 } from '../../lib/conglomerateApi';
+import { assetTypeLabelKey } from '../../lib/assetTypeLabel';
 import { cx } from '../../lib/cx';
 import {
   WATCHLISTS_QUERY_KEY,
@@ -38,11 +39,11 @@ import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 /** Reused by the lazily-fetched supporting queries below (watchlists, portfolios). */
 const SEARCH_STALE_MS = 30_000;
 
-// Search only ever returns catalog/provider (market) assets — a user's custom
-// off-market assets are not in the search index, so `type: 'custom'` can never
-// reach this badge. The former `custom` entry was dead (identical to the neutral
-// fallback below) and is dropped so no CUSTOM slice lingers in an asset-type map
-// (V3-P2, issue #325).
+// Badge tint per asset type. `custom` deliberately has no tint and falls back to
+// the neutral badge: search DOES return the caller's own custom assets
+// (`assetRepository.visibleTo` includes `owner_id = $user`), so the row is real
+// — it just carries no CUSTOM colour slice (V3-P2, issue #325). Its LABEL comes
+// from the shared `assetTypeLabelKey` helper like every other type's.
 const TYPE_BADGE: Record<string, string> = {
   stock: 'bt-badge--blue',
   etf: 'bg-violet-900/60 text-violet-300',
@@ -471,7 +472,9 @@ function ResultRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm font-semibold">{item.symbol}</span>
-          <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>{item.type}</span>
+          <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>
+            {t(assetTypeLabelKey(item.type))}
+          </span>
           <MarketStateBadge state={item.marketState} />
           <CapabilityTags type={item.type} />
         </div>
@@ -807,7 +810,9 @@ function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () =>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-sm font-semibold">{item.symbol}</span>
-            <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>{item.type}</span>
+            <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>
+              {t(assetTypeLabelKey(item.type))}
+            </span>
             <CapabilityTags type={item.type} />
           </div>
           <span className="truncate text-xs bt-muted">

@@ -294,6 +294,44 @@ describe('S3 — an unreadable grouped number is reported, not silently null', (
     expect(mapping.mappings.find((m) => m.field === 'amount')?.needsReview).toBe(false);
   });
 
+  it('scopes the ROW flag to the columns something is actually read from', () => {
+    // An `Exchange Rate` column is aliased to `ignore` — no value is ever taken
+    // from it — yet `1.092` is an unreadable grouping under `en`, so every row
+    // of a real month was demoted to one-by-one manual confirmation citing a
+    // column nothing reads. The column ISSUE stays (the mapper reads it to mark
+    // the column reviewed); what may not survive is the per-row demand.
+    const { table, mapping } = understandTable(
+      buf(
+        [
+          'Date,Payee,Transaction type,Amount,Exchange Rate',
+          '2024-01-10,Netflix,Direct Debit,-12.99,1.092',
+          '2024-01-11,Spar,Card Payment,-31.40,1.087',
+        ].join('\n'),
+      ),
+      'fx.csv',
+    )!;
+    const issue = kinds(table, 'ambiguous-grouped-number');
+    expect(issue).toHaveLength(1);
+    expect(issue[0]?.column).toBe(4);
+    expect(mapping.ignoredColumns).toContain(4);
+    // Unscoped, both rows still carry the flag…
+    expect(sniffFlagsByRow(table).get(0)).toEqual(['ambiguous-grouped-number']);
+    // …and a reader that knows the mapping sees nothing to review.
+    const scoped = sniffFlagsByRow(table, { ignoredColumns: new Set(mapping.ignoredColumns) });
+    expect(scoped.get(0)).toBeUndefined();
+    expect(scoped.get(1)).toBeUndefined();
+  });
+
+  it('keeps the row flag when a READ column is the ambiguous one', () => {
+    // The same scoping must not be a way to lose the flag that matters: here
+    // the unreadable grouping is in `Quantity`, which the mapper reads.
+    const { table, mapping } = understandTable(buf(ENGLISH_AMBIGUOUS), 'qty.csv')!;
+    expect(mapping.ignoredColumns).toEqual([]);
+    const scoped = sniffFlagsByRow(table, { ignoredColumns: new Set([4]) });
+    expect(scoped.get(0)).toEqual(['ambiguous-grouped-number']);
+    expect(scoped.get(1)).toEqual(['ambiguous-grouped-number']);
+  });
+
   it('does not flag the same values in the notation that CAN read them', () => {
     // `1,250` is unambiguous German: 1.25. A German file must stay quiet.
     const { table, mapping } = understandTable(
@@ -357,7 +395,9 @@ describe('S3b — every row-level finding is emitted per row', () => {
       ),
       'summe.csv',
     )!;
-    expect(table.rowFlags).toEqual([{ row: 2, line: 4, flags: ['summary-row'] }]);
+    // A summary row is a ROW-level finding, so it names no column — `columns`
+    // carries entries only for the column-scoped kinds (see RowFlag.columns).
+    expect(table.rowFlags).toEqual([{ row: 2, line: 4, flags: ['summary-row'], columns: {} }]);
     expect(sniffFlagsByRow(table).get(2)).toEqual(['summary-row']);
     expect(sniffFlagsByRow(table).get(0)).toBeUndefined();
   });

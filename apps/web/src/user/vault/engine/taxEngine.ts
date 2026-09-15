@@ -15,6 +15,8 @@ import { resolvePortfolioSetting } from '@bettertrack/domain/settingsScope';
 import {
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
+  TaxRowClassificationError,
+  costBasisStrategyForEngine,
   customCarryForYears,
   deCarryPots,
   dePotCategoryForAssetType,
@@ -22,12 +24,15 @@ import {
   settleAtYear,
   settleCustomYear,
   settleDeYear,
+  settleFiYear,
+  taxEngineForRow,
   viennaYearOf,
   type CostBasisStrategy,
   type CustomTaxParams,
   type CustomTaxableEvent,
   type DeTaxableEvent,
   type SellRealizationEur,
+  type TaxRowEngine,
   type TaxableTransaction,
 } from '@bettertrack/domain/tax';
 
@@ -54,17 +59,41 @@ interface EffectiveTaxSettings {
   custom: CustomTaxParams | null;
 }
 
+/**
+ * The engine a row or a portfolio settles under. `fi` is reachable only as a
+ * FROZEN row engine under the manual living regime (#1512): a living FI
+ * regime is still refused by {@link validateSettings} until the FI
+ * derivation has its own conformance vector, so `regimeFromSettings` never
+ * yields it — but a frozen FI row must classify, render at its FIFO basis and
+ * pool under `settleFiYear` exactly as the server report does, never take the
+ * whole composed view down.
+ */
 export type TaxRegime =
   | { kind: 'none' }
   | { kind: 'manual' }
   | { kind: 'at' }
   | { kind: 'de' }
+  | { kind: 'fi' }
   | { kind: 'custom'; params: CustomTaxParams };
 
 export interface TaxRowRegimeFacts {
   taxMode: TaxMode | null;
   taxCountry: TaxCountry | null;
   taxParams: unknown;
+}
+
+/** The shared engine vocabulary (`@bettertrack/domain/tax`) of a client regime. */
+export function taxEngineOfRegime(regime: TaxRegime): TaxRowEngine {
+  switch (regime.kind) {
+    case 'at':
+      return 'AT';
+    case 'de':
+      return 'DE';
+    case 'fi':
+      return 'FI';
+    default:
+      return regime.kind;
+  }
 }
 
 /**
@@ -345,6 +374,7 @@ function buildTaxReport(
   };
 
   const atEvents = new Map<number, CustomTaxableEvent[]>();
+  const fiEvents = new Map<number, CustomTaxableEvent[]>();
   const deEvents = new Map<number, DeTaxableEvent[]>();
   const customGroups = new Map<
     string,
@@ -382,6 +412,7 @@ function buildTaxReport(
       entry.event,
       entry.category,
       atEvents,
+      fiEvents,
       deEvents,
       customGroups,
     );
@@ -390,22 +421,30 @@ function buildTaxReport(
   const targets = new Map<number, number>();
   const addTarget = (year: number, value: number) =>
     targets.set(year, floorCents((targets.get(year) ?? 0) + value));
-  for (const [year, events] of atEvents) {
-    const gains = events
-      .filter((event) => event.kind === 'sell_gain')
-      .map((event) => event.amountEur);
-    const dividends = events
-      .filter((event) => event.kind === 'dividend')
-      .map((event) => event.amountEur);
-    addTarget(
-      year,
-      settleAtYear({
-        existingGainsEur: gains,
-        existingDividendsEur: dividends,
-        heldEur: 0,
-        newEvents: [],
-      }).heldAfterEur,
-    );
+  // AT and FI are both single-pool year settlements over the same event
+  // shape; only the target function differs (flat KESt vs. the progressive
+  // pääomatulovero), and both come verbatim from the shared domain.
+  for (const [pool, settle] of [
+    [atEvents, settleAtYear],
+    [fiEvents, settleFiYear],
+  ] as const) {
+    for (const [year, events] of pool) {
+      const gains = events
+        .filter((event) => event.kind === 'sell_gain')
+        .map((event) => event.amountEur);
+      const dividends = events
+        .filter((event) => event.kind === 'dividend')
+        .map((event) => event.amountEur);
+      addTarget(
+        year,
+        settle({
+          existingGainsEur: gains,
+          existingDividendsEur: dividends,
+          heldEur: 0,
+          newEvents: [],
+        }).heldAfterEur,
+      );
+    }
   }
 
   const deStates = new Map<
@@ -631,11 +670,14 @@ function addRegimeEvent(
   event: CustomTaxableEvent,
   category: 'aktien' | 'sonstige',
   atEvents: Map<number, CustomTaxableEvent[]>,
+  fiEvents: Map<number, CustomTaxableEvent[]>,
   deEvents: Map<number, DeTaxableEvent[]>,
   customGroups: Map<string, { params: CustomTaxParams; events: Map<number, CustomTaxableEvent[]> }>,
 ): void {
   if (regime.kind === 'at') {
     append(atEvents, year, event);
+  } else if (regime.kind === 'fi') {
+    append(fiEvents, year, event);
   } else if (regime.kind === 'de') {
     append(
       deEvents,
@@ -655,32 +697,53 @@ function addRegimeEvent(
   }
 }
 
+/**
+ * The client side of the #1512 single classifier: the ENGINE assignment is
+ * the shared domain `taxEngineForRow` (the same call the server's
+ * `rowTaxEngine` makes; the committed `@bettertrack/domain/taxVectors` table
+ * pins both replays). This function only attaches what the client regime
+ * carries beyond the engine label — the living custom parameters on a
+ * derivable row, the row's own frozen snapshot on a custom-frozen row.
+ */
 function regimeForRow(row: TaxRowRegimeFacts, active: TaxRegime): TaxRegime {
-  if (row.taxMode !== 'manual_per_trade' && active.kind !== 'manual') {
-    return active;
-  }
-  if (row.taxMode === 'manual_per_trade') return { kind: 'manual' };
-  if (row.taxMode === 'none' || row.taxMode === null) return { kind: 'none' };
-  if (row.taxMode === 'country_specific') {
-    if (row.taxCountry === null || row.taxCountry === TAX_COUNTRY_AT) {
-      return { kind: 'at' };
+  let engine: TaxRowEngine;
+  try {
+    engine = taxEngineForRow(row, taxEngineOfRegime(active));
+  } catch (cause) {
+    if (cause instanceof TaxRowClassificationError) {
+      throw moneyFailure(
+        'TAX_MODE_UNSUPPORTED',
+        `Tax country ${String(cause.taxCountry)} is unsupported by the paranoid client engine.`,
+        { cause },
+      );
     }
-    if (row.taxCountry === TAX_COUNTRY_DE) return { kind: 'de' };
-    throw moneyFailure(
-      'TAX_MODE_UNSUPPORTED',
-      `Tax country ${String(row.taxCountry)} is unsupported by the paranoid client engine.`,
-    );
+    throw cause;
   }
-  if (row.taxMode === 'custom') {
-    return { kind: 'custom', params: parseCustom(row.taxParams) };
+  switch (engine) {
+    case 'manual':
+      return { kind: 'manual' };
+    case 'none':
+      return { kind: 'none' };
+    case 'AT':
+      return { kind: 'at' };
+    case 'DE':
+      return { kind: 'de' };
+    case 'FI':
+      return { kind: 'fi' };
+    case 'custom':
+      // A derivable row under a custom LIVING regime settles under the living
+      // parameters; a custom-FROZEN row (manual living regime) keeps its own.
+      return active.kind === 'custom'
+        ? active
+        : { kind: 'custom', params: parseCustom(row.taxParams) };
   }
-  throw moneyFailure('TAX_MODE_UNSUPPORTED', `Unsupported frozen tax mode ${String(row.taxMode)}.`);
 }
 
 function strategyForReportRow(regime: TaxRegime): CostBasisStrategy {
-  if (regime.kind === 'de') return 'fifo';
-  if (regime.kind === 'custom') return regime.params.costBasis;
-  return 'moving-average';
+  return costBasisStrategyForEngine(
+    taxEngineOfRegime(regime),
+    regime.kind === 'custom' ? regime.params : null,
+  );
 }
 
 function effectiveTaxSettings(

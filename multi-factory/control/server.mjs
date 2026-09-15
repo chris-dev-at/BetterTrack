@@ -140,7 +140,7 @@ const run = (cmd, args, opts = {}) =>
           err: err?.message,
         }),
     );
-    // Close stdin so CLIs that append piped stdin (codex exec, agy) don't block
+    // Close stdin so CLIs that append piped stdin (codex exec) do not block
     // waiting for EOF — none of these calls feed data in.
     child.stdin?.end();
   });
@@ -875,39 +875,13 @@ async function persistClaudexLastTest(value) {
 }
 
 // ---- provider connection status (host-side — this is what the auth sync copies) --------
-let provCache = { at: 0, data: null };
 async function providerStatus(multiDocker) {
   const home = process.env.HOME || '';
   // Connection status is cheap (file existence) — always fresh, so logging in a
   // provider flips it to connected on the very next snapshot instead of after the
-  // cache TTL. codex = ~/.codex/auth.json; gemini is factory-ready only once the
-  // CONTAINER has the agy token (on macOS the host token lives in the keychain,
-  // so host presence alone doesn't mean the containers can use it — they get it
-  // via `autorun.sh --login-gemini`).
+  // cache TTL. codex = ~/.codex/auth.json.
   const codex = existsSync(join(home, '.codex', 'auth.json'));
   const containerCodex = existsSync(join(MF_DIR, 'auth', 'master', 'codex', 'auth.json'));
-  const gemini =
-    existsSync(
-      join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token'),
-    ) || existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
-  // The expensive agy model probe stays cached at 10 min. Claude profile
-  // presence is a cheap private-file read and remains fresh after a login or
-  // assignment change.
-  if (Date.now() - provCache.at >= 600000 || !provCache.data) {
-    let agyModels = provCache.data?.agyModels || [];
-    const hostGemini = gemini || existsSync(join(home, '.gemini', 'oauth_creds.json'));
-    if (hostGemini) {
-      const r = await run('agy', ['models'], { timeout: 20000 });
-      if (r.ok) {
-        const list = r.stdout
-          .split('\n')
-          .map((s) => s.trim())
-          .filter(Boolean);
-        if (list.length) agyModels = list;
-      }
-    }
-    provCache = { at: Date.now(), data: { agyModels } };
-  }
   const claudeState = await publicClaudeCredentialState();
   const selectedClaude = await masterClaudeCredential();
   const claudeConnected = !!selectedClaude.token;
@@ -932,8 +906,6 @@ async function providerStatus(multiDocker) {
     },
     codex: { connected: codex },
     claudex,
-    gemini: { connected: gemini },
-    agyModels: provCache.data.agyModels,
   };
 }
 
@@ -1486,12 +1458,7 @@ async function doAction(action, payload = {}) {
       const requested = {
         provider: p,
         model: typeof payload.model === 'string' ? payload.model : configured?.model,
-        ...(p === 'gemini'
-          ? {}
-          : {
-              effort:
-                typeof payload.effort === 'string' ? payload.effort : configured?.effort || 'high',
-            }),
+        effort: typeof payload.effort === 'string' ? payload.effort : configured?.effort || 'high',
       };
       const selected = normalizeRouteEntry(requested);
       if (!selected) return { ok: false, message: 'invalid provider/model/effort' };
@@ -1596,12 +1563,7 @@ async function doAction(action, payload = {}) {
           },
           { invalidateRuntime: true, invalidateDocker: true },
         );
-      } else if (p === 'gemini')
-        r = await run('agy', ['-p', 'Reply with exactly: ok', '--model', selected.model], {
-          timeout: 120000,
-          cwd: MF_DIR,
-        });
-      else return { ok: false, message: 'unknown provider' };
+      } else return { ok: false, message: 'unknown provider' };
       if (p === 'codex' && r.ok) {
         const events = r.stdout
           .split('\n')

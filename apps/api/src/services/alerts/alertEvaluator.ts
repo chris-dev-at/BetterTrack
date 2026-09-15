@@ -6,7 +6,10 @@ import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { NotificationCenter } from '../notifications/notificationCenter';
-import { withAlertFollowRecipients, type AlertFollowerFanoutDeps } from './alertFollowerFanout';
+import {
+  createAlertFollowRecipientCache,
+  type AlertFollowerFanoutDeps,
+} from './alertFollowerFanout';
 
 /**
  * The price-alert evaluator (PROJECTPLAN.md §14, V3-P10 arc b). A BullMQ
@@ -15,22 +18,36 @@ import { withAlertFollowRecipients, type AlertFollowerFanoutDeps } from './alert
  * §5.3 market-data core (never a per-alert upstream fan-out), tests the rule,
  * and fires the ones that met their condition.
  *
- * Firing is guarded twice so concurrent or restarted evaluator runs cannot
- * double-fire (§14 "idempotency key per (alert, trigger window)"):
- *  - a per-(alert, minute-window) Redis `SET NX` lock, and
- *  - the alert's own persisted state (`status`/`last_triggered_at`): one-shot
- *    alerts flip to `triggered` and drop out of the active set; repeat alerts
- *    stay active but honour a 24 h cooldown.
+ * Firing is guarded so overlapping, re-delivered or replicated evaluator runs
+ * cannot double-fire (§14 "idempotency key per (alert, trigger window)"):
+ *  - a per-(alert, minute-window) Redis `SET NX` lock sheds the same-minute
+ *    stampede before it reaches the database, and
+ *  - the fire itself is an ATOMIC conditional transition on the alert row
+ *    ({@link AlertRepository.claimTrigger}): it lands only while the row still
+ *    carries the exact (`active`, `last_triggered_at`) snapshot the run read.
+ *
+ * The claim is what makes the guarantee hold ACROSS minutes, which the Redis
+ * key alone cannot: a run that stalls past its BullMQ lock is re-delivered in a
+ * later minute and still sees the pre-fire snapshot, so it takes a different
+ * Redis key — and then loses the claim. The dispatcher's own dedupe cannot
+ * catch that case either, because its event key folds in the fire's minute.
  *
  * A fire only emits `alert.triggered` through the notification center, which
  * enqueues it on the DURABLE `notifications.dispatch` queue (#368/#367: the
  * old pub/sub hand-off was at-most-once — a fire published while the
  * dispatcher was down/redeploying was silently lost although the alert was
- * already on cooldown; the queue survives restarts and retries). The emit
- * happens BEFORE the alert's own state flips — and the flip is skipped when the
- * enqueue itself failed — so a crash OR a Redis hiccup between the two can only
- * ever re-fire (deduped downstream), never lose the notification. This module
+ * already on cooldown; the queue survives restarts and retries). This module
  * never touches the notification tables directly.
+ *
+ * The honest ordering, and what it costs: the claim is taken BEFORE the emit,
+ * because a claim is what makes one run's emit exclusive. A failed enqueue is
+ * still fully recovered — the claim is RELEASED and the row restored to its
+ * pre-fire snapshot, so the next run retries it, exactly the #367 rule for a
+ * Redis hiccup. What is NOT covered is the process dying in the one-enqueue-wide
+ * window between claim and emit: that fire is lost (a one-shot ends `triggered`
+ * undelivered, a repeat waits out its cooldown) rather than duplicated. That is
+ * the deliberate trade for killing the double fire that every overlapping run
+ * produced.
  */
 
 /** Repeat-alert cooldown between fires (§14: 24 h). */
@@ -154,6 +171,14 @@ export async function runAlertsEvaluation(
   const { alertRepo, marketData, redis, notify, logger } = deps;
   const now = deps.now ? deps.now() : Date.now();
 
+  // Alert-follow fan-out (#455): one audience resolution per owner per RUN,
+  // spanning both rails. The resolution depends only on (owner, 'fire') but
+  // costs two privacy-lock transactions, so resolving it per fired alert made a
+  // market-wide event cost 2N lock round-trips before any notification work.
+  const followAudience = deps.followFanout
+    ? createAlertFollowRecipientCache(deps.followFanout, 'fire')
+    : null;
+
   const globalActive = await alertRepo.listActiveWithAsset({ includeCustomAssets: false });
   let evaluated = globalActive.length;
   let fired = await evaluateBatch(globalActive);
@@ -242,9 +267,10 @@ export async function runAlertsEvaluation(
           continue;
         }
 
-        // Idempotency: only the first evaluator run to claim this (alert, window)
-        // lock may fire it. A concurrent/repeated run in the same minute loses the
-        // race and no-ops — no double publish, no double notification (§14).
+        // Idempotency, first line: the per-(alert, window) Redis lock sheds a
+        // same-minute stampede (a second replica, a raised concurrency) before
+        // it reaches the database. It cannot span minutes, so it is a damper,
+        // not the guarantee.
         const acquired = await redis.set(
           alertFireLockKey(alert.id, windowStart),
           '1',
@@ -254,10 +280,20 @@ export async function runAlertsEvaluation(
         );
         if (acquired !== 'OK') continue;
 
-        // Emit FIRST, then flip the alert's state: if the process dies between
-        // the two, the worst case is a re-fire next window (deduped by the
-        // dispatcher's eventKey), never a triggered-but-never-delivered alert —
-        // the exact #367 failure this ordering kills.
+        // Idempotency, the guarantee: an atomic conditional transition off the
+        // exact snapshot this run read. A run re-delivered in a LATER minute
+        // still holds the pre-fire snapshot and takes a different Redis key —
+        // and loses here, so it never emits.
+        const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
+        const triggeredAt = new Date(now);
+        const claimed = await alertRepo.claimTrigger({
+          id: alert.id,
+          expectedLastTriggeredAt: alert.lastTriggeredAt,
+          status,
+          triggeredAt,
+        });
+        if (!claimed) continue;
+
         const emitted = await notify.emit({
           type: 'alert.triggered',
           userId: alert.userId,
@@ -266,41 +302,42 @@ export async function runAlertsEvaluation(
           occurredAt,
         });
         if (!emitted) {
-          // Enqueue failed (the center logged it): leave the alert untouched so
-          // the next window retries — same #367 rule for a Redis hiccup as for a
-          // crash: a fire may be delayed and re-attempted, never dropped after
-          // the state already flipped.
+          // Enqueue failed (the center logged it): release the claim so the row
+          // is exactly where it was and the next window retries it — the #367
+          // rule for a Redis hiccup, unchanged by the claim-first ordering: a
+          // fire may be delayed and re-attempted, never dropped after the state
+          // already flipped.
+          await alertRepo.releaseTriggerClaim({
+            id: alert.id,
+            claimedStatus: status,
+            claimedAt: triggeredAt,
+            lastTriggeredAt: alert.lastTriggeredAt,
+          });
           continue;
         }
 
         // Alert-follow fan-out (#455): IN ADDITION TO the owner's delivery above,
-        // notify followers who opted into fired-alert news — the recipient query
-        // joins the owner's visibility opt-in per fire. Recipients are disjoint
-        // from the owner (self-follows are impossible), so the owner is never
-        // doubled. Best-effort like the channel fan-outs: a failed follower emit
-        // logs (the center already did) and never blocks the owner's fire — and
-        // it runs BEFORE the state flip so a crash can only re-fire (deduped per
-        // window downstream), never strand the followers of a one-shot alert.
-        if (deps.followFanout) {
+        // notify followers who opted into fired-alert news — the audience is the
+        // one resolved for this owner this run (visibility is still decided by
+        // the recipient query, never here). Recipients are disjoint from the
+        // owner (self-follows are impossible), so the owner is never doubled.
+        // Best-effort like the channel fan-outs: a failed follower emit logs
+        // (the center already did) and never blocks the owner's fire.
+        if (followAudience) {
           try {
-            await withAlertFollowRecipients(
-              deps.followFanout,
-              alert.userId,
-              'fire',
-              async (recipients) => {
-                for (const recipient of recipients) {
-                  await notify.emit({
-                    type: 'follow.alert.fired',
-                    userId: recipient.followerId,
-                    actorId: alert.userId,
-                    actorUsername: recipient.ownerUsername,
-                    alertId: alert.id,
-                    assetId: alert.assetId,
-                    occurredAt,
-                  });
-                }
-              },
-            );
+            await followAudience.withRecipients(alert.userId, async (recipients) => {
+              for (const recipient of recipients) {
+                await notify.emit({
+                  type: 'follow.alert.fired',
+                  userId: recipient.followerId,
+                  actorId: alert.userId,
+                  actorUsername: recipient.ownerUsername,
+                  alertId: alert.id,
+                  assetId: alert.assetId,
+                  occurredAt,
+                });
+              }
+            });
           } catch (err) {
             logger.warn(
               { alertId: alert.id, err: errorMessage(err) },
@@ -309,8 +346,6 @@ export async function runAlertsEvaluation(
           }
         }
 
-        const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
-        await alertRepo.recordTriggered(alert.id, status, new Date(now));
         batchFired += 1;
       }
     }

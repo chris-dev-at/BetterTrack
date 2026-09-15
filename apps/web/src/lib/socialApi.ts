@@ -5,6 +5,7 @@ import {
   followersListResponseSchema,
   followingEntrySchema,
   commentThreadResponseSchema,
+  commentThreadSummaryResponseSchema,
   createCommentResponseSchema,
   followingListResponseSchema,
   friendGroupListResponseSchema,
@@ -29,6 +30,7 @@ import {
   type BacktestMode,
   type BacktestPreviewRange,
   type CommentThreadResponse,
+  type CommentThreadSummaryResponse,
   type CreateCommentResponse,
   type CreateFriendRequestRequest,
   type ReactionEmoji,
@@ -464,10 +466,26 @@ const itemPath = (kind: ShareKind, subjectId: string): string =>
 export async function getCommentThread(
   kind: ShareKind,
   subjectId: string,
+  cursor?: string,
   signal?: AbortSignal,
 ): Promise<CommentThreadResponse> {
-  const data = await apiRequest<unknown>(`${itemPath(kind, subjectId)}/thread`, { signal });
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+  const data = await apiRequest<unknown>(`${itemPath(kind, subjectId)}/thread${query}`, { signal });
   return commentThreadResponseSchema.parse(data);
+}
+
+/**
+ * `GET /social/items/:kind/:subjectId/thread/summary` — the collapsed head
+ * (live comment count + item reactions, no bodies). Read while the comments
+ * section is collapsed so a long thread costs nothing until it is opened.
+ */
+export async function getCommentThreadSummary(
+  kind: ShareKind,
+  subjectId: string,
+  signal?: AbortSignal,
+): Promise<CommentThreadSummaryResponse> {
+  const data = await apiRequest<unknown>(`${itemPath(kind, subjectId)}/thread/summary`, { signal });
+  return commentThreadSummaryResponseSchema.parse(data);
 }
 
 /** `POST /social/items/:kind/:subjectId/comments` — post one comment. */

@@ -1,17 +1,22 @@
 import {
+  CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES,
+  CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX,
   customAssetCategorySchema,
+  customAssetVaultSnapshotsResponseSchema,
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
   type CustomAsset,
   type CustomAssetCategory,
   type CustomAssetListItem,
+  type CustomAssetVaultSnapshotsResponse,
   type UpdateCustomAssetRequest,
   type ValuePoint,
 } from '@bettertrack/contracts';
 
 import type { CustomAssetRepository } from '../../data/repositories/customAssetRepository';
 import type { AssetRow } from '../../data/schema';
-import { badRequest, notFound } from '../../errors';
+import { badRequest, conflict, notFound } from '../../errors';
+import type { ConglomerateService } from '../conglomerate/conglomerateService';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import type { VaultedPortfolioGuard } from '../account/vaultedPortfolioEnforcement';
@@ -40,6 +45,12 @@ export interface CustomAssetServiceDeps {
   snapshots: PortfolioSnapshotService;
   /** E2 portfolio boundary for the optional server-side initial purchase. */
   vaultedPortfolio?: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>;
+  /**
+   * The blueprint side of a delete (#1776): a custom asset is usable in
+   * blueprints (§6.8.5), and its position rows cascade away with it, so the
+   * baskets that held it are re-run through the §6.5 activation gate.
+   */
+  conglomerates: Pick<ConglomerateService, 'basketsHoldingAsset' | 'revalidateAfterAssetRemoval'>;
 }
 
 export interface CustomAssetService {
@@ -50,6 +61,16 @@ export interface CustomAssetService {
   remove(userId: string, id: string): Promise<void>;
   getValuePoints(userId: string, id: string): Promise<ValuePoint[]>;
   putValuePoints(userId: string, id: string, points: ValuePoint[]): Promise<ValuePoint[]>;
+  /**
+   * #1529: the exact current state of the caller's own manual assets among
+   * `ids`, in vault-entity row shape (decimal strings, verbatim `meta`) — the
+   * lossless seam the per-portfolio move needs in both directions. Ids that
+   * are not the caller's manual assets are simply absent (no oracle).
+   */
+  vaultSnapshots(
+    userId: string,
+    ids: readonly string[],
+  ): Promise<CustomAssetVaultSnapshotsResponse>;
   /** How many of the user's custom assets still need re-categorizing (V3-P2). */
   recategorizationStatus(userId: string): Promise<{ pending: number }>;
   /** Dismiss the re-categorize banner: clear every flag the user owns (V3-P2). */
@@ -217,11 +238,67 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       // it commits, so a fast recompute can never persist pre-delete data and
       // then be trusted (§16 rule 7).
       const refs = await snapshots.resolveAssetReferences(id);
+      // Same reason, blueprint side (#1776): `conglomerate_positions.asset_id`
+      // is ON DELETE CASCADE, so the baskets holding this asset must be named
+      // now — after the delete nothing records that they ever did.
+      const baskets = await deps.conglomerates.basketsHoldingAsset(userId, id);
       const deleted = await repo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
       for (const ref of refs) {
         await snapshots.invalidate(ref.portfolioId, ref.fromDay);
       }
+      // §6.8.5 keeps this a hard delete — a custom asset is an asset like any
+      // other and deleting one already discards its transactions. So the
+      // blueprints it silently gutted are relabelled instead: every basket that
+      // held it, and every ancestor above them, is re-run through the §6.5
+      // activation gate, because a basket left `active` while part of it
+      // resolves to nothing is the state #1755 ruled invalid — the donut claims
+      // fully invested while the Invest Calculator withholds the missing slice.
+      await deps.conglomerates.revalidateAfterAssetRemoval(userId, baskets);
+    },
+
+    async vaultSnapshots(userId, ids) {
+      const { present, absentIds } = await repo.vaultSnapshotsForOwner(userId, ids);
+      const totalValues = present.reduce((total, { values }) => total + values.length, 0);
+      if (totalValues > CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX) {
+        // Size, not security: one response stays bounded; the client asks
+        // for fewer ids per request.
+        throw conflict(
+          `The requested manual assets carry ${totalValues} value points; at most ${CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX} fit one read.`,
+          CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES.tooLarge,
+        );
+      }
+      const response = customAssetVaultSnapshotsResponseSchema.safeParse({
+        present: present.map(({ asset, values }) => ({
+          id: asset.id,
+          asset: {
+            providerId: asset.providerId,
+            providerRef: asset.providerRef,
+            ownerId: asset.ownerId,
+            type: asset.type,
+            symbol: asset.symbol,
+            name: asset.name,
+            exchange: asset.exchange,
+            currency: asset.currency,
+            meta: asset.meta ?? null,
+            // `search_text` is GENERATED ALWAYS server-side; the vault's own
+            // snapshot producer (`assetSnapshotRow`) spells it as `symbol name`.
+            searchText: `${asset.symbol} ${asset.name}`.trim(),
+          },
+          values: values.map(({ date, close }) => ({ assetId: asset.id, date, close })),
+        })),
+        absentIds,
+      });
+      if (!response.success) {
+        // TYPED (review F2): a bare ZodError would become a client 400 —
+        // but nothing about the request is invalid; a STORED row is not
+        // exactly servable, so the move must refuse the asset, not the request.
+        throw conflict(
+          'A stored manual-asset row cannot be served exactly in vault-entity shape.',
+          CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES.unservable,
+        );
+      }
+      return response.data;
     },
 
     async getValuePoints(userId, id) {

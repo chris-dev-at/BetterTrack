@@ -11,7 +11,10 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="BetterTrack" />
     <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
-    <link rel="apple-touch-icon" sizes="192x192" href="/icons/bettertrack-maskable-192.png" />
+    <!-- iOS ignores the maskable safe zone and masks the whole square itself,
+         so the home-screen idiom is its own 180×180 opaque asset (V5-P13b);
+         reusing the padded maskable 192 rendered the mark small and inset. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/bettertrack-apple-touch-180.png" />
     <title>BetterTrack</title>
   </head>
   <body>

@@ -21,7 +21,13 @@ beforeEach(async () => {
   const redis = new RedisMock() as unknown as Redis;
   await publisher.flushall();
   bus = createEventBus({ publisher, subscriber });
-  ctx = { events: bus, deadLetter: createDeadLetter(redis), redis, logger };
+  ctx = {
+    events: bus,
+    deadLetter: createDeadLetter(redis),
+    redis,
+    logger,
+    isFeatureEnabled: async () => true,
+  };
 });
 
 afterEach(async () => {

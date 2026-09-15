@@ -15,6 +15,21 @@ check(){
 }
 
 REAL_NODE=$(command -v node)
+# Hermetic environment. The suite also runs INSIDE a factory container (the
+# autorun.sh --self-test deploy hook), where compose exports MF_MODELS_FILE,
+# MF_REQUEUE_MAX, MF_LIMIT_NAPS_MAX, the composer caps and CC_* for the live
+# fleet. Every one of those silently overrides a fixture: an inherited
+# MF_MODELS_FILE alone reddened 42 checks here. Own the whole namespace.
+unset MF_MODELS_FILE MF_ROLE_TIMEOUT MF_REQUEUE_MAX MF_MERGE_LOOKAHEAD \
+  MF_LIMIT_NAPS_MAX MF_COMPOSER_COOLDOWN MF_COMPOSER_BACKOFF_MAX \
+  MF_COMPOSER_PROTOCOL_ATTEMPTS MF_COMPOSER_PROTOCOL_COOLDOWN \
+  MF_COMPOSER_PROTOCOL_BACKOFF_MAX MF_COMPOSER_MAX_TURNS MF_COMPOSER_TIMEOUT \
+  MF_SOL_COMPOSER_TIMEOUT MF_SOL_COMPOSER_MAX_TURNS COMPOSER_BATCH \
+  CC_ROLE CC_SLOT CC_EFFORT CC_ISSUE CC_MAX_TURNS CC_TIMEOUT 2>/dev/null || true
+# claudex-test.sh drives autorun.sh with a stubbed docker; without this the
+# start path would re-enter this very suite.
+export MF_SKIP_SELF_TEST=1
+
 export REAL_NODE
 ORIGINAL_PATH=$PATH
 mkdir -p "$T/bin" "$T/state/control" "$T/repo"
@@ -653,7 +668,7 @@ check "override is preserved for dry build/up/ps" 3 \
     MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --fresh >/dev/null
   COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
     PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
-    MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --login-gemini >/dev/null
+    MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --stop >/dev/null
 )
 COMPOSE_CALLS=$(grep '^compose' "$DOCKER_CALLS" || true)
 check "every Compose lifecycle call pins the canonical project" 0 \
@@ -663,7 +678,10 @@ check "every Compose lifecycle call clears the inherited project env" 0 \
   "$(printf '%s\n' "$COMPOSE_CALLS" | grep -vc '<project-env:__unset__>' || true)"
 check "hostile project names never reach a Compose invocation" 0 \
   "$(printf '%s\n' "$COMPOSE_CALLS" | grep -Ec 'hostile-env|hostile-overlay' || true)"
-for verb in build up down stop logs config ps; do
+# `config` left this list with the retired provider's interactive login (#1623):
+# `dc config --images` was that subcommand's only caller, so autorun.sh no longer
+# issues it at all.
+for verb in build up down stop logs ps; do
   grep -q "<$verb>" <<<"$COMPOSE_CALLS" \
     && ok "canonical Compose helper covers $verb" \
     || bad "canonical Compose helper missed $verb"

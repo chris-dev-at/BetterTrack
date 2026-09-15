@@ -1,0 +1,355 @@
+{
+  "description": "The shipped paranoid capture, frozen. `reads` is the account exactly as the server's own endpoints serve it; `document` is what buildNormalVaultDocument + toStrictRestoreDocument emit from those reads. apps/web/src/user/vault/ui/migration.test.ts regenerates the document from `reads` and asserts it equals `document` byte-for-byte, so the file cannot drift from the capture. apps/api/src/services/expenses/__tests__/vaultDedupRegression.test.ts seeds `reads` into a real database, purges it the way enable does, drives `document` through the real restore, and asserts the account reads back as `reads` again. Neither side hand-writes a restore entity: the capture is the only author of `document`.",
+  "capture": {
+    "userId": "018f0000-0000-7000-8000-0000000000a1",
+    "deviceId": "018f0000-0000-7000-8000-0000000000d2",
+    "syntheticIdPrefix": "018f0000-0000-7000-8001-",
+    "now": "2026-07-15T12:00:00.000Z"
+  },
+  "reads": {
+    "portfolios": {
+      "portfolios": [
+        {
+          "id": "018f0000-0000-7000-8000-00000000a001",
+          "name": "Main",
+          "visibility": "private",
+          "sortOrder": 0,
+          "isDefault": true,
+          "defaultPayFromCash": false,
+          "archivedAt": null
+        }
+      ]
+    },
+    "cash": {
+      "balanceEur": 957.5,
+      "sources": [
+        {
+          "id": "018f0000-0000-7000-8000-00000000a002",
+          "name": "Main",
+          "type": "cash",
+          "isMain": true,
+          "archivedAt": null,
+          "balanceEur": 957.5,
+          "createdAt": "2026-06-01T09:00:00.000Z"
+        }
+      ],
+      "movements": [
+        {
+          "id": "018f0000-0000-7000-8000-00000000a004",
+          "kind": "withdrawal",
+          "amountEur": -42.5,
+          "sourceId": "018f0000-0000-7000-8000-00000000a002",
+          "transactionId": null,
+          "transferId": null,
+          "counterpartSourceId": null,
+          "dividendId": null,
+          "taxYear": null,
+          "executedAt": "2026-07-01T00:00:00.000Z",
+          "note": "User-edited description",
+          "source": "import:n26",
+          "createdAt": "2026-07-01T08:00:00.000Z",
+          "tags": [],
+          "dedupHash": "27c07763486885bceed1e09b634e77572e7db29709c8240e18e02cd9d1e6e03c"
+        },
+        {
+          "id": "018f0000-0000-7000-8000-00000000a003",
+          "kind": "deposit",
+          "amountEur": 1000,
+          "sourceId": "018f0000-0000-7000-8000-00000000a002",
+          "transactionId": null,
+          "transferId": null,
+          "counterpartSourceId": null,
+          "dividendId": null,
+          "taxYear": null,
+          "executedAt": "2026-06-01T09:00:00.000Z",
+          "note": "Salary",
+          "source": "manual",
+          "createdAt": "2026-06-01T09:00:00.000Z",
+          "tags": []
+        }
+      ],
+      "nextCursor": null
+    },
+    "portfolioTaxSettings": {
+      "effective": {
+        "mode": "none",
+        "country": null
+      },
+      "override": null,
+      "userDefault": {
+        "mode": "none",
+        "country": null
+      },
+      "source": "user"
+    },
+    "taxSettings": {
+      "mode": "none",
+      "country": null
+    },
+    "expenseCategories": {
+      "categories": [
+        {
+          "id": "018f0000-0000-7000-8000-00000000a005",
+          "name": "Groceries",
+          "direction": "expense",
+          "color": "#123456",
+          "createdAt": "2026-05-01T08:00:00.000Z",
+          "updatedAt": "2026-05-01T08:00:00.000Z"
+        },
+        {
+          "id": "018f0000-0000-7000-8000-00000000a006",
+          "name": "Subscriptions",
+          "direction": "expense",
+          "color": "#654321",
+          "createdAt": "2026-06-01T08:00:00.000Z",
+          "updatedAt": "2026-06-01T08:00:00.000Z"
+        }
+      ]
+    },
+    "expenseTransactions": {
+      "transactions": [
+        {
+          "id": "018f0000-0000-7000-8000-00000000a007",
+          "categoryId": "018f0000-0000-7000-8000-00000000a005",
+          "direction": "expense",
+          "amount": 42.5,
+          "currency": "EUR",
+          "bookedOn": "2026-07-01",
+          "description": "User-edited description",
+          "source": "import:n26",
+          "dedupHash": "27c07763486885bceed1e09b634e77572e7db29709c8240e18e02cd9d1e6e03c",
+          "createdAt": "2026-07-01T08:00:00.000Z",
+          "updatedAt": "2026-07-03T09:30:00.000Z"
+        }
+      ]
+    },
+    "expenseBudgets": {
+      "period": "2026-07",
+      "budgets": [
+        {
+          "id": "018f0000-0000-7000-8000-00000000c001",
+          "categoryId": "018f0000-0000-7000-8000-00000000a005",
+          "categoryName": "Groceries",
+          "categoryColor": "#123456",
+          "amount": 300,
+          "currency": "EUR",
+          "period": "2026-07",
+          "spent": 42.5,
+          "remaining": 257.5,
+          "exceeded": false,
+          "createdAt": "2026-05-01T08:30:00.000Z",
+          "updatedAt": "2026-05-01T08:30:00.000Z"
+        },
+        {
+          "id": "018f0000-0000-7000-8000-00000000b001",
+          "categoryId": "018f0000-0000-7000-8000-00000000a006",
+          "categoryName": "Subscriptions",
+          "categoryColor": "#654321",
+          "amount": 25,
+          "currency": "EUR",
+          "period": "2026-07",
+          "spent": 0,
+          "remaining": 25,
+          "exceeded": false,
+          "createdAt": "2026-06-01T08:30:00.000Z",
+          "updatedAt": "2026-06-01T08:30:00.000Z"
+        }
+      ]
+    }
+  },
+  "document": {
+    "schemaVersion": 1,
+    "entities": [
+      {
+        "id": "018f0000-0000-7000-8000-00000000a001",
+        "rev": 1,
+        "editedAt": "2026-07-15T12:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "portfolio",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "name": "Main",
+          "visibility": "private",
+          "sortOrder": 0,
+          "defaultPayFromCash": false,
+          "archivedAt": null,
+          "kind": null,
+          "vaultId": null,
+          "alias": null,
+          "vaultAlias": null
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000a002",
+        "rev": 1,
+        "editedAt": "2026-06-01T09:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "cashSource",
+        "data": {
+          "portfolioId": "018f0000-0000-7000-8000-00000000a001",
+          "name": "Main",
+          "type": "cash",
+          "isMain": true,
+          "archivedAt": null,
+          "createdAt": "2026-06-01T09:00:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000a004",
+        "rev": 1,
+        "editedAt": "2026-07-01T08:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "cashMovement",
+        "data": {
+          "portfolioId": "018f0000-0000-7000-8000-00000000a001",
+          "sourceId": "018f0000-0000-7000-8000-00000000a002",
+          "kind": "withdrawal",
+          "amountEur": "-42.5",
+          "transactionId": null,
+          "transferId": null,
+          "counterpartSourceId": null,
+          "dividendId": null,
+          "taxYear": null,
+          "executedAt": "2026-07-01T00:00:00.000Z",
+          "note": "User-edited description",
+          "source": "import:n26",
+          "dedupHash": "27c07763486885bceed1e09b634e77572e7db29709c8240e18e02cd9d1e6e03c",
+          "originalCurrency": null,
+          "createdAt": "2026-07-01T08:00:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000a003",
+        "rev": 1,
+        "editedAt": "2026-06-01T09:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "cashMovement",
+        "data": {
+          "portfolioId": "018f0000-0000-7000-8000-00000000a001",
+          "sourceId": "018f0000-0000-7000-8000-00000000a002",
+          "kind": "deposit",
+          "amountEur": "1000",
+          "transactionId": null,
+          "transferId": null,
+          "counterpartSourceId": null,
+          "dividendId": null,
+          "taxYear": null,
+          "executedAt": "2026-06-01T09:00:00.000Z",
+          "note": "Salary",
+          "source": "manual",
+          "dedupHash": null,
+          "originalCurrency": null,
+          "createdAt": "2026-06-01T09:00:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8001-000000000001",
+        "rev": 1,
+        "editedAt": "2026-07-15T12:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "taxSetting",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "mode": "none",
+          "country": null,
+          "manualDefaultAmountEur": null,
+          "manualDefaultRatePct": null,
+          "customParams": null,
+          "updatedAt": "2026-07-15T12:00:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000a005",
+        "rev": 1,
+        "editedAt": "2026-05-01T08:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "expenseCategory",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "name": "Groceries",
+          "direction": "expense",
+          "color": "#123456",
+          "createdAt": "2026-05-01T08:00:00.000Z",
+          "updatedAt": "2026-05-01T08:00:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000a006",
+        "rev": 1,
+        "editedAt": "2026-06-01T08:00:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "expenseCategory",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "name": "Subscriptions",
+          "direction": "expense",
+          "color": "#654321",
+          "createdAt": "2026-06-01T08:00:00.000Z",
+          "updatedAt": "2026-06-01T08:00:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000a007",
+        "rev": 1,
+        "editedAt": "2026-07-03T09:30:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "expenseTransaction",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "categoryId": "018f0000-0000-7000-8000-00000000a005",
+          "direction": "expense",
+          "amount": "42.5",
+          "currency": "EUR",
+          "bookedOn": "2026-07-01",
+          "description": "User-edited description",
+          "source": "import:n26",
+          "dedupHash": "27c07763486885bceed1e09b634e77572e7db29709c8240e18e02cd9d1e6e03c",
+          "createdAt": "2026-07-01T08:00:00.000Z",
+          "updatedAt": "2026-07-03T09:30:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000c001",
+        "rev": 1,
+        "editedAt": "2026-05-01T08:30:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "expenseBudget",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "categoryId": "018f0000-0000-7000-8000-00000000a005",
+          "amount": "300",
+          "currency": "EUR",
+          "createdAt": "2026-05-01T08:30:00.000Z",
+          "updatedAt": "2026-05-01T08:30:00.000Z"
+        }
+      },
+      {
+        "id": "018f0000-0000-7000-8000-00000000b001",
+        "rev": 1,
+        "editedAt": "2026-06-01T08:30:00.000Z",
+        "editedBy": "018f0000-0000-7000-8000-0000000000d2",
+        "deletedAt": null,
+        "kind": "expenseBudget",
+        "data": {
+          "userId": "018f0000-0000-7000-8000-0000000000a1",
+          "categoryId": "018f0000-0000-7000-8000-00000000a006",
+          "amount": "25",
+          "currency": "EUR",
+          "createdAt": "2026-06-01T08:30:00.000Z",
+          "updatedAt": "2026-06-01T08:30:00.000Z"
+        }
+      }
+    ],
+    "mergeLog": [],
+    "mirrorProvenance": []
+  }
+}

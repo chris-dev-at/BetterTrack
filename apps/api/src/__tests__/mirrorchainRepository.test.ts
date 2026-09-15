@@ -1,7 +1,10 @@
-import type { MirrorOpPayload } from '@bettertrack/contracts';
+import { MIRROR_OP_KINDS, type MirrorOpPayload } from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import {
+  TERMINAL_OP_KINDS,
+  createMirrorchainRepository,
+} from '../data/repositories/mirrorchainRepository';
 import { assets, portfolios, transactions } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -312,19 +315,28 @@ describe('mirrorchainRepository (M1)', () => {
       });
     }
 
+    const cursorOf = (row: (typeof all)[number]) => ({
+      mirrorId: row.mirrorId,
+      portfolioId: row.portfolioId,
+      kind: row.kind,
+    });
+
     const all = await repo.listDanglingOriginRows(10);
     expect(all.map((row) => row.mirrorId)).toEqual([...mirrorIds].sort());
     // Same order every time, and the pages tile the set without overlap or gap.
     expect((await repo.listDanglingOriginRows(10)).map((r) => r.mirrorId)).toEqual(
       all.map((r) => r.mirrorId),
     );
-    expect((await repo.listDanglingOriginRows(2, 0)).map((r) => r.mirrorId)).toEqual(
-      all.slice(0, 2).map((r) => r.mirrorId),
-    );
-    expect((await repo.listDanglingOriginRows(2, 2)).map((r) => r.mirrorId)).toEqual(
-      all.slice(2).map((r) => r.mirrorId),
-    );
-    expect(await repo.listDanglingOriginRows(2, 10)).toEqual([]);
+    const firstPage = await repo.listDanglingOriginRows(2);
+    expect(firstPage.map((r) => r.mirrorId)).toEqual(all.slice(0, 2).map((r) => r.mirrorId));
+    expect(
+      (await repo.listDanglingOriginRows(2, cursorOf(firstPage[1]!))).map((r) => r.mirrorId),
+    ).toEqual(all.slice(2).map((r) => r.mirrorId));
+    // Resuming past the last row reports the empty tail rather than wrapping —
+    // the wrap is the service pager's job, not the scan's.
+    expect(await repo.listDanglingOriginRows(2, cursorOf(all[all.length - 1]!))).toEqual([]);
+    // Every residual is counted, not just the page this run surfaced.
+    expect(await repo.countDanglingOriginRows()).toBe(all.length);
   });
 
   /**
@@ -361,15 +373,25 @@ describe('mirrorchainRepository (M1)', () => {
 
     // (c) lost `*.delete`: the oplog keeps all three alive, the copy carries no
     // link for any of them.
+    const divergentCursorOf = (row: { chainId: string; mirrorId: string; portfolioId: string }) => ({
+      chainId: row.chainId,
+      mirrorId: row.mirrorId,
+      portfolioId: row.portfolioId,
+    });
+
     const missing = await repo.listDivergentMissingRows(10);
     expect(missing.map((r) => r.mirrorId)).toEqual([...mirrorIds].sort());
-    expect((await repo.listDivergentMissingRows(2, 0)).map((r) => r.mirrorId)).toEqual(
-      missing.slice(0, 2).map((r) => r.mirrorId),
-    );
-    expect((await repo.listDivergentMissingRows(2, 2)).map((r) => r.mirrorId)).toEqual(
-      missing.slice(2).map((r) => r.mirrorId),
-    );
-    expect(await repo.listDivergentMissingRows(2, 10)).toEqual([]);
+    const missingFirst = await repo.listDivergentMissingRows(2);
+    expect(missingFirst.map((r) => r.mirrorId)).toEqual(missing.slice(0, 2).map((r) => r.mirrorId));
+    expect(
+      (await repo.listDivergentMissingRows(2, divergentCursorOf(missingFirst[1]!))).map(
+        (r) => r.mirrorId,
+      ),
+    ).toEqual(missing.slice(2).map((r) => r.mirrorId));
+    expect(
+      await repo.listDivergentMissingRows(2, divergentCursorOf(missing[missing.length - 1]!)),
+    ).toEqual([]);
+    expect(await repo.countDivergentMissingRows()).toBe(missing.length);
 
     // Link each entity to a local row whose money contradicts its op (quantity
     // 2 against the payload's 1) → (c) falls silent, (d) names all three.
@@ -414,13 +436,22 @@ describe('mirrorchainRepository (M1)', () => {
     expect(await repo.listDivergentMissingRows(10)).toEqual([]);
     const divergent = await repo.listDivergentTransactionRows(10);
     expect(divergent.map((r) => r.mirrorId)).toEqual([...mirrorIds].sort());
-    expect((await repo.listDivergentTransactionRows(2, 0)).map((r) => r.mirrorId)).toEqual(
+    const divergentFirst = await repo.listDivergentTransactionRows(2);
+    expect(divergentFirst.map((r) => r.mirrorId)).toEqual(
       divergent.slice(0, 2).map((r) => r.mirrorId),
     );
-    expect((await repo.listDivergentTransactionRows(2, 2)).map((r) => r.mirrorId)).toEqual(
-      divergent.slice(2).map((r) => r.mirrorId),
-    );
-    expect(await repo.listDivergentTransactionRows(2, 10)).toEqual([]);
+    expect(
+      (await repo.listDivergentTransactionRows(2, divergentCursorOf(divergentFirst[1]!))).map(
+        (r) => r.mirrorId,
+      ),
+    ).toEqual(divergent.slice(2).map((r) => r.mirrorId));
+    expect(
+      await repo.listDivergentTransactionRows(
+        2,
+        divergentCursorOf(divergent[divergent.length - 1]!),
+      ),
+    ).toEqual([]);
+    expect(await repo.countDivergentTransactionRows()).toBe(divergent.length);
 
     // A faithfully applied row whose submitted numbers carry MORE decimals than
     // the columns keep: the copy rounds exactly as every other copy did, so it
@@ -471,5 +502,66 @@ describe('mirrorchainRepository (M1)', () => {
     expect((await repo.listDivergentTransactionRows(10)).map((r) => r.mirrorId)).not.toContain(
       SUBMS,
     );
+  });
+
+  /**
+   * The two §3 terminality guards (the service's door check and this
+   * repository's in-transaction check) read ONE derived list, so they cannot
+   * drift. This pins the derivation itself: a `*.delete` op kind that is not
+   * terminal is exactly the `cash.delete` bug — an edit racing a delete
+   * acknowledged with 200 and then dropped on replay. A future delete-ish kind
+   * NOT named `*.delete` must be added to the derivation by hand.
+   */
+  it('the in-transaction guard refuses an op after a cash.delete (§3 terminality backstop)', async () => {
+    const { chain, owner, pid } = await seedChainWithOwner();
+    const MIRROR = '018f0000-0000-7000-8000-0000000000e1';
+    const [deletion] = await repo.appendOps(chain.id, [
+      {
+        kind: 'cash.delete',
+        mirrorId: MIRROR,
+        actorUserId: owner.id,
+        actorUsername: owner.username,
+        originPortfolioId: pid,
+        payload: { opVersion: 1, kind: 'cash.delete', mirrorId: MIRROR, baseSeq: 0 },
+      },
+    ]);
+
+    // Editing against the delete's own seq satisfies the stale-edit guard — only
+    // terminality refuses it, and money rows are no exception to the rule.
+    const refused = await repo.appendOpsChecked(chain.id, owner.id, [
+      {
+        kind: 'cash.update',
+        mirrorId: MIRROR,
+        actorUserId: owner.id,
+        actorUsername: owner.username,
+        originPortfolioId: pid,
+        baseSeq: deletion!.seq,
+        payload: {
+          opVersion: 1,
+          kind: 'cash.update',
+          mirrorId: MIRROR,
+          baseSeq: deletion!.seq,
+          sourceMirrorId: null,
+          amountEur: 999,
+          executedAt: '2026-07-22T10:00:00.000Z',
+          note: null,
+          originSource: 'manual',
+          cashKind: 'deposit',
+        },
+      },
+    ]);
+
+    expect(refused).toEqual({ refused: 'ROW_DELETED', mirrorId: MIRROR });
+    // The refusal rolls the whole append back: no seq consumed, no op row.
+    expect((await repo.getChain(chain.id))!.lastSeq).toBe(deletion!.seq);
+    expect(await repo.latestOpForEntity(chain.id, MIRROR)).toMatchObject({ kind: 'cash.delete' });
+  });
+
+  it('every *.delete op kind is terminal (the two guards share one derived list)', () => {
+    const deleteKinds = MIRROR_OP_KINDS.filter((kind) => kind.endsWith('.delete'));
+    expect([...TERMINAL_OP_KINDS].sort()).toEqual([...deleteKinds].sort());
+    expect(TERMINAL_OP_KINDS).toContain('cash.delete');
+    expect(TERMINAL_OP_KINDS).toContain('tx.delete');
+    expect(TERMINAL_OP_KINDS).toContain('dividend.delete');
   });
 });

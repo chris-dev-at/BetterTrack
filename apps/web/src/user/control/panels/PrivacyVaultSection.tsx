@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
 
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -11,8 +10,7 @@ import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineContext
 import { hasUnambiguousBranch, type VaultSyncStatus } from '../../vault/sync';
 import type { VaultRuntime } from '../../vault/VaultRuntimeContext';
 import { disableUnlockedVault } from '../../vault/ui/disable';
-import { CHECKBOX_STYLE } from '../../components/ui';
-import { Button, Field, Input } from '../../../ui/origin';
+import { Button, CheckRow, Field, Input, LinkButton } from '../../../ui/origin';
 import type { Notice } from './PrivacyPanel';
 import { PanelFold, PanelForm, PanelGroup, PanelNote, Row } from './panelKit';
 
@@ -53,9 +51,9 @@ export function PrivacyVaultSection({
           hint={t('vault.settings.mediaHint')}
           label={t(`vault.settings.media.${mediaLabel(mediaSet)}`)}
         >
-          <Link className="bt-link text-sm" to="/control/connections">
+          <LinkButton size="sm" to="/control/connections" variant="quiet">
             {t('vault.settings.manageMedia')}
-          </Link>
+          </LinkButton>
         </Row>
         <PanelFold summary={t('vault.settings.whatsOff')}>
           <ul className="list-disc space-y-1 pl-5 text-sm">
@@ -261,15 +259,9 @@ function VaultSecurityActions({
               value={rotationPassphrase}
             />
           </Field>
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={rotationAcknowledged}
-              onChange={(event) => setRotationAcknowledged(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.settings.rotationAcknowledgment')}</span>
-          </label>
+          <CheckRow checked={rotationAcknowledged} onChange={setRotationAcknowledged} tone="gold">
+            {t('vault.settings.rotationAcknowledgment')}
+          </CheckRow>
           <Button
             disabled={working || rotationPassphrase.length === 0 || !rotationAcknowledged}
             size="sm"
@@ -353,15 +345,9 @@ function VaultDestructiveActions({
       <PanelFold summary={t('vault.settings.startFresh')}>
         <PanelForm>
           <PanelNote warn>{t('vault.settings.startFreshWarning')}</PanelNote>
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={freshConfirmed}
-              onChange={(event) => setFreshConfirmed(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.settings.startFreshConfirm')}</span>
-          </label>
+          <CheckRow checked={freshConfirmed} onChange={setFreshConfirmed} tone="gold">
+            {t('vault.settings.startFreshConfirm')}
+          </CheckRow>
           <Button
             disabled={working || !freshConfirmed}
             onClick={() => void startFresh()}
@@ -378,15 +364,9 @@ function VaultDestructiveActions({
         <PanelForm>
           <PanelNote warn>{t('vault.settings.disableWarning')}</PanelNote>
           {disableBlocked ? <PanelNote warn>{t('vault.settings.disableBlocked')}</PanelNote> : null}
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={disableConfirmed}
-              onChange={(event) => setDisableConfirmed(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.settings.disableConfirm')}</span>
-          </label>
+          <CheckRow checked={disableConfirmed} onChange={setDisableConfirmed} tone="gold">
+            {t('vault.settings.disableConfirm')}
+          </CheckRow>
           <Button
             disabled={
               working ||

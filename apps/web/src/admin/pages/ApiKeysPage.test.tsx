@@ -73,7 +73,10 @@ beforeEach(() => {
   vi.mocked(api.listApiKeyTiers).mockResolvedValue({
     tiers: [tier(), tier({ id: 't-pro', name: 'Pro', requestLimit: 600, isDefault: false })],
   });
-  vi.mocked(api.listAdminApiKeys).mockResolvedValue({ keys: [key()] });
+  vi.mocked(api.listAdminApiKeys).mockResolvedValue({
+    keys: [key()],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.getApiKeyAudit).mockResolvedValue({
     keyId: 'k-1',
     lastUsedAt: '2026-07-20T00:00:00.000Z',
@@ -134,6 +137,31 @@ test('opens the per-key audit log', async () => {
   expect(within(dialog).getByText('/portfolios')).toBeInTheDocument();
 });
 
+test('every key-governance table scrolls horizontally instead of widening the page', async () => {
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('button', { name: 'View audit' }));
+  const tables = await screen.findAllByRole('table');
+
+  // Tiers, keys and the per-key audit log. jsdom does no layout, so the wrapper
+  // class is the regression contract: an unscrolled table is sized to its
+  // columns' min-content, which pushed the German header row to 384px inside a
+  // 328px phone column until these three joined every other console table.
+  expect(tables).toHaveLength(3);
+  for (const table of tables) {
+    expect(table.parentElement).toHaveClass('overflow-x-auto');
+  }
+});
+
+test('the per-key tier picker opts into the console tap-target floor', async () => {
+  renderPage();
+
+  // The only page-local control on a swept route that a finger has to hit. The
+  // marker is both the 44px floor (`styles/origin.css`) and the phone gate's
+  // selector, so a control that drops it also drops out of the measurement.
+  expect(await screen.findByLabelText('Tier for CI bot')).toHaveClass('admin-tap-target');
+});
+
 test('renders the extracted key-governance copy in German', async () => {
   renderPage('de');
 
@@ -159,7 +187,7 @@ test('retries a failed tier-list read without hiding the key list', async () => 
 test('retries a failed key-list read without hiding the tier list', async () => {
   vi.mocked(api.listAdminApiKeys)
     .mockRejectedValueOnce(new Error('offline'))
-    .mockResolvedValueOnce({ keys: [key()] });
+    .mockResolvedValueOnce({ keys: [key()], page: { total: 1, limit: 25, offset: 0 } });
   const user = userEvent.setup();
   renderPage();
 
@@ -203,4 +231,108 @@ test('localizes an API mutation failure instead of rendering the server message'
     'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
   );
   expect(screen.queryByText(/tier could not be created/i)).not.toBeInTheDocument();
+});
+
+test('renders one bounded page of keys and reaches the rest through the footer', async () => {
+  // #1814: every key ever minted used to arrive in one body, each row carrying a
+  // tier <select> populated with every tier.
+  const pageOf = (offset: number) =>
+    Array.from({ length: 25 }, (_, i) => key({ id: `k-${offset + i}`, name: `bot-${offset + i}` }));
+  vi.mocked(api.listAdminApiKeys).mockImplementation(async (params = {}) => ({
+    keys: pageOf(params.offset ?? 0),
+    page: { total: 60, limit: 25, offset: params.offset ?? 0 },
+  }));
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(await screen.findByText('bot-0')).toBeInTheDocument();
+  const keysSection = screen.getByRole('heading', { level: 2, name: 'Keys' }).closest('section')!;
+  // 25 rows of a 60-key table, not 60.
+  expect(within(keysSection).getAllByRole('row')).toHaveLength(26); // + header
+
+  await user.click(within(keysSection).getByRole('button', { name: 'Next' }));
+
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+      { offset: 25, includeRevoked: false },
+      expect.anything(),
+    ),
+  );
+  expect(await within(keysSection).findByText('bot-25')).toBeInTheDocument();
+});
+
+/**
+ * #1848 D2. Like the users table, this panel rendered its footer INSIDE the
+ * non-empty branch, so a window that answered nothing lost the pager exactly
+ * when it was needed. The footer now sits in both branches, and the offset
+ * snaps back to a page that still holds rows.
+ *
+ * The empty-page footer itself is asserted where it can be held still — the
+ * component's own `ListPagination.test.tsx` ("keeps a usable way back on an
+ * empty page past the first") and `UsersPage.test.tsx`, whose server keeps
+ * answering the stale window. Here the snap-back lands immediately, which is
+ * the outcome that matters to the operator.
+ */
+test('an empty page past the first snaps back to a page that still has rows', async () => {
+  const firstPage = Array.from({ length: 25 }, (_, i) => key({ id: `k-${i}`, name: `bot-${i}` }));
+  // The set still says 50, but the second window is empty: the keys that lived
+  // there were revoked while the operator was reading page 1.
+  vi.mocked(api.listAdminApiKeys).mockImplementation(async (params = {}) => {
+    const offset = params.offset ?? 0;
+    return offset === 0
+      ? { keys: firstPage, page: { total: 50, limit: 25, offset } }
+      : { keys: [], page: { total: 50, limit: 25, offset } };
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText('bot-0');
+  const keysSection = screen.getByRole('heading', { level: 2, name: 'Keys' }).closest('section')!;
+  await user.click(within(keysSection).getByRole('button', { name: 'Next' }));
+
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+      { offset: 25, includeRevoked: false },
+      expect.anything(),
+    ),
+  );
+  // Not "No API keys have been created yet." over 25 live keys: the surface
+  // recovers to the page that has them.
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenLastCalledWith(
+      { offset: 0, includeRevoked: false },
+      expect.anything(),
+    ),
+  );
+  expect(await within(keysSection).findByText('bot-0')).toBeInTheDocument();
+  expect(
+    within(keysSection).queryByText('No API keys have been created yet.'),
+  ).not.toBeInTheDocument();
+});
+
+test('leaves revoked keys out of the default view until the filter asks for them', async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('CI bot')).toBeInTheDocument());
+  // The default read carries no `includeRevoked` — the contract's default keeps
+  // them out, so a table nothing prunes cannot fill up with dead rows (#1814).
+  expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+    { offset: 0, includeRevoked: false },
+    expect.anything(),
+  );
+
+  vi.mocked(api.listAdminApiKeys).mockResolvedValue({
+    keys: [key(), key({ id: 'k-2', name: 'retired', revokedAt: '2026-07-25T00:00:00.000Z' })],
+    page: { total: 2, limit: 25, offset: 0 },
+  });
+  await user.click(screen.getByLabelText('Show revoked keys'));
+
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+      { offset: 0, includeRevoked: true },
+      expect.anything(),
+    ),
+  );
+  expect(await screen.findByText('retired')).toBeInTheDocument();
 });

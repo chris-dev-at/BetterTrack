@@ -27,7 +27,13 @@ import type {
   SharedWithMeResponse,
   UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
-import { PROFILE_BIO_MAX, profileIconIdSchema } from '@bettertrack/contracts';
+import {
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
+  FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
+  PROFILE_BIO_MAX,
+  profileIconIdSchema,
+} from '@bettertrack/contracts';
 
 import { coerceProfileIcon } from '../../http/serializers';
 import type {
@@ -41,6 +47,7 @@ import type {
   ItemFollowListRow,
 } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
+import type { AudienceReachSummary } from '../../data/repositories/shareAudienceRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type {
   FollowingUserRow,
@@ -48,7 +55,7 @@ import type {
   FollowUserRow,
   UserFollowsRepository,
 } from '../../data/repositories/userFollowsRepository';
-import { badRequest, notFound } from '../../errors';
+import { ApiError, badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
@@ -79,7 +86,7 @@ export interface SocialServiceDeps {
   itemFollows: ItemFollowsRepository;
   /** Public-profile settings + per-viewer activity-alert preferences (V3-P6). */
   profile: ProfileRepository;
-  /** User row writes — only used here for the profile-icon picker (§13.5 V5-P0c). */
+  /** User row writes — only used here for the profile-icon picker (§13.5 V5-P0 (c)). */
   userRepo: UserRepository;
   /** The single sharing-enforcement layer — consulted by every read path here. */
   audience: AudienceService;
@@ -214,6 +221,36 @@ const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOU
 const GROUP_NOT_FOUND = () => notFound('Group not found.', 'FRIEND_GROUP_NOT_FOUND');
 const NOT_A_FRIEND = () =>
   badRequest('Only your accepted friends can be added to a group.', 'GROUP_MEMBER_NOT_FRIEND');
+/**
+ * The two friend-group ceilings (§13.5 V5-P8, #1780). They exist because `GET
+ * /social/groups` — the read every `AudiencePicker` open performs — hydrates
+ * every circle of the caller WITH every circle's roster: without a cap the cost
+ * of that request is chosen by the caller. Both numbers come from the contract,
+ * so the SPA can name the ceiling it is about to hit instead of discovering it
+ * as an opaque refusal.
+ */
+const GROUP_LIMIT_REACHED = () =>
+  badRequest(
+    `You can have at most ${FRIEND_GROUPS_MAX} groups. Delete one to create another.`,
+    'FRIEND_GROUP_LIMIT_REACHED',
+  );
+const GROUP_MEMBER_LIMIT_REACHED = () =>
+  badRequest(
+    `A group can have at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
+    FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
+  );
+/**
+ * The unfriend transaction rolled back, so NOTHING changed — the friendship and
+ * every group roster / grant it owns are exactly as they were. Typed and 503 so
+ * the caller can say "try again" instead of showing an opaque 500 next to a
+ * friend row whose state is now unknown (#1710).
+ */
+const UNFRIEND_FAILED = () =>
+  new ApiError(
+    503,
+    'FRIENDSHIP_REMOVE_FAILED',
+    'Removing this friend did not complete. Nothing was changed — please try again.',
+  );
 const FOLLOW_TARGET_NOT_FOUND = () => notFound('User not found.', 'USER_NOT_FOUND');
 const NOT_FOLLOWING = () => notFound('You are not following this user.', 'FOLLOW_NOT_FOUND');
 const CANNOT_FOLLOW_SELF = () => badRequest('You cannot follow yourself.', 'CANNOT_FOLLOW_SELF');
@@ -266,11 +303,13 @@ function toFriendGroup(row: {
   id: string;
   name: string;
   members: { id: string; username: string; profileIcon: string | null }[];
+  shareCount: number;
 }): FriendGroup {
   return {
     id: row.id,
     name: row.name,
     memberCount: row.members.length,
+    shareCount: row.shareCount,
     members: row.members.map((m) => ({
       id: m.id,
       username: m.username,
@@ -342,10 +381,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     if (!(await follows.isFollowing(userId, targetId))) throw NOT_FOLLOWING();
   }
 
-  /** Re-read one owned group after a mutation, or 404 if it vanished mid-flight. */
+  /**
+   * Re-read ONE owned group after a mutation, or 404 if it vanished mid-flight.
+   * Reads exactly that group: hydrating every group of the caller plus every
+   * member of those groups (O(groups × members) rows) to `.find()` one was the
+   * N+1 on every rename/add/remove (#1710).
+   */
   async function groupOrThrow(userId: string, groupId: string): Promise<FriendGroup> {
-    const all = await groups.listGroups(userId);
-    const found = all.find((g) => g.id === groupId);
+    const found = await groups.getGroup(userId, groupId);
     if (!found) throw GROUP_NOT_FOUND();
     return toFriendGroup(found);
   }
@@ -676,12 +719,28 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async removeFriend(userId, otherUserId) {
-      const removed = await repo.deleteFriendship(userId, otherUserId);
+      // ONE transaction: the friendship row, the pair's `specific_friends` grants
+      // on each other's items and — here — their group rosters. Unfriending drops
+      // the pair from each other's groups (V5-P8), keeping the invariant that a
+      // group's members are the owner's current friends, so a `group` share can
+      // never reach a now-non-friend (§6.9). Running the roster cleanup as a
+      // second, independent statement made that invariant best-effort: a failure
+      // after the friendship committed left the ex-friend on the roster, and a
+      // later re-friend (a plain accept — no re-share, no widen confirmation)
+      // silently restored their read on every item shared to that circle (#1710).
+      let removed: boolean;
+      try {
+        removed = await repo.deleteFriendship(userId, otherUserId, (tx) =>
+          groups.removeMutualMemberships(userId, otherUserId, tx),
+        );
+      } catch (err) {
+        // The transaction rolled back — nothing changed, so answer a typed,
+        // retryable refusal instead of an opaque 500 that would leave the caller
+        // unsure whether the unfriend half-applied.
+        deps.logger?.error({ err, userId }, 'unfriend transaction rolled back');
+        throw UNFRIEND_FAILED();
+      }
       if (!removed) throw FRIEND_NOT_FOUND();
-      // Unfriending drops the pair from each other's groups too (V5-P8), keeping
-      // the invariant that a group's members are the owner's current friends — so
-      // a `group` share can never reach a now-non-friend (§6.9).
-      await groups.removeMutualMemberships(userId, otherUserId);
     },
 
     // ── Friend groups (V5-P8) ──────────────────────────────────────────────
@@ -692,8 +751,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async createGroup(userId, name) {
+      // The per-user ceiling, checked before the insert (#1780). The count and
+      // the insert are two statements, so two simultaneous creates at the
+      // boundary can both pass — that costs one circle over the line, not an
+      // unbounded surface, and `listGroups` carries the same `LIMIT` regardless.
+      if ((await groups.countGroups(userId)) >= FRIEND_GROUPS_MAX) throw GROUP_LIMIT_REACHED();
       const groupId = await groups.createGroup(userId, name);
-      return { id: groupId, name, memberCount: 0, members: [] };
+      // A fresh circle has no members and nothing shared to it yet.
+      return { id: groupId, name, memberCount: 0, members: [], shareCount: 0 };
     },
 
     async renameGroup(userId, groupId, name) {
@@ -714,6 +779,26 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
       if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
       const add = async () => {
+        // The roster ceiling (#1780), inside the lock so a paranoid-mode add
+        // cannot slip past it. An add that is a no-op (the member is already in
+        // the circle) must still succeed at the cap: refusing it would make the
+        // idempotent repeat the one call a full circle cannot answer.
+        if (
+          (await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX &&
+          !(await groups.isMember(groupId, memberId))
+        ) {
+          // The ceiling counts STORED rows, but the owner only ever sees the
+          // LIVE roster — a row for a disabled or no-longer-friend member is
+          // absent from `members`, so it has no Remove button and the refusal it
+          // causes can neither be explained nor cleared (#1830). Drop those rows
+          // first: what is left blocking the add is then exactly the population
+          // `memberCount` reports and the owner can act on, so the refusal below
+          // names a real, fixable cause.
+          await groups.pruneUnreachableMembers(groupId);
+          if ((await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX) {
+            throw GROUP_MEMBER_LIMIT_REACHED();
+          }
+        }
         await groups.addMember(groupId, memberId);
         return groupOrThrow(userId, groupId);
       };
@@ -1049,12 +1134,13 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           allIdeas.map((i) => i.id),
         ),
       ]);
+      // A subject with no audience row has no reach to report: `private`
+      // (or the legacy `friends` flag) with nobody named and no group.
       const summary = (
-        map: Map<string, { audience: ShareAudience; friendCount: number }>,
+        map: Map<string, AudienceReachSummary>,
         id: string,
         fallback: ShareAudience,
-      ): { audience: ShareAudience; friendCount: number } =>
-        map.get(id) ?? { audience: fallback, friendCount: 0 };
+      ): AudienceReachSummary => map.get(id) ?? { audience: fallback, friendCount: 0, group: null };
       return {
         portfolios: allPortfolios.map((p) => {
           // Fall back off the legacy `visibility` column only when no audience
@@ -1066,6 +1152,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             name: p.name,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
         conglomerates: allConglomerates.map((c) => {
@@ -1079,6 +1166,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             positionCount: c.positionCount,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
         watchlists: allWatchlists.map((w) => {
@@ -1089,6 +1177,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             itemCount: w.itemCount,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
         ideas: allIdeas.map((i) => {
@@ -1101,6 +1190,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             hasThesis: i.thesis !== null,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
       };
@@ -1197,11 +1287,15 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         }
         const current = await profile.getProfileSettings(userId);
         if (!current) throw PROFILE_NOT_FOUND();
-        await profile.updateProfileSettings(userId, {
-          isPublic: input.isPublic,
-          bio: bio === undefined ? current.bio : bio,
-        });
-        // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
+        // Both fields pass through as sent: `undefined` (omitted) is NOT resolved
+        // to the stored value here, it is dropped from the UPDATE's SET list by
+        // the repository. An icon-only write therefore issues no
+        // profile-visibility write at all — not even one that happens to
+        // round-trip the current value, which would republish a profile a
+        // concurrent paranoid-enable had just taken private (the lock below is
+        // only taken when the request actually carries `isPublic`).
+        await profile.updateProfileSettings(userId, { isPublic: input.isPublic, bio });
+        // Profile-icon picker (§13.5 V5-P0 (c)). `undefined` = untouched; `null` clears
         // the choice; a valid id from the finite allow-list persists. The service
         // re-validates the id against {@link profileIconIdSchema} — the request
         // body already did, but defense-in-depth keeps a hand-crafted call honest.

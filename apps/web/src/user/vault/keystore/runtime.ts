@@ -4,8 +4,6 @@ import type { EndpointUnlockResult } from './types';
 const NOTHING_RESUMED: EndpointUnlockResult = { unlockedVaultIds: [] };
 
 let resumeOnce: Promise<EndpointUnlockResult> | null = null;
-/** What the last resume actually established; see the listener below. */
-let resumedVaultIds: readonly string[] = [];
 
 /** One endpoint-scoped E3 keystore shared by the directory, chip and stubs. */
 export const endpointVaultKeystore = new EndpointVaultKeystore();
@@ -22,7 +20,6 @@ export function bindEndpointKeystoreAccount(accountId: string | null): void {
   if (endpointVaultKeystore.boundAccountId() === (accountId?.trim() || null)) return;
   endpointVaultKeystore.bindAccount(accountId);
   resumeOnce = null;
-  resumedVaultIds = [];
 }
 
 /** The account currently bound, for surfaces that must not guess it. */
@@ -42,33 +39,29 @@ export function endpointKeystoreAccountId(): string | null {
  */
 export function resumeEndpointSessionOnce(): Promise<EndpointUnlockResult> {
   if (endpointVaultKeystore.boundAccountId() === null) return Promise.resolve(NOTHING_RESUMED);
-  resumeOnce ??= endpointVaultKeystore.resumeSessionFromOpenTabs().then((result) => {
-    resumedVaultIds = result.unlockedVaultIds;
-    return result;
-  });
+  resumeOnce ??= endpointVaultKeystore.resumeSessionFromOpenTabs();
   return resumeOnce;
 }
 
 /**
- * A session another tab granted may be re-requested after a teardown no lock
- * caused.
+ * A session may be re-requested after a teardown no lock caused.
  *
  * `endSession()` is raised by consistency teardowns as well as by locks — a
  * SECOND TAB writing a phrase entry bumps the keystore revision, and
  * `reconcileSessionRevision` ends this tab's session over it. Without this
  * retry, one tab unlocking would silently lock the other, which is precisely
- * the "it locks itself again" this work exists to end.
+ * the "it locks itself again" this work exists to end. Since the 2026-09-03
+ * amendment the session also lives on the device (`sessionPersistence.ts`), so
+ * the retry is worth it for a PASSWORD-established session too, not only for
+ * one a sibling tab granted.
  *
  * It cannot resurrect a real lock: manual lock, sign-out and the PIN idle lock
  * all go through `lockDevice()`, which writes the §12 marker BEFORE the session
- * end this listener sees — so the retry runs, finds a locked device, and settles
- * at "nothing resumed". Which also disarms the retry, because `resumedVaultIds`
- * is then empty: at most one re-attempt per genuinely resumed session, never a
- * poll.
+ * end this listener sees — so the retry runs, finds a locked device, and
+ * settles at "nothing resumed". And it is never a poll: the memo is dropped
+ * once per session end, and only the next state READ asks again.
  */
 endpointVaultKeystore.subscribeToSessionEnd(() => {
-  if (resumedVaultIds.length === 0) return;
-  resumedVaultIds = [];
   resumeOnce = null;
 });
 

@@ -35,6 +35,20 @@ export interface SessionData {
    * created before this shipped — treated as persistent (see {@link isPersistent}).
    */
   persistent?: boolean;
+  /**
+   * Absolute cap on this session measured from {@link createdAt}, in ms,
+   * INDEPENDENT of the persistence model (§13.5 V5-P13c). Set for admin
+   * sessions from the configured 6–24 h admin lifetime; absent for user
+   * sessions, which stay on the §6.1 persistence rules alone.
+   *
+   * It is a cap, never an extension: every derived value takes the *earlier* of
+   * this deadline and the persistence window, so a stamped session can only
+   * ever end sooner. `authService.resolveSession` remains the authority — it
+   * re-reads the live policy on every admin request — and re-stamps this value
+   * when the policy changes, so the storage TTL, the cookie and the reported
+   * expiry follow a runtime change instead of freezing at login.
+   */
+  absoluteLifetimeMs?: number;
 }
 
 export const SESSION_AUTHENTICATION_METHODS = [
@@ -112,6 +126,23 @@ export type SecurityMutationContext = BearerSecurityMutationContext | SessionSec
 export const isPersistent = (data: Pick<SessionData, 'persistent'>): boolean =>
   data.persistent !== false;
 
+/**
+ * The epoch-ms instant an {@link SessionData.absoluteLifetimeMs} session can
+ * never outlive, or null when the record carries no absolute cap (§13.5
+ * V5-P13c). Validates before deriving, exactly like the resolve-time check it
+ * mirrors: a malformed `createdAt` or lifetime yields null here, which leaves
+ * the session on its ordinary persistence window — the resolve path is what
+ * fails such a record closed, and it must stay the single place that does.
+ */
+export const absoluteDeadlineOf = (
+  data: Pick<SessionData, 'createdAt' | 'absoluteLifetimeMs'>,
+): number | null => {
+  const lifetime = data.absoluteLifetimeMs;
+  if (typeof lifetime !== 'number' || !Number.isFinite(lifetime) || lifetime <= 0) return null;
+  if (!Number.isSafeInteger(data.createdAt) || data.createdAt <= 0) return null;
+  return data.createdAt + lifetime;
+};
+
 /** Device metadata for the session manager (V3-P11a). Stored beside the session,
  * NOT inside `SessionData`, so writing it never touches the fixed-window TTL. */
 export interface SessionMeta {
@@ -145,18 +176,29 @@ export interface SessionService {
    * stable upper bound the session can never outlive, since the sliding idle
    * window only ever expires it sooner. Never overstates — unlike a flat
    * 30-day claim on an ephemeral session (V4-P2b, §399 §A).
+   *
+   * A session carrying an {@link SessionData.absoluteLifetimeMs} cap (an admin
+   * session, §13.5 V5-P13c) reports the EARLIER of the two, so the one "when
+   * does this lapse" number never overstates an admin session by the ~60× a
+   * flat 30-day window would.
    */
-  expiresAtFor(data: Pick<SessionData, 'createdAt' | 'renewedAt' | 'persistent'>): number;
+  expiresAtFor(
+    data: Pick<SessionData, 'createdAt' | 'renewedAt' | 'persistent' | 'absoluteLifetimeMs'>,
+  ): number;
   /**
    * Mint a session. `persistent` (default true) picks the TTL model: a
    * persistent session gets the fixed 30-day window; an ephemeral one gets a
    * sliding idle window hard-capped from now (V4-P2b, §399 §A).
+   *
+   * `absoluteLifetimeMs` caps the record from `createdAt` regardless of that
+   * model — the admin session lifetime (§13.5 V5-P13c). It only ever shortens.
    */
   create(
     userId: string,
     securityGeneration: number,
     persistent?: boolean,
     authentication?: SessionAuthentication,
+    options?: { absoluteLifetimeMs?: number },
   ): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
@@ -168,6 +210,25 @@ export interface SessionService {
    * upgrade routes through here. False when the session is already gone.
    */
   setPersistent(sessionId: string, persistent: boolean): Promise<boolean>;
+  /**
+   * Stamp (or re-stamp) the absolute cap on a live session and re-derive its key
+   * TTL from it (§13.5 V5-P13c). Called by the admin resolve path when the
+   * configured lifetime differs from what the record carries — a runtime policy
+   * change, or a session minted before the cap was stamped at all. Deliberately
+   * does NOT touch `renewedAt`, and floors the new key TTL at what the key
+   * already had left: this is a cap, not a renewal, and re-stamping it must
+   * never slide the persistence window it sits inside. False when the session is
+   * already gone.
+   *
+   * That makes a runtime policy change one-directional by design. LOWERING the
+   * lifetime reaches every live session on its next request. RAISING it reaches
+   * only sessions that make a request before their OLD deadline: one parked past
+   * it has already had its key expired by the storage TTL and is reaped from
+   * `listForUser`, even though `resolveSession` would now admit it. Fail-closed,
+   * and the alternative — keeping dead admin sessions alive on the chance the
+   * policy widens — is exactly what §6.12 asks us not to do.
+   */
+  setAbsoluteLifetime(sessionId: string, absoluteLifetimeMs: number): Promise<boolean>;
   destroy(sessionId: string): Promise<void>;
   destroyAllForUser(userId: string): Promise<void>;
   /**
@@ -255,13 +316,21 @@ export function createSessionService(
    * session at `createdAt + ephemeralCapMs`, and idleness expires it sooner. The
    * capped value alone enforces both bounds; no clock-timed sweep is needed. At
    * least 1s so a still-valid session is never written with a non-positive TTL.
+   *
+   * An absolute cap (an admin session, §13.5 V5-P13c) is applied on top: the key
+   * never outlives `createdAt + absoluteLifetimeMs`, so the `sess:`/`sess_meta:`
+   * records of a ≤24 h admin session stop surviving 30 days of a closed browser
+   * waiting for a read to reap them.
    */
   const ttlSecondsFor = (
-    data: Pick<SessionData, 'createdAt' | 'persistent'>,
+    data: Pick<SessionData, 'createdAt' | 'persistent' | 'absoluteLifetimeMs'>,
     now: number,
   ): number => {
-    if (isPersistent(data)) return ttlSeconds;
-    const cappedMs = Math.min(ephemeralIdleMs, data.createdAt + ephemeralCapMs - now);
+    const windowMs = isPersistent(data)
+      ? ttlSeconds * 1000
+      : Math.min(ephemeralIdleMs, data.createdAt + ephemeralCapMs - now);
+    const deadline = absoluteDeadlineOf(data);
+    const cappedMs = deadline === null ? windowMs : Math.min(windowMs, deadline - now);
     return Math.max(1, Math.ceil(cappedMs / 1000));
   };
 
@@ -271,15 +340,21 @@ export function createSessionService(
       // Persistent: the fixed window past the last renew — exactly what the key
       // TTL enforces (`get` never slides it). Ephemeral: the hard cap from
       // creation, a stable upper bound (idleness / browser-close end it sooner).
-      return isPersistent(data)
+      const windowEnd = isPersistent(data)
         ? data.renewedAt + ttlSeconds * 1000
         : data.createdAt + ephemeralCapMs;
+      // An admin session lapses at its absolute deadline whichever window it
+      // sits in (§13.5 V5-P13c) — report the earlier of the two, never the
+      // 30-day claim the persistence model alone would make.
+      const deadline = absoluteDeadlineOf(data);
+      return deadline === null ? windowEnd : Math.min(windowEnd, deadline);
     },
     async create(
       userId,
       securityGeneration,
       persistent = true,
       authentication = { method: 'unknown' },
+      options = {},
     ) {
       if (!Number.isSafeInteger(securityGeneration) || securityGeneration < 0) {
         throw new Error('A valid account security generation is required to create a session.');
@@ -289,6 +364,13 @@ export function createSessionService(
       }
       if (authentication.mfaAssurance && !mfaAssuranceOf(authentication)) {
         throw new Error('A valid MFA assurance is required to create an assured session.');
+      }
+      const absoluteLifetimeMs = options.absoluteLifetimeMs;
+      if (
+        absoluteLifetimeMs !== undefined &&
+        (!Number.isFinite(absoluteLifetimeMs) || absoluteLifetimeMs <= 0)
+      ) {
+        throw new Error('A positive absolute lifetime is required to cap a session.');
       }
       const sessionId = randomBytes(32).toString('base64url');
       const now = clock();
@@ -300,6 +382,7 @@ export function createSessionService(
         createdAt: now,
         renewedAt: now,
         persistent,
+        ...(absoluteLifetimeMs !== undefined ? { absoluteLifetimeMs } : {}),
       };
       await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await redis.sadd(userIndexKey(userId), sessionId);
@@ -354,6 +437,40 @@ export function createSessionService(
       // Flip persistence and reset the window to match the new model (V4-P2b).
       await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await touchIndex(data.userId);
+      return true;
+    },
+
+    async setAbsoluteLifetime(sessionId, absoluteLifetimeMs) {
+      if (!Number.isFinite(absoluteLifetimeMs) || absoluteLifetimeMs <= 0) {
+        throw new Error('A positive absolute lifetime is required to cap a session.');
+      }
+      const raw = await redis.get(sessionKey(sessionId));
+      if (!raw) return false;
+      let data: SessionData;
+      try {
+        data = JSON.parse(raw) as SessionData;
+      } catch {
+        await redis.del(sessionKey(sessionId));
+        return false;
+      }
+      data.absoluteLifetimeMs = absoluteLifetimeMs;
+      // `renewedAt` is deliberately untouched (see the interface note): the cap
+      // rides on top of the existing window rather than resetting it.
+      //
+      // The new TTL is likewise floored at what the key already had left. For a
+      // PERSISTENT session `ttlSecondsFor` is a fixed window and the derivation
+      // alone is safe, but for an EPHEMERAL one it re-derives the SLIDING idle
+      // window from `now` — so a bare re-derive would hand a session that had
+      // been idle for most of its window a full fresh one. Taking the smaller of
+      // the two keeps the re-stamp strictly a cap: it can shorten the key, never
+      // extend it. A backend that reports no remaining TTL (`pttl` ≤ 0, which
+      // for a key we just read means no expiry set) leaves the derived value as
+      // the only bound, which is still an improvement on none.
+      const remainingMs = await redis.pttl(sessionKey(sessionId));
+      const derivedSeconds = ttlSecondsFor(data, clock());
+      const ttl =
+        remainingMs > 0 ? Math.min(derivedSeconds, Math.ceil(remainingMs / 1000)) : derivedSeconds;
+      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', Math.max(1, ttl));
       return true;
     },
 
@@ -454,6 +571,17 @@ export function createSessionService(
         }
         // Guard against a stray id belonging to another user (should never happen).
         if (data.userId !== userId) continue;
+
+        // Past its absolute cap (§13.5 V5-P13c): the session is dead by policy
+        // even while its key lingers — the resolve path refuses and destroys it
+        // on the next request, and the device list must not present it as an
+        // active device in the meantime. Reaped here exactly like an expired key.
+        const deadline = absoluteDeadlineOf(data);
+        if (deadline !== null && deadline <= clock()) {
+          await redis.del(sessionKey(sessionId), sessionMetaKey(sessionId));
+          await redis.srem(userIndexKey(userId), sessionId);
+          continue;
+        }
 
         let meta: SessionMeta | null = null;
         const rawMeta = await redis.get(sessionMetaKey(sessionId));

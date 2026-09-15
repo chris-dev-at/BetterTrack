@@ -1,14 +1,17 @@
-import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
-import type { ShareAudience, ShareKind } from '@bettertrack/contracts';
+import { SHARE_KINDS, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import {
   conglomerates,
   friendGroupMembers,
+  friendGroups,
   friendships,
   ideas,
+  itemComments,
+  itemReactions,
   portfolios,
   shareAudienceLinks,
   shareAudienceMembers,
@@ -43,7 +46,7 @@ import {
 export interface OwnerRef {
   ownerId: string;
   ownerUsername: string;
-  /** Owner's curated profile icon id (§13.5 V5-P0c) or `null` when unset. */
+  /** Owner's curated profile icon id (§13.5 V5-P0 (c)) or `null` when unset. */
   ownerProfileIcon: string | null;
 }
 
@@ -86,10 +89,73 @@ export interface OwnedAudienceState {
   link: { active: boolean; createdAt: Date | null };
 }
 
+/**
+ * One subject's "who can see this" reach, for the owner's My items list
+ * (§13.5 V5-P8). `friendCount` is non-zero only for `specific_friends`; `group`
+ * names the circle a `group` share reaches, with its LIVE roster size, and is
+ * `null` both for every other audience and for a `group` share whose group was
+ * deleted — a state that resolves to nobody.
+ */
+export interface AudienceReachSummary {
+  audience: ShareAudience;
+  friendCount: number;
+  group: { id: string; name: string; memberCount: number } | null;
+}
+
 /** A token resolved to its subject (public-link mode, no friendship). */
 export interface PublicLinkTarget extends OwnerRef {
   kind: ShareKind;
   subjectId: string;
+}
+
+/**
+ * The owned-subject id set per shareable kind — the ONE place that knows which
+ * table and owner column back each `ShareKind`. A `Record<ShareKind, …>` on
+ * purpose: adding a shareable kind fails to compile until its owner lookup is
+ * declared here, so a new kind cannot silently escape a by-owner purge (§6.9).
+ *
+ * Vaulted portfolios are deliberately NOT excluded: this set feeds account
+ * teardown, where every row the owner holds is going away regardless of whether
+ * its subject is currently readable.
+ */
+const OWNED_SUBJECT_IDS: Record<ShareKind, (db: Database, ownerId: string) => SQLWrapper> = {
+  portfolio: (db, ownerId) =>
+    db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, ownerId)),
+  conglomerate: (db, ownerId) =>
+    db
+      .select({ id: conglomerates.id })
+      .from(conglomerates)
+      .where(eq(conglomerates.ownerId, ownerId)),
+  watchlist: (db, ownerId) =>
+    db.select({ id: watchlists.id }).from(watchlists).where(eq(watchlists.userId, ownerId)),
+  idea: (db, ownerId) => db.select({ id: ideas.id }).from(ideas).where(eq(ideas.ownerId, ownerId)),
+};
+
+/**
+ * A predicate matching every polymorphic `(kind, subject_id)` row that points at
+ * a subject `ownerId` owns, across ALL shareable kinds at once — the by-owner
+ * counterpart of the `(kind, subjectId)` equality used by `clearForSubject`.
+ *
+ * Each kind contributes an id **subquery**, never a materialized id list, so an
+ * account with a thousand portfolios still purges in the same single statement
+ * as an account with one (#1724). Callers pass their own table's polymorphic
+ * column pair, which is why this lives outside the repository factory:
+ * `item_follows` is purged from its own repository against the same set.
+ */
+export function ownedSubjectsPredicate(
+  db: Database,
+  ownerId: string,
+  cols: { kind: AnyPgColumn; subjectId: AnyPgColumn },
+): SQL {
+  // `or` over a non-empty literal tuple always yields a predicate; the fallback
+  // keeps the return type honest without a non-null assertion.
+  return (
+    or(
+      ...SHARE_KINDS.map((kind) =>
+        and(eq(cols.kind, kind), inArray(cols.subjectId, OWNED_SUBJECT_IDS[kind](db, ownerId))),
+      ),
+    ) ?? sql`false`
+  );
 }
 
 export function createShareAudienceRepository(db: Database) {
@@ -139,11 +205,16 @@ export function createShareAudienceRepository(db: Database) {
     )`;
   }
 
-  /** Friendship-exists predicate between the viewer and a subject-owner column. */
-  function friendshipWith(viewerId: string, ownerCol: AnyPgColumn) {
+  /**
+   * Friendship-exists predicate between one bound user id and a column holding
+   * the other side. The pair is stored once and read order-independently, so it
+   * serves both the authorization queries (viewer id × subject-owner column) and
+   * the owner-facing membership read (owner id × member column).
+   */
+  function friendshipWith(userId: string, otherCol: AnyPgColumn) {
     return or(
-      and(eq(friendships.userA, viewerId), eq(friendships.userB, ownerCol)),
-      and(eq(friendships.userB, viewerId), eq(friendships.userA, ownerCol)),
+      and(eq(friendships.userA, userId), eq(friendships.userB, otherCol)),
+      and(eq(friendships.userB, userId), eq(friendships.userA, otherCol)),
     );
   }
 
@@ -880,42 +951,113 @@ export function createShareAudienceRepository(db: Database) {
     },
 
     /**
-     * Per-subject audience + named-friend count, for a same-kind batch (missing
-     * row = `private`, 0 friends) — feeds the "who can see this" summary in **My
-     * Shared Items** without an N+1. One grouped query over the audience rows and
-     * their membership set.
+     * Per-subject audience + reach summary, for a same-kind batch (missing row =
+     * `private`, 0 friends) — feeds the "who can see this" summary in **My Shared
+     * Items** without an N+1. One grouped query over the audience rows, their
+     * membership set and, for a `group` audience, the referenced circle.
+     *
+     * The group's roster size is counted LIVE from `friend_group_members` here,
+     * off the same rows {@link audienceGrants} authorizes against — so editing a
+     * circle changes the reported reach on the very next read and the owner
+     * surface can never claim a reach the enforcement layer doesn't grant.
+     *
+     * Both counts carry the SAME extra joins enforcement applies, because a
+     * count without them is exactly the disagreement this summary exists to
+     * prevent (#1710): a named friend is counted only while the friendship still
+     * exists (a membership row outliving an unfriend grants nothing, since every
+     * read `AND`s an inner join on `friendships`), and a circle member only
+     * while their account is active (a disabled account cannot sign in, and
+     * every read joins `users.status = 'active'`). `friend_group_members` is
+     * joined the same way `friendGroupRepository` joins it, so `GET
+     * /social/groups` and this summary can never report different sizes for one
+     * circle.
+     *
+     * That includes the friendship join (#1780): the `group` rung used to be the
+     * ONE rung whose reported reach trusted a roster row instead of deriving
+     * friendship, inside the very select that derives it for named friends. Only
+     * the share's own owner can point an audience at a circle, so the friendship
+     * is between `share_audiences.owner_id` and the member — exactly the pair
+     * `friendGroupRepository.rostersOf` joins.
+     *
+     * `group` is `null` for a non-`group` audience AND for a `group` share whose
+     * group was deleted (`group_id` nulls out; the share then resolves to
+     * nobody). With the audience beside it, the owner surface distinguishes
+     * "not a group share" from "group gone" from a populated / empty circle.
+     *
+     * Both counts are correlated subqueries rather than joins + `count(distinct
+     * …)`: one row per audience row, so neither count can inflate on the other's
+     * product and neither needs a GROUP BY.
      */
     async audienceSummariesForSubjects(
       kind: ShareKind,
       subjectIds: readonly string[],
-    ): Promise<Map<string, { audience: ShareAudience; friendCount: number }>> {
-      const out = new Map<string, { audience: ShareAudience; friendCount: number }>();
+    ): Promise<Map<string, AudienceReachSummary>> {
+      const out = new Map<string, AudienceReachSummary>();
       if (subjectIds.length === 0) return out;
       const rows = await db
         .select({
           subjectId: shareAudiences.subjectId,
           audience: shareAudiences.audience,
-          friendCount:
-            sql<number>`count(${shareAudienceMembers.friendId}) filter (where ${shareAudiences.audience} = 'specific_friends')`.mapWith(
-              Number,
-            ),
+          groupId: friendGroups.id,
+          groupName: friendGroups.name,
+          friendCount: sql<number>`(
+            select count(*)
+            from ${shareAudienceMembers}
+            join ${friendships} on (
+              (${friendships.userA} = ${shareAudiences.ownerId}
+                and ${friendships.userB} = ${shareAudienceMembers.friendId})
+              or (${friendships.userB} = ${shareAudiences.ownerId}
+                and ${friendships.userA} = ${shareAudienceMembers.friendId})
+            )
+            where ${shareAudienceMembers.audienceId} = ${shareAudiences.id}
+              and ${shareAudiences.audience} = 'specific_friends'
+          )`.mapWith(Number),
+          groupMemberCount: sql<number>`(
+            select count(*)
+            from ${friendGroupMembers}
+            join ${users} on ${users.id} = ${friendGroupMembers.memberId}
+              and ${users.status} = 'active'
+            join ${friendships} on (
+              (${friendships.userA} = ${shareAudiences.ownerId}
+                and ${friendships.userB} = ${friendGroupMembers.memberId})
+              or (${friendships.userB} = ${shareAudiences.ownerId}
+                and ${friendships.userA} = ${friendGroupMembers.memberId})
+            )
+            where ${friendGroupMembers.groupId} = ${friendGroups.id}
+          )`.mapWith(Number),
         })
         .from(shareAudiences)
-        .leftJoin(shareAudienceMembers, eq(shareAudienceMembers.audienceId, shareAudiences.id))
+        .leftJoin(friendGroups, eq(friendGroups.id, shareAudiences.groupId))
         .where(
           and(eq(shareAudiences.kind, kind), inArray(shareAudiences.subjectId, [...subjectIds])),
-        )
-        .groupBy(shareAudiences.id, shareAudiences.subjectId, shareAudiences.audience);
+        );
       for (const r of rows)
-        out.set(r.subjectId, { audience: r.audience, friendCount: r.friendCount });
+        out.set(r.subjectId, {
+          audience: r.audience,
+          friendCount: r.friendCount,
+          group:
+            r.audience === 'group' && r.groupId !== null && r.groupName !== null
+              ? { id: r.groupId, name: r.groupName, memberCount: r.groupMemberCount }
+              : null,
+        });
       return out;
     },
 
-    /** The current owner-facing audience state for one subject (missing row = private). */
+    /**
+     * The current owner-facing audience state for one subject (missing row =
+     * private).
+     *
+     * The membership read joins `friendships` exactly like the enforcement layer
+     * does (#1710): a `specific_friends` row whose friendship has since
+     * dissolved grants nothing, so naming it here would tell the owner — and the
+     * picker, which cannot resolve the id against the friends list and silently
+     * drops the checkbox — that someone can see the item when they cannot.
+     */
     async getOwnedState(kind: ShareKind, subjectId: string): Promise<OwnedAudienceState> {
       const [row] = await db
         .select({
           id: shareAudiences.id,
+          ownerId: shareAudiences.ownerId,
           audience: shareAudiences.audience,
           groupId: shareAudiences.groupId,
         })
@@ -933,6 +1075,7 @@ export function createShareAudienceRepository(db: Database) {
       const members = await db
         .select({ friendId: shareAudienceMembers.friendId })
         .from(shareAudienceMembers)
+        .innerJoin(friendships, friendshipWith(row.ownerId, shareAudienceMembers.friendId))
         .where(eq(shareAudienceMembers.audienceId, row.id));
 
       const [link] = await db
@@ -1067,14 +1210,100 @@ export function createShareAudienceRepository(db: Database) {
     },
 
     /**
-     * Delete the audience row for a subject (cascades members + links) — called
-     * when the subject itself is deleted, so no orphan row lingers. Safety net
-     * only: the authorization joins already exclude a vanished subject.
+     * Delete everything keyed to a deleted subject: its audience row (cascading
+     * members + links) AND its social conversation — every `item_comments` row
+     * and every `item_reactions` row, item- and comment-targeted alike.
+     *
+     * The subject columns are polymorphic (no FK, no cascade), so without this
+     * purge a comment on a deleted portfolio would outlive its item forever and
+     * become undeletable through the API — the owner is gone, so moderation can
+     * no longer resolve one (§13.5 V5-P8). Comments are HARD-deleted here: the
+     * tombstone exists to make moderation auditable on a live item, and there is
+     * no live item left. Comment reactions go first — `item_reactions.comment_id`
+     * cascades, but deleting them explicitly keeps the purge independent of that.
+     *
+     * All four statements run in ONE transaction: a failure between them would
+     * otherwise leave a half-purged subject — e.g. comments gone but the audience
+     * row still live, or the reverse — with no second caller to finish the job.
      */
     async clearForSubject(kind: ShareKind, subjectId: string): Promise<void> {
-      await db
-        .delete(shareAudiences)
-        .where(and(eq(shareAudiences.kind, kind), eq(shareAudiences.subjectId, subjectId)));
+      await db.transaction(async (tx) => {
+        // A subquery, not a materialized id list: a long thread must not turn its
+        // teardown into a 20 000-element IN clause.
+        await tx.delete(itemReactions).where(
+          inArray(
+            itemReactions.commentId,
+            tx
+              .select({ id: itemComments.id })
+              .from(itemComments)
+              .where(and(eq(itemComments.kind, kind), eq(itemComments.subjectId, subjectId))),
+          ),
+        );
+        await tx
+          .delete(itemComments)
+          .where(and(eq(itemComments.kind, kind), eq(itemComments.subjectId, subjectId)));
+        await tx
+          .delete(itemReactions)
+          .where(
+            and(
+              eq(itemReactions.targetType, 'item'),
+              eq(itemReactions.kind, kind),
+              eq(itemReactions.subjectId, subjectId),
+            ),
+          );
+        await tx
+          .delete(shareAudiences)
+          .where(and(eq(shareAudiences.kind, kind), eq(shareAudiences.subjectId, subjectId)));
+      });
+    },
+
+    /**
+     * The account-teardown counterpart of `clearForSubject` (#1724): purge the
+     * social conversation on EVERY subject one owner holds, across all shareable
+     * kinds, in three statements — regardless of how many subjects that is.
+     *
+     * `item_comments` and `item_reactions` key to their subject polymorphically,
+     * so deleting the `users` row cascades away only the rows the departing user
+     * *authored*; a friend's comment body and a third user's reaction on the
+     * vanished portfolio would survive with no subject, no audience that ever
+     * authorised them, and — for the reaction — no removal path at all
+     * (`toggleItemReaction` 404s once the subject is gone). This is the sweep the
+     * deletion path runs while the subject rows still exist to resolve.
+     *
+     * `share_audiences.owner_id` is a real FK and cascades on its own, so the
+     * audience row is deliberately not re-deleted here.
+     *
+     * One transaction, same reasoning as `clearForSubject`: a failure between the
+     * statements must not leave half a purge behind, and the caller runs this
+     * BEFORE the user row goes so an abort leaves the account fully intact.
+     */
+    async clearForOwner(ownerId: string): Promise<void> {
+      await db.transaction(async (tx) => {
+        const ownedComments = ownedSubjectsPredicate(db, ownerId, {
+          kind: itemComments.kind,
+          subjectId: itemComments.subjectId,
+        });
+        // Comment reactions first, on the same independence-from-the-cascade
+        // grounds as `clearForSubject`.
+        await tx
+          .delete(itemReactions)
+          .where(
+            inArray(
+              itemReactions.commentId,
+              tx.select({ id: itemComments.id }).from(itemComments).where(ownedComments),
+            ),
+          );
+        await tx.delete(itemComments).where(ownedComments);
+        await tx.delete(itemReactions).where(
+          and(
+            eq(itemReactions.targetType, 'item'),
+            ownedSubjectsPredicate(db, ownerId, {
+              kind: itemReactions.kind,
+              subjectId: itemReactions.subjectId,
+            }),
+          ),
+        );
+      });
     },
   };
 }

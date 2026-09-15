@@ -397,4 +397,362 @@ describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
     expect(byId.get(z.id)!.costEur).toBeCloseTo(300, 6);
     expect(body.totalCostEur).toBeLessThanOrEqual(1000);
   });
+
+  it('spells every warning in the caller’s base currency, never in euros', async () => {
+    // #1831: the "raise the budget to ≥ ~X €" note was hardcoded in euros while
+    // the response — budget, prices, leftover and the withheld-slice warning
+    // beside it — is denominated in the caller's base. A CHF user was told to
+    // raise a CHF budget by a figure spelled in €, two currencies in one
+    // `warnings` array for one run.
+    const prices: Record<string, number> = { VWCE: 100, GOLD: 450 };
+    const { h, agent } = await harnessWith((ref) =>
+      ref.providerRef === 'EURCHF=X'
+        ? cachedQuote(2, { currency: 'CHF' })
+        : cachedQuote(prices[ref.providerRef]!),
+    );
+    // 1 EUR = 2 CHF, so VWCE is 200 CHF and GOLD 900 CHF.
+    await agent
+      .patch('/api/v1/settings/account')
+      .set(...XRW)
+      .send({ baseCurrency: 'CHF' })
+      .expect(200);
+
+    const vwce = await seedAsset(h, { symbol: 'VWCE', providerRef: 'VWCE' });
+    const gold = await seedAsset(h, { symbol: 'GOLD', providerRef: 'GOLD' });
+    const bonds = await seedConglomerate(agent, 'CHF Bonds', []);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'CHF Core' });
+    expect(created.status).toBe(201);
+    const coreId = created.body.id as string;
+    await agent
+      .put(`/api/v1/conglomerates/${coreId}/positions`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: vwce.id, weightPct: 30 },
+          { assetId: gold.id, weightPct: 30 },
+          { childId: bonds, weightPct: 40 },
+        ],
+      })
+      .expect(200);
+
+    // CHF 1 000: 40 % withheld for the empty child, so GOLD's 300 CHF slice
+    // cannot reach one 900 CHF share — an unreachable weight, plus the withheld
+    // warning built beside it.
+    const res = await agent
+      .post(`/api/v1/conglomerates/${coreId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole' });
+
+    expect(res.status).toBe(200);
+    expect(allocateResponseSchema.safeParse(res.body).success).toBe(true);
+    const body = res.body as AllocateResponse;
+    expect(body.baseCurrency).toBe('CHF');
+
+    const goldRow = body.positions.find((p) => p.assetId === gold.id)!;
+    expect(goldRow.qty).toBe(0);
+    expect(goldRow.note).toContain('900 CHF');
+    expect(goldRow.note).toContain('300 CHF');
+    expect(body.warnings).toContain(goldRow.note);
+    expect(body.warnings.length).toBeGreaterThan(1);
+    for (const warning of body.warnings) {
+      expect(warning).not.toContain('€');
+      expect(warning).toContain('CHF');
+    }
+
+    // Never overshoot, withheld slice included: what is not spent is leftover.
+    expect(body.totalCostEur).toBeCloseTo(200, 6);
+    expect(body.totalCostEur).toBeLessThanOrEqual(1000);
+    expect(body.totalCostEur + body.leftoverEur).toBeCloseTo(1000, 6);
+  });
+
+  it('withholds an EMPTY nested slice instead of redistributing it onto the rest', async () => {
+    // The issue's scenario: "Core" = 60 % VWCE + 40 % "Bonds", where Bonds has
+    // no positions. Flattening drops the empty child and normalizes VWCE to
+    // 100 %, so a 10 000 € budget used to buy 10 000 € of VWCE — the bond
+    // sleeve silently absorbed. It must buy 6 000 € and leave 4 000 € alone.
+    const { h, agent } = await harnessWith(() => cachedQuote(100));
+    const vwce = await seedAsset(h, { symbol: 'VWCE', providerRef: 'VWCE' });
+
+    const bonds = await seedConglomerate(agent, 'Bonds', []);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Core' });
+    expect(created.status).toBe(201);
+    const coreId = created.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${coreId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: [
+              { assetId: vwce.id, weightPct: 60 },
+              { childId: bonds, weightPct: 40 },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${coreId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 10000, mode: 'whole' });
+
+    expect(res.status).toBe(200);
+    expect(allocateResponseSchema.safeParse(res.body).success).toBe(true);
+    const body = res.body as AllocateResponse;
+    expect(body.positions).toHaveLength(1);
+    // 60 shares at 100 €, not 100.
+    expect(body.positions[0]!.qty).toBe(60);
+    expect(body.positions[0]!.costEur).toBeCloseTo(6000, 6);
+    expect(body.totalCostEur).toBeCloseTo(6000, 6);
+    // The withheld sleeve is reported as unallocated, not spent…
+    expect(body.leftoverEur).toBeCloseTo(4000, 6);
+    expect(body.totalCostEur + body.leftoverEur).toBeCloseTo(10000, 6);
+    // …and said out loud rather than left as an unexplained remainder.
+    expect(body.warnings.some((w) => w.includes('4000.00'))).toBe(true);
+
+    // The RESOLVED view of the same basket, which the detail page's weights
+    // table, allocation donut and backtest panel all read, now agrees about
+    // what this basket is (#1755): its positions are still normalized to 100
+    // over the surviving leg, but it reports the same 40 % this calculator
+    // withheld instead of presenting a fully-invested basket beside a budget
+    // that is deliberately not fully spent.
+    const resolved = await agent.get(`/api/v1/conglomerates/${coreId}/resolved`);
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.unresolvedPct).toBeCloseTo(40, 9);
+    expect(resolved.body.unresolvedPct).toBeCloseTo((body.leftoverEur / 10000) * 100, 9);
+  });
+
+  it('withholds — and stops claiming `active` — after a custom asset empties the child (#1776)', async () => {
+    // Same shape as above, but the child is emptied by deleting the custom asset
+    // that was its only constituent (§6.8.5 keeps that a hard delete). The
+    // calculator has always withheld the 40 %; what used to disagree was the
+    // basket's own status, which stayed `active` with nothing backing the slice.
+    const { h, agent } = await harnessWith(() => cachedQuote(100));
+    const vwce = await seedAsset(h, { symbol: 'VWCE', providerRef: 'VWCE' });
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Lakeside Cabin', category: 'other', currency: 'EUR' });
+    expect(created.status).toBe(201);
+    const cabin = created.body.asset.id as string;
+
+    const property = await seedConglomerate(agent, 'Property', [
+      { assetId: cabin, weightPct: 100 },
+    ]);
+    const coreCreated = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Core' });
+    const coreId = coreCreated.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${coreId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: [
+              { assetId: vwce.id, weightPct: 60 },
+              { childId: property, weightPct: 40 },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+    for (const id of [property, coreId]) {
+      expect((await agent.post(`/api/v1/conglomerates/${id}/activate`).set(...XRW)).status).toBe(
+        200,
+      );
+    }
+
+    expect((await agent.delete(`/api/v1/custom-assets/${cabin}`).set(...XRW)).status).toBe(204);
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${coreId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 10000, mode: 'whole' });
+    expect(res.status).toBe(200);
+    const body = res.body as AllocateResponse;
+    expect(body.positions).toHaveLength(1);
+    expect(body.totalCostEur).toBeCloseTo(6000, 6);
+    expect(body.leftoverEur).toBeCloseTo(4000, 6);
+
+    const resolved = await agent.get(`/api/v1/conglomerates/${coreId}/resolved`);
+    expect(resolved.body.unresolvedPct).toBeCloseTo((body.leftoverEur / 10000) * 100, 9);
+    // The third view of the same basket now agrees with the other two.
+    expect((await agent.get(`/api/v1/conglomerates/${coreId}`)).body.status).toBe('draft');
+  });
+
+  it('suggests a budget the CALLER can type in, not one denominated in the withheld remainder (#1811)', async () => {
+    // "Core" = 40 % Bonds (an empty nested child) + 10 % GOOGL + 50 % MSFT. The
+    // flatten normalizes the survivors, so the engine sees GOOGL at 16.667 % of
+    // the 600 € that is allocatable out of 1000 € — a 100 € slice against a
+    // 140 € share. Its "raise the budget to ≥ ~840 €" is right about the budget
+    // the ENGINE was given and wrong about the one the user has: at 840 € the
+    // calculator withholds 336 € again, and the identical note comes back.
+    const prices: Record<string, number> = { GOOGL: 140, MSFT: 100 };
+    const { h, agent } = await harnessWith((ref) => cachedQuote(prices[ref.providerRef]!));
+    const googl = await seedAsset(h, { symbol: 'GOOGL', providerRef: 'GOOGL' });
+    const msft = await seedAsset(h, { symbol: 'MSFT', providerRef: 'MSFT' });
+
+    const bonds = await seedConglomerate(agent, 'Bonds', []);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Core' });
+    const coreId = created.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${coreId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: [
+              { childId: bonds, weightPct: 40 },
+              { assetId: googl.id, weightPct: 10 },
+              { assetId: msft.id, weightPct: 50 },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+
+    const allocate = (budgetEur: number) =>
+      agent
+        .post(`/api/v1/conglomerates/${coreId}/allocate`)
+        .set(...XRW)
+        .send({ budgetEur, mode: 'whole' });
+
+    const first = await allocate(1000);
+    expect(first.status).toBe(200);
+    expect(allocateResponseSchema.safeParse(first.body).success).toBe(true);
+    const firstBody = first.body as AllocateResponse;
+    const firstGoogl = firstBody.positions.find((p) => p.assetId === googl.id)!;
+    expect(firstGoogl.qty).toBe(0);
+    // The slice figure is a whole-budget figure already (10 % of 1000 €); only
+    // the suggested budget was denominated in the allocatable remainder.
+    expect(firstGoogl.note).toContain('its 100 € slice');
+    expect(firstGoogl.note).toContain('≥ ~1400 €');
+    expect(firstGoogl.note).not.toContain('≥ ~840 €');
+    // The banner repeats the row's note — the same restated sentence.
+    expect(firstBody.warnings).toContain(firstGoogl.note);
+    // Σ cost ≤ B still holds with a share withheld: 5 × MSFT @ 100 €.
+    expect(firstBody.totalCostEur).toBeCloseTo(500, 6);
+    expect(firstBody.totalCostEur).toBeLessThanOrEqual(1000);
+    expect(firstBody.totalCostEur + firstBody.leftoverEur).toBeCloseTo(1000, 6);
+
+    // The round trip: type in what the note asked for, and it buys the share.
+    const second = await allocate(1400);
+    expect(second.status).toBe(200);
+    const secondBody = second.body as AllocateResponse;
+    const secondGoogl = secondBody.positions.find((p) => p.assetId === googl.id)!;
+    expect(secondGoogl.qty).toBeGreaterThan(0);
+    expect(secondGoogl.note).toBeUndefined();
+    expect(secondBody.warnings).not.toContain(firstGoogl.note);
+    // …without ever overshooting: 840 € allocatable buys 1 GOOGL + 7 MSFT.
+    expect(secondBody.totalCostEur).toBeLessThanOrEqual(1400);
+    expect(secondBody.totalCostEur).toBeCloseTo(840, 6);
+    expect(secondBody.totalCostEur + secondBody.leftoverEur).toBeCloseTo(1400, 6);
+  });
+
+  it('leaves a fully-resolved nested basket spending the whole budget (no withholding)', async () => {
+    const { h, agent } = await harnessWith(() => cachedQuote(100));
+    const vwce = await seedAsset(h, { symbol: 'VWCEB', providerRef: 'VWCEB' });
+    const bond = await seedAsset(h, { symbol: 'BONDX', providerRef: 'BONDX' });
+
+    const bonds = await seedConglomerate(agent, 'Bonds Filled', [
+      { assetId: bond.id, weightPct: 100 },
+    ]);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Core Filled' });
+    const coreId = created.body.id as string;
+    await agent
+      .put(`/api/v1/conglomerates/${coreId}/positions`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: vwce.id, weightPct: 60 },
+          { childId: bonds, weightPct: 40 },
+        ],
+      });
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${coreId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 10000, mode: 'whole' });
+
+    expect(res.status).toBe(200);
+    const body = res.body as AllocateResponse;
+    expect(body.totalCostEur).toBeCloseTo(10000, 6);
+    expect(body.leftoverEur).toBeCloseTo(0, 6);
+    expect(body.warnings).toEqual([]);
+  });
+
+  it('never allocates over a basket the activation gate let through (#1849)', async () => {
+    const { h, agent } = await harnessWith(() => cachedQuote(100));
+    // Six children of 50 DISTINCT assets at 2 % (Σ = 100 each); the root holds
+    // the six at 16.667 % (Σ = 100.002, inside the §6.5 ±0.01 tolerance). Every
+    // per-basket cap is respected — only the ROOT's own flatten, at 300 assets,
+    // goes past MAX_FLATTENED_POSITIONS.
+    const assetRows = await h.db
+      .insert(schema.assets)
+      .values(
+        Array.from({ length: 300 }, (_, i) => ({
+          providerId: 'yahoo',
+          providerRef: `WIDE${i}`,
+          type: 'stock' as const,
+          symbol: `WIDE${i}`,
+          name: `Asset WIDE${i}`,
+          currency: 'EUR',
+          exchange: 'XETRA',
+        })),
+      )
+      .returning({ id: schema.assets.id });
+
+    const children: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      children.push(
+        await seedConglomerate(
+          agent,
+          `Wide Child ${i}`,
+          assetRows.slice(i * 50, i * 50 + 50).map((row) => ({ assetId: row.id, weightPct: 2 })),
+        ),
+      );
+    }
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Wide Root' });
+    const rootId = created.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${rootId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: children.map((childId) => ({ childId, weightPct: 16.667 })),
+          })
+      ).status,
+    ).toBe(200);
+
+    // The gate flattens the row it is gating, so the promotion is refused with
+    // the same code the calculator answers with — the two can no longer
+    // disagree about whether this basket is usable.
+    const activate = await agent.post(`/api/v1/conglomerates/${rootId}/activate`).set(...XRW);
+    expect(activate.status).toBe(422);
+    expect(activate.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${rootId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 10000, mode: 'whole' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+    expect((await agent.get(`/api/v1/conglomerates/${rootId}`)).body.status).toBe('draft');
+  });
 });

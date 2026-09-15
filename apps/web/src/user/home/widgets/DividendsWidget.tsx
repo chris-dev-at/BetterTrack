@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { DividendCalendarEntry } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { formatDate } from '../../../lib/format';
+import { upcomingDividendDate } from '../../../lib/dividendDates';
+import { displayZoneDay, formatDate } from '../../../lib/format';
 import {
   getPortfolioDividendCalendar,
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
@@ -30,21 +31,6 @@ import type { WidgetProps } from './types';
 /** Events surfaced at most — the calendar page is one click away. */
 const MAX_ROWS = 6;
 
-/**
- * The event's own date: whichever of ex-date / pay-date comes first, since either
- * may be missing. `null` when the provider gave neither, in which case the row is
- * dropped — an undated "upcoming" event is not information.
- */
-function eventDate(entry: DividendCalendarEntry): { iso: string; isEx: boolean } | null {
-  const { exDate, payDate } = entry;
-  if (exDate !== null && payDate !== null) {
-    return exDate <= payDate ? { iso: exDate, isEx: true } : { iso: payDate, isEx: false };
-  }
-  if (exDate !== null) return { iso: exDate, isEx: true };
-  if (payDate !== null) return { iso: payDate, isEx: false };
-  return null;
-}
-
 export function DividendsWidget({ size }: WidgetProps) {
   const t = useT();
   const calendarQuery = useQuery({
@@ -66,45 +52,67 @@ export function DividendsWidget({ size }: WidgetProps) {
     return <Empty title={t('home.widgets.dividends.unavailable')} />;
   }
 
+  // The endpoint already orders the calendar on the date each event is upcoming
+  // on, and `upcomingDividendDate` is that same rule — so the widget renders the
+  // API's order as it arrived. Re-sorting here on a date chosen by a different
+  // rule is exactly what reversed the list and printed a past ex-date (#1758).
+  const today = displayZoneDay();
   const rows = calendarQuery.data.entries
-    .map((entry) => ({ entry, date: eventDate(entry) }))
+    .map((entry) => ({ entry, date: upcomingDividendDate(entry, today) }))
     .filter((row): row is { entry: DividendCalendarEntry; date: { iso: string; isEx: boolean } } =>
       Boolean(row.date),
     )
-    // The endpoint already sorts ascending by the earliest of the two dates; sort
-    // again anyway so the widget's own choice of date drives its own order.
-    .sort((a, b) => a.date.iso.localeCompare(b.date.iso))
     .slice(0, size === 's' ? 3 : MAX_ROWS);
 
-  if (rows.length === 0) return <Empty title={t('home.widgets.dividends.empty')} />;
+  // The server caps the per-request provider fan-out (§5.3), so a book past that
+  // budget yields a calendar covering only part of it. Say so — and say it tied
+  // to `truncated`, NOT to having rows: the cap runs over the raw book, so a
+  // capped read can legitimately surface no upcoming event at all, and "No
+  // dividends coming up." over a book only partly read is the loudest
+  // claim-of-completeness this widget can make (NewsDigestPage.tsx states the
+  // same rule for the digest page).
+  const truncated = calendarQuery.data.truncated === true;
+
+  if (rows.length === 0) {
+    return (
+      <Empty
+        title={t(
+          truncated ? 'home.widgets.dividends.emptyPartial' : 'home.widgets.dividends.empty',
+        )}
+      />
+    );
+  }
 
   return (
-    <ul className="bt-band">
-      {rows.map(({ entry, date }) => (
-        <li className="bt-home-row bt-home-row--split" key={`${entry.assetId}-${date.iso}`}>
-          <span className="bt-home-row__main">
-            <Link className="bt-row-title bt-home-txn__link" to={`/assets/${entry.assetId}`}>
-              {entry.symbol}
-            </Link>
-            <span className="bt-row-sub bt-home-row__sub">
-              {[
-                t(date.isEx ? 'home.widgets.dividends.exDate' : 'home.widgets.dividends.payDate'),
-                formatDate(date.iso),
-              ].join(' · ')}
+    <>
+      {truncated ? <p className="bt-meta">{t('home.widgets.dividends.truncated')}</p> : null}
+      <ul className="bt-band">
+        {rows.map(({ entry, date }) => (
+          <li className="bt-home-row bt-home-row--split" key={`${entry.assetId}-${date.iso}`}>
+            <span className="bt-home-row__main">
+              <Link className="bt-row-title bt-home-txn__link" to={`/assets/${entry.assetId}`}>
+                {entry.symbol}
+              </Link>
+              <span className="bt-row-sub bt-home-row__sub">
+                {[
+                  t(date.isEx ? 'home.widgets.dividends.exDate' : 'home.widgets.dividends.payDate'),
+                  formatDate(date.iso),
+                ].join(' · ')}
+              </span>
             </span>
-          </span>
-          {/*
+            {/*
             Only shown when the currency came with it: an amount whose
             denomination is unknown would be rendered in the user's base currency
             by default, quietly relabelling a $0.24 dividend as €0.24.
           */}
-          {entry.amount !== null && entry.currency !== null ? (
-            <span className="bt-num">
-              <MoneyText amount={entry.amount} currency={entry.currency} unitPrice />
-            </span>
-          ) : null}
-        </li>
-      ))}
-    </ul>
+            {entry.amount !== null && entry.currency !== null ? (
+              <span className="bt-num">
+                <MoneyText amount={entry.amount} currency={entry.currency} unitPrice />
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

@@ -128,6 +128,41 @@ function evaluator(h: TestHarness, market: StubMarketData, nowMs: number): Evalu
   };
 }
 
+/**
+ * A STALLED evaluator run, the shape BullMQ re-delivery produces: it loads the
+ * active-alert snapshot, parks in the quote read (`loadedSnapshot` resolves once
+ * it is parked) and only finishes — stamped with the minute `at` — after
+ * `release()`. Two runs then hold the SAME pre-fire snapshot in DIFFERENT
+ * minute windows, which the per-(alert, window) Redis key cannot catch: they
+ * take different keys, so only the atomic claim stands between them.
+ */
+function staleRun(h: TestHarness, at: number, bus: NotificationCenter) {
+  let parked!: () => void;
+  let open!: () => void;
+  const loadedSnapshot = new Promise<void>((resolve) => {
+    parked = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const result = runAlertsEvaluation({
+    alertRepo: createAlertRepository(h.db),
+    marketData: createStubMarketData({
+      quote: async () => {
+        parked();
+        await gate;
+        return quoteResult(150);
+      },
+    }),
+    redis: h.ctx.redis,
+    notify: bus,
+    paranoid: h.ctx.paranoidGuard,
+    logger: silentLogger,
+    now: () => at,
+  });
+  return { loadedSnapshot, release: () => open(), result };
+}
+
 // ─── pure predicate ──────────────────────────────────────────────────────────
 
 describe('alertConditionMet (§14 rule predicate)', () => {
@@ -281,13 +316,21 @@ describe('alerts CRUD (§14)', () => {
     expect(patched.body.repeat).toBe(true);
 
     // Simulate a fire, then re-arm.
-    await createAlertRepository(harness.db).recordTriggered(id, 'triggered', new Date());
+    await createAlertRepository(harness.db).claimTrigger({
+      id,
+      expectedLastTriggeredAt: null,
+      status: 'triggered',
+      triggeredAt: new Date(),
+    });
     const rearmed = await agent
       .post(`/api/v1/alerts/${id}/rearm`)
       .set(...XRW)
       .send();
     expect(rearmed.status).toBe(200);
     expect(rearmed.body.status).toBe('active');
+    // Re-arming clears the cooldown marker too — an alert that is armed again
+    // must not sit out the rest of the 24 h window (see the evaluator suite).
+    expect(rearmed.body.lastTriggeredAt).toBeNull();
   });
 
   it('scopes every mutation to the owner (a foreign id is a 404)', async () => {
@@ -438,6 +481,12 @@ describe('alerts evaluator (§14)', () => {
     const market = createStubMarketData({ quote: () => quoteResult(150) });
     const setup = evaluator(harness, market, NOW);
 
+    // A third run loads the SAME pre-fire snapshot and then stalls — BullMQ
+    // re-delivers it a minute later, so it fires against a different (alert,
+    // window) key than the racing pair below.
+    const stale = staleRun(harness, NOW + 60_000, setup.bus);
+    await stale.loadedSnapshot;
+
     // Two evaluator runs racing in the same minute window.
     const [a, b] = await Promise.all([setup.run(), setup.run()]);
     expect(a.fired + b.fired).toBe(1);
@@ -446,6 +495,74 @@ describe('alerts evaluator (§14)', () => {
     // The (alert, window) idempotency key is set.
     const key = alertFireLockKey(alert.id, alertFireWindowStart(NOW));
     expect(await harness.ctx.redis.get(key)).toBe('1');
+
+    // The re-delivered run now finishes. Its Redis key is free (different
+    // minute) and its snapshot still says `lastTriggeredAt: null`, so only the
+    // atomic claim can stop it — and does: one fire, one emit.
+    stale.release();
+    expect((await stale.result).fired).toBe(0);
+    expect(setup.bus.published.filter((e) => e.type === 'alert.triggered')).toHaveLength(1);
+    const row = await createAlertRepository(harness.db).findByIdForUser(user.id, alert.id);
+    expect(row?.lastTriggeredAt?.getTime()).toBe(NOW);
+    expect(row?.status).toBe('active');
+  });
+
+  it('a run re-delivered a minute later cannot re-fire a one-shot alert either', async () => {
+    const user = await harness.seedUser();
+    const asset = await seedAsset(harness);
+    const alertRepo = createAlertRepository(harness.db);
+    const alert = await alertRepo.create({
+      userId: user.id,
+      assetId: asset.id,
+      kind: 'price_above',
+      threshold: 100,
+      refPrice: null,
+      repeat: false,
+    });
+
+    const setup = evaluator(harness, createStubMarketData({ quote: () => quoteResult(150) }), NOW);
+    // The stalled run loads the pre-fire snapshot FIRST, then parks.
+    const stale = staleRun(harness, NOW, setup.bus);
+    await stale.loadedSnapshot;
+
+    expect((await setup.run(NOW + 60_000)).fired).toBe(1);
+    stale.release();
+    expect((await stale.result).fired).toBe(0);
+
+    expect(setup.bus.published.filter((e) => e.type === 'alert.triggered')).toHaveLength(1);
+    expect((await alertRepo.findByIdForUser(user.id, alert.id))?.status).toBe('triggered');
+  });
+
+  it('re-arming clears the cooldown, so the alert fires again on the next run', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const asset = await seedAsset(harness);
+    const alertRepo = createAlertRepository(harness.db);
+    const alert = await alertRepo.create({
+      userId: user.id,
+      assetId: asset.id,
+      kind: 'price_above',
+      threshold: 100,
+      refPrice: null,
+      repeat: true,
+    });
+
+    const setup = evaluator(harness, createStubMarketData({ quote: () => quoteResult(150) }), NOW);
+    expect((await setup.run()).fired).toBe(1);
+    // Without a re-arm the 24 h cooldown stands (asserted in full above).
+    expect((await setup.run(NOW + 60_000)).fired).toBe(0);
+
+    const rearmed = await agent
+      .post(`/api/v1/alerts/${alert.id}/rearm`)
+      .set(...XRW)
+      .send();
+    expect(rearmed.status).toBe(200);
+    expect(rearmed.body).toMatchObject({ status: 'active', lastTriggeredAt: null });
+
+    // The condition is still met a minute later: an armed alert fires, it does
+    // not sit out the remaining 23-plus hours of a cooldown it was released from.
+    expect((await setup.run(NOW + 120_000)).fired).toBe(1);
+    expect(setup.bus.published.filter((e) => e.type === 'alert.triggered')).toHaveLength(2);
   });
 });
 

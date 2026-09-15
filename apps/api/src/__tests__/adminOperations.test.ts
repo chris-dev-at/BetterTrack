@@ -9,7 +9,8 @@ import {
 } from '@bettertrack/contracts';
 
 import { createDeadLetter, DEAD_LETTER_KEY, QUEUE_NAMES, type QueueRegistry } from '../jobs';
-import { summaryOf } from '../services/ops/jobOpsService';
+import { JOB_FAILURE_PAGE_SIZE, readJobOps, summaryOf } from '../services/ops/jobOpsService';
+import { scrubOpsError } from '../services/ops/opsText';
 import { readProviderOps } from '../services/ops/providerOpsService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -30,6 +31,17 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
  * catch — a fixture with an empty payload makes that check unable to fail.
  */
 const PAYLOAD_MARKER = 'DEAD-LETTER-PAYLOAD-MUST-NOT-LEAK';
+
+/**
+ * Wall-clock ceilings for one full-page dead-letter read (#1853, see its test).
+ *
+ * The tight one is the assertion that matters: scrubbing a full page of hostile
+ * `failedReason`s, with no I/O in it. It used to cost ~2.9 s PER ROW, so ~71 s
+ * a page. The loose one covers the whole read, whose LLRANGE + `JSON.parse` of
+ * ~7.5 MB dominate it and have nothing to do with this fix.
+ */
+const SCRUB_PAGE_BUDGET_MS = 100;
+const READ_JOB_OPS_BUDGET_MS = 500;
 
 let harness: TestHarness;
 
@@ -261,6 +273,60 @@ describe('GET /admin/ops/jobs — the §9 dead-letter list finally has a reader 
     expect(JSON.stringify(res.body)).not.toContain('victim@');
     const body = adminOpsJobsResponseSchema.parse(res.body);
     expect(body.failures[0]!.failedReason.length).toBeLessThanOrEqual(ADMIN_OPS_ERROR_MAX_LENGTH);
+  });
+
+  /**
+   * Nothing caps a dead-letter entry's size at write time, and this read scrubs
+   * one per projected row — a full page of them, again on every live-refresh
+   * tick of the page an operator stares at while an incident is live. With the
+   * pre-fix rule a quarter-MB `failedReason` cost ~2.9 s EACH on the API's single
+   * event loop: ~71 s of blocked loop per page load, stalling every user's
+   * request and making the incident worse the more it was looked at (#1853).
+   *
+   * Timed in TWO parts on purpose. An end-to-end budget would be mostly the
+   * read's own LLRANGE + `JSON.parse` of ~7.5 MB, which is neither what this
+   * pins nor stable on a loaded runner; so the scrub cost is measured on its
+   * own over the same page of strings, tightly, and the read itself is only
+   * held to a loose ceiling that says the page still comes back at all.
+   *
+   * The hostile string carries BOTH shapes that made the scan quadratic: a
+   * keyword-dense blob (the rule this replaced, ~2.9 s at a quarter-MB) and a
+   * run of unterminated `?`-separated parameters (the rewrite that replaced it,
+   * ~7.5 s at 300 KB). Neither has a `&`, whitespace or a quote to stop a value
+   * early — that absence is what the quadratic shapes need.
+   */
+  it('projects a full page of 300 KB failure reasons without blocking the loop', async () => {
+    const hostile = `?${'{"apikey":"a","signature":"b"},'.repeat(5_000)}${'?a='.repeat(50_000)}`;
+    expect(hostile.length).toBeGreaterThan(300_000);
+    const reasons = Array.from(
+      { length: JOB_FAILURE_PAGE_SIZE },
+      () => `dispatch failed: ?apikey=SUPERSECRET ${hostile}`,
+    );
+    for (const [i, failedReason] of reasons.entries()) {
+      await seedDeadLetter({ jobId: `job-${i}`, failedReason });
+    }
+
+    // The work the fix is about, isolated from the read's I/O and parsing.
+    const scrubStarted = performance.now();
+    const scrubbed = reasons.map(scrubOpsError);
+    const scrubElapsed = performance.now() - scrubStarted;
+    expect(scrubElapsed).toBeLessThan(SCRUB_PAGE_BUDGET_MS);
+
+    const started = performance.now();
+    const body = await readJobOps({ queues: null, redis: harness.ctx.redis });
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(READ_JOB_OPS_BUDGET_MS);
+    expect(body.failures).toHaveLength(JOB_FAILURE_PAGE_SIZE);
+    for (const failure of body.failures) {
+      // Reading less costs no redaction on what is shown: the credential is
+      // still gone, and the row is still held to the wire limit.
+      expect(failure.failedReason).toContain('?apikey=');
+      expect(failure.failedReason).not.toContain('SUPERSECRET');
+      expect(failure.failedReason.length).toBeLessThanOrEqual(ADMIN_OPS_ERROR_MAX_LENGTH);
+      // Same string, same treatment, whichever of the two timed paths read it.
+      expect(scrubbed).toContain(failure.failedReason);
+    }
   });
 
   it('reads depths, schedules, next run and the sweep counts when a registry exists', async () => {

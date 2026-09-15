@@ -17,6 +17,7 @@ import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useT, type TranslateFn } from '../../i18n';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
+import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
@@ -957,7 +958,12 @@ function UserAuditLog({ userId }: { userId: string }) {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (err instanceof ApiError && err.isNotAuthorized) {
-          clearSession();
+          // Same 401-or-404 rule as `useResource`, and the same reason: on the
+          // admin origin this is normally the V5-P13c window closing, so the login
+          // screen names it instead of bouncing silently. A `USER_NOT_FOUND` 404 —
+          // this very page's route, for an account a colleague just deleted — is
+          // NOT an expiry, so it signs out without the claim.
+          clearSession(adminSignOutReason(err));
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {
@@ -1071,7 +1077,13 @@ function NotesTab({
       await api.createUserNote(userId, { body });
       setDraft('');
     },
-    { errorKey: 'admin.userDetail.notes.addError', onSuccess: reloadAll },
+    {
+      // `POST /admin/users/:id/notes` is addressed by the user row, which another
+      // admin can delete while this pane is open — a banner, not a sign-out.
+      notFound: 'surface',
+      errorKey: 'admin.userDetail.notes.addError',
+      onSuccess: reloadAll,
+    },
   );
 
   const remove = useAdminMutation((noteId: string) => api.deleteUserNote(userId, noteId), {

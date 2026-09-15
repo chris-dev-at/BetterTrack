@@ -4,10 +4,12 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type {
-  ExportRequestResponse,
-  ExportStatusResponse,
-  MeResponse,
+import {
+  EXPORT_PENDING_STALE_MS,
+  PROFILE_ICON_IDS,
+  type ExportRequestResponse,
+  type ExportStatusResponse,
+  type MeResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../../lib/userApi', () => ({
@@ -24,6 +26,11 @@ vi.mock('../../../lib/socialApi', () => ({
   getProfileSettings: vi.fn(),
   updateProfileSettings: vi.fn(),
 }));
+// The panel's only use of the auth context is the seam that mirrors a saved
+// curated icon onto the session user (so the rail avatar agrees); the context
+// itself is covered in AuthContext.test.tsx.
+const authMocks = vi.hoisted(() => ({ applyProfileIcon: vi.fn() }));
+vi.mock('../../AuthContext', () => ({ useAuth: () => authMocks }));
 vi.mock('../../vault/export/deliver', () => ({
   deliverClientDownload: vi.fn(),
   printClientDocument: vi.fn(),
@@ -72,6 +79,7 @@ const NO_EXPORT: ExportStatusResponse = {
   requestedAt: null,
   expiresAt: null,
   sizeBytes: null,
+  error: null,
 };
 
 const READY_EXPORT: ExportStatusResponse = {
@@ -80,6 +88,33 @@ const READY_EXPORT: ExportStatusResponse = {
   requestedAt: '2026-07-16T09:00:00.000Z',
   expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   sizeBytes: 4096,
+  error: null,
+};
+
+/** A build refused for size: actionable, and distinct from a transient failure. */
+const TOO_LARGE_EXPORT: ExportStatusResponse = {
+  status: 'failed',
+  jobId: '00000000-0000-0000-0000-0000000000ab',
+  requestedAt: '2026-07-16T09:00:00.000Z',
+  expiresAt: null,
+  sizeBytes: null,
+  error: 'EXPORT_TOO_LARGE',
+};
+
+/** A build in flight: the request form is hidden while it can still finish. */
+const PENDING_EXPORT: ExportStatusResponse = {
+  status: 'pending',
+  jobId: '00000000-0000-0000-0000-0000000000ac',
+  requestedAt: new Date(Date.now() - 5_000).toISOString(),
+  expiresAt: null,
+  sizeBytes: null,
+  error: null,
+};
+
+/** The same build, past the window in which anything could still build it. */
+const STALLED_EXPORT: ExportStatusResponse = {
+  ...PENDING_EXPORT,
+  requestedAt: new Date(Date.now() - EXPORT_PENDING_STALE_MS - 60_000).toISOString(),
 };
 
 const REQUEST_RESPONSE: ExportRequestResponse = {
@@ -149,6 +184,34 @@ describe('AccountPanel', () => {
 
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getAllByText('Export my data')).not.toHaveLength(0);
+  });
+
+  // #1714: a build refused for size is terminal for that account, so the note
+  // has to say so — a generic "try again" would send the user in a loop.
+  test('names a size-refused export and says the allowance was not used', async () => {
+    vi.mocked(getDataExportStatus).mockResolvedValue(TOO_LARGE_EXPORT);
+    renderPanel();
+
+    expect(await screen.findByText(/more data than a single export archive/i)).toBeInTheDocument();
+    expect(screen.getByText(/daily allowance was not used/i)).toBeInTheDocument();
+  });
+
+  // #1812: a build the queue lost leaves a `pending` row nothing will finish.
+  // Hiding the request form on it made the export surface permanently dead.
+  test('offers the request form again once a pending export can no longer make progress', async () => {
+    vi.mocked(getDataExportStatus).mockResolvedValue(PENDING_EXPORT);
+    const inFlight = renderPanel();
+
+    expect(await screen.findByText(/Your export is being prepared/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm your password')).not.toBeInTheDocument();
+    inFlight.unmount();
+
+    vi.mocked(getDataExportStatus).mockResolvedValue(STALLED_EXPORT);
+    renderPanel();
+
+    expect(await screen.findByText(/never finished being prepared/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Confirm your password')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Request a new export' })).toBeInTheDocument();
   });
 
   test('renders identity rows; the base currency has its own picker (V3-P10d)', async () => {
@@ -299,17 +362,24 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
     renderPanel('paranoid');
 
     await user.click(await screen.findByRole('button', { name: /Profile icon/i }));
+    // The paranoid row offers the SAME finite set as the general picker — both
+    // render one shared component over `PROFILE_ICON_IDS`.
     const choices = screen.getAllByRole('radio');
+    expect(choices.map((el) => el.getAttribute('data-icon-id'))).toEqual([...PROFILE_ICON_IDS]);
     await user.click(choices[0]!);
     await user.click(screen.getByRole('button', { name: 'Save profile' }));
 
+    // ICON ONLY. `isPublic` used to ride along as a hardcoded `false`, a write
+    // that was a no-op purely because the paranoid transition forces the column
+    // off; sending it kept that safety hostage to an unrelated rule.
     await waitFor(() =>
-      expect(updateProfileSettings).toHaveBeenCalledWith({
-        isPublic: false,
-        profileIcon: expect.any(String),
-      }),
+      expect(updateProfileSettings).toHaveBeenCalledWith({ profileIcon: PROFILE_ICON_IDS[0] }),
     );
     expect(screen.queryByRole('switch', { name: /public profile/i })).not.toBeInTheDocument();
+    // The rail/topbar avatar reads the icon off the session user, which the
+    // `/auth/me` invalidation beside this cannot reach — the saved choice gets
+    // there through the auth seam or not at all (§13.5 V5-P0 (c)).
+    await waitFor(() => expect(authMocks.applyProfileIcon).toHaveBeenCalledWith('astronaut'));
   });
 
   test('a normal account never shows the cleartext export block', async () => {
