@@ -787,7 +787,7 @@ function assertCompleteAdminOverlayInventory(): void {
   ).toEqual(discovered);
 
   // …and per OVERLAY, not merely per file (#1834's lesson, applied to the
-  // console): `UserDetailPage` alone opens four distinct dialogs.
+  // console): `UserDetailPage` alone opens five distinct dialogs.
   expect(
     overlayRegistrationProblems(
       detection,
@@ -1993,6 +1993,21 @@ const ADMIN_OVERLAY_SCENARIOS: readonly AdminOverlayScenario[] = [
       'A destructive confirmation in the shared console Modal, carrying a real account email that has to wrap at 360px.',
   },
   {
+    label: 'audit entry detail drawer',
+    sources: ['apps/web/src/admin/components/AuditEntryDrawer.tsx'],
+    route: '/admin/audit',
+    // Every deployment has rows here — the admin's own `admin.login` is written
+    // by the sign-in this sweep just performed — so the trigger is always
+    // present, and opening it changes nothing (#1908 §7).
+    action: { kind: 'click', selector: '#main-content table button:text-is("Details")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    // The close control plus the details button that opened it; a real entry
+    // adds its key/value rows on top.
+    minimumMeasured: 1,
+    justification:
+      'The row drawer replaces the truncated JSON cell and is the only way to read an audit entry\u2019s detail; it is the one console overlay that can hold a TABLE (the field-by-field diff), which is exactly the content a 360px phone has to fit.',
+  },
+  {
     label: 'user delete confirmation',
     sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
     route: '/admin/users/:userId',
@@ -2001,6 +2016,18 @@ const ADMIN_OVERLAY_SCENARIOS: readonly AdminOverlayScenario[] = [
     minimumMeasured: 2,
     justification:
       "The console's most destructive dialog: a typed-username confirmation form in the Modal shell, opened on a real non-self account.",
+  },
+  {
+    label: 'user moderation reason confirmation',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    route: '/admin/users/:userId',
+    // Opening it suspends nothing: this IS the confirmation step (#1907), and
+    // its Confirm button stays disabled until a reason is typed.
+    action: { kind: 'click', selector: '#main-content button:text-is("Disable")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    minimumMeasured: 2,
+    justification:
+      'The gate every suspension, chat ban and review flag now passes through (#1907): a required-reason textarea plus its two controls, which have to stay reachable and tappable at 360px.',
   },
 ];
 

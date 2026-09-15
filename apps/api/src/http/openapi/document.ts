@@ -310,6 +310,9 @@ const componentSchemas = {
   AdminUserNote: contracts.adminUserNoteSchema,
   AdminUserNoteListResponse: contracts.adminUserNoteListResponseSchema,
   CreateAdminUserNoteRequest: contracts.createAdminUserNoteRequestSchema,
+  // Moderation depth (#1907 ADMIN-W5) — the reasoned, attributed record.
+  AdminModerationListResponse: contracts.adminModerationListResponseSchema,
+  AdminUserFlagRequest: contracts.adminUserFlagRequestSchema,
   CreateUserResponse: contracts.createUserResponseSchema,
   ResetPasswordResponse: contracts.resetPasswordResponseSchema,
   AdminInviteListResponse: contracts.adminInviteListResponseSchema,
@@ -331,6 +334,7 @@ const componentSchemas = {
   EmailStatusResponse: contracts.emailStatusResponseSchema,
   TestEmailResponse: contracts.testEmailResponseSchema,
   AuditLogListResponse: contracts.auditLogListResponseSchema,
+  AdminSecuritySignalsResponse: contracts.adminSecuritySignalsResponseSchema,
   EmailLogListResponse: contracts.emailLogListResponseSchema,
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement)
   Problem: contracts.problemSchema,
@@ -1563,6 +1567,18 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.AdminSessionPolicyResponse,
   },
+  // Aggregate authentication signals (#1908 §5): counts derived from existing
+  // audit rows over a window capped at 7 days. No identifiers, no new capture,
+  // and no action — it is a read.
+  {
+    method: 'get',
+    path: '/admin/security/signals',
+    tag: 'Admin',
+    summary: 'Aggregate authentication signal counts over a bounded window (24h or 7d).',
+    query: contracts.adminSecuritySignalsQuerySchema,
+    status: 200,
+    response: R.AdminSecuritySignalsResponse,
+  },
   {
     method: 'get',
     path: '/admin/users',
@@ -1752,7 +1768,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/announcements',
     tag: 'Admin',
     summary:
-      'Create an announcement. Requires EN + DE title/body; creating with active=true publishes immediately (fans one inbox row out per user).',
+      'Create an announcement. Requires EN + DE title/body. The request persists and returns — it never fans out; the `announcements.publishDue` job delivers one inbox row per user once the display window has opened, so a future startsAt defers the inbox entry as well as the banner.',
     body: R.CreateAnnouncementRequest,
     status: 201,
     response: R.Announcement,
@@ -1762,7 +1778,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/announcements/{id}',
     tag: 'Admin',
     summary:
-      'Update an announcement. Flipping active off→on publishes (fan-out is idempotent per user via the shared eventKey).',
+      'Update an announcement. Saving never fans out on the request path; the publish job picks the row up once its window is open, and delivery is idempotent per user via the shared eventKey.',
     params: contracts.idParamSchema,
     body: R.UpdateAnnouncementRequest,
     status: 200,
@@ -1966,8 +1982,17 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/audit',
     tag: 'Admin',
-    summary: 'Cursor-paged audit log.',
-    query: contracts.auditQuerySchema,
+    summary: 'Cursor-paged audit log, filterable by action, actor, target, date and preset.',
+    // The cross-field rule is stated HERE because it cannot be generated: the
+    // schema carries it in a `superRefine`, and the document needs the object
+    // underneath that effect (`.innerType()`), which drops it. Without this line
+    // the published contract would describe two independent date fields and a
+    // reader would learn about the refusal from a 400.
+    description:
+      'The date range is half-open `[from, to)`. `from` must be strictly before `to`; ' +
+      'an equal or inverted range is refused with 400 VALIDATION_ERROR. ' +
+      '`action` matches exactly, or — with a trailing dot (`user.`) — every action in that domain.',
+    query: contracts.auditQuerySchema.innerType(),
     status: 200,
     response: R.AuditLogListResponse,
   },
@@ -1996,7 +2021,11 @@ const endpoints: EndpointDef[] = [
     tag: 'Admin',
     summary: 'Cursor-paged audit history for one user.',
     params: contracts.idParamSchema,
-    query: contracts.auditQuerySchema,
+    description:
+      'Same filter set and the same half-open `[from, to)` rule as `GET /admin/audit`; ' +
+      'the account scope is applied by the repository, so a `targetId` naming another ' +
+      'account narrows this page to empty rather than re-pointing it.',
+    query: contracts.auditQuerySchema.innerType(),
     status: 200,
     response: R.AuditLogListResponse,
   },
@@ -2042,6 +2071,35 @@ const endpoints: EndpointDef[] = [
     query: contracts.adminUserSupportQuerySchema,
     status: 200,
     response: R.AdminUserSupportResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/moderation',
+    tag: 'Admin',
+    summary: "One account's moderation record — action, operator, reason — newest first.",
+    params: contracts.idParamSchema,
+    query: contracts.adminListQuerySchema,
+    status: 200,
+    response: R.AdminModerationListResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/users/{id}/flag',
+    tag: 'Admin',
+    summary: 'Flag an account for review (reason required). Suspends nothing; idempotent.',
+    params: contracts.idParamSchema,
+    body: R.AdminUserFlagRequest,
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
+    method: 'delete',
+    path: '/admin/users/{id}/flag',
+    tag: 'Admin',
+    summary: 'Clear the review flag. Idempotent — an unflagged account is a no-op.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',

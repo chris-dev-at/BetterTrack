@@ -1,0 +1,41 @@
+-- ADMIN-W6, #1908 §2 — the indexes the audit filters need, and the one the
+-- per-account Activity tab has been missing since it shipped.
+--
+-- Numbering: `idx` 117, the next CONTIGUOUS entry after 0116 (the ADMIN-W7a
+-- announcement delivery counts, #1941). `migrationJournal.test.ts` asserts
+-- `entry.idx === arrayIndex`, so a gap left open for an in-flight branch is a
+-- red gate, not a reservation: this entry was stamped 115 while #1938 was open,
+-- 116 after that merged, and 117 after #1941 did — re-stamped on each rebase,
+-- with 0115 and 0116 left byte-identical every time. The `when` is refreshed
+-- with the renumber and has always been above the released tail's, so a
+-- deployed database's `max(created_at)` gate applies this entry exactly once.
+--
+-- `audit_log` carried exactly two indexes before this migration:
+-- `audit_log_created_at_idx` (the retention sweep's `created_at < cutoff` walk)
+-- and `audit_log_actor_id_idx`. `target_id`, `target_type` and `action` were
+-- unindexed, so `listForTarget` — the per-user audit behind People 360's
+-- Activity tab — sequentially scanned a table that `BT_AUDIT_RETENTION_DAYS`
+-- lets grow for 400 days, and the new `action` filter would have done the same.
+--
+-- Every paged read of this table is `ORDER BY id DESC LIMIT n` over a UUIDv7
+-- (time-sortable) primary key, so each index carries `id DESC` as its second
+-- column: the filter and the ordering are then served by one index scan that
+-- stops at the page size, instead of a filter that hands a sort the whole
+-- matching set.
+--
+-- `audit_log_actor_id_id_idx` REPLACES `audit_log_actor_id_idx` rather than
+-- joining it. The composite subsumes the single-column index — a lookup by
+-- `actor_id` alone uses its leading column, and `check:schema-drift`'s
+-- foreign-key coverage rule is satisfied by a leading-column match — so keeping
+-- both would cost every audit write a second index update for no read.
+--
+-- NOT `CREATE INDEX CONCURRENTLY`: drizzle's migrator runs each migration
+-- inside a transaction (`breakpoints: true` in the journal), and CONCURRENTLY
+-- cannot run in one; it is also unavailable on the PGlite the test suite
+-- migrates. At this table's size a plain build is a short lock, and the
+-- alternative — a migration that cannot be applied by the project's own runner
+-- — is not an improvement.
+CREATE INDEX IF NOT EXISTS "audit_log_actor_id_id_idx" ON "audit_log" USING btree ("actor_id","id" DESC);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_log_target_id_id_idx" ON "audit_log" USING btree ("target_id","id" DESC);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "audit_log_action_id_idx" ON "audit_log" USING btree ("action","id" DESC);--> statement-breakpoint
+DROP INDEX IF EXISTS "audit_log_actor_id_idx";

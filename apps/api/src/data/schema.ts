@@ -617,8 +617,27 @@ export const auditLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // The retention sweep's `created_at < cutoff` walk (`deleteOlderThan`).
     index('audit_log_created_at_idx').on(t.createdAt),
-    index('audit_log_actor_id_idx').on(t.actorId),
+    /*
+     * Three `(column, id DESC)` indexes for the three filters the console's
+     * audit read composes (#1908 §2). `id` is a UUIDv7, i.e. time-sortable, and
+     * every paged read is `ORDER BY id DESC LIMIT n` — so carrying `id` in the
+     * index turns each filter into an index scan that stops at the page size
+     * instead of a filter-then-sort over the whole 400-day table.
+     *
+     * `audit_log_actor_id_id_idx` REPLACES the bare `audit_log_actor_id_idx`,
+     * which it subsumes: a lookup by `actor_id` alone uses this index's leading
+     * column, and the foreign-key coverage `check:schema-drift` requires is
+     * satisfied by a leading-column match. Keeping both would have cost every
+     * audit write a second index update for nothing.
+     *
+     * `target_id` had NO index at all before this wave, which is why People
+     * 360's per-account Activity tab sequentially scanned the table.
+     */
+    index('audit_log_actor_id_id_idx').on(t.actorId, t.id.desc()),
+    index('audit_log_target_id_id_idx').on(t.targetId, t.id.desc()),
+    index('audit_log_action_id_idx').on(t.action, t.id.desc()),
   ],
 );
 
@@ -663,6 +682,111 @@ export const adminUserNotes = pgTable(
     check('admin_user_notes_body_length', sql`char_length(${t.body}) <= 2000`),
 
     index('admin_user_notes_author_id_idx').on(t.authorId),
+  ],
+);
+
+/**
+ * The moderation record (#1907 ADMIN-W5, People 360 "Moderation" tab).
+ *
+ * One append-only row per moderation action taken against an account —
+ * suspension, re-enable, chat ban/unban, role change, review flag/unflag — each
+ * carrying the operator's REASON and the operator's identity. The audit log
+ * says what happened; this says why, in the one place the next operator looks,
+ * and every row is written in the SAME transaction as the state change it
+ * describes, so a suspension can never exist without its reason.
+ *
+ * `user_id` cascades (deletion stays total, exactly as {@link adminUserNotes});
+ * `actor_id` set-nulls the way {@link auditLog.actorId} does, so the record
+ * outlives the operator who wrote it and renders a tombstone instead of
+ * vanishing.
+ *
+ * `previous_value` / `next_value` hold SHORT STATE LABELS only (`active`,
+ * `disabled`, `admin`) — never a portfolio name, a holding or anything else
+ * that came out of an account's content (§6.12 "no portfolio browsing").
+ */
+export const adminModerationActions = pgTable(
+  'admin_moderation_actions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    reason: text('reason').notNull(),
+    previousValue: text('previous_value'),
+    nextValue: text('next_value'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The only read is "this account's record, newest first" (#1907), so the
+    // index carries the order as well as the filter — and the stable `id`
+    // tiebreak the paged read adds cannot be indexed away from a `created_at`
+    // collision, which two actions of one PATCH share by construction.
+    index('admin_moderation_actions_user_created_idx').on(
+      t.userId,
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    // Declared here as well as in the migration for the reason
+    // `admin_user_notes` documents above: drizzle-kit generates from THIS file,
+    // so a constraint that lives only in SQL is one the next `generate`
+    // silently proposes dropping.
+    check('admin_moderation_actions_reason_not_empty', sql`${t.reason} ~ '[^[:space:]]'`),
+    check('admin_moderation_actions_reason_length', sql`char_length(${t.reason}) <= 2000`),
+    // The action vocabulary is closed. A typo'd action would be a row no
+    // operator surface knows how to render, in the one table whose job is to be
+    // readable years later.
+    check(
+      'admin_moderation_actions_action_known',
+      sql`${t.action} in ('disable', 'enable', 'chat_ban', 'chat_unban', 'role_change', 'flag', 'unflag', 'delete_reservation', 'password_reset')`,
+    ),
+    // State labels, not a second prose field: `previous_value` / `next_value`
+    // hold `active`, `disabled`, `admin` and nothing longer. Without a bound
+    // they are exactly the unbounded column the `reason` CHECK above exists to
+    // prevent, one field over.
+    check(
+      'admin_moderation_actions_previous_value_length',
+      sql`${t.previousValue} is null or char_length(${t.previousValue}) <= 64`,
+    ),
+    check(
+      'admin_moderation_actions_next_value_length',
+      sql`${t.nextValue} is null or char_length(${t.nextValue}) <= 64`,
+    ),
+
+    index('admin_moderation_actions_actor_id_idx').on(t.actorId),
+  ],
+);
+
+/**
+ * The CURRENT review flag on an account (#1907 ADMIN-W5).
+ *
+ * Deliberately tiny and deliberately separate from the record above: "is this
+ * account flagged?" is a list filter, and answering it from the append-only
+ * history would be a correlated "latest flag/unflag wins" subquery per row.
+ * One row per account (the user id IS the primary key) makes the filter an
+ * index lookup and makes re-flagging an upsert rather than a race.
+ *
+ * Flagging and unflagging ALSO append to {@link adminModerationActions}, so the
+ * history stays complete while this table stays a one-row answer. A flag is not
+ * a suspension: it changes nothing the account can observe (§6.12 — `disabled`
+ * remains THE suspension, and no tier joins it).
+ */
+export const adminUserFlags = pgTable(
+  'admin_user_flags',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    reason: text('reason').notNull(),
+    flaggedBy: uuid('flagged_by').references(() => users.id, { onDelete: 'set null' }),
+    flaggedAt: timestamp('flagged_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('admin_user_flags_reason_not_empty', sql`${t.reason} ~ '[^[:space:]]'`),
+    check('admin_user_flags_reason_length', sql`char_length(${t.reason}) <= 2000`),
+
+    index('admin_user_flags_flagged_by_idx').on(t.flaggedBy),
   ],
 );
 
@@ -3021,10 +3145,28 @@ export const announcements = pgTable(
     startsAt: timestamp('starts_at', { withTimezone: true }),
     endsAt: timestamp('ends_at', { withTimezone: true }),
     active: boolean('active').notNull().default(false),
-    // Stamped the first time `active` flips on — the moment the fan-out job runs.
-    // Later re-publishes update this to the latest publish timestamp; the shared
-    // eventKey (announcement:<id>:v1) keeps a re-publish idempotent per user.
+    /**
+     * Stamped by the `announcements.publishDue` job when a fan-out walk
+     * COMPLETES (#1909) — never by the admin's save. It is the per-announcement
+     * idempotency marker: the job's claim is the conditional
+     * `SET published_at = … WHERE id = $1 AND published_at IS NULL`, so of two
+     * concurrent runs exactly one records the publication, and a run that dies
+     * mid-walk leaves NULL behind and is simply re-published on the next tick.
+     * The shared eventKey (`account.notice:announcement:<id>:v1`) is what keeps
+     * that re-walk from double-notifying anybody.
+     */
     publishedAt: timestamp('published_at', { withTimezone: true }),
+    /**
+     * Outcome of the LAST COMPLETED fan-out pass (#1909). `delivered_count` is
+     * the number of recipients confirmed to hold their inbox row at the end of
+     * that pass (accounts walked minus failures) — a confirmation count, not a
+     * count of rows written, so a re-run that inserts nothing still reports
+     * everyone delivered. `failed_count` is that pass's failures, so a clean
+     * retry resets it to 0. Both stay NULL on rows that predate the job — an
+     * absent measurement, not a zero.
+     */
+    deliveredCount: integer('delivered_count'),
+    failedCount: integer('failed_count'),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

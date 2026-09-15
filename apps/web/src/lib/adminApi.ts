@@ -19,8 +19,10 @@ import {
   adminUserSupportResponseSchema,
   adminUserNoteSchema,
   adminUserNoteListResponseSchema,
+  adminModerationListResponseSchema,
   accountDefaultsResponseSchema,
   adminFeatureFlagsResponseSchema,
+  adminSecuritySignalsResponseSchema,
   adminSessionPolicyResponseSchema,
   announcementListResponseSchema,
   announcementSchema,
@@ -79,7 +81,10 @@ import {
   type Announcement,
   type AnnouncementListResponse,
   type AppSettingsResponse,
+  type AdminSecuritySignalsResponse,
   type AuditLogListResponse,
+  type AuditPreset,
+  type AuditSignalWindow,
   type BulkUserActionRequest,
   type BulkUserActionResponse,
   type ChangePasswordRequest,
@@ -129,6 +134,8 @@ import {
   type AdminUserSupportResponse,
   type AdminUserNote,
   type AdminUserNoteListResponse,
+  type AdminModerationListResponse,
+  type AdminUserFlagRequest,
   type CreateAdminUserNoteRequest,
   type TestEmailRequest,
   type TestEmailResponse,
@@ -241,6 +248,10 @@ export async function listUsers(
       role: params.role,
       status: params.status,
       privacyMode: params.privacyMode,
+      // Tri-state (#1907): the key is only sent when the operator asked a
+      // question about the flag. `buildUrl` drops `undefined`, so an omitted
+      // filter really is omitted rather than sent as `false`.
+      flagged: params.flagged === undefined ? undefined : params.flagged ? 'true' : 'false',
       sort: params.sort,
       direction: params.direction,
       limit: params.limit,
@@ -302,6 +313,35 @@ export async function createUserNote(
 
 export async function deleteUserNote(id: string, noteId: string): Promise<void> {
   await apiRequest<unknown>(`/admin/users/${id}/notes/${noteId}`, { method: 'DELETE' });
+}
+
+/**
+ * The moderation record behind the People 360 "Moderation" tab (#1907
+ * ADMIN-W5): why this account is in the state it is in, who decided, and
+ * whether it was ever reversed. Paged like every other bounded admin list.
+ */
+export async function listUserModeration(
+  id: string,
+  params: Partial<AdminListQuery> = {},
+  signal?: AbortSignal,
+): Promise<AdminModerationListResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/moderation`, {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
+  return adminModerationListResponseSchema.parse(data);
+}
+
+/** Raise (or re-state) the review flag. Suspends nothing; the reason is required. */
+export async function flagUser(id: string, body: AdminUserFlagRequest): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/flag`, { method: 'POST', body });
+  okResponseSchema.parse(data);
+}
+
+/** Clear the review flag. Idempotent — clearing an unflagged account is fine. */
+export async function unflagUser(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/flag`, { method: 'DELETE' });
+  okResponseSchema.parse(data);
 }
 
 export async function createUser(body: CreateUserRequest): Promise<CreateUserResponse> {
@@ -453,15 +493,58 @@ export async function sendTestEmail(body: TestEmailRequest): Promise<TestEmailRe
   return testEmailResponseSchema.parse(data);
 }
 
+/**
+ * The audit filter set (#1908 §1). Every key is optional and absent means "do
+ * not filter" — the query schema is `.strict()`, so an undefined value must not
+ * reach the wire as an empty string, which `apiRequest`'s query builder already
+ * drops.
+ */
+export interface AuditFilterParams {
+  cursor?: string;
+  limit?: number;
+  action?: string;
+  actorId?: string;
+  targetId?: string;
+  targetType?: string;
+  from?: string;
+  to?: string;
+  preset?: AuditPreset;
+}
+
 export async function listAudit(
-  params: { cursor?: string; limit?: number } = {},
+  params: AuditFilterParams = {},
   signal?: AbortSignal,
 ): Promise<AuditLogListResponse> {
   const data = await apiRequest<unknown>('/admin/audit', {
-    query: { cursor: params.cursor, limit: params.limit },
+    query: {
+      cursor: params.cursor,
+      limit: params.limit,
+      action: params.action,
+      actorId: params.actorId,
+      targetId: params.targetId,
+      targetType: params.targetType,
+      from: params.from,
+      to: params.to,
+      preset: params.preset,
+    },
     signal,
   });
   return auditLogListResponseSchema.parse(data);
+}
+
+/**
+ * Aggregate authentication signals (#1908 §5) — counts derived from existing
+ * audit rows over a window the server caps at 7 days.
+ */
+export async function getSecuritySignals(
+  window: AuditSignalWindow,
+  signal?: AbortSignal,
+): Promise<AdminSecuritySignalsResponse> {
+  const data = await apiRequest<unknown>('/admin/security/signals', {
+    query: { window },
+    signal,
+  });
+  return adminSecuritySignalsResponseSchema.parse(data);
 }
 
 // --- Admin: Problems (§13.5 V5-P2 arc (d)) ---------------------------------
