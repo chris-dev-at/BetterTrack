@@ -71,9 +71,20 @@ function renderPage(locale: 'en' | 'de' = 'en') {
   );
 }
 
-/** The panel a given flag owns, found by its localized name. */
+/**
+ * The panel a given flag owns, found by its localized name.
+ *
+ * Queried as a HEADING, not as text: the page carries the Product & Comms tab
+ * strip since the W7c fold (#1406), and one of its tabs — "AI" — has the same
+ * text as a flag name. A heading query cannot match a strip link, so the page's
+ * own structure disambiguates instead of a brittle index.
+ */
 function panelFor(name: string): HTMLElement {
-  return screen.getByText(name).closest('section')!;
+  return flagHeading(name).closest('section')!;
+}
+
+function flagHeading(name: string): HTMLElement {
+  return screen.getByRole('heading', { name, level: 2 });
 }
 
 beforeEach(() => {
@@ -96,12 +107,14 @@ beforeEach(() => {
 test('lists every localized flag with its On state', async () => {
   renderPage();
 
-  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
-  expect(screen.getByText('Realtime')).toBeInTheDocument();
-  expect(screen.getByText('Live Mode')).toBeInTheDocument();
-  expect(screen.getByText('Price alerts')).toBeInTheDocument();
-  expect(screen.getByText('Imports')).toBeInTheDocument();
-  expect(screen.getByText('AI')).toBeInTheDocument();
+  await waitFor(() => expect(flagHeading('Chat')).toBeInTheDocument());
+  expect(flagHeading('Realtime')).toBeInTheDocument();
+  expect(flagHeading('Live Mode')).toBeInTheDocument();
+  expect(flagHeading('Price alerts')).toBeInTheDocument();
+  expect(flagHeading('Imports')).toBeInTheDocument();
+  // "AI" is also a Product & Comms TAB since the fold — the heading query is
+  // what keeps this assertion about the flag.
+  expect(flagHeading('AI')).toBeInTheDocument();
   expect(screen.getAllByText('On').length).toBe(6);
 });
 
@@ -261,4 +274,21 @@ test('paints no rounded corner anywhere on the page', async () => {
   await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
   const rounded = container.querySelectorAll('[class*="rounded-"]:not([class*="rounded-none"])');
   expect([...rounded].map((el) => el.className)).toEqual([]);
+});
+
+/**
+ * The page IS a tab of the Product & Comms workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Product & Comms tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Product & Comms' });
+  expect(within(nav).getByRole('link', { name: 'Feature flags' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });

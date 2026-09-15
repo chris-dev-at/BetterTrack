@@ -19,6 +19,7 @@ import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
 
 /**
@@ -155,6 +156,8 @@ export function AiSettingsPage() {
         title={t('admin.ai.title')}
         description={t('admin.ai.subtitle')}
       />
+
+      <WorkspaceTabs />
 
       {loading && !form ? <Spinner label={t('admin.ai.title')} /> : null}
       {error && !form ? (
