@@ -205,15 +205,25 @@ test('a closed admin session window signs the console out instead of a save bann
  * "publishes to every user on save" and the `startsAt` helper implied a filled
  * start meant "later", while the fan-out ran on the `active` flag alone.
  */
+// The page title is asserted as the page's HEADING rather than as text: since
+// the W7c fold (#1406) "Announcements" is also this page's own tab in the
+// Product & Comms strip, so a bare text query matches twice.
+const COMPOSER_KEYS = [
+  'admin.announcements.composer.active',
+  'admin.announcements.composer.startsAt',
+  'admin.announcements.composer.create',
+  'admin.announcements.preview.heading',
+] as const;
+
 test('renders the composer from the catalog in EN and in DE', async () => {
   const { unmount } = renderPage();
-  for (const key of [
-    'admin.announcements.title',
-    'admin.announcements.composer.active',
-    'admin.announcements.composer.startsAt',
-    'admin.announcements.composer.create',
-    'admin.announcements.preview.heading',
-  ]) {
+  expect(
+    await screen.findByRole('heading', {
+      level: 1,
+      name: localizedMessage('en', 'admin.announcements.title'),
+    }),
+  ).toBeInTheDocument();
+  for (const key of COMPOSER_KEYS) {
     expect(await screen.findByText(localizedMessage('en', key))).toBeInTheDocument();
   }
   // The old copy promised a send that no longer happens on save.
@@ -221,13 +231,13 @@ test('renders the composer from the catalog in EN and in DE', async () => {
   unmount();
 
   renderPage('de');
-  for (const key of [
-    'admin.announcements.title',
-    'admin.announcements.composer.active',
-    'admin.announcements.composer.startsAt',
-    'admin.announcements.composer.create',
-    'admin.announcements.preview.heading',
-  ]) {
+  expect(
+    await screen.findByRole('heading', {
+      level: 1,
+      name: localizedMessage('de', 'admin.announcements.title'),
+    }),
+  ).toBeInTheDocument();
+  for (const key of COMPOSER_KEYS) {
     expect(await screen.findByText(localizedMessage('de', key))).toBeInTheDocument();
   }
   // And the DE catalog is not silently falling back to English.

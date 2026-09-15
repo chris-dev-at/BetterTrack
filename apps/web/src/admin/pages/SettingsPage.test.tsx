@@ -39,7 +39,9 @@ const settings: AppSettingsResponse = {
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <MemoryRouter>
+      {/* The real path, so the page renders the Product & Comms tab strip it
+          owns since the W7c fold (#1406). */}
+      <MemoryRouter initialEntries={['/admin/settings']}>
         <AuthProvider>
           <SettingsPage />
         </AuthProvider>

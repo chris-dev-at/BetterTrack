@@ -71,9 +71,20 @@ function renderPage(locale: 'en' | 'de' = 'en') {
   );
 }
 
-/** The panel a given flag owns, found by its localized name. */
+/**
+ * The panel a given flag owns, found by its localized name.
+ *
+ * Queried as a HEADING, not as text: the page carries the Product & Comms tab
+ * strip since the W7c fold (#1406), and two of its tabs — "AI" and "Settings" —
+ * collide with flag names. A heading query cannot match a strip link, so the
+ * page's own structure disambiguates instead of a brittle index.
+ */
 function panelFor(name: string): HTMLElement {
-  return screen.getByText(name).closest('section')!;
+  return flagHeading(name).closest('section')!;
+}
+
+function flagHeading(name: string): HTMLElement {
+  return screen.getByRole('heading', { name, level: 2 });
 }
 
 beforeEach(() => {
@@ -96,12 +107,14 @@ beforeEach(() => {
 test('lists every localized flag with its On state', async () => {
   renderPage();
 
-  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
-  expect(screen.getByText('Realtime')).toBeInTheDocument();
-  expect(screen.getByText('Live Mode')).toBeInTheDocument();
-  expect(screen.getByText('Price alerts')).toBeInTheDocument();
-  expect(screen.getByText('Imports')).toBeInTheDocument();
-  expect(screen.getByText('AI')).toBeInTheDocument();
+  await waitFor(() => expect(flagHeading('Chat')).toBeInTheDocument());
+  expect(flagHeading('Realtime')).toBeInTheDocument();
+  expect(flagHeading('Live Mode')).toBeInTheDocument();
+  expect(flagHeading('Price alerts')).toBeInTheDocument();
+  expect(flagHeading('Imports')).toBeInTheDocument();
+  // "AI" is also a Product & Comms TAB since the fold — the heading query is
+  // what keeps this assertion about the flag.
+  expect(flagHeading('AI')).toBeInTheDocument();
   expect(screen.getAllByText('On').length).toBe(6);
 });
 

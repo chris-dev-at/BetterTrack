@@ -19,6 +19,7 @@ import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { ActorValue, AuditEntryDrawer, stringify } from '../components/AuditEntryDrawer';
 import { TEXT_MICRO, TEXT_MONO, TEXT_MUTED, TEXT_NUM } from '../components/tokens';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   AsyncReadState,
@@ -288,6 +289,10 @@ export function AuditPage() {
         description={t('admin.audit.subtitle')}
         eyebrow={eyebrow}
       />
+
+      {/* W7c folds Security & API the same way; this page is its landing and
+          the strip's first tab. */}
+      <WorkspaceTabs />
 
       {/* Standing, never behind a fold: a break-glass 2FA reset is the single
           highest-privilege event in the product and used to render as "system". */}
