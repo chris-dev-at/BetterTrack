@@ -576,18 +576,37 @@ export function createFeedbackRepository(
         ...FEEDBACK_TERMINAL_STATUSES,
       ] satisfies readonly FeedbackStatus[];
       /**
+       * The sort keys are the only part of this `CASE` that is SQL text rather
+       * than a bind parameter, and they have to be: every arm of a `CASE` whose
+       * results are unknown-typed parameters leaves Postgres with no way to
+       * resolve the expression's type (`could not determine data type of
+       * parameter`), a failure PGlite does not reliably reproduce. So the
+       * positions go through `sql.raw` and each call is exempted from
+       * `sql/no-dynamic-identifier` one line at a time: the value is a `map`
+       * index (and the array's length) over `lifecycleStatusOrder`, a
+       * module-level `as const` partition — no user input can reach it. The
+       * status literals themselves stay bound parameters, which is why they are
+       * spelled `${status}` here rather than as SQL text like `priorityOrder`'s
+       * categories above: they come from the same closed list, but binding them
+       * keeps one more string out of the statement text for free.
+       *
        * The `else` arm is unreachable in production — the column is the
        * `feedback_status` pg enum and the partition covers it exhaustively, so
        * every row matches a `WHEN`. It is kept so a status that somehow escapes
        * the partition sorts last deterministically instead of producing a NULL
        * key; do not go looking for the query that exercises it.
        */
+      const lifecycleArms = lifecycleStatusOrder.map((status, index) => {
+        // eslint-disable-next-line sql/no-dynamic-identifier -- integer index into lifecycleStatusOrder, the closed FEEDBACK_OPEN_STATUSES + FEEDBACK_TERMINAL_STATUSES partition; never user input
+        const position = sql.raw(String(index));
+        return sql`when ${status} then ${position}`;
+      });
+      // eslint-disable-next-line sql/no-dynamic-identifier -- length of that same closed partition, one past its last index; never user input
+      const lifecycleFallback = sql.raw(String(lifecycleStatusOrder.length));
       const lifecycleOrder = sql<number>`case ${feedback.status} ${sql.join(
-        lifecycleStatusOrder.map(
-          (status, index) => sql`when ${status} then ${sql.raw(String(index))}`,
-        ),
+        lifecycleArms,
         sql` `,
-      )} else ${sql.raw(String(lifecycleStatusOrder.length))} end`;
+      )} else ${lifecycleFallback} end`;
 
       /**
        * Every ordering ends on the `id` tiebreak. Without it two rows sharing
