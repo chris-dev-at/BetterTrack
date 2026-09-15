@@ -42,7 +42,7 @@ pnpm --filter @bettertrack/redesign-demo test:e2e
    first-source, collaboration, and activation journey.
 
 For a complete portfolio-to-platform evaluation route, follow
-[`docs/redesign/ORIGIN_DEMO_TOUR.md`](../../docs/redesign/ORIGIN_DEMO_TOUR.md).
+[`docs/history/redesign/ORIGIN_DEMO_TOUR.md`](../../docs/history/redesign/ORIGIN_DEMO_TOUR.md).
 
 The selected direction, theme, density, portfolio scope, created portfolios, trades, cash
 flow, imports, review decisions, shares, connection records, developer credentials,
@@ -163,7 +163,7 @@ imports, settings, backup, and developer access are organized in Control Center 
 remain reachable through command search and contextual links.
 
 The rationale and production tradeoffs are documented in
-`docs/redesign/DESIGN_DIRECTIONS.md`.
+`docs/history/redesign/DESIGN_DIRECTIONS.md`.
 
 ## Keyboard
 

@@ -1,5 +1,7 @@
 # BetterTrack Design Lab
 
+_Archived 2026-09-02 — the Origin redesign record; the shipped design language now lives in `apps/web/src/styles/origin.css`, and the ground-up v6 redesign is tracked in #544._
+
 Status: six production-grade visual directions applied to the complete demo  
 Shared product model: portfolio-scoped wealth workspace  
 Recommended starting point: **Origin**, with **Northstar** as the calmer card-based
