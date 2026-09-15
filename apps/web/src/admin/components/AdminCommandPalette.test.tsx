@@ -174,6 +174,69 @@ test('filters destinations by their localized label', async () => {
   expect(screen.queryByRole('option', { name: /^Overview/ })).not.toBeInTheDocument();
 });
 
+/**
+ * The fold must cost no ⌘K hit (#1406 W7c).
+ *
+ * A folded workspace's landing route is emitted ONCE, and it used to take the
+ * workspace's label — so `/admin/users` answered only to "People" and, after
+ * folding the last two, `/admin/settings` would have answered only to "Product &
+ * Comms". An operator types the page name. The landing row now carries the page
+ * label and matches the workspace name as well, so both queries land.
+ */
+test.each([
+  ['Settings', '/admin/settings'],
+  ['Audit', '/admin/audit'],
+  ['Users', '/admin/users'],
+  ['Health', '/admin/health'],
+])('a ⌘K query for %s still reaches %s after the fold', async (query, to) => {
+  const user = userEvent.setup();
+  renderPalette();
+
+  await user.type(screen.getByRole('combobox'), query);
+
+  await screen.findAllByRole('option');
+
+  // Navigating is the proof the row points where it claims: the label could
+  // match and the route still be wrong.
+  await user.keyboard('{Enter}');
+  expect(screen.getByTestId('location')).toHaveTextContent(to);
+});
+
+// …and the workspace name still finds its landing, so the fold added a name
+// rather than swapping one for another.
+test.each([
+  ['People', '/admin/users'],
+  ['Product', '/admin/settings'],
+  ['Security & API', '/admin/audit'],
+])('a ⌘K query for the workspace name %s reaches %s', async (query, to) => {
+  const user = userEvent.setup();
+  renderPalette();
+
+  await user.type(screen.getByRole('combobox'), query);
+  await screen.findAllByRole('option');
+  await user.keyboard('{Enter}');
+
+  expect(screen.getByTestId('location')).toHaveTextContent(to);
+});
+
+// Every non-landing tab is a destination in its own right, exactly as the page
+// rows were before the fold.
+test.each([
+  ['Feature flags', '/admin/feature-flags'],
+  ['Account defaults', '/admin/account-defaults'],
+  ['OAuth apps', '/admin/oauth-apps'],
+  ['API keys', '/admin/api-keys'],
+])('the folded tab %s is still its own ⌘K destination', async (query, to) => {
+  const user = userEvent.setup();
+  renderPalette();
+
+  await user.type(screen.getByRole('combobox'), query);
+  await screen.findAllByRole('option');
+  await user.keyboard('{Enter}');
+
+  expect(screen.getByTestId('location')).toHaveTextContent(to);
+});
+
 test('searches users through the existing admin endpoint and flags a disabled account', async () => {
   vi.mocked(api.listUsers).mockResolvedValue({
     users: [disabledUser],

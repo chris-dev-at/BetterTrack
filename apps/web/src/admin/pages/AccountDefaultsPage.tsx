@@ -17,6 +17,7 @@ import * as api from '../../lib/adminApi';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
 function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, string> {
@@ -149,6 +150,8 @@ export function AccountDefaultsPage() {
         title={t('admin.accountDefaults.title')}
         description={t('admin.accountDefaults.subtitle')}
       />
+
+      <WorkspaceTabs />
 
       {defaults.loading ? (
         <Spinner label={t('admin.accountDefaults.loading')} />

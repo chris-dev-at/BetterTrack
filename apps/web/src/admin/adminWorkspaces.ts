@@ -9,20 +9,26 @@
  * Route paths are deliberately unchanged from the pre-W1 console: only the
  * grouping moved, so every bookmark still resolves.
  *
- * **W2 folded People; W4 folds Operations.** A folded workspace declares
- * `tabs`, and its rail entry collapses to a single item: the tab strip on the
- * page carries the in-workspace navigation the child rows used to, so nothing
- * became unreachable. Workspaces that still list `pages` keep W1's shape — the
- * nav fold for Product & Comms and Security & API was CUT as a package (W7,
- * §16 2026-08-29) and is deliberately not smuggled in here.
+ * **Every workspace that has children is folded (W2 People, W4 Operations,
+ * W7c Product & Comms and Security & API).** A folded workspace declares `tabs`,
+ * and its rail entry collapses to a single item: the tab strip on the page
+ * carries the in-workspace navigation the child rows used to, so nothing became
+ * unreachable. `pages` is the pre-fold shape and is now empty on EVERY
+ * workspace; the field and the sidebar's rendering of it stay because removing
+ * them is a separate change, not because a new workspace may quietly use them —
+ * `WorkspaceTabs.test.tsx` asserts `pages: []` across the whole registry, so
+ * re-introducing a child row fails that assertion and has to be argued for.
  *
- * **W7b gives the two unfolded workspaces a `to`, and nothing else.** Their rail
- * labels were headings that navigated nowhere, which made two of the six
- * workspaces dead ends. A `to` pointing at the workspace's own first page fixes
- * that with no new route and, crucially, no `tabs`: a `to` is a link, a `tabs`
- * array is the fold, and only the second one is the cut package. The assertion
- * in `WorkspaceTabs.test.tsx` that no third workspace declares `tabs` stays
- * green and stays the guard.
+ * **W7c is the §16 2026-09-14 ruling UN-CUTTING the fold.** The 2026-08-29
+ * ruling 3 cut it as a package with a stated precondition — "the fold is proven
+ * on one workspace before it is repeated" — and W2 and W4 met it twice over,
+ * both merged with every pre-fold path surviving as a tab. The console now has
+ * ONE navigation shape.
+ *
+ * **W7b's `to` is what the fold builds on, and it stays a `to`.** A landing is a
+ * link; a `tabs` array is the fold. Overview and Support carry a `to` and no
+ * `tabs` because they have no children to fold, which is a different thing from
+ * an unfolded workspace and is asserted as such.
  */
 
 export interface AdminDestination {
@@ -62,7 +68,13 @@ export interface AdminWorkspace {
    * tab listed under it.
    */
   wide?: boolean;
-  /** Child rows in the sidebar. Empty for a workspace whose pages became tabs. */
+  /**
+   * Child rows in the sidebar. Empty on every workspace since W7c, and pinned
+   * empty by `WorkspaceTabs.test.tsx` — the console has one navigation shape,
+   * and a workspace that wants page rows back must change that assertion first.
+   * The field is still typed and still rendered by `AdminLayout`, so the
+   * pre-fold shape remains expressible; it is not a quiet option.
+   */
   pages: readonly AdminDestination[];
   /** In-workspace tab strip. Present once a workspace has been folded (W2). */
   tabs?: readonly AdminTab[];
@@ -136,13 +148,21 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
     ],
   },
   {
+    // W7c folds the third workspace (§16 2026-09-14). Same contract as W2 and
+    // W4: the landing is W7b's `to`, every W1 page row becomes a tab under its
+    // OWN existing label key, and every pre-fold path stays a real route — no
+    // redirect, no renamed key, no new i18n string.
+    //
+    // `wide` is deliberately NOT set. `isWideAdminPath` applies to a
+    // workspace's landing AND every tab it owns, so setting it here would
+    // re-flow all five pages from `max-w-5xl` into the dense column. Folding is
+    // a navigation change; density is a per-surface decision these pages have
+    // not asked for.
     key: 'product',
     labelKey: 'admin.nav.sections.product',
-    // A landing, NOT a fold (W7b): the label links at the workspace's first page
-    // so the rail entry is reachable, while the page rows below stay exactly as
-    // W1 left them.
     to: '/admin/settings',
-    pages: [
+    pages: [],
+    tabs: [
       { to: '/admin/settings', labelKey: 'admin.nav.settings' },
       { to: '/admin/feature-flags', labelKey: 'admin.nav.featureFlags' },
       { to: '/admin/ai', labelKey: 'admin.nav.ai' },
@@ -151,11 +171,13 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
     ],
   },
   {
+    // The fourth and last fold. No `comingSoon` tab here or above: all nine of
+    // these pages are real and shipped.
     key: 'security',
     labelKey: 'admin.nav.sections.securityApi',
-    // Same as Product & Comms above: a landing on its own first page, no fold.
     to: '/admin/audit',
-    pages: [
+    pages: [],
+    tabs: [
       { to: '/admin/audit', labelKey: 'admin.nav.audit' },
       { to: '/admin/security', labelKey: 'admin.nav.security' },
       { to: '/admin/oauth-apps', labelKey: 'admin.nav.oauthApps' },
@@ -178,26 +200,57 @@ function pathsOf(workspace: AdminWorkspace): string[] {
  * included so ⌘K can still reach Registration and Invites now that the rail no
  * longer lists them — the fold must not cost reachability. A coming-soon tab is
  * excluded: the palette navigates, and navigating to a placeholder is noise.
+ *
+ * **A landing route carries the PAGE's name as its label and the workspace's as
+ * a match key** (#1406 W7c). One route is one row — two rows for `/admin/users`
+ * is the kind of noise a palette dies of — so the row has to satisfy both
+ * queries at once. The label is the page name because that is what an operator
+ * types and what they will see in the tab strip when they arrive; the workspace
+ * name rides along in `matchKeys`, which the palette matches on but never
+ * displays (it already shows the workspace as the row's `meta`).
+ *
+ * Without this, folding a workspace would COST reachability: the landing's only
+ * label would be the workspace's, so "Settings" would stop matching
+ * `/admin/settings` and "Audit" `/admin/audit` — and People and Operations
+ * already carried that regression for `/admin/users` and `/admin/health`. The
+ * fold's contract is that it costs no reachability, so the fix lives here in the
+ * registry rather than as a special case in the palette.
  */
-export const ADMIN_DESTINATIONS: readonly (AdminDestination & { workspaceKey: string })[] =
-  ADMIN_WORKSPACES.flatMap((workspace) => {
-    // An UNFOLDED workspace's landing points at a route its own page rows
-    // already list (W7b), so emitting it again would put two rows for
-    // `/admin/settings` in the palette — one labelled "Settings", one labelled
-    // "Product & Comms". The page row wins: an operator types the page name.
-    // A folded workspace keeps its landing entry, because there are no page rows
-    // to carry it (the same reason the tab filter below drops `tab.to === to`).
-    const landing =
-      workspace.to && !workspace.pages.some((page) => page.to === workspace.to)
-        ? [{ to: workspace.to, labelKey: workspace.labelKey, workspaceKey: workspace.key }]
-        : [];
-    const pages = workspace.pages.map((page) => ({ ...page, workspaceKey: workspace.key }));
-    const tabs = (workspace.tabs ?? [])
-      // The landing already covers the first tab's route.
-      .filter((tab) => !tab.comingSoon && tab.to !== workspace.to)
-      .map((tab) => ({ to: tab.to, labelKey: tab.labelKey, workspaceKey: workspace.key }));
-    return [...landing, ...pages, ...tabs];
-  });
+export const ADMIN_DESTINATIONS: readonly (AdminDestination & {
+  workspaceKey: string;
+  /**
+   * Extra catalog keys a ⌘K query may match on, beyond the displayed label.
+   * Never rendered — the palette shows `labelKey` and the workspace meta.
+   */
+  matchKeys?: readonly string[];
+})[] = ADMIN_WORKSPACES.flatMap((workspace) => {
+  // An UNFOLDED workspace's landing points at a route its own page rows already
+  // list (W7b), so emitting it again would put two rows for one route in the
+  // palette. The page row wins: an operator types the page name.
+  const landingPage = workspace.pages.find((page) => page.to === workspace.to);
+  // A FOLDED workspace has no page rows, so the landing row is the only one that
+  // route gets (the tab filter below drops `tab.to === to` for the same
+  // reason) — and it takes that tab's page label, with the workspace label as a
+  // second thing to match on.
+  const landingTab = (workspace.tabs ?? []).find((tab) => tab.to === workspace.to);
+  const landing =
+    workspace.to && !landingPage
+      ? [
+          {
+            to: workspace.to,
+            labelKey: landingTab?.labelKey ?? workspace.labelKey,
+            ...(landingTab ? { matchKeys: [workspace.labelKey] } : {}),
+            workspaceKey: workspace.key,
+          },
+        ]
+      : [];
+  const pages = workspace.pages.map((page) => ({ ...page, workspaceKey: workspace.key }));
+  const tabs = (workspace.tabs ?? [])
+    // The landing already covers the first tab's route.
+    .filter((tab) => !tab.comingSoon && tab.to !== workspace.to)
+    .map((tab) => ({ to: tab.to, labelKey: tab.labelKey, workspaceKey: workspace.key }));
+  return [...landing, ...pages, ...tabs];
+});
 
 const WIDE_PATHS = new Set(ADMIN_WORKSPACES.filter((workspace) => workspace.wide).flatMap(pathsOf));
 

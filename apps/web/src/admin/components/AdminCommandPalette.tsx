@@ -157,8 +157,15 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
     const destinations = ADMIN_DESTINATIONS.map((destination) => ({
       destination,
       label: t(destination.labelKey),
+      // A folded workspace's landing is ONE row that answers to two names: the
+      // page's ("Settings") and the workspace's ("Product & Comms"). The extra
+      // names are matched, never rendered — the workspace already shows as the
+      // row's `meta` below (#1406 W7c).
+      haystack: [destination.labelKey, ...(destination.matchKeys ?? [])].map((key) =>
+        t(key).toLowerCase(),
+      ),
     }))
-      .filter(({ label }) => local.length === 0 || label.toLowerCase().includes(local))
+      .filter(({ haystack }) => local.length === 0 || haystack.some((name) => name.includes(local)))
       .slice(0, DESTINATION_LIMIT)
       .map(({ destination, label }, index) => {
         const workspaceKey = adminWorkspaceLabelKey(destination.to);

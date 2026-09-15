@@ -13,6 +13,7 @@ import { useAdminWindowClosedSignOut } from '../sessionExpiry';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Button, PageHeader, Spinner, TextField } from '../components/ui';
 import {
   EmailEnrollForm,
@@ -454,6 +455,8 @@ export function SecuritySettingsPage() {
         title={t('admin.security.title')}
         description={t('admin.security.subtitle')}
       />
+
+      <WorkspaceTabs />
 
       {recoveryCodes ? (
         <RecoveryCodesPanel

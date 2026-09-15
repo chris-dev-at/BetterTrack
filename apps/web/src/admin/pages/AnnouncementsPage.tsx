@@ -36,6 +36,7 @@ import {
   TEXT_SECTION,
   type Tone,
 } from '../components/tokens';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   Badge,
@@ -407,6 +408,8 @@ export function AnnouncementsPage() {
         title={t('admin.announcements.title')}
         description={t('admin.announcements.description')}
       />
+
+      <WorkspaceTabs />
 
       <Panel padded={false}>
         <PanelHeader
