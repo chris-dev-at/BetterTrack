@@ -122,6 +122,9 @@ const currentSession: SessionSummary = {
 const featureFlag = (key: AdminFeatureFlag['key']): AdminFeatureFlag => ({
   key,
   enabled: true,
+  rolloutPercent: 100,
+  allowUserIds: [],
+  denyUserIds: [],
   description: `${key} desc`,
   updatedAt: null,
   updatedBy: null,

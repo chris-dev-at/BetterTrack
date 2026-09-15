@@ -15,6 +15,14 @@
  * became unreachable. Workspaces that still list `pages` keep W1's shape — the
  * nav fold for Product & Comms and Security & API was CUT as a package (W7,
  * §16 2026-08-29) and is deliberately not smuggled in here.
+ *
+ * **W7b gives the two unfolded workspaces a `to`, and nothing else.** Their rail
+ * labels were headings that navigated nowhere, which made two of the six
+ * workspaces dead ends. A `to` pointing at the workspace's own first page fixes
+ * that with no new route and, crucially, no `tabs`: a `to` is a link, a `tabs`
+ * array is the fold, and only the second one is the cut package. The assertion
+ * in `WorkspaceTabs.test.tsx` that no third workspace declares `tabs` stays
+ * green and stays the guard.
  */
 
 export interface AdminDestination {
@@ -130,6 +138,10 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
   {
     key: 'product',
     labelKey: 'admin.nav.sections.product',
+    // A landing, NOT a fold (W7b): the label links at the workspace's first page
+    // so the rail entry is reachable, while the page rows below stay exactly as
+    // W1 left them.
+    to: '/admin/settings',
     pages: [
       { to: '/admin/settings', labelKey: 'admin.nav.settings' },
       { to: '/admin/feature-flags', labelKey: 'admin.nav.featureFlags' },
@@ -141,6 +153,8 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
   {
     key: 'security',
     labelKey: 'admin.nav.sections.securityApi',
+    // Same as Product & Comms above: a landing on its own first page, no fold.
+    to: '/admin/audit',
     pages: [
       { to: '/admin/audit', labelKey: 'admin.nav.audit' },
       { to: '/admin/security', labelKey: 'admin.nav.security' },
@@ -167,9 +181,16 @@ function pathsOf(workspace: AdminWorkspace): string[] {
  */
 export const ADMIN_DESTINATIONS: readonly (AdminDestination & { workspaceKey: string })[] =
   ADMIN_WORKSPACES.flatMap((workspace) => {
-    const landing = workspace.to
-      ? [{ to: workspace.to, labelKey: workspace.labelKey, workspaceKey: workspace.key }]
-      : [];
+    // An UNFOLDED workspace's landing points at a route its own page rows
+    // already list (W7b), so emitting it again would put two rows for
+    // `/admin/settings` in the palette — one labelled "Settings", one labelled
+    // "Product & Comms". The page row wins: an operator types the page name.
+    // A folded workspace keeps its landing entry, because there are no page rows
+    // to carry it (the same reason the tab filter below drops `tab.to === to`).
+    const landing =
+      workspace.to && !workspace.pages.some((page) => page.to === workspace.to)
+        ? [{ to: workspace.to, labelKey: workspace.labelKey, workspaceKey: workspace.key }]
+        : [];
     const pages = workspace.pages.map((page) => ({ ...page, workspaceKey: workspace.key }));
     const tabs = (workspace.tabs ?? [])
       // The landing already covers the first tab's route.
@@ -201,6 +222,35 @@ export function isWideAdminPath(pathname: string): boolean {
 /** The workspace a path belongs to, for the palette's result grouping. */
 export function adminWorkspaceLabelKey(to: string): string | undefined {
   return ADMIN_WORKSPACES.find((workspace) => pathsOf(workspace).includes(to))?.labelKey;
+}
+
+/**
+ * The workspace label for a LIVE pathname — what every console page's eyebrow
+ * resolves against (W7b), so "where am I" is answered from this registry rather
+ * than hand-written once per page and left to drift the next time a page moves
+ * workspace.
+ *
+ * Exact match first, then the LONGEST owning prefix. The longest-prefix rule is
+ * load-bearing, not defensive: Overview owns `/admin`, so a plain
+ * `startsWith` would let it claim every console route. `/admin/users/:id`
+ * resolves to People because `/admin/users` is a longer match than `/admin`.
+ */
+export function adminWorkspaceLabelKeyForPath(pathname: string): string | undefined {
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+  const exact = adminWorkspaceLabelKey(normalized);
+  if (exact) return exact;
+
+  let best: AdminWorkspace | undefined;
+  let bestLength = 0;
+  for (const workspace of ADMIN_WORKSPACES) {
+    for (const path of pathsOf(workspace)) {
+      if (normalized.startsWith(`${path}/`) && path.length > bestLength) {
+        best = workspace;
+        bestLength = path.length;
+      }
+    }
+  }
+  return best?.labelKey;
 }
 
 /**

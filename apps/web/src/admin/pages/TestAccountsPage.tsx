@@ -1,5 +1,6 @@
 import { useT } from '../../i18n';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import * as api from '../../lib/adminApi';
 import type { AdminStats } from '@bettertrack/contracts';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
@@ -23,6 +24,7 @@ import { TEXT_MUTED } from '../components/tokens';
  */
 export function TestAccountsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const stats = useResource((signal) => api.getStats(signal), []);
   // Decorative counts: absent while the stats read is loading or failed, so a
   // missing number never reads as a confident zero.
@@ -31,7 +33,7 @@ export function TestAccountsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={t('admin.testAccounts.title')}
         description={t('admin.testAccounts.subtitle')}
       />

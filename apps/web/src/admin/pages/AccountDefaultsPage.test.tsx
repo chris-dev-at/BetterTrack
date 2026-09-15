@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import {
@@ -64,9 +65,11 @@ const admin: MeResponse = {
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <AuthProvider>
-        <AccountDefaultsPage />
-      </AuthProvider>
+      <MemoryRouter initialEntries={['/admin/account-defaults']}>
+        <AuthProvider>
+          <AccountDefaultsPage />
+        </AuthProvider>
+      </MemoryRouter>
     </I18nProvider>,
   );
 }

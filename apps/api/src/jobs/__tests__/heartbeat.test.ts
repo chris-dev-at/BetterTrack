@@ -26,7 +26,7 @@ beforeEach(async () => {
     deadLetter: createDeadLetter(redis),
     redis,
     logger,
-    isFeatureEnabled: async () => true,
+    isFeatureEnabledGlobally: async () => true,
   };
 });
 

@@ -2291,7 +2291,16 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // 401 / mandatory-2FA / catalogue-copy handling `useResource` has, and which no
 // gate counts in either direction. The row drawer (`AuditEntryDrawer.tsx`) adds
 // no read at all: it renders a row the page already holds.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 81;
+// 81 → 84 with the admin rebuild ADMIN-W7b (#1910): the ⌘K palette learns to
+// search content, so it gains three client-filtered reads — announcements,
+// invites and registration tokens. None adds a state gap: each renders the
+// section's row-shaped note for BOTH loading ("Searching…") and error ("Could
+// not load announcements." / "…invites or registration tokens."), and each has
+// an explicit empty case distinct from the error one, which is the whole reason
+// the palette's existing two reads are not in the debt ledger either. The fourth
+// new section (feature flags) reads nothing at all — the registry is a contract
+// constant — so it adds no site. The debt ceiling below is therefore unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 84;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

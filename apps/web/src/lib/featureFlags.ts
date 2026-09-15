@@ -53,15 +53,33 @@ const BOOTSTRAP_FALLBACK: FeatureFlagsResponse = {
   capabilities: NO_CAPABILITIES,
 };
 
+/**
+ * The bootstrap's cache key, exported so the ONE place that must drop it —
+ * `AuthContext.applyUser`, the single door into a session user — cannot drift
+ * from the query that reads it.
+ */
+export const FEATURE_FLAGS_QUERY_KEY = ['feature-flags'] as const;
+
 export async function getFeatureFlags(signal?: AbortSignal): Promise<FeatureFlagsResponse> {
   const data = await apiRequest<unknown>('/feature-flags', { signal });
   return featureFlagsResponseSchema.parse(data);
 }
 
-/** The bootstrap envelope, refetched on the standard cadence so a flip lands soon. */
+/**
+ * The bootstrap envelope, refetched on the standard cadence so a flip lands soon.
+ *
+ * Since #1910 this answer is PRINCIPAL-DEPENDENT: a flag can be rolled out to a
+ * percentage of accounts or to a named list, so the map an anonymous visitor
+ * reads before logging in is not the map their account gets. The server marks
+ * the response `no-store` so no shared cache can mix two principals' answers;
+ * this query is the client half of that, and `applyUser` invalidates it the
+ * moment a session user is adopted. Without that, a partially-rolled feature
+ * would stay hidden for a whole `staleTime` after login — the SPA would hide a
+ * surface the API is perfectly willing to serve.
+ */
 function useFeatureFlagsBootstrap(): FeatureFlagsResponse {
   const { data } = useQuery({
-    queryKey: ['feature-flags'],
+    queryKey: FEATURE_FLAGS_QUERY_KEY,
     queryFn: ({ signal }) => getFeatureFlags(signal),
     staleTime: 60_000,
   });

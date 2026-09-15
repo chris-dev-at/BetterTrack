@@ -18,6 +18,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
 
 /**
@@ -48,6 +49,7 @@ function fromSettings(settings: AiSettingsResponse): FormState {
 
 export function AiSettingsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const resource = useResource((signal) => api.getAiSettings(signal), []);
   const { loading, error, reload } = resource;
 
@@ -148,7 +150,11 @@ export function AiSettingsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={t('admin.ai.title')} description={t('admin.ai.subtitle')} />
+      <PageHeader
+        eyebrow={eyebrow}
+        title={t('admin.ai.title')}
+        description={t('admin.ai.subtitle')}
+      />
 
       {loading && !form ? <Spinner label={t('admin.ai.title')} /> : null}
       {error && !form ? (

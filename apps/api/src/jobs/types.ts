@@ -215,8 +215,16 @@ export interface JobContext {
    * Resolved PER RUN, never captured at worker startup: the underlying service
    * reads the admin-flipped value through its shared Redis snapshot, so a flip
    * takes effect on the next scheduled run with no redeploy.
+   *
+   * GLOBALLY, and the name says so (#1910). A flag carries a percentage rollout
+   * and allow/deny lists now, and all three are properties of a USER — a
+   * scheduled producer has no user, so it reads the base `enabled` alone. The
+   * alternative, resolving the sweep against some default principal, would mean
+   * a 10 % rollout quietly ran the nightly job for a tenth of the accounts (or,
+   * with an anonymous default, for none) with nothing at the call site saying it
+   * had happened.
    */
-  isFeatureEnabled(key: FeatureFlagKey): Promise<boolean>;
+  isFeatureEnabledGlobally(key: FeatureFlagKey): Promise<boolean>;
 }
 
 /**

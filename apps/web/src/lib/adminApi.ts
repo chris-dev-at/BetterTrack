@@ -79,6 +79,7 @@ import {
   type AccountDefaultsResponse,
   type AdminFeatureFlagsResponse,
   type FeatureFlagKey,
+  type UpdateFeatureFlagRequest,
   type Announcement,
   type AnnouncementListResponse,
   type AnnouncementRedeliverResponse,
@@ -790,13 +791,18 @@ export async function getFeatureFlags(signal?: AbortSignal): Promise<AdminFeatur
   return adminFeatureFlagsResponseSchema.parse(data);
 }
 
+/**
+ * Patch one flag. The body is a PARTIAL config (#1910): the server merges it
+ * onto the stored row, so the kill switch and the rollout stay independent
+ * writes and the console never has to round-trip fields it is not editing.
+ */
 export async function setFeatureFlag(
   key: FeatureFlagKey,
-  enabled: boolean,
+  patch: UpdateFeatureFlagRequest,
 ): Promise<AdminFeatureFlagsResponse> {
   const data = await apiRequest<unknown>(`/admin/feature-flags/${key}`, {
     method: 'PATCH',
-    body: { enabled },
+    body: patch,
   });
   return adminFeatureFlagsResponseSchema.parse(data);
 }

@@ -17,6 +17,7 @@ import * as api from '../../lib/adminApi';
 import { useAdminMutation } from '../useAdminMutation';
 import { useLiveRefresh } from '../useLiveRefresh';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { LiveRefreshControl } from '../components/LiveRefreshControl';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { TEXT_MICRO, TEXT_MONO, TEXT_MUTED, TEXT_NUM, type Tone } from '../components/tokens';
@@ -77,6 +78,7 @@ function readStatus(raw: string | null): StatusFilter {
  */
 export function ProblemsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [params, setParams] = useSearchParams();
 
   const kind = readKind(params.get('kind'));
@@ -200,7 +202,7 @@ export function ProblemsPage() {
       <PageHeader
         actions={<LiveRefreshControl busy={loading} live={live} />}
         description={t('admin.problems.subtitle')}
-        eyebrow={t('admin.nav.sections.operations')}
+        eyebrow={eyebrow}
         title={t('admin.problems.title')}
       />
 

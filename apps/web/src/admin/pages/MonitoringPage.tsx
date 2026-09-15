@@ -8,6 +8,7 @@ import { apiBaseUrl } from '../../lib/runtimeConfig';
 import { formatDateTime } from '../../lib/format';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
@@ -58,6 +59,7 @@ function ConditionRow({ label, met }: { label: string; met: boolean }) {
 
 export function MonitoringPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [override, setOverride] = useState<MonitoringStatusResponse | null>(null);
@@ -90,7 +92,7 @@ export function MonitoringPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <PageHeader
-          eyebrow={t('admin.nav.sections.operations')}
+          eyebrow={eyebrow}
           title={t('admin.monitoring.title')}
           description={t('admin.monitoring.subtitle')}
         />

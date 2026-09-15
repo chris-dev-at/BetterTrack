@@ -16,6 +16,7 @@ import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
 function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, string> {
@@ -73,6 +74,7 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
  */
 export function AccountDefaultsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const defaults = useResource((signal) => api.getAccountDefaults(signal), []);
   const { data } = defaults;
 
@@ -143,6 +145,7 @@ export function AccountDefaultsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
+        eyebrow={eyebrow}
         title={t('admin.accountDefaults.title')}
         description={t('admin.accountDefaults.subtitle')}
       />

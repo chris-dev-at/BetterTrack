@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type {
@@ -70,10 +71,12 @@ function AuthStatus() {
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <AuthProvider>
-        <AuthStatus />
-        <OAuthAppsPage />
-      </AuthProvider>
+      <MemoryRouter initialEntries={['/admin/oauth-apps']}>
+        <AuthProvider>
+          <AuthStatus />
+          <OAuthAppsPage />
+        </AuthProvider>
+      </MemoryRouter>
     </I18nProvider>,
   );
 }
