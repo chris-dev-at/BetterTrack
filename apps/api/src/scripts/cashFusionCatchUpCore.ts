@@ -340,6 +340,32 @@ export function planIsEmpty(plan: OwnerPlan): boolean {
   );
 }
 
+/**
+ * The UTC day this plan's earliest new movement lands on, or `null` when it
+ * books no movements.
+ *
+ * Every planned movement is a BACKDATED external cash flow (`booked_on` at UTC
+ * midnight, deposit or withdrawal), so it reshapes the portfolio's value curve
+ * and its TWR flows from that day onward: the daily snapshots from this day on
+ * are stale the moment the rows land (§16 2026-07-17 invalidation rules).
+ *
+ * The apply step invalidates from the day it actually WROTE, taken from the
+ * insert's `RETURNING`. This day is at or BEFORE that day, never after: the
+ * plan already excludes movements the ledger holds, so a first run agrees
+ * exactly, but on a partial re-run the insert can skip a planned movement
+ * (`ON CONFLICT DO NOTHING`) and land on a LATER day. So it is an upper bound
+ * on the invalidated RANGE — `--dry-run` reports the widest range an apply
+ * could invalidate, never less — while being a lower bound on the day itself.
+ */
+export function planInvalidationDay(plan: OwnerPlan): string | null {
+  let earliest: string | null = null;
+  for (const movement of plan.movements) {
+    const day = movement.executedAt.toISOString().slice(0, 10);
+    if (earliest === null || day < earliest) earliest = day;
+  }
+  return earliest;
+}
+
 // ── Planning ─────────────────────────────────────────────────────────────────
 
 /** `MAIN_CASH_SOURCE_NAME`, restated here so the core imports no repository. */
