@@ -5,6 +5,7 @@ import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import {
   Alert,
   AsyncReadState,
@@ -33,6 +34,7 @@ import { TEXT_MICRO, TEXT_MUTED } from '../components/tokens';
  */
 export function SettingsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const settings = useResource((signal) => api.getSettings(signal), []);
   const { data } = settings;
 
@@ -68,7 +70,7 @@ export function SettingsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        eyebrow={t('admin.nav.sections.product')}
+        eyebrow={eyebrow}
         title={t('admin.settings.title')}
         description={t('admin.settings.subtitle')}
       />

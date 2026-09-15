@@ -1,10 +1,15 @@
 import type { Job } from 'bullmq';
 import { pino } from 'pino';
+import RedisMock from 'ioredis-mock';
 import { describe, expect, it } from 'vitest';
 
 import { FEATURE_FLAG_KEYS, type FeatureFlagKey } from '@bettertrack/contracts';
 
 import type { Logger } from '../../logger';
+import {
+  createFeatureFlagService,
+  type FeatureFlagService,
+} from '../../services/featureFlags/featureFlagService';
 import {
   JOB_REGISTRATION_DESCRIPTORS,
   assembleRegisteredJobDefinitions,
@@ -43,7 +48,7 @@ function makeCtx(
     deadLetter: null as never,
     redis: null as never,
     logger,
-    isFeatureEnabled: async (key) => {
+    isFeatureEnabledGlobally: async (key) => {
       reads.push(key);
       return flags[key] ?? true;
     },
@@ -178,7 +183,7 @@ describe('runJobDefinition — the one execution seam', () => {
     let runs = 0;
     const ctx: JobContext = {
       ...makeCtx({}),
-      isFeatureEnabled: async () => {
+      isFeatureEnabledGlobally: async () => {
         throw new Error('flag store unreachable');
       },
     };
@@ -203,5 +208,91 @@ describe('runJobDefinition — the one execution seam', () => {
     const summary = await runJobDefinition(definition, noJob, makeCtx({}, reads));
     expect(summary).toEqual({ deleted: 3 });
     expect(reads).toEqual([]);
+  });
+});
+
+/**
+ * A scheduled producer has NO principal, so it must read the BASE switch and
+ * nothing else (#1910). Wired through the real service, because the property
+ * being protected is a wiring property: the seam that would break it is someone
+ * later pointing `isFeatureEnabledGlobally` at the principal-scoped resolver.
+ */
+describe('a job reads the base switch, never a rollout', () => {
+  function realService(): FeatureFlagService {
+    const rows = new Map<
+      string,
+      { key: string; value: unknown; updatedAt: Date | null; updatedBy: string | null }
+    >();
+    const repo = {
+      async get(key: string) {
+        return rows.get(key) ?? null;
+      },
+      async getAll() {
+        return [...rows.values()];
+      },
+      async upsert(key: string, value: unknown, updatedBy: string | null) {
+        const row = { key, value, updatedAt: new Date(), updatedBy };
+        rows.set(key, row);
+        return row;
+      },
+    } as unknown as Parameters<typeof createFeatureFlagService>[0]['repo'];
+    return createFeatureFlagService({
+      repo,
+      redis: new RedisMock() as unknown as Parameters<typeof createFeatureFlagService>[0]['redis'],
+      audit: { record: async () => {} } as never,
+      logger,
+    });
+  }
+
+  function ctxFor(service: FeatureFlagService): JobContext {
+    return {
+      events: null as never,
+      deadLetter: null as never,
+      redis: null as never,
+      logger,
+      // EXACTLY the production wiring (`apps/api/src/scripts/worker.ts`).
+      isFeatureEnabledGlobally: (key) => service.isEnabledGlobally(key),
+    };
+  }
+
+  const gated = (onRun: () => void): JobDefinition<'alerts.evaluate'> => ({
+    name: 'alerts.evaluate' as QueueName as 'alerts.evaluate',
+    featureFlag: 'alerts',
+    handler: async () => {
+      onRun();
+    },
+  });
+
+  it('runs at `rolloutPercent: 0` with a deny list — a rollout cannot halve a sweep', async () => {
+    const service = realService();
+    await service.setFlag(
+      'alerts',
+      { rolloutPercent: 0, denyUserIds: ['11111111-1111-4111-8111-111111111111'] },
+      { id: 'admin' },
+    );
+
+    let runs = 0;
+    await runJobDefinition(
+      gated(() => (runs += 1)),
+      noJob,
+      ctxFor(service),
+    );
+    // The switch is ON; only its ROLLOUT is closed, and a rollout is a statement
+    // about users. Shedding here would silently stop alert evaluation for
+    // everyone — including the accounts the rollout explicitly allows.
+    expect(runs).toBe(1);
+  });
+
+  it('still sheds when the switch itself is OFF', async () => {
+    const service = realService();
+    await service.setFlag('alerts', { enabled: false, rolloutPercent: 100 }, { id: 'admin' });
+
+    let runs = 0;
+    await runJobDefinition(
+      gated(() => (runs += 1)),
+      noJob,
+      ctxFor(service),
+    );
+    expect(runs).toBe(0);
   });
 });

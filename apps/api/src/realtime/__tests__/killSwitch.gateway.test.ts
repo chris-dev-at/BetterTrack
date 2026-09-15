@@ -292,14 +292,18 @@ describe('`realtime` OFF sheds connections that are already established', () => 
     expect(seen).toEqual([REALTIME_SERVER_EVENTS.featureDisabled]);
   });
 
-  it('reads the flag once per sweep — never per emit', async () => {
+  it('reads the flag configuration once per sweep — never per emit, and never per socket', async () => {
     const user = await harness.seedUser({ email: 'bounded@bt.test', username: 'bounded' });
+    const second = await harness.seedUser({ email: 'bounded2@bt.test', username: 'bounded2' });
     const admin = await adminAgent();
     const assetId = await seedAsset('BOUND.DE');
     const socket = await connect(await loginCookie(user));
-    const isEnabled = vi.spyOn(harness.ctx.featureFlags, 'isEnabled');
-    const realtimeReads = (): number =>
-      isEnabled.mock.calls.filter(([key]) => key === 'realtime').length;
+    // A SECOND connected socket, with its own principal. Since #1910 the sweep
+    // resolves each socket against its own user, so "one read per sweep" is only
+    // still true if the read is hoisted out of that loop — with one socket the
+    // assertion below could not tell the two apart.
+    const other = await connect(await loginCookie(second));
+    const configReads = vi.spyOn(harness.ctx.featureFlags, 'resolver');
 
     await flip(admin, 'realtime', false);
     const stillPushed = waitForEvent(socket, REALTIME_SERVER_EVENTS.notificationNew);
@@ -307,13 +311,81 @@ describe('`realtime` OFF sheds connections that are already established', () => 
     await stillPushed;
     // The emit paths never consult the flag; the switch is enforced by the sweep
     // alone, whose bound is one interval.
-    expect(realtimeReads()).toBe(0);
+    expect(configReads).toHaveBeenCalledTimes(0);
     expect(REALTIME_FEATURE_SHED_MAX_DELAY_MS).toBe(REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS);
 
     triggerSweep!();
     await vi.waitFor(() => expect(socket.connected).toBe(false));
-    expect(realtimeReads()).toBe(1);
-    isEnabled.mockRestore();
+    await vi.waitFor(() => expect(other.connected).toBe(false));
+    // Two sockets, two principals, ONE configuration read.
+    expect(configReads).toHaveBeenCalledTimes(1);
+    configReads.mockRestore();
+  });
+});
+
+/**
+ * Rollout targeting over LONG-LIVED work (#1910). `realtime` and `liveMode` gate
+ * a connection and a shared poll loop, so narrowing their rollout has to reach
+ * work that is already running — and has to reach ONLY the accounts that fell
+ * out of it, or a 90 % rollout would be a fleet-wide outage.
+ */
+describe('a narrowed rollout sheds exactly the sockets it excludes', () => {
+  /** Patch one flag's configuration through the admin surface. */
+  async function configure(agent: Agent, key: string, body: unknown): Promise<void> {
+    const res = await agent
+      .patch(`/api/v1/admin/feature-flags/${key}`)
+      .set(...XRW)
+      .send(body as object);
+    expect(res.status).toBe(200);
+  }
+
+  it('disconnects the denied user and leaves every other socket connected', async () => {
+    const denied = await harness.seedUser({ email: 'denied-rt@bt.test', username: 'deniedrt' });
+    const kept = await harness.seedUser({ email: 'kept-rt@bt.test', username: 'keptrt' });
+    const admin = await adminAgent();
+    const deniedSocket = await connect(await loginCookie(denied));
+    const keptSocket = await connect(await loginCookie(kept));
+    const disabled = waitForEvent<RealtimeFeatureDisabled>(
+      deniedSocket,
+      REALTIME_SERVER_EVENTS.featureDisabled,
+    );
+
+    await configure(admin, 'realtime', { denyUserIds: [denied.id] });
+    // Sweep-bounded, exactly like a fleet-wide kill: nothing happens until the
+    // pass runs, and then only to the socket the rollout excludes.
+    expect(deniedSocket.connected).toBe(true);
+
+    triggerSweep!();
+
+    expect(realtimeFeatureDisabledSchema.parse(await disabled)).toEqual({ feature: 'realtime' });
+    await vi.waitFor(() => expect(deniedSocket.connected).toBe(false));
+    // The kept socket is not merely still open — it is still being swept, so
+    // this is not "the sweep died before reaching it".
+    triggerSweep!();
+    expect(keptSocket.connected).toBe(true);
+
+    // …and the denied user cannot get back in: the handshake resolves the
+    // rollout too, with the SAME frame a fleet-wide kill produces, so a client
+    // cannot tell targeted refusal from a global one.
+    await expect(connect(await loginCookie(denied))).rejects.toThrow();
+  });
+
+  it('refuses a new live.watch for an excluded user while serving an included one', async () => {
+    const outside = await harness.seedUser({ email: 'outside-lm@bt.test', username: 'outsidelm' });
+    const inside = await harness.seedUser({ email: 'inside-lm@bt.test', username: 'insidelm' });
+    const admin = await adminAgent();
+    const assetId = await seedAsset('ROLL.DE');
+    const outsideSocket = await connect(await loginCookie(outside));
+    const insideSocket = await connect(await loginCookie(inside));
+
+    // Nobody is in the rollout except the one allowlisted account.
+    await configure(admin, 'liveMode', { rolloutPercent: 0, allowUserIds: [inside.id] });
+
+    expect(await watch(outsideSocket, assetId, '10m')).toEqual({ ok: false, error: 'UNAVAILABLE' });
+    expect(await watch(insideSocket, assetId, '10m')).toMatchObject({ ok: true });
+    // `realtime` was untouched, so neither connection is affected.
+    expect(outsideSocket.connected).toBe(true);
+    expect(insideSocket.connected).toBe(true);
   });
 });
 

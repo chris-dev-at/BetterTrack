@@ -17,6 +17,7 @@ import * as api from '../../lib/adminApi';
 import { formatBackupAge, formatDuration } from '../formatDuration';
 import { useLiveRefresh } from '../useLiveRefresh';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { LiveRefreshControl } from '../components/LiveRefreshControl';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
@@ -114,6 +115,7 @@ function relativeRun(t: TranslateFn, iso: string | null, now: number): ReactNode
 
 export function HealthPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
 
   const health = useResource((signal) => api.getAdminHealth(signal), []);
   const jobs = useResource((signal) => api.getOpsJobs(signal), []);
@@ -143,7 +145,7 @@ export function HealthPage() {
       <PageHeader
         actions={<LiveRefreshControl busy={busy} live={live} />}
         description={t('admin.ops.health.subtitle')}
-        eyebrow={t('admin.nav.sections.operations')}
+        eyebrow={eyebrow}
         title={t('admin.ops.health.title')}
       />
       <WorkspaceTabs {...(counts ? { counts } : {})} />

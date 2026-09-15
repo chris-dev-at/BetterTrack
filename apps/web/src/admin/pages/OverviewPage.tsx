@@ -11,6 +11,7 @@ import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatBackupAge, formatDuration } from '../formatDuration';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { Alert, Badge, Button, EmptyState, PageHeader, Spinner, cx } from '../components/ui';
 
 /** The web bundle's own commit, baked in at build time — same marker the admin login footer shows. */
@@ -93,6 +94,7 @@ function useObserveOnce(onSeen: (seen: true) => void) {
  */
 export function OverviewPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
 
   // The approval-queue size rides on `/admin/stats` as a COUNT: the attention row
   // needs a number, and listing the whole queue to read `.length` would have made
@@ -163,7 +165,7 @@ export function OverviewPage() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <PageHeader
-          eyebrow={t('admin.nav.sections.overview')}
+          eyebrow={eyebrow}
           title={t('admin.overview.title')}
           description={t('admin.overview.subtitle')}
         />

@@ -1,4 +1,5 @@
 import { useT } from '../../i18n';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { TEXT_MUTED } from '../components/tokens';
 import { Alert, Badge, KeyValueList, PageHeader, Panel, PanelHeader, cx } from '../components/ui';
@@ -21,12 +22,13 @@ import { Alert, Badge, KeyValueList, PageHeader, Panel, PanelHeader, cx } from '
  */
 export function MarketDataPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         description={t('admin.marketData.subtitle')}
-        eyebrow={t('admin.nav.sections.operations')}
+        eyebrow={eyebrow}
         title={t('admin.marketData.title')}
       />
 

@@ -11,6 +11,7 @@ import type { Logger } from '../../logger';
 import type { AiSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { auditFieldDiff } from '../audit/auditRedaction';
+import { userPrincipal } from '../featureFlags/featureFlagResolution';
 import type { FeatureFlagService } from '../featureFlags/featureFlagService';
 import type { AiDailyCap } from './dailyCap';
 import { AiProviderError, AiUnavailableError } from './errors';
@@ -99,9 +100,15 @@ export function createAiService(deps: AiServiceDeps): AiService {
    * The `ai` feature flag (already in the registry as "AI insights & assistant").
    * Folding it into availability lets an admin hide AI without unconfiguring it,
    * and aligns this read with the `requireFeature('ai')` route gate 2/2 adds.
+   *
+   * Resolved for the ASKING USER (#1910). Both callers already hold one, and
+   * they must: `requireFeature('ai')` on the routes resolves per principal now,
+   * so a capability read that answered globally would tell a user outside the
+   * rollout that AI is available and then 404 them at the generation endpoint —
+   * the flag equivalent of a dead link.
    */
-  async function featureEnabled(): Promise<boolean> {
-    return featureFlags.isEnabled('ai');
+  async function featureEnabled(userId: string): Promise<boolean> {
+    return featureFlags.isEnabled('ai', userPrincipal(userId));
   }
 
   function serialize(settings: AiSettings): AiSettingsResponse {
@@ -117,7 +124,7 @@ export function createAiService(deps: AiServiceDeps): AiService {
 
   async function capability(userId: string): Promise<AiCapabilityResponse> {
     const settings = await appSettings.getAiSettings();
-    const available = settings.configured && (await featureEnabled());
+    const available = settings.configured && (await featureEnabled(userId));
     const used = available ? await cap.usage(userId) : 0;
     return {
       available,
@@ -133,7 +140,7 @@ export function createAiService(deps: AiServiceDeps): AiService {
     request: AiCompletionRequest,
   ): Promise<AiCompletionResult> {
     const settings = await appSettings.getAiSettings();
-    if (!settings.configured || !(await featureEnabled())) throw new AiUnavailableError();
+    if (!settings.configured || !(await featureEnabled(userId))) throw new AiUnavailableError();
     const provider = await registry.resolve();
     if (!provider) throw new AiUnavailableError();
 

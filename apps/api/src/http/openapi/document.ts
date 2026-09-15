@@ -1949,7 +1949,8 @@ const endpoints: EndpointDef[] = [
     method: 'patch',
     path: '/admin/feature-flags/{key}',
     tag: 'Admin',
-    summary: 'Flip one feature kill-switch (audit-logged; effective on the next request).',
+    summary:
+      'Patch one feature kill-switch and its rollout targeting (audit-logged; effective on the next request).',
     params: contracts.featureFlagKeyParamSchema,
     body: R.UpdateFeatureFlagRequest,
     status: 200,

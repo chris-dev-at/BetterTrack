@@ -6,7 +6,9 @@ import type { AppSettingRow } from '../../../data/schema';
 import type { AppSettingsRepository } from '../../../data/repositories/appSettingsRepository';
 import type { Logger } from '../../../logger';
 import type { AuditService } from '../../audit/auditService';
+import type { FeatureFlagConfig } from '@bettertrack/contracts';
 import { createAppSettingsService } from '../../appSettings/appSettingsService';
+import { resolveFeatureFlag } from '../../featureFlags/featureFlagResolution';
 import {
   AiCapExceededError,
   AiProviderError,
@@ -110,6 +112,12 @@ interface BuildOpts {
   initial?: Record<string, unknown>;
   aiDefaults?: { endpoint?: string; model?: string; dailyCap: number };
   featureEnabled?: boolean;
+  /**
+   * Rollout targeting for the `ai` flag (#1910). Given, the stub resolves it
+   * through the REAL `resolveFeatureFlag`, so a test can put a user on the deny
+   * list and the service's own principal plumbing is what decides the answer.
+   */
+  aiFlag?: Partial<FeatureFlagConfig>;
   now?: () => Date;
   chatStatus?: number;
   models?: string[];
@@ -130,7 +138,25 @@ function makeService(opts: BuildOpts = {}) {
     appSettings,
     registry,
     cap,
-    featureFlags: { isEnabled: async () => opts.featureEnabled ?? true },
+    featureFlags: {
+      // Resolved through the REAL precedence function against the REAL principal
+      // the service passes. A stub that ignored its arguments — as this one used
+      // to — made the whole principal argument untestable: swapping the
+      // service's `userPrincipal(userId)` for `SYSTEM_PRINCIPAL` left every test
+      // in this file green (#1910 review M2).
+      isEnabled: async (key, principal) =>
+        resolveFeatureFlag(
+          {
+            enabled: opts.featureEnabled ?? true,
+            rolloutPercent: 100,
+            allowUserIds: [],
+            denyUserIds: [],
+            ...opts.aiFlag,
+          },
+          key,
+          principal,
+        ),
+    },
     audit: audit.service,
     logger: noopLogger,
   });
@@ -154,6 +180,58 @@ describe('AI capability — disabled unless configured', () => {
       featureEnabled: false,
     });
     expect((await service.capability('user-1')).available).toBe(false);
+  });
+
+  /**
+   * The `ai` flag resolves against the ASKING USER (#1910). Both entry points
+   * already hold one, and they must: `requireFeature('ai')` on the routes is
+   * per-principal, so a capability read that answered globally would tell a user
+   * outside the rollout that AI is available and then 404 them at the generation
+   * endpoint — the flag equivalent of a dead link.
+   */
+  it('reports unavailable for a DENIED user while another user is served', async () => {
+    const denied = '11111111-1111-4111-8111-111111111111';
+    const { service } = makeService({
+      aiDefaults: { endpoint: ENDPOINT, model: 'llama3.1:8b', dailyCap: 20 },
+      aiFlag: { denyUserIds: [denied] },
+    });
+
+    const refused = await service.capability(denied);
+    expect(refused.available).toBe(false);
+    expect(refused.model).toBeNull();
+    expect(refused.remaining).toBe(0);
+
+    // Same service, same instant, same configuration — the only difference is
+    // who is asking.
+    expect((await service.capability('22222222-2222-4222-8222-222222222222')).available).toBe(true);
+  });
+
+  it('refuses GENERATION for a denied user, so the capability read and the guard agree', async () => {
+    const denied = '11111111-1111-4111-8111-111111111111';
+    const { service, fetch } = makeService({
+      aiDefaults: { endpoint: ENDPOINT, model: 'llama3.1:8b', dailyCap: 20 },
+      aiFlag: { denyUserIds: [denied] },
+    });
+
+    await expect(service.complete(denied, { prompt: 'hi' })).rejects.toBeInstanceOf(
+      AiUnavailableError,
+    );
+    // Refused BEFORE the provider is reached: a flag the user is outside of must
+    // not spend a local generation, nor a unit of their daily cap.
+    expect(fetch.calls).toHaveLength(0);
+  });
+
+  it('serves only the ALLOWLISTED user when the rollout is otherwise closed', async () => {
+    const allowed = '33333333-3333-4333-8333-333333333333';
+    const { service } = makeService({
+      aiDefaults: { endpoint: ENDPOINT, model: 'llama3.1:8b', dailyCap: 20 },
+      aiFlag: { rolloutPercent: 0, allowUserIds: [allowed] },
+    });
+
+    expect((await service.capability(allowed)).available).toBe(true);
+    expect((await service.capability('44444444-4444-4444-8444-444444444444')).available).toBe(
+      false,
+    );
   });
 
   it('reports available with the model + budget once configured', async () => {
