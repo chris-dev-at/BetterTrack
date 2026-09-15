@@ -5239,6 +5239,13 @@
         "other": "On for {{percent}} % + {{count}} accounts"
       },
       "killedNote": "The switch is off, so this feature is off for everyone — the rollout below, allow list included, does not apply.",
+      "stored": {
+        "salvagedBadge": "Rollout unreadable",
+        "unreadableBadge": "Config unreadable",
+        "salvagedNote": "The stored targeting for this flag could not be read, so the rollout below is the default this app is serving — not what is on disk. The switch itself was readable and is honoured. Save the rollout to replace the stored configuration completely.",
+        "unreadableNote": "The stored configuration for this flag could not be read at all, so the switch and the rollout below are the default this app is serving — not what is on disk. Save the rollout to replace the stored configuration completely.",
+        "conflictError": "This flag's stored configuration is unreadable — replace it completely using Save on the rollout panel."
+      },
       "rolloutHeading": "Rollout",
       "percentLabel": "Rollout %",
       "percentHint": "0–100. Each account lands in a stable bucket, so widening never takes the feature away from someone who had it.",

@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
 import {
+  FEATURE_FLAG_CONFIG_UNREADABLE,
   FEATURE_FLAG_KEYS,
   featureFlagConfigSchema,
   featureFlagStoredConfigSchema,
@@ -10,6 +11,7 @@ import {
   type FeatureFlagConfig,
   type FeatureFlagKey,
   type FeatureFlagsPublic,
+  type FeatureFlagStoredRead,
   type UpdateFeatureFlagRequest,
 } from '@bettertrack/contracts';
 
@@ -83,8 +85,12 @@ export const FEATURE_FLAG_PROPAGATION_UNCONFIRMED = 'FEATURE_FLAG_PROPAGATION_UN
 /**
  * Error code a PATCH returns when the stored row cannot be read and the patch
  * would have to INVENT the fields it omits (#1910 review B1). See `setFlag`.
+ *
+ * Defined in the contract package since #1950 — the console matches on it to
+ * render the repair instruction — and re-exported here so this service stays the
+ * obvious place to find it.
  */
-export const FEATURE_FLAG_CONFIG_UNREADABLE = 'FEATURE_FLAG_CONFIG_UNREADABLE';
+export { FEATURE_FLAG_CONFIG_UNREADABLE };
 
 /** Stable English metadata per flag — API/audit only; the SPA renders i18n. */
 export const FEATURE_FLAG_REGISTRY: Record<FeatureFlagKey, { description: string }> = {
@@ -136,6 +142,20 @@ type StoredConfigRead =
   | { status: 'salvaged'; config: FeatureFlagConfig }
   /** Nothing usable in the row at all. */
   | { status: 'unreadable' };
+
+/**
+ * Collapse the read outcome to what the admin console is told (#1950).
+ *
+ * `unset` folds into `parsed` on purpose: the console's use for this value is
+ * "does this row need repairing", and a row nobody has ever written does not —
+ * the defaults it shows are the defaults that are being served, with nothing on
+ * disk contradicting them. The two degraded outcomes stay distinct because they
+ * are differently bad: a salvaged row still has a kill switch that was actually
+ * read, an unreadable one has nothing.
+ */
+function reportedRead(read: StoredConfigRead): FeatureFlagStoredRead {
+  return read.status === 'unset' ? 'parsed' : read.status;
+}
 
 /**
  * Read one persisted `app_settings` value, honouring as much of it as can be
@@ -230,9 +250,16 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
   /**
    * Complain about a row that could not be fully read — once per read, at the
    * site that read it. A degraded kill switch has to be VISIBLE rather than
-   * inferred from a feature quietly behaving oddly; the console deliberately
-   * grows no per-flag "broken" marker for it (that would put an operational
-   * defect into the product contract), so this log is the signal.
+   * inferred from a feature quietly behaving oddly.
+   *
+   * This log is the signal for every read path that has no operator in front of
+   * it (the bootstrap, the route guards, the realtime sweep). The ADMIN list
+   * additionally reports the outcome in its response (#1950): the log alone left
+   * the one surface that can actually repair the row drawing it as healthy, so
+   * the operator met the damage as a 409 on a write instead of as a state they
+   * could see. The marker is scoped to the admin console — it is an operational
+   * fact for the person holding the switch, and it still does not leak into the
+   * SPA bootstrap, which stays booleans only.
    */
   function reportDegraded(key: FeatureFlagKey, read: StoredConfigRead, where: string): void {
     if (read.status === 'salvaged') {
@@ -382,6 +409,12 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
    * The two id lists ride this response — the console has to render them to be
    * editable — and it is fenced by `requireAdmin` + admin 2FA. That is exactly
    * the line the public bootstrap must not cross.
+   *
+   * Each row also carries HOW WELL it could be read (#1950). A row the reader had
+   * to fall back on reports the same defaults as a healthy one, so without this
+   * the console cannot tell "fully rolled" from "we could not read this and are
+   * showing you fully rolled" — and the operator discovers the difference only by
+   * attempting a write and collecting {@link FEATURE_FLAG_CONFIG_UNREADABLE}.
    */
   async function listForAdmin(): Promise<AdminFeatureFlag[]> {
     const rows = await repo.getAll();
@@ -398,6 +431,10 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
         rolloutPercent: config.rolloutPercent,
         allowUserIds: config.allowUserIds,
         denyUserIds: config.denyUserIds,
+        // Whether the four fields above are the stored row or a fallback for it.
+        // Serving this is what lets the console mark the row and route the
+        // operator to the one write it will accept — a COMPLETE replacement.
+        stored: reportedRead(read),
         description: FEATURE_FLAG_REGISTRY[key].description,
         updatedAt: row?.updatedAt ? row.updatedAt.toISOString() : null,
         updatedBy: row?.updatedBy ?? null,

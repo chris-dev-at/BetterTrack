@@ -46,6 +46,26 @@ interface AdminMutationOptions {
    * back to `errorKey` when a call site has nothing more specific to say.
    */
   notFoundErrorKey?: string;
+  /**
+   * Catalog key for the banner when the server refuses with a 409 carrying this
+   * error CODE. Anything else — a different 409, any other status — keeps
+   * {@link errorKey}.
+   *
+   * Two things make this narrower than its `notFoundErrorKey` precedent, and
+   * both are deliberate (#1950):
+   *
+   *  - It matches on the code, not on the status. A 404 means one thing per call
+   *    site ("that row is gone"); 409 is the status for a whole family of
+   *    conflicts, and a route that grows a second one would otherwise start
+   *    telling the operator to perform a repair that has nothing to do with the
+   *    refusal they hit. On an operator surface, confidently wrong copy is worse
+   *    than the generic banner.
+   *  - It exists at all because server envelopes are authored in English and are
+   *    not locale-aware, so a refusal that carries a REPAIR INSTRUCTION cannot be
+   *    surfaced by rendering the server's message. The code is the only part the
+   *    SPA may key off, and the instruction lives in the catalog in both locales.
+   */
+  conflictErrorKey?: { code: string; messageKey: string };
 }
 
 interface AdminMutation<TArgs extends readonly unknown[]> {
@@ -117,7 +137,8 @@ export function useAdminMutation<TArgs extends readonly unknown[]>(
 
   const execute = useCallback(
     async (key: PendingKey, args: TArgs): Promise<boolean> => {
-      const { errorKey, notFound, notFoundErrorKey, onSuccess } = optionsRef.current;
+      const { conflictErrorKey, errorKey, notFound, notFoundErrorKey, onSuccess } =
+        optionsRef.current;
       setPendingKeys((current) => new Set(current).add(key));
       setError(null);
       try {
@@ -141,8 +162,21 @@ export function useAdminMutation<TArgs extends readonly unknown[]>(
           requireTwoFactorSetup();
           return false;
         }
-        const key404 = status === 404 ? (notFoundErrorKey ?? errorKey) : errorKey;
-        setError(localizedMessage(localeRef.current, key404));
+        // A mapped conflict wins over the generic key; an unmapped one does not,
+        // so a 409 nobody has thought about still reads as the honest "could not
+        // save" rather than as whichever instruction was written for a different
+        // conflict on the same route.
+        const conflict =
+          status === 409 &&
+          conflictErrorKey !== undefined &&
+          err instanceof ApiError &&
+          err.code === conflictErrorKey.code;
+        const messageKey = conflict
+          ? conflictErrorKey.messageKey
+          : status === 404
+            ? (notFoundErrorKey ?? errorKey)
+            : errorKey;
+        setError(localizedMessage(localeRef.current, messageKey));
         return false;
       } finally {
         // Release only this call's own key.

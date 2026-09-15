@@ -192,6 +192,7 @@ describe('feature-flag rollout configuration', () => {
       rolloutPercent: 25,
       allowUserIds: [uuid(1)],
       denyUserIds: [],
+      stored: 'parsed' as const,
       description: 'Friend chat.',
       updatedAt: null,
       updatedBy: null,
@@ -200,6 +201,36 @@ describe('feature-flag rollout configuration', () => {
     // Total, not optional: the console renders one shape for every flag.
     const { rolloutPercent, ...missing } = flag;
     expect(rolloutPercent).toBe(25);
+    expect(adminFeatureFlagSchema.safeParse(missing).success).toBe(false);
+  });
+
+  /**
+   * The read outcome the admin list carries (#1950). It is what lets the console
+   * tell "fully rolled" from "we could not read this row and are showing you
+   * fully rolled" — two rows that are otherwise byte-identical on the wire.
+   */
+  it('reports how well the stored row could be read, as a closed set', () => {
+    const flag = {
+      key: 'chat' as const,
+      enabled: true,
+      rolloutPercent: 100,
+      allowUserIds: [],
+      denyUserIds: [],
+      stored: 'parsed' as const,
+      description: 'Friend chat.',
+      updatedAt: null,
+      updatedBy: null,
+    };
+    for (const stored of ['parsed', 'salvaged', 'unreadable'] as const) {
+      expect(adminFeatureFlagSchema.safeParse({ ...flag, stored }).success).toBe(true);
+    }
+    // A closed enum, so a fourth outcome invented server-side is a contract error
+    // in the client rather than a row the console silently draws as healthy.
+    expect(adminFeatureFlagSchema.safeParse({ ...flag, stored: 'unset' }).success).toBe(false);
+    // Required: an OMITTED outcome must not read as "fine". A serving instance
+    // that predates this field would otherwise reassure a console that does not.
+    const { stored, ...missing } = flag;
+    expect(stored).toBe('parsed');
     expect(adminFeatureFlagSchema.safeParse(missing).success).toBe(false);
   });
 });

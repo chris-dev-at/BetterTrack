@@ -146,6 +146,44 @@ export const featureFlagStoredConfigSchema = z.object(featureFlagConfigShape);
 export type FeatureFlagConfigInput = z.input<typeof featureFlagConfigSchema>;
 export type FeatureFlagConfig = z.output<typeof featureFlagConfigSchema>;
 
+/**
+ * Error code a PATCH is refused with when the stored row cannot be read and the
+ * patch would have to INVENT the fields it omits (#1910 review B1).
+ *
+ * It lives in the contract rather than in the API service because BOTH sides
+ * need it: the API throws it, and the console matches on it to swap the generic
+ * "could not update" banner for copy that names the repair (#1950). Server error
+ * envelopes are authored in English and are not locale-aware, so the CODE is the
+ * only part of the refusal the SPA may render off.
+ */
+export const FEATURE_FLAG_CONFIG_UNREADABLE = 'FEATURE_FLAG_CONFIG_UNREADABLE';
+
+/**
+ * How well one flag's stored row could be read, as reported to the admin console
+ * (#1950).
+ *
+ * The API already computes this to decide what it may honour; serving it is what
+ * lets the console tell a healthy row from one whose displayed rollout is a
+ * FALLBACK rather than what is on disk. Without it the two look identical and
+ * the only way to discover the damage is to attempt a write and collect a 409.
+ *
+ *  - `parsed` — every field understood. An unconfigured row reports this too:
+ *    "never configured" and "configured and fully understood" are the same thing
+ *    to an operator, namely nothing to repair.
+ *  - `salvaged` — `enabled` was readable and is honoured; the targeting fields
+ *    were not, so the rollout shown is the default.
+ *  - `unreadable` — nothing usable in the row, so everything shown is the
+ *    default.
+ *
+ * Both degraded values mean the same thing operationally: only a COMPLETE
+ * replacement (all four fields) can be written to that row.
+ */
+export const FEATURE_FLAG_STORED_READS = ['parsed', 'salvaged', 'unreadable'] as const;
+
+export const featureFlagStoredReadSchema = z.enum(FEATURE_FLAG_STORED_READS);
+
+export type FeatureFlagStoredRead = z.infer<typeof featureFlagStoredReadSchema>;
+
 /** One flag as the admin console lists it: state + targeting + change metadata. */
 export const adminFeatureFlagSchema = z
   .object({
@@ -159,6 +197,13 @@ export const adminFeatureFlagSchema = z
     rolloutPercent: z.number().int().min(0).max(100),
     allowUserIds: z.array(z.string().uuid()),
     denyUserIds: z.array(z.string().uuid()),
+    /**
+     * Whether the four fields above are what is STORED or what is being fallen
+     * back to. Required, not optional: an optional field would let a serving
+     * instance that has not been updated read as "healthy" on a console that
+     * has, which is precisely the false reassurance this reports away.
+     */
+    stored: featureFlagStoredReadSchema,
     /** Stable English metadata for API/audit consumers; the SPA renders i18n. */
     description: z.string(),
     updatedAt: z.string().datetime().nullable(),

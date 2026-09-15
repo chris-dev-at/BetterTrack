@@ -903,6 +903,96 @@ describe('an unparseable stored row can never resurrect a killed feature', () =>
 });
 
 /**
+ * The console cannot repair what it cannot see (#1950).
+ *
+ * #1910 made the READ honest — a degraded row no longer reports an invented
+ * healthy configuration — and made a partial PATCH onto one a 409. Both halves
+ * are invisible to the operator: the list served a row that looks exactly like a
+ * clean one, so the only way to discover the damage was to attempt a write and
+ * read a conflict. The list therefore carries the READ OUTCOME per flag, which
+ * is the same four-outcome value `readStoredConfig` already computes — `unset`
+ * reported as `parsed`, because "nobody has configured this" and "configured and
+ * fully understood" are the same thing to an operator: nothing to repair.
+ */
+describe('the admin list reports how well each stored row could be read', () => {
+  async function storeRaw(key: string, value: unknown): Promise<void> {
+    await createAppSettingsRepository(harness.db).upsert(`feature_flag_${key}`, value, null);
+    await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
+  }
+
+  /** One admin per test — `seedAdmin` uses a fixed email, so two would collide. */
+  type AdminAgent = Awaited<ReturnType<typeof harness.loginAdmin>>;
+
+  async function storedOf(adminAgent: AdminAgent): Promise<Record<string, unknown>> {
+    const list = await adminAgent.get('/api/v1/admin/feature-flags').expect(200);
+    return Object.fromEntries(
+      (list.body.flags as Array<{ key: string; stored: unknown }>).map((f) => [f.key, f.stored]),
+    );
+  }
+
+  it('says `parsed` for an unset row and for one it understands completely', async () => {
+    // Written by this version, in the object form…
+    await storeRaw('chat', {
+      enabled: true,
+      rolloutPercent: 25,
+      allowUserIds: [],
+      denyUserIds: [],
+    });
+    // …and in the legacy bare-boolean form, which is equally well understood.
+    await storeRaw('alerts', false);
+
+    const stored = await storedOf(await harness.loginAdmin(await harness.seedAdmin()));
+    expect(stored.chat).toBe('parsed');
+    expect(stored.alerts).toBe('parsed');
+    // Never configured: there is nothing to repair, so it must not wear a badge.
+    expect(stored.imports).toBe('parsed');
+  });
+
+  it('says `salvaged` when only the targeting fields were unreadable', async () => {
+    await storeRaw('alerts', { enabled: true, rolloutPercent: 'fifty' });
+
+    const stored = await storedOf(await harness.loginAdmin(await harness.seedAdmin()));
+    expect(stored.alerts).toBe('salvaged');
+    // The salvage is per row, not a global degradation.
+    expect(stored.chat).toBe('parsed');
+  });
+
+  it('says `unreadable` when there was no `enabled` left to honour', async () => {
+    await storeRaw('imports', { rolloutPercent: 'fifty', nothing: 'usable' });
+
+    expect((await storedOf(await harness.loginAdmin(await harness.seedAdmin()))).imports).toBe(
+      'unreadable',
+    );
+  });
+
+  /**
+   * The repair path end to end: the badge the console draws off `stored` leads to
+   * a complete replacement, and the replacement clears it. A row that stayed
+   * marked after a successful repair would send the operator round the loop again.
+   */
+  it('clears back to `parsed` once a complete replacement has landed', async () => {
+    await storeRaw('chat', { enabled: false, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    expect((await storedOf(adminAgent)).chat).toBe('salvaged');
+
+    const repaired = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      // Exactly the body the console's rollout Save sends for a degraded row:
+      // all four fields, so nothing is inherited from a row we could not read.
+      .send({ enabled: false, rolloutPercent: 100, allowUserIds: [], denyUserIds: [] })
+      .expect(200);
+
+    // The response the write returns is the same list shape, already repaired —
+    // the console renders it optimistically and must not keep showing the badge.
+    const chat = repaired.body.flags.find((f: { key: string }) => f.key === 'chat');
+    expect(chat.stored).toBe('parsed');
+    expect(chat.enabled).toBe(false);
+    expect((await storedOf(adminAgent)).chat).toBe('parsed');
+  });
+});
+
+/**
  * Rollback safety (#1910 H1). Pre-#1910 code reads a row with
  * `typeof value === 'boolean'` and falls back to "every flag ON" for anything
  * else — so a deploy that rolled BACK past this change would read every object

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
+import { FEATURE_FLAG_CONFIG_UNREADABLE } from '@bettertrack/contracts';
 import type {
   AdminFeatureFlag,
   AdminFeatureFlagsResponse,
@@ -11,6 +12,7 @@ import type {
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { ApiError } from '../../lib/apiClient';
 import { I18nProvider, localizedMessage } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { FeatureFlagsPage } from './FeatureFlagsPage';
@@ -36,13 +38,19 @@ const BOB = '22222222-2222-4222-8222-222222222222';
 const flag = (
   key: AdminFeatureFlag['key'],
   enabled: boolean,
-  rollout: Partial<Pick<AdminFeatureFlag, 'rolloutPercent' | 'allowUserIds' | 'denyUserIds'>> = {},
+  rollout: Partial<
+    Pick<AdminFeatureFlag, 'rolloutPercent' | 'allowUserIds' | 'denyUserIds' | 'stored'>
+  > = {},
 ): AdminFeatureFlag => ({
   key,
   enabled,
   rolloutPercent: rollout.rolloutPercent ?? 100,
   allowUserIds: rollout.allowUserIds ?? [],
   denyUserIds: rollout.denyUserIds ?? [],
+  // A healthy row unless a test says otherwise — the default has to be the
+  // state that wears NO badge, so a fixture that forgets to say cannot make the
+  // degraded-row assertions below pass for the wrong reason.
+  stored: rollout.stored ?? 'parsed',
   description: `${key} desc`,
   updatedAt: null,
   updatedBy: null,
@@ -291,4 +299,207 @@ test('renders the Product & Comms tab strip with this page as the current tab', 
     'aria-current',
     'page',
   );
+});
+
+/**
+ * A degraded row has to LOOK degraded (#1950).
+ *
+ * #1946 made the read honest — a row whose stored configuration cannot be parsed
+ * no longer reports an invented healthy one — but the console still drew it
+ * exactly like a clean row. The rollout an operator saw was the default the app
+ * falls back to, not what is on disk, and the only way to find that out was to
+ * attempt a write and collect a 409.
+ */
+test('marks the rows whose stored configuration could not be read, and only those', async () => {
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: [
+      flag('realtime', true),
+      flag('liveMode', true, { stored: 'parsed' }),
+      flag('chat', true, { stored: 'salvaged' }),
+      flag('alerts', true),
+      flag('imports', true, { stored: 'unreadable' }),
+      flag('ai', true),
+    ],
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  const salvaged = localizedMessage('en', 'admin.featureFlags.stored.salvagedBadge');
+  const unreadable = localizedMessage('en', 'admin.featureFlags.stored.unreadableBadge');
+
+  // The two degradations are told apart: a salvaged row still has a trustworthy
+  // kill switch, an unreadable one has nothing.
+  expect(within(panelFor('Chat')).getByText(salvaged)).toBeInTheDocument();
+  expect(
+    within(panelFor('Chat')).getByText(
+      localizedMessage('en', 'admin.featureFlags.stored.salvagedNote'),
+    ),
+  ).toBeInTheDocument();
+  expect(within(panelFor('Imports')).getByText(unreadable)).toBeInTheDocument();
+  expect(
+    within(panelFor('Imports')).getByText(
+      localizedMessage('en', 'admin.featureFlags.stored.unreadableNote'),
+    ),
+  ).toBeInTheDocument();
+
+  // Negative space: a healthy row wears no badge at all. Without this the test
+  // would pass just as happily if the badge were rendered on every row.
+  for (const name of ['Realtime', 'Live Mode', 'Price alerts', 'AI']) {
+    expect(within(panelFor(name)).queryByText(salvaged)).toBeNull();
+    expect(within(panelFor(name)).queryByText(unreadable)).toBeNull();
+  }
+  expect(screen.getAllByText(salvaged).length).toBe(1);
+  expect(screen.getAllByText(unreadable).length).toBe(1);
+});
+
+/**
+ * The repair path. On a degraded row the server refuses anything partial, so
+ * Save has to send the WHOLE configuration — and it has to be reachable without
+ * first making a pointless edit, because the operator's intent is "replace what
+ * is on disk with what this panel shows", not "change something".
+ */
+test('Save on a degraded row sends the COMPLETE four-field configuration, untouched form included', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: list.flags.map((f) =>
+      f.key === 'chat' ? { ...f, enabled: false, stored: 'salvaged' as const } : f,
+    ),
+  });
+  vi.mocked(api.setFeatureFlag).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, enabled: false } : f)),
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  const chat = panelFor('Chat');
+  const save = within(chat).getByRole('button', { name: 'Save rollout' });
+  // Nothing has been edited: on a healthy row this button is disabled, and it
+  // must not be here — the stored row differs from what is displayed, so saving
+  // it unchanged is a real write.
+  expect(save).toBeEnabled();
+  await user.click(save);
+
+  await waitFor(() =>
+    expect(api.setFeatureFlag).toHaveBeenCalledWith('chat', {
+      // `enabled` rides along ONLY because the row is degraded. It carries the
+      // value the console is showing, so the replacement states the switch
+      // rather than letting the server inherit it from a row it cannot read.
+      enabled: false,
+      rolloutPercent: 100,
+      allowUserIds: [],
+      denyUserIds: [],
+    }),
+  );
+});
+
+/**
+ * The clobber the PATCH-merge design exists to avoid: two operators, one widening
+ * a rollout and one flipping the switch. A healthy row must therefore keep
+ * sending the three targeting fields and NOTHING else — `toHaveBeenCalledWith`
+ * is exact, so a stray `enabled` fails here.
+ */
+test('Save on a healthy row still sends a PARTIAL patch — no `enabled` tagging along', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.setFeatureFlag).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, rolloutPercent: 40 } : f)),
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  const chat = panelFor('Chat');
+  const percent = within(chat).getByLabelText('Rollout %');
+  await user.clear(percent);
+  await user.type(percent, '40');
+  await user.click(within(chat).getByRole('button', { name: 'Save rollout' }));
+
+  await waitFor(() =>
+    expect(api.setFeatureFlag).toHaveBeenCalledWith('chat', {
+      rolloutPercent: 40,
+      allowUserIds: [],
+      denyUserIds: [],
+    }),
+  );
+});
+
+/**
+ * The kill switch deliberately stays a one-field patch even on a degraded row —
+ * making it send all four would reintroduce exactly the clobber above, and it is
+ * the control an operator reaches for mid-incident. What it owes the operator is
+ * an honest refusal: the server's 409 envelope is English-only by policy, so the
+ * console maps the CODE to catalog copy that names the repair.
+ */
+test('the kill switch still patches only `enabled`, and its 409 names the repair', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'unreadable' as const } : f)),
+  });
+  vi.mocked(api.setFeatureFlag).mockRejectedValue(
+    new ApiError(
+      409,
+      FEATURE_FLAG_CONFIG_UNREADABLE,
+      "The stored configuration for 'chat' cannot be read, so a partial change would have to invent the fields it does not set.",
+    ),
+  );
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  await user.click(within(panelFor('Chat')).getByRole('button', { name: 'Disable' }));
+
+  await waitFor(() => expect(api.setFeatureFlag).toHaveBeenCalledWith('chat', { enabled: false }));
+  expect(
+    await screen.findByText(localizedMessage('en', 'admin.featureFlags.stored.conflictError')),
+  ).toBeInTheDocument();
+  // The generic banner would leave the operator with "could not update" and no
+  // way forward — that is the bug, so assert it is NOT what is rendered.
+  expect(screen.queryByText(localizedMessage('en', 'admin.featureFlags.actionError'))).toBeNull();
+});
+
+/** A 409 is not an expired admin session: the console must stay usable. */
+test('a conflict leaves the console signed in and the row still operable', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'unreadable' as const } : f)),
+  });
+  vi.mocked(api.setFeatureFlag).mockRejectedValue(
+    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope'),
+  );
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  await user.click(within(panelFor('Chat')).getByRole('button', { name: 'Disable' }));
+
+  expect(
+    await screen.findByText(localizedMessage('en', 'admin.featureFlags.stored.conflictError')),
+  ).toBeInTheDocument();
+  expect(within(panelFor('Chat')).getByRole('button', { name: 'Disable' })).toBeEnabled();
+});
+
+/** EN/DE parity for every string this wave adds. */
+test('renders the degraded-row chrome in German too', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'salvaged' as const } : f)),
+  });
+  vi.mocked(api.setFeatureFlag).mockRejectedValue(
+    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope'),
+  );
+  renderPage('de');
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  const chat = panelFor('Chat');
+  for (const key of [
+    'admin.featureFlags.stored.salvagedBadge',
+    'admin.featureFlags.stored.salvagedNote',
+  ] as const) {
+    expect(within(chat).getByText(localizedMessage('de', key))).toBeInTheDocument();
+  }
+
+  await user.click(
+    within(chat).getByRole('button', {
+      name: localizedMessage('de', 'admin.featureFlags.disable'),
+    }),
+  );
+  expect(
+    await screen.findByText(localizedMessage('de', 'admin.featureFlags.stored.conflictError')),
+  ).toBeInTheDocument();
 });
