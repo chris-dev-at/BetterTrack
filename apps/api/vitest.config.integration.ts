@@ -83,6 +83,11 @@ export default defineConfig({
       // opens for the event bus. Only real Redis can be asked, via CLIENT LIST,
       // whether a harness actually gave its sockets back.
       'src/__tests__/harnessLifecycle.test.ts',
+      // #1896: two re-materializations of the same usage day must serialize on
+      // the real two-session advisory lock instead of colliding on the
+      // (day, feature) primary key; PGlite has one connection, so it cannot
+      // hold the two open transactions the race needs.
+      'src/__tests__/usageAnalytics.test.ts',
     ],
     // Every test file gets the harness reapers: the #1936 `afterAll` that
     // releases any `createTestApp()` harness the file did not dispose itself,

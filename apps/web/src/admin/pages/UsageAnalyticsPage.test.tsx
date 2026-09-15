@@ -39,6 +39,7 @@ const usage: UsageAnalyticsResponse = {
   ],
   series: [{ day: '2026-07-17', events: 30, activeUsers: 5 }],
   windowDays: 30,
+  todayRollupStale: false,
   generatedAt: '2026-07-18T00:00:00.000Z',
 };
 

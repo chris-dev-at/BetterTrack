@@ -25,7 +25,8 @@ import type { Logger } from '../../logger';
  *    {@link usageDaily} rollup; the read refreshes TODAY's rollup first — spaced
  *    by {@link DEFAULT_READ_ROLLUP_MIN_INTERVAL_MS} and deduped across
  *    concurrent reads — so the current day stays fresh between cron runs without
- *    a refresh loop buying a scan per page load. The funnel's
+ *    a refresh loop buying a scan per page load. A refresh that FAILS marks the
+ *    payload `todayRollupStale` instead of failing the read. The funnel's
  *    `activated` stage is a LIFETIME figure and comes from the durable
  *    `usage_activations` marker, not from raw events — those are swept by
  *    `BT_USAGE_EVENT_RETENTION_DAYS` and would make it decay (#1680).
@@ -250,8 +251,24 @@ export function createUsageAnalyticsService(
   };
 
   const overview = async (): Promise<UsageAnalyticsResponse> => {
-    // Keep the current day fresh between cron runs, then read the rollup.
-    await refreshTodayRollup();
+    // Keep the current day fresh between cron runs, then read the rollup. A
+    // refresh that fails is a STALENESS, not a read failure: everything else on
+    // the page is already materialized, so letting the rejection out of
+    // `overview()` traded a page missing today's numbers for no page at all
+    // (#1896). It is reported rather than swallowed — in the payload, because
+    // the admin console is the only management surface (§6.12) and the
+    // container log is not a channel the operator is expected to read, and in
+    // the log, because the cause only exists there.
+    let todayRollupStale = false;
+    try {
+      await refreshTodayRollup();
+    } catch (err) {
+      todayRollupStale = true;
+      logger?.warn(
+        { err },
+        "failed to refresh today's usage rollup — serving the last materialized one",
+      );
+    }
     const since = cutoffDay(windowDays);
     const [daily, weekly, monthly, activated, registered, features, series, topAssets] =
       await Promise.all([
@@ -277,6 +294,7 @@ export function createUsageAnalyticsService(
       ],
       series,
       windowDays,
+      todayRollupStale,
       generatedAt: new Date(now()).toISOString(),
     };
   };

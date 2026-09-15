@@ -126,7 +126,13 @@ export const problemListResponseSchema = z.object({
    * in the container log is a drop the operator never learns about.
    */
   droppedCaptures: z.number().int().nonnegative(),
-  /** Captures refused since the process booted (the same counter, cumulative). */
+  /**
+   * The same refusals, cumulative over a BOUNDED recent history rather than
+   * since the beginning of time: this process's count since it booted, plus the
+   * shared cross-process tally, which is retained for at most 24 h from its own
+   * first drop. "Since boot" is not expressible across processes, and a total
+   * whose expiry slid with every drop could never expire at all.
+   */
   droppedCapturesTotal: z.number().int().nonnegative(),
 });
 export type ProblemListResponse = z.infer<typeof problemListResponseSchema>;

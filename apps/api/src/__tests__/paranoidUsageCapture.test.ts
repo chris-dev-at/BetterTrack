@@ -225,6 +225,109 @@ describe('usage capture never records a paranoid account', () => {
   });
 
   /**
+   * A custom asset IS the user's own private object — a car, a house, an
+   * unlisted stock — so its id identifies a holding directly, without the
+   * detour through the catalog. The suppression was gated on a predicate that
+   * matched only the public `/assets/...` GET reads, so `custom-assets` traffic
+   * (which shares the `assets` feature bucket, hence records `req.params.id`)
+   * wrote those private UUIDs straight into `usage_events`, where `topAssets`
+   * groups them and the admin panel prints them verbatim (#1896).
+   *
+   * Driven through the real middleware, not `capture()`: the defect lived in
+   * the route classification, which a direct `capture()` call bypasses.
+   */
+  it('records no custom-asset id for an account that owns a vault — reads and writes alike', async () => {
+    const h = await createTestApp();
+    const user = await h.seedUser({ email: 'custom-vault@test.dev', username: 'custom_vault' });
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Family house', category: 'other', currency: 'EUR' });
+    expect(created.status).toBe(201);
+    const customAssetId = created.body.asset.id as string;
+
+    // TEST VECTOR: identity-only vault/stub ids, no key material or content.
+    const vaultId = '018f0000-0000-7000-8000-000000000430';
+    await h.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: user.id,
+      name: 'Custom asset boundary',
+      headerDocId: '018f0000-0000-7000-8000-000000000431',
+      commonDocId: '018f0000-0000-7000-8000-000000000432',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'deterministic-custom-public-proof',
+      keyFingerprint: 'deterministic-custom-fingerprint',
+    });
+    await h.db.insert(schema.portfolios).values({
+      id: '018f0000-0000-7000-8000-000000000433',
+      userId: user.id,
+      name: 'Locked stub',
+      vaultId,
+    });
+
+    // Everything above is setup; only the traffic below is under test.
+    await h.ctx.usageAnalytics.flush();
+    await h.db.delete(schema.usageEvents).where(eq(schema.usageEvents.userId, user.id));
+
+    expect((await agent.get(`/api/v1/custom-assets/${customAssetId}/value-points`)).status).toBe(
+      200,
+    );
+    const patched = await agent
+      .patch(`/api/v1/custom-assets/${customAssetId}`)
+      .set(...XRW)
+      .send({ name: 'Family home' });
+    expect(patched.status).toBe(200);
+    const removed = await agent.delete(`/api/v1/custom-assets/${customAssetId}`).set(...XRW);
+    expect(removed.status).toBe(204);
+    await h.ctx.usageAnalytics.flush();
+
+    // The whole signal is suppressed, exactly as for the unattributed market
+    // reads: dropping only the id is not enough, because a bare
+    // `feature='assets'` row would still count how many private assets were
+    // touched.
+    expect(await usageRowsFor(h, user.id)).toEqual([]);
+  });
+
+  /**
+   * …and the control that keeps the fix from being "count nothing". An ordinary
+   * account owns no vault, so its catalog reads and its custom-asset traffic
+   * both still feed the Top-assets panel.
+   */
+  it('still counts custom-asset and catalog traffic for an account with no vault', async () => {
+    const h = await createTestApp({
+      marketData: createStubMarketData({ quote: cachedQuote }),
+    });
+    const user = await h.seedUser({ email: 'custom-plain@test.dev', username: 'custom_plain' });
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const aapl = await seedGlobalAsset(h, 'AAPL');
+
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Vintage car', category: 'other', currency: 'EUR' });
+    expect(created.status).toBe(201);
+    const customAssetId = created.body.asset.id as string;
+
+    await h.ctx.usageAnalytics.flush();
+    await h.db.delete(schema.usageEvents).where(eq(schema.usageEvents.userId, user.id));
+
+    expect((await agent.get(`/api/v1/custom-assets/${customAssetId}/value-points`)).status).toBe(
+      200,
+    );
+    expect((await agent.get(`/api/v1/assets/${aapl.id}/quote`)).status).toBe(200);
+    await h.ctx.usageAnalytics.flush();
+
+    const captured = (await usageRowsFor(h, user.id))
+      .filter((row) => row.assetId !== '')
+      .map((row) => row.assetId)
+      .sort();
+    expect(captured).toEqual([aapl.id, customAssetId].sort());
+  });
+
+  /**
    * The enable RACE. Capture buffers in memory and flushes on a timer, so
    * signals taken while the account was still `normal` can land AFTER the enable
    * transaction purged the table — re-creating the roster rows with nothing left

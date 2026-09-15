@@ -37,6 +37,13 @@ import { PARANOID_ADMIN_METADATA_LOCK_CHUNK } from './paranoidTransitionReposito
  */
 export const USAGE_TOTAL_FEATURE = '*';
 
+/**
+ * Advisory-lock class for the per-day rollup. Two-key locks live in a namespace
+ * separate from the one-key portfolio-ledger locks; the second key is
+ * `hashtext(day)`, so runs of DIFFERENT days never wait on each other.
+ */
+const USAGE_ROLLUP_LOCK_CLASS = 0x5541;
+
 /** One folded activity row to upsert (a hit count for a user/feature/day). */
 export interface UsageEventUpsert {
   userId: string;
@@ -80,7 +87,9 @@ export interface UsageAnalyticsRepository {
   /**
    * Recompute the {@link usageDaily} rollup for one day from the raw events:
    * replaces that day's rows with fresh per-feature aggregates plus the `'*'`
-   * total row. Idempotent — re-running converges to the same rows.
+   * total row. Idempotent — re-running converges to the same rows — and safe
+   * to run concurrently with another re-materialization of the SAME day, which
+   * waits behind it rather than colliding on the `(day, feature)` key.
    */
   rollupDay(day: string): Promise<void>;
   /** Distinct users with any activity since (inclusive) `sinceDay`. */
@@ -308,42 +317,63 @@ export function createUsageAnalyticsRepository(
     },
 
     async rollupDay(day: string): Promise<void> {
-      // Per-feature aggregates for the day…
-      const perFeature = await db
-        .select({
-          feature: usageEvents.feature,
-          events: sql<number>`sum(${usageEvents.hits})`,
-          activeUsers: sql<number>`count(distinct ${usageEvents.userId})`,
-        })
-        .from(usageEvents)
-        .where(eq(usageEvents.day, day))
-        .groupBy(usageEvents.feature);
-      // …plus the all-features total (distinct users across every feature).
-      const [total] = await db
-        .select({
-          events: sql<number>`coalesce(sum(${usageEvents.hits}), 0)`,
-          activeUsers: sql<number>`count(distinct ${usageEvents.userId})`,
-        })
-        .from(usageEvents)
-        .where(eq(usageEvents.day, day));
-
-      const rows: NewUsageDailyRow[] = perFeature.map((r) => ({
-        day,
-        feature: r.feature,
-        events: Number(r.events),
-        activeUsers: Number(r.activeUsers),
-      }));
-      if (total && Number(total.events) > 0) {
-        rows.push({
-          day,
-          feature: USAGE_TOTAL_FEATURE,
-          events: Number(total.events),
-          activeUsers: Number(total.activeUsers),
-        });
-      }
-
-      // Replace the day's rows atomically — idempotent re-materialization.
+      // Replace the day's rows atomically — idempotent re-materialization,
+      // and serialized per DAY across processes (#1896).
+      //
+      // The write is a DELETE + INSERT over a `(day, feature)` primary key, so
+      // two re-materializations of the SAME day — an API read refreshing today
+      // while the 03:10 cron rolls it, or two API replicas doing it at once —
+      // collided deterministically: under READ COMMITTED the second DELETE
+      // blocks on the first's row locks and then removes nothing (those rows
+      // are already gone), the first's fresh rows are outside the second's
+      // statement snapshot, and its INSERT raises 23505 — which propagated all
+      // the way out to the admin read and 500'd a page whose every other number
+      // was readable.
+      //
+      // The lock is taken BEFORE the aggregates are read, so the waiting run
+      // also re-reads the events the earlier one committed: the two converge on
+      // the same rows instead of racing to write them. Two-key namespace, as in
+      // `passwordResetTokenRepository` — never the one-key portfolio-ledger
+      // space — and an xact lock, so it is released on commit or rollback.
       await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(${USAGE_ROLLUP_LOCK_CLASS}, hashtext(${day}))`,
+        );
+
+        // Per-feature aggregates for the day…
+        const perFeature = await tx
+          .select({
+            feature: usageEvents.feature,
+            events: sql<number>`sum(${usageEvents.hits})`,
+            activeUsers: sql<number>`count(distinct ${usageEvents.userId})`,
+          })
+          .from(usageEvents)
+          .where(eq(usageEvents.day, day))
+          .groupBy(usageEvents.feature);
+        // …plus the all-features total (distinct users across every feature).
+        const [total] = await tx
+          .select({
+            events: sql<number>`coalesce(sum(${usageEvents.hits}), 0)`,
+            activeUsers: sql<number>`count(distinct ${usageEvents.userId})`,
+          })
+          .from(usageEvents)
+          .where(eq(usageEvents.day, day));
+
+        const rows: NewUsageDailyRow[] = perFeature.map((r) => ({
+          day,
+          feature: r.feature,
+          events: Number(r.events),
+          activeUsers: Number(r.activeUsers),
+        }));
+        if (total && Number(total.events) > 0) {
+          rows.push({
+            day,
+            feature: USAGE_TOTAL_FEATURE,
+            events: Number(total.events),
+            activeUsers: Number(total.activeUsers),
+          });
+        }
+
         await tx.delete(usageDaily).where(eq(usageDaily.day, day));
         if (rows.length > 0) await tx.insert(usageDaily).values(rows);
       });
