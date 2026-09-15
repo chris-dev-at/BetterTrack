@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { EXPENSE_RULE_PATTERN_MAX } from '@bettertrack/contracts';
 
 import type {
   ExpenseCategoryRepository,
@@ -7,7 +9,18 @@ import type {
 } from '../../../data/repositories/expenseRepository';
 import { ApiError } from '../../../errors';
 import { CASH_RULES_PER_USER_MAX } from '../../cash/cashTagService';
+import { isSupportedExpenseRuleRegex } from '../ruleEngine';
 import { EXPENSE_RULES_PER_USER_MAX, createExpenseService } from '../expenseService';
+
+/** Spied, not stubbed — the real check still runs (see the cash twin, #1954). */
+vi.mock('../ruleEngine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ruleEngine')>();
+  return { ...actual, isSupportedExpenseRuleRegex: vi.fn(actual.isSupportedExpenseRuleRegex) };
+});
+
+beforeEach(() => {
+  vi.mocked(isSupportedExpenseRuleRegex).mockClear();
+});
 
 /**
  * THE SAME BOUNDS, ON THE EXPENSE ENGINE (#1743).
@@ -115,5 +128,83 @@ describe('restored rules go through the write path’s gate', () => {
 
     expect(insertRules).toHaveBeenCalledTimes(1);
     expect(insertRules.mock.calls[0]![0]).toBe(document);
+  });
+});
+
+it('still allows the rule that lands exactly ON the cap', async () => {
+  // The cash lane has had this since #1743 and this side did not, so nothing
+  // proved the expense cap was a CEILING rather than an off-by-one that refused
+  // the last rule a user is entitled to (#1954).
+  const record = {
+    id: '018f0000-0000-7000-8000-0000000000c1',
+    userId: USER,
+    categoryId: CATEGORY,
+    matchType: 'contains' as const,
+    pattern: 'REWE',
+    priority: 0,
+    enabled: true,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+  const rules = stubRules({
+    countForOwner: vi.fn(async () => EXPENSE_RULES_PER_USER_MAX - 1),
+    create: vi.fn(async () => record) as unknown as ExpenseRuleRepository['create'],
+  });
+
+  const res = await service(rules).createRule(USER, {
+    categoryId: CATEGORY,
+    matchType: 'contains',
+    pattern: 'REWE',
+    priority: 0,
+    enabled: true,
+  });
+
+  expect(res.rule.id).toBe(record.id);
+});
+
+describe('the cap is checked BEFORE any pattern is compiled (#1954)', () => {
+  it('refuses an over-cap document by CARDINALITY, having compiled nothing', async () => {
+    const insertRules = vi.fn(async () => {});
+    const document = Array.from({ length: EXPENSE_RULES_PER_USER_MAX + 1 }, () => ({
+      matchType: 'regex' as const,
+      pattern: '(a)\\1',
+    }));
+
+    const err = await refusal(() =>
+      service(stubRules()).restoreRules(USER, document, { insertRules }),
+    );
+
+    expect(err.code).toBe('EXPENSE_RULE_LIMIT_REACHED');
+    expect(isSupportedExpenseRuleRegex).not.toHaveBeenCalled();
+    expect(insertRules).not.toHaveBeenCalled();
+  });
+
+  it('refuses an over-long pattern before the regex engine is asked', async () => {
+    const insertRules = vi.fn(async () => {});
+
+    const err = await refusal(() =>
+      service(stubRules()).restoreRules(
+        USER,
+        [{ matchType: 'regex' as const, pattern: 'a'.repeat(EXPENSE_RULE_PATTERN_MAX + 1) }],
+        { insertRules },
+      ),
+    );
+
+    expect(err.code).toBe('EXPENSE_RULE_PATTERN_TOO_LONG');
+    expect(err.statusCode).toBe(400);
+    expect(isSupportedExpenseRuleRegex).not.toHaveBeenCalled();
+    expect(insertRules).not.toHaveBeenCalled();
+  });
+
+  it('accepts a pattern landing exactly ON the ceiling', async () => {
+    const insertRules = vi.fn(async () => {});
+
+    await service(stubRules()).restoreRules(
+      USER,
+      [{ matchType: 'contains' as const, pattern: 'a'.repeat(EXPENSE_RULE_PATTERN_MAX) }],
+      { insertRules },
+    );
+
+    expect(insertRules).toHaveBeenCalledTimes(1);
   });
 });
