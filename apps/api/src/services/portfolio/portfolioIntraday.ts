@@ -13,6 +13,7 @@ import {
   type FlowPoint,
   type ValuePoint,
 } from '../../domain/holdings';
+import { modifiedDietz, type DietzFlow } from '../../domain/seriesStats';
 import { buildIntradayBucketPrices } from './intradayBucketPrices';
 
 /**
@@ -1027,9 +1028,6 @@ export function intradayPerformancePoints(
   const valueByDay = new Map<string, number>();
   for (const p of dailyBasePoints) valueByDay.set(p.date, p.valueEur);
 
-  const flowByDay = new Map<string, number>();
-  for (const f of flowsBase) flowByDay.set(f.date, (flowByDay.get(f.date) ?? 0) + f.flowEur);
-
   // Ascending distinct days of the daily series → each day's predecessor.
   const orderedDays = [...valueByDay.keys()].sort();
   const prevDayOf = new Map<string, string | undefined>();
@@ -1037,42 +1035,13 @@ export function intradayPerformancePoints(
     prevDayOf.set(orderedDays[i]!, i > 0 ? orderedDays[i - 1] : undefined);
   }
 
-  // #1120: flow instants per day + each day's last point (its closing seam,
-  // which always neutralises the full day flow).
-  const eventsByDay = new Map<string, IntradayFlowEvent[]>();
-  for (const event of input.flowEvents ?? []) {
-    if (!Number.isFinite(event.atMs) || !Number.isFinite(event.flowEur)) continue;
-    const day = new Date(event.atMs).toISOString().slice(0, 10);
-    const list = eventsByDay.get(day);
-    if (list) list.push(event);
-    else eventsByDay.set(day, [event]);
-  }
-  const lastTimeByDay = new Map<string, number>();
-  for (const pt of intradayPoints) {
-    // Max, not last-write-wins: the day's closing seam is the one point that
-    // must neutralise the FULL day flow, so it cannot depend on the caller
-    // having sorted its input (#1120 review).
-    lastTimeByDay.set(pt.date, Math.max(lastTimeByDay.get(pt.date) ?? pt.timeMs, pt.timeMs));
-  }
-  const stepMs = input.stepMs ?? 0;
+  const applied = intradayFlowLedger(input);
 
   const raw: IntradayPerformancePoint[] = intradayPoints.map((pt) => {
     const prevDay = prevDayOf.get(pt.date);
     const prevIndex = prevDay !== undefined ? (indexByDay.get(prevDay) ?? 1) : 1;
     const prevValue = prevDay !== undefined ? (valueByDay.get(prevDay) ?? 0) : 0;
-    const dayFlow = flowByDay.get(pt.date) ?? 0;
-    let flow = dayFlow;
-    const events = eventsByDay.get(pt.date);
-    if (events !== undefined && pt.timeMs !== lastTimeByDay.get(pt.date)) {
-      // Progressive application: subtract the flows not yet applied by this
-      // bucket's end; any residual (FX dust, un-instanted flows) stays at the
-      // day start, exactly where the day-boundary convention put everything.
-      let unapplied = 0;
-      for (const event of events) {
-        if (event.atMs >= pt.timeMs + stepMs) unapplied += event.flowEur;
-      }
-      flow = dayFlow - unapplied;
-    }
+    const flow = applied.flowAt(pt);
     const numerator = pt.valueEur - Math.min(flow, 0);
     const denominator = prevValue + Math.max(flow, 0);
     const r =
@@ -1090,4 +1059,110 @@ export function intradayPerformancePoints(
     timeMs: p.timeMs,
     pct: ((1 + p.pct / 100) / base - 1) * 100,
   }));
+}
+
+/**
+ * The one rule for "how much of day D's external flow is applied at intraday
+ * point t" — shared by the % curve and the money-weighted window so the two
+ * headline figures of a 1D/1W/1M range can never disagree about WHEN a flow
+ * counts (#1120, #1669):
+ *
+ *  - the day's LAST point (its closing seam) always carries the FULL day flow,
+ *    so the close still telescopes to the daily figure;
+ *  - any other point carries the day flow minus the instants not yet applied
+ *    by its bucket's end (`atMs >= timeMs + stepMs`), so a deposit at 14:00
+ *    neither reads as a pre-deposit dip nor counts before it arrived; any
+ *    residual (FX dust, un-instanted flows) stays at the day start, exactly
+ *    where the day-boundary convention put everything;
+ *  - without flow instants the whole day flow anchors at the day boundary
+ *    (the pre-#1120 behaviour).
+ *
+ * The day's last point is its MAX instant, not its last-written one, so the
+ * rule does not depend on the caller having sorted its input (#1120 review).
+ */
+function intradayFlowLedger(input: IntradayPerformanceInput): {
+  flowAt(pt: IntradayValuePoint): number;
+} {
+  const flowByDay = new Map<string, number>();
+  for (const f of input.flowsBase) {
+    flowByDay.set(f.date, (flowByDay.get(f.date) ?? 0) + f.flowEur);
+  }
+  const eventsByDay = new Map<string, IntradayFlowEvent[]>();
+  for (const event of input.flowEvents ?? []) {
+    if (!Number.isFinite(event.atMs) || !Number.isFinite(event.flowEur)) continue;
+    const day = new Date(event.atMs).toISOString().slice(0, 10);
+    const list = eventsByDay.get(day);
+    if (list) list.push(event);
+    else eventsByDay.set(day, [event]);
+  }
+  const lastTimeByDay = new Map<string, number>();
+  for (const pt of input.intradayPoints) {
+    lastTimeByDay.set(pt.date, Math.max(lastTimeByDay.get(pt.date) ?? pt.timeMs, pt.timeMs));
+  }
+  const stepMs = input.stepMs ?? 0;
+  return {
+    flowAt(pt) {
+      const dayFlow = flowByDay.get(pt.date) ?? 0;
+      const events = eventsByDay.get(pt.date);
+      if (events === undefined || pt.timeMs === lastTimeByDay.get(pt.date)) return dayFlow;
+      let unapplied = 0;
+      for (const event of events) {
+        if (event.atMs >= pt.timeMs + stepMs) unapplied += event.flowEur;
+      }
+      return dayFlow - unapplied;
+    },
+  };
+}
+
+/**
+ * The money-weighted (Modified Dietz, `domain/seriesStats.modifiedDietz`)
+ * return of an intraday window, percent — the 1D/1W/1M counterpart of the
+ * daily `modifiedDietzReturn` (#1669), fed the SAME input as
+ * {@link intradayPerformancePoints} so the two figures of a range are built
+ * from one set of points, one set of flows and one application rule:
+ *
+ *  - the window opens at the first intraday point (its value is the capital,
+ *    the re-based-slice anchor every sub-daily range uses) and closes at the
+ *    last one;
+ *  - each flow enters at the instant the % curve applies it — the increase in
+ *    {@link intradayFlowLedger}'s applied day flow from one point of a day to
+ *    the next, the day's first point carrying whatever was applied by its
+ *    bucket end plus the un-instanted residual — and is weighted by the
+ *    fraction of the window remaining after that point;
+ *  - what is applied at the very first point is already inside the start
+ *    value (as the re-base puts it) and is not a window flow.
+ *
+ * `null` when the window has no capital (empty curve, or a denominator ≤ 0 —
+ * see `modifiedDietz`). Pure and deterministic; nothing is mutated.
+ */
+export function intradayMoneyWeightedReturn(input: IntradayPerformanceInput): number | null {
+  if (input.intradayPoints.length === 0) return null;
+  const sorted = [...input.intradayPoints].sort((a, b) => a.timeMs - b.timeMs);
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  const applied = intradayFlowLedger(input);
+
+  const flows: DietzFlow[] = [];
+  let currentDay: string | undefined;
+  let appliedSoFar = 0;
+  for (let i = 0; i < sorted.length; i += 1) {
+    const pt = sorted[i]!;
+    if (pt.date !== currentDay) {
+      currentDay = pt.date;
+      appliedSoFar = 0;
+    }
+    const flowNow = applied.flowAt(pt);
+    const delta = flowNow - appliedSoFar;
+    appliedSoFar = flowNow;
+    if (i === 0 || delta === 0) continue;
+    flows.push({ atMs: pt.timeMs, amount: delta });
+  }
+
+  return modifiedDietz({
+    startMs: first.timeMs,
+    endMs: last.timeMs,
+    startValue: first.valueEur,
+    endValue: last.valueEur,
+    flows,
+  });
 }

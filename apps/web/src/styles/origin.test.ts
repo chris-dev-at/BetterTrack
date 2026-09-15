@@ -426,6 +426,56 @@ describe('Origin accessibility safety nets', () => {
 });
 
 /**
+ * The disclosure marker's geometry. `.bt-cc-fold` (Control Center) and
+ * `.bt-disclosure` (Origin's promoted fold) share one rule set, so this covers
+ * both.
+ *
+ * `[open]` turns the marker a quarter-turn, and a rotated box contributes its
+ * TRANSFORMED bounds to the scrollable overflow of every ancestor. At the
+ * glyph's own metrics — ~5.3px of advance inside a 16.5px line box — the turn
+ * laid that tall box on its side and pushed 6px past the summary's right edge:
+ * measured on /control/notifications at 390px, on the summary, the `<details>`,
+ * the row group and the panel. A SQUARE box rotates into itself.
+ *
+ * Asserted as an invariant (width === height) rather than against the literal
+ * size, so a future marker may be resized but not un-squared. jsdom applies no
+ * CSS and cannot see this at all, and the e2e gate only reaches the folds its
+ * fixtures actually render — this is the assertion that covers every fold.
+ */
+describe('Origin disclosure marker', () => {
+  const markerBlock = (() => {
+    const selector = '.bt-cc-fold > summary::after,\n.bt-disclosure > summary::after {';
+    const start = originCss.indexOf(selector);
+    if (start === -1) throw new Error('Missing shared fold marker rule');
+    const end = originCss.indexOf('\n}', start);
+    if (end === -1) throw new Error('Unclosed fold marker rule');
+    return originCss.slice(start, end);
+  })();
+
+  const declaration = (property: string): string => {
+    const match = markerBlock.match(new RegExp(`\\n\\s*${property}:\\s*([^;]+);`));
+    const value = match?.[1];
+    if (!value) throw new Error(`Fold marker declares no ${property}`);
+    return value.trim();
+  };
+
+  it('keeps the rotated marker box square, so an open fold measures like a closed one', () => {
+    expect(declaration('width')).toBe(declaration('height'));
+    // Squareness only holds while the box keeps its size: a shrinkable marker
+    // becomes a rectangle again the moment the summary runs out of room.
+    expect(declaration('flex')).toBe('none');
+    expect(markerBlock).toContain('place-items: center');
+  });
+
+  it('still animates the quarter-turn it is sized for', () => {
+    expect(declaration('transition')).toContain('transform');
+    expect(originCss).toMatch(
+      /\.bt-cc-fold\[open\] > summary::after,\s*\.bt-disclosure\[open\] > summary::after \{[^}]*transform: rotate\(90deg\);/,
+    );
+  });
+});
+
+/**
  * The installable-PWA rules (§7.1, V5-P13b). Both halves are stylesheet-only
  * behaviour that no component test can observe: jsdom applies no CSS, so the
  * fixed positioning and the standalone block are asserted against the source.

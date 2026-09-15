@@ -1633,7 +1633,10 @@
         "perfHint": "Ein- und Auszahlungen werden neutralisiert (zeitgewichtete Rendite) — die Kurve bewegt sich nur, wenn sich deine Bestände bewegen.",
         "loadError": "Der Portfolio-Verlauf konnte nicht geladen werden. Bitte versuche es erneut.",
         "ariaLabelPerformance": "Portfolio-Performance im Zeitverlauf",
-        "ariaLabelValue": "Portfolio-Wert im Zeitverlauf"
+        "ariaLabelValue": "Portfolio-Wert im Zeitverlauf",
+        "summaryTimeWeighted": "Zeitgewichtet {{pct}}",
+        "summaryMoneyWeighted": "Geldgewichtet {{pct}}",
+        "summaryMaxExplainer": "Zeitgewichtet ist die Rendite deiner Bestände, Ein- und Auszahlungen herausgerechnet; geldgewichtet ist, was dein Geld tatsächlich erwirtschaftet hat — frühe Verluste auf kleine Beträge wiegen dadurch weniger."
       }
     },
     "analytics": {

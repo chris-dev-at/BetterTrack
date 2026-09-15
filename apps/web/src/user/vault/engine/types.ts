@@ -49,6 +49,13 @@ export interface ClientPortfolioDerivation {
   cashSources: ClientCashSourceBalance[];
   series: ClientSeriesPoint[];
   stats: SeriesStats | null;
+  /**
+   * Money-weighted (Modified Dietz) return of the derived window, percent
+   * (#1669) — the twin of the server's `moneyWeightedPct`, from the same
+   * domain function over the twin's own series and flows. `null` when the
+   * window has no capital or the series is not priceable.
+   */
+  moneyWeightedPct: number | null;
   freshness: 'fresh' | 'stale';
   missingAssetIds: string[];
 }

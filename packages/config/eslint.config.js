@@ -4,6 +4,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 import noCustomCategorySlice from './rules/noCustomCategorySlice.js';
+import noDynamicSqlIdentifier from './rules/noDynamicSqlIdentifier.js';
 import noLiteralJsxString from './rules/noLiteralJsxString.js';
 import requirePasswordSignInHelper from './rules/requirePasswordSignInHelper.js';
 
@@ -28,6 +29,17 @@ const taxonomyPlugin = { rules: { 'no-custom-category-slice': noCustomCategorySl
 const e2ePlugin = { rules: { 'require-password-sign-in-helper': requirePasswordSignInHelper } };
 
 /**
+ * The SQL-identifier reachability gate. Drizzle parameterises values but cannot
+ * parameterise identifiers, so `sql.identifier()`, `sql.raw()`, `alias()` and
+ * `.as()` are the only places a JavaScript string becomes SQL text verbatim. The
+ * vault/paranoid review signed those call sites off on the claim that no
+ * user-controlled string reaches them; this plugin is what keeps the claim true
+ * — see `rules/noDynamicSqlIdentifier.js`, which also polices the reason every
+ * exemption has to carry.
+ */
+const sqlPlugin = { rules: { 'no-dynamic-identifier': noDynamicSqlIdentifier } };
+
+/**
  * Non-test app + contract source the CUSTOM-slice gate sweeps. Broad on purpose:
  * unlike the per-surface i18n list above, the whole point is that *any* new
  * grouping surface anywhere is covered without an opt-in.
@@ -36,6 +48,20 @@ const TAXONOMY_GATED_SOURCES = [
   'apps/web/src/**/*.{ts,tsx}',
   'apps/api/src/**/*.{ts,tsx}',
   'packages/contracts/src/**/*.ts',
+];
+
+/**
+ * Everything that can speak drizzle. Narrower than the taxonomy gate because
+ * `.as()` is matched on ANY receiver — a SQL builder here, somebody else's
+ * fluent API in `apps/web` — and wider than "repositories" because the point is
+ * that a new drizzle caller anywhere in these trees is covered without an
+ * opt-in. Tests are deliberately NOT exempt: a test is where an unsafe
+ * "interpolate the table name" helper gets written first and copied second.
+ */
+const SQL_IDENTIFIER_GATED_SOURCES = [
+  'apps/api/src/**/*.ts',
+  'packages/*/src/**/*.ts',
+  'e2e/**/*.ts',
 ];
 
 /**
@@ -109,6 +135,16 @@ export default tseslint.config(
     plugins: { taxonomy: taxonomyPlugin },
     rules: {
       'taxonomy/no-custom-category-slice': 'error',
+    },
+  },
+  {
+    // The SQL-identifier reachability gate: every identifier builder takes a
+    // literal, and every exemption states which closed allow-list its value
+    // comes from. See `rules/noDynamicSqlIdentifier.js`.
+    files: SQL_IDENTIFIER_GATED_SOURCES,
+    plugins: { sql: sqlPlugin },
+    rules: {
+      'sql/no-dynamic-identifier': 'error',
     },
   },
   {

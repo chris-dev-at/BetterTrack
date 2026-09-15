@@ -149,6 +149,7 @@ async function liveRowCounts(userId: string): Promise<Record<string, number>> {
   const one = async (table: string): Promise<number> => {
     const rows = resultRows<{ n: number }>(
       await harness.db.execute(
+        // eslint-disable-next-line sql/no-dynamic-identifier -- closed list: `table` only ever takes the seven literal names in the loop below, the same set as PARANOID_V1_LEGACY_TABLES. The user id stays a bound parameter.
         sql`select count(*)::int as n from ${sql.raw(`"${table}"`)} where "user_id" = ${userId}`,
       ),
     );
@@ -173,6 +174,7 @@ async function quarantineRowCounts(userId: string): Promise<Record<string, numbe
   const one = async (table: string): Promise<number> => {
     const rows = resultRows<{ n: number }>(
       await harness.db.execute(
+        // eslint-disable-next-line sql/no-dynamic-identifier -- closed list: the `zz_paranoid_v1_backup_` quarantine twin of the same seven literal names in the loop below. The user id stays a bound parameter.
         sql`select count(*)::int as n from ${sql.raw(`"zz_paranoid_v1_backup_${table}"`)} where "user_id" = ${userId}`,
       ),
     );
@@ -384,6 +386,7 @@ describe('paranoidV1WipeService — §17 step 2, gated on the verified backup', 
     // destroyed.
     const listed = async (): Promise<string[]> =>
       resultRows<{ user_id: string }>(
+        // eslint-disable-next-line sql/no-dynamic-identifier -- closed list of one: PARANOID_V1_WIPE_CANDIDATES_SQL is a module-level literal in paranoidV1TransitionSql.ts; running it verbatim is what pins the operator's listing.
         await harness.db.execute(sql.raw(PARANOID_V1_WIPE_CANDIDATES_SQL)),
       ).map((r) => r.user_id);
 
