@@ -1521,6 +1521,45 @@ export const updateAnnouncementRequestSchema = z
   );
 export type UpdateAnnouncementRequest = z.infer<typeof updateAnnouncementRequestSchema>;
 
+/**
+ * `POST /admin/announcements/:id/redeliver` — 202 Accepted (ADMIN-W7c, #1943).
+ *
+ * The console's answer to a published announcement standing at "N failed" with
+ * no action attached to it. The route does NOT deliver: a fan-out is a walk of
+ * the entire user table, so it hands ONE targeted pass to the existing
+ * `announcements.publishDue` queue and returns the job identity. The per-user
+ * `eventKey` unique index makes the re-walk insert exactly the rows that are
+ * missing, and the pass REPLACES `deliveredCount` / `failedCount` from its own
+ * outcome, so a retry can neither re-stamp `publishedAt` nor double-count.
+ *
+ * `deliveredCount` / `failedCount` are the counts as they stood when the
+ * operator asked — the state being retried, not the result. The result arrives
+ * on the next `GET /admin/announcements`.
+ */
+export const announcementRedeliverResponseSchema = z
+  .object({
+    announcementId: z.string().uuid(),
+    /**
+     * The BullMQ job id the pass carries. Two clicks inside the manual dedupe
+     * window deliberately return the SAME id: one re-walk delivers everything a
+     * second identical one would, so the queue collapses them.
+     */
+    jobId: z.string(),
+    /**
+     * Which pass this is. Manual redelivery uses its own attempt number, above
+     * the automatic ladder (0 = first publication, 1 = its single bounded
+     * retry), so an operator-initiated pass is never confused with the job's own
+     * and never schedules a retry of its own.
+     */
+    attempt: z.number().int(),
+    /** Recipients still missing their row when the operator asked. */
+    failedCount: z.number().int(),
+    /** Recipients confirmed delivered when the operator asked. */
+    deliveredCount: z.number().int().nullable(),
+  })
+  .strict();
+export type AnnouncementRedeliverResponse = z.infer<typeof announcementRedeliverResponseSchema>;
+
 // ── Backup / restore-drill readiness (#1406 W1) ──────────────────────────────
 // The production stack's `backup-scheduler` writes a machine-readable status
 // file after every dump, offsite upload, restore drill and healthcheck (see

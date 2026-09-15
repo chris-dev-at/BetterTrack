@@ -182,11 +182,19 @@ export interface JobPayloads {
   'data.retentionCleanup': Record<string, never>;
   /**
    * Empty payload = the sweep (every due announcement). `announcementId` = one
-   * targeted pass. `attempt` bounds the retry ladder: 0 is the first
-   * publication, 1 the single retry a partial delivery schedules, and nothing
-   * ever enqueues a 2 (see `ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT`).
+   * targeted pass. `attempt` bounds the automatic retry ladder: 0 is the first
+   * publication and 1 the single retry a partial delivery schedules — the
+   * automatic path never enqueues anything above that (see
+   * `ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT`). An operator's manual redelivery
+   * (#1943) uses `ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT`, one rung above the
+   * ladder, and is the only pass carrying an `actorId` — the admin who clicked,
+   * so the pass's own audit row names them instead of reading as a sweep.
    */
-  'announcements.publishDue': { announcementId?: string; attempt?: number };
+  'announcements.publishDue': {
+    announcementId?: string;
+    attempt?: number;
+    actorId?: string;
+  };
   'system.heartbeat': Record<string, never>;
 }
 

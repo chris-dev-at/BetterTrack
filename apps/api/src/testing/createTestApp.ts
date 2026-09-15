@@ -302,7 +302,9 @@ export interface CreateTestAppOptions {
     announcementId: string;
     attempt: number;
     delayMs?: number;
-  }) => Promise<void>;
+    actorId?: string;
+    dedupeWindowMs?: number;
+  }) => Promise<{ jobId: string }>;
   /** Pause an export after collection while its account transition lock is held. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Shrink the export build ceilings (#1714) so the clean-refusal path is provable. */

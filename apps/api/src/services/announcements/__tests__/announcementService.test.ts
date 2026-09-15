@@ -13,6 +13,8 @@ import {
   createAnnouncementService,
   announcementEventKey,
   deriveAnnouncementDeliveryState,
+  ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+  ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS,
   type AnnouncementPublishRequest,
 } from '../announcementService';
 
@@ -62,6 +64,7 @@ function buildService(
         ? {
             enqueuePublish: async (request: AnnouncementPublishRequest) => {
               enqueued.push(request);
+              return { jobId: `${request.announcementId}:${request.attempt}` };
             },
           }
         : {}),
@@ -259,5 +262,118 @@ describe('deriveAnnouncementDeliveryState', () => {
     ['draft', { active: false, startsAt: past, endsAt: future, publishedAt: past }],
   ])('is %s', (expected, row) => {
     expect(deriveAnnouncementDeliveryState(row, at)).toBe(expected);
+  });
+});
+
+/**
+ * ADMIN-W7c (#1943): the manual redelivery, at the service boundary.
+ *
+ * The end-to-end proof — a fault-injected recipient, the click, the missing row
+ * and nothing else — lives in `jobs/__tests__/announcementPublishJob.test.ts`,
+ * where the walk actually runs. What is pinned here is the contract around it:
+ * a click never walks the user table, and it never answers "accepted" for a
+ * pass that will not happen.
+ */
+describe('AnnouncementService — redelivering a partial publication (#1943)', () => {
+  /** Publish `announcement`, then leave it standing at one failed recipient. */
+  async function publishWithOneFailure(
+    repo: ReturnType<typeof createAnnouncementRepository>,
+    id: string,
+    at: Date,
+  ) {
+    await repo.claimPublication(id, at, { delivered: 11, failed: 1 });
+  }
+
+  it('refuses a switched-off or expired announcement instead of queueing a pass the worker would skip', async () => {
+    const admin = await harness.seedAdmin();
+    const at = new Date('2026-08-01T00:00:00.000Z');
+    const enqueued: AnnouncementPublishRequest[] = [];
+    const { service, repo } = buildService(() => at, { enqueued });
+
+    const off = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
+    await publishWithOneFailure(repo, off.id, at);
+    await service.update(off.id, { active: false }, { id: admin.id });
+    await expect(service.redeliver(off.id, { id: admin.id })).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'ANNOUNCEMENT_NOT_REDELIVERABLE',
+    });
+
+    const closed = await service.create(
+      { ...BASE_BODY, active: true, endsAt: '2026-09-01T00:00:00.000Z' },
+      { id: admin.id },
+    );
+    await publishWithOneFailure(repo, closed.id, at);
+    // The window closes under the row: `publishOne` would re-read it and skip,
+    // so accepting the click would be a 202 for nothing.
+    const { service: afterClose } = buildService(() => new Date('2026-09-02T00:00:00.000Z'), {
+      enqueued,
+    });
+    await expect(afterClose.redeliver(closed.id, { id: admin.id })).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'ANNOUNCEMENT_NOT_REDELIVERABLE',
+    });
+
+    // Neither refusal asked the queue for anything.
+    expect(enqueued.filter((r) => r.attempt === ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT)).toEqual([]);
+  });
+
+  it('answers 503 rather than an accepted-looking 202 when there is no transport', async () => {
+    const admin = await harness.seedAdmin();
+    const at = new Date('2026-08-03T00:00:00.000Z');
+    // No `enqueued` recorder → the service is built WITHOUT `enqueuePublish`,
+    // exactly as the API context builds it when the queue is unavailable.
+    const { service, repo } = buildService(() => at);
+
+    const row = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
+    await publishWithOneFailure(repo, row.id, at);
+
+    // The sweep does not stand behind this one: `publishDue` takes UNSTAMPED
+    // rows only, so a silent acceptance here would never be delivered by
+    // anything, ever.
+    await expect(service.redeliver(row.id, { id: admin.id })).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'ANNOUNCEMENT_REDELIVER_UNAVAILABLE',
+    });
+    // And it left no audit row claiming a redelivery that was never queued.
+    const { entries } = await createAuditRepository(db).listForTarget({
+      targetId: row.id,
+      limit: 20,
+    });
+    expect(entries.filter((e) => e.action === 'announcement.redeliver')).toEqual([]);
+  });
+
+  it('queues one narrow-window pass carrying the operator, and delivers nothing inline', async () => {
+    const admin = await harness.seedAdmin();
+    const alice = await harness.seedUser({ email: 'rd@bt.test', username: 'redeliveruser' });
+    const at = new Date('2026-08-05T00:00:00.000Z');
+    const enqueued: AnnouncementPublishRequest[] = [];
+    const { service, repo, notifications } = buildService(() => at, { enqueued });
+
+    const row = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
+    await publishWithOneFailure(repo, row.id, at);
+
+    const accepted = await service.redeliver(row.id, { id: admin.id, ip: '10.9.9.9' });
+    expect(accepted).toMatchObject({
+      announcementId: row.id,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      failedCount: 1,
+      deliveredCount: 11,
+    });
+    expect(enqueued.at(-1)).toEqual({
+      announcementId: row.id,
+      attempt: ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
+      actorId: admin.id,
+      dedupeWindowMs: ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS,
+    });
+    // The request path did not walk the user table — the whole reason this is a
+    // 202 and not a 200.
+    expect(await notifications.existsForEventKey(alice.id, announcementEventKey(row.id))).toBe(
+      false,
+    );
+    // Nor did it re-stamp or zero anything: the counts still describe the pass
+    // that failed, until the queued one replaces them.
+    const unchanged = (await repo.findById(row.id))!;
+    expect(unchanged.failedCount).toBe(1);
+    expect(unchanged.deliveredCount).toBe(11);
   });
 });
