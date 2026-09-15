@@ -1,5 +1,7 @@
 # Landing phone viewport verification — PR #973
 
+_Archived 2026-09-02 — visual acceptance evidence for the merged PR #973._
+
 These screenshots provide the visual acceptance evidence for #955’s landing-header
 breakpoint. They were captured at a 760 CSS-pixel height using Chromium at the
 named viewport widths. `before` is the landing site from

@@ -1,5 +1,7 @@
 # Pass 04 — Privacy, legal, and data governance
 
+_Archived 2026-09-02 — part of the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 ## Summary
 
 The product UI and legal pages make stronger deletion, retention, processor, cookie, and backup claims than the current implementation can support. These are launch-level trust and compliance risks, even where retained data may have a legitimate security or accounting purpose.
