@@ -284,6 +284,8 @@ test('humanizes recent admin activity and links to the audit log', async () => {
       {
         id: '00000000-0000-7000-8000-00000000000a',
         actorId: null,
+        actor: null,
+        actorKind: 'unattributed',
         action: 'user.disable',
         targetType: 'user',
         targetId: 'u1',

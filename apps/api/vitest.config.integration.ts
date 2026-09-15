@@ -79,12 +79,22 @@ export default defineConfig({
       // #1485: disposing one harness must never close the worker-shared Redis
       // singleton that another harness is still using.
       'src/testing/createTestApp.test.ts',
+      // #1914: …and it must hand back the two pub/sub connections buildContext
+      // opens for the event bus. Only real Redis can be asked, via CLIENT LIST,
+      // whether a harness actually gave its sockets back.
+      'src/__tests__/harnessLifecycle.test.ts',
       // #1896: two re-materializations of the same usage day must serialize on
       // the real two-session advisory lock instead of colliding on the
       // (day, feature) primary key; PGlite has one connection, so it cannot
       // hold the two open transactions the race needs.
       'src/__tests__/usageAnalytics.test.ts',
     ],
+    // Every test file gets the #1936 harness reaper: an `afterAll` that
+    // releases any `createTestApp()` harness the file did not dispose itself.
+    // Registered from a setup file so it is the first `afterAll` collected and
+    // — under Vitest's default `sequence.hooks: "stack"` — therefore the last
+    // to run, after any hook of the file's own that still uses its harness.
+    setupFiles: ['src/testing/setupHarnessReaper.ts'],
     pool: 'forks',
     poolOptions: {
       forks: { singleFork: true },

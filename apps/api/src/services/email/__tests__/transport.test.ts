@@ -71,6 +71,11 @@ describe('SMTP transport', () => {
       host: 'smtp.bettertrack.test',
       port: 465,
       secure: true,
+      // 465 is implicit TLS: the socket is encrypted before the greeting, so
+      // there is no plaintext phase for STARTTLS to protect (#1931).
+      requireTLS: false,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: { user: 'smtp-user', pass: 'smtp-password' },
     });
     expect(smtp.sendMail).toHaveBeenCalledOnce();
@@ -91,6 +96,12 @@ describe('SMTP transport', () => {
       host: 'smtp.bettertrack.test',
       port: 587,
       secure: false,
+      // …and every other port starts in the clear, so the upgrade is mandatory
+      // rather than left to the server's EHLO advertisement (#1931). Pinned on
+      // the wire in `smtpWire.test.ts`.
+      requireTLS: true,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: { user: 'smtp-user', pass: 'smtp-password' },
     });
   });
@@ -103,8 +114,24 @@ describe('SMTP transport', () => {
       host: 'smtp.bettertrack.test',
       port: 465,
       secure: true,
+      requireTLS: false,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: undefined,
     });
+  });
+
+  it.each([25, 587, 2525])('requires the STARTTLS upgrade on plaintext port %i', (port) => {
+    // The submission ports, and the legacy relay port a self-hosted deploy may
+    // still be pointed at. All of them open in the clear, and `smtp-connection`
+    // upgrades only when the server ADVERTISES STARTTLS — a capability list an
+    // on-path attacker can simply strip. `requireTLS` takes that vote away.
+    createSmtpTransport({ ...emailConfig, port });
+
+    expect(smtp.createTransport).toHaveBeenCalledOnce();
+    expect(smtp.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ port, secure: false, requireTLS: true }),
+    );
   });
 
   it.each([

@@ -17,6 +17,13 @@ import { provisionUser } from './support/users';
  * The admin composer surface is exercised through the admin API (the composer
  * page unit tests cover its form UI). This spec keeps the admin path lean and
  * focuses the browser-driven assertions on the user-facing banner.
+ *
+ * ADMIN-W7a (#1909): the admin write no longer delivers anything itself. The
+ * BANNER is unaffected — it has always been a pure window query — but the INBOX
+ * entry now arrives when the `announcements.publishDue` worker job runs. The
+ * save enqueues a targeted pass, and the worker is one of this config's
+ * `webServer` processes, so it lands in milliseconds; the inbox assertion below
+ * still retries around the hand-off rather than assuming a synchronous send.
  */
 test('announcements: an active announcement reaches every user and stays dismissed per user', async ({
   browser,
@@ -80,11 +87,16 @@ test('announcements: an active announcement reaches every user and stays dismiss
     timeout: 15_000,
   });
   // And the inbox notification remains (banner ≠ inbox — she can still read it).
-  // The inbox is the notification-log panel since the R2 split.
-  await aliceReturnPage.goto('/control/notification-log');
-  await expect(aliceReturnPage.getByText('E2E scheduled maintenance').first()).toBeVisible({
-    timeout: 15_000,
-  });
+  // The inbox is the notification-log panel since the R2 split. Re-navigating
+  // inside the poll is what makes this robust to the publish job's hand-off:
+  // the panel is a cached read, so waiting on the locator alone would never
+  // pick up a row that landed a moment after the first render (#1909).
+  await expect(async () => {
+    await aliceReturnPage.goto('/control/notification-log');
+    await expect(aliceReturnPage.getByText('E2E scheduled maintenance').first()).toBeVisible({
+      timeout: 5_000,
+    });
+  }).toPass({ timeout: 30_000 });
 
   // DELETE the announcement before leaving. An active announcement is GLOBAL —
   // it renders a banner above every page for every user — so leaving one behind

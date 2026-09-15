@@ -92,6 +92,17 @@ export {
   type ApiKeyRequestLogCleanupJobDeps,
 } from './apiKeyJobs';
 export {
+  createAnnouncementPublishJob,
+  createAnnouncementPublishEnqueuer,
+  announcementPublishJobId,
+  ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS,
+  ANNOUNCEMENT_PUBLISH_SCHEDULER_ID,
+  ANNOUNCEMENT_PUBLISH_CRON,
+  ANNOUNCEMENT_PUBLISH_TZ,
+  type AnnouncementPublishJobDeps,
+} from './announcementJobs';
+
+export {
   createDataRetentionCleanupJob,
   DATA_RETENTION_DELETE_BATCH_SIZE,
   DATA_RETENTION_MAX_ROWS_PER_RUN,

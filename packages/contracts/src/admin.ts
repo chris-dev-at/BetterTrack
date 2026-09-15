@@ -191,6 +191,13 @@ export const adminUserSchema = z
         historyCount: z.number().int().nonnegative(),
       })
       .optional(),
+    /**
+     * Review flag (#1907 ADMIN-W5). Additive and present ONLY when the account
+     * is flagged, exactly as `privacyMode` above is: an unflagged account's
+     * payload stays byte-for-byte what it was before this wave. The flag is a
+     * marker, not a suspension — see `admin_user_flags`.
+     */
+    flagged: z.literal(true).optional(),
     lastLoginAt: z.string().datetime().nullable(),
     createdAt: z.string().datetime(),
   })
@@ -253,6 +260,18 @@ export const adminUserListQuerySchema = z
     role: roleSchema.optional(),
     status: userStatusSchema.optional(),
     privacyMode: adminUserPrivacyFilterSchema.optional(),
+    /**
+     * Review flag (#1907 ADMIN-W5). Tri-state on purpose, exactly as the
+     * helpdesk queue's `unread` is: absent means "don't filter on the flag",
+     * which is a different request from `flagged=false` ("only accounts that
+     * are NOT flagged"). `.optional()` sits OUTSIDE the transform so an omitted
+     * key stays `undefined` instead of collapsing to `false` and silently
+     * hiding every flagged account from the default list.
+     */
+    flagged: z
+      .enum(['true', 'false'])
+      .transform((value) => value === 'true')
+      .optional(),
     sort: adminUserSortSchema.default('createdAt'),
     direction: adminUserSortDirectionSchema.default('desc'),
     limit: z.coerce
@@ -299,6 +318,102 @@ export const createUserResponseSchema = z.object({
 });
 export type CreateUserResponse = z.infer<typeof createUserResponseSchema>;
 
+// ── Moderation depth (#1907 ADMIN-W5) ────────────────────────────────────────
+// Every moderation action carries a REASON, is attributed to a named operator,
+// and lands in a record the next operator can read. Before this wave disabling
+// an account, banning it from chat or changing its role recorded what happened
+// and never why.
+
+/**
+ * Same bound the operator-note body has, and for the same reason: the column's
+ * CHECK repeats it, so no caller can write unbounded prose past the route.
+ */
+export const ADMIN_MODERATION_REASON_MAX_LENGTH = 2000;
+export const ADMIN_MODERATION_PAGE_SIZE_DEFAULT = 25;
+
+/**
+ * Why an operator did it. Trimmed and non-empty: a reason made of spaces is the
+ * same unattributed suspension this wave exists to end, and the
+ * `admin_moderation_actions.reason` CHECK refuses it at the column too.
+ */
+export const adminModerationReasonSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(ADMIN_MODERATION_REASON_MAX_LENGTH);
+
+/**
+ * Short state labels (`active`, `disabled`, `admin`) — never free text, and
+ * never anything that came out of a portfolio (§6.12). Bounded so the column
+ * cannot become a second, unbounded prose field beside `reason`.
+ */
+export const ADMIN_MODERATION_VALUE_MAX_LENGTH = 64;
+
+/**
+ * What the record can hold.
+ *
+ * `delete_reservation` is the row an admin DELETE writes when it disables the
+ * account to reserve the removal: that suspension is durable and survives a
+ * failed delete, so it has to be explainable like any other (#1907).
+ *
+ * `password_reset` is reserved by the table's CHECK and this enum but is not
+ * written by any route today: `POST /admin/users/:id/reset-password` takes no
+ * body, and giving it a mandatory one is a breaking change to a shipped route
+ * that #1907 §1 did not ask for.
+ */
+export const ADMIN_MODERATION_ACTIONS = [
+  'disable',
+  'enable',
+  'chat_ban',
+  'chat_unban',
+  'role_change',
+  'flag',
+  'unflag',
+  'delete_reservation',
+  'password_reset',
+] as const;
+export const adminModerationActionSchema = z.enum(ADMIN_MODERATION_ACTIONS);
+export type AdminModerationAction = z.infer<typeof adminModerationActionSchema>;
+
+/**
+ * One row of the moderation record. The actor is resolved to a USERNAME — never
+ * an e-mail, a session id or any other handle — and goes null-with-tombstone
+ * when that operator's account is gone, exactly as an operator note does.
+ * `previousValue` / `nextValue` are short state labels (`active`, `admin`);
+ * nothing portfolio-derived may ever be written into them (§6.12).
+ */
+export const adminModerationEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    action: adminModerationActionSchema,
+    reason: z.string(),
+    previousValue: z.string().max(ADMIN_MODERATION_VALUE_MAX_LENGTH).nullable(),
+    nextValue: z.string().max(ADMIN_MODERATION_VALUE_MAX_LENGTH).nullable(),
+    actorId: z.string().uuid().nullable(),
+    actorUsername: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminModerationEntry = z.infer<typeof adminModerationEntrySchema>;
+
+export const adminModerationListResponseSchema = z
+  .object({
+    actions: z.array(adminModerationEntrySchema),
+    page: adminListPageSchema,
+  })
+  .strict();
+export type AdminModerationListResponse = z.infer<typeof adminModerationListResponseSchema>;
+
+/**
+ * `POST /admin/users/:id/flag` — mark an account for a second look WITHOUT
+ * suspending it. The reason is mandatory here with no exceptions: a flag whose
+ * reason is optional is the unattributed suspicion this wave replaces.
+ */
+export const adminUserFlagRequestSchema = z
+  .object({ reason: adminModerationReasonSchema })
+  .strict();
+export type AdminUserFlagRequest = z.infer<typeof adminUserFlagRequestSchema>;
+
 export const updateUserRequestSchema = z
   .object({
     status: userStatusSchema.optional(),
@@ -307,6 +422,15 @@ export const updateUserRequestSchema = z
     email: emailSchema.optional(),
     /** Admin chat ban toggle (§13.4 V4-P0d): true bans, false unbans (instant). */
     chatBanned: z.boolean().optional(),
+    /**
+     * Why. Required when the request MODERATES, optional otherwise — a rename
+     * or an e-mail correction is administration, not moderation, and demanding
+     * prose for one would train operators to type filler into the field the
+     * suspensions depend on. The requirement is expressed HERE rather than in
+     * the route handler so the OpenAPI document, the SPA and the server refuse
+     * identically.
+     */
+    reason: adminModerationReasonSchema.optional(),
   })
   .strict()
   .refine(
@@ -317,7 +441,23 @@ export const updateUserRequestSchema = z
       d.email !== undefined ||
       d.chatBanned !== undefined,
     { message: 'Provide at least one field to update.' },
-  );
+  )
+  .superRefine((d, ctx) => {
+    // Suspending, chat-banning and role changes are the three moderating
+    // writes. Reversals (`status: 'active'`, `chatBanned: false`) deliberately
+    // stay optional — the console always sends one, and the server records the
+    // reversal in the moderation record whenever it does.
+    const moderates = d.status === 'disabled' || d.chatBanned === true || d.role !== undefined;
+    if (moderates && d.reason === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reason'],
+        // Generic, state-free (§10): it says what the REQUEST is missing and
+        // discloses nothing about the account it names.
+        message: 'A reason is required for this change.',
+      });
+    }
+  });
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
 
 /**
@@ -332,6 +472,13 @@ export const bulkUserActionRequestSchema = z
   .object({
     action: bulkUserActionSchema,
     userIds: z.array(z.string().uuid()).min(1).max(200),
+    /**
+     * Mandatory with no exception: every action a batch can take today is a
+     * suspension, and 200 unattributed suspensions is the gap this wave closes
+     * multiplied by 200. The one reason is copied onto every affected row's
+     * moderation record, so each account carries its own answer to "why".
+     */
+    reason: adminModerationReasonSchema,
   })
   .strict();
 export type BulkUserActionRequest = z.infer<typeof bulkUserActionRequestSchema>;
@@ -699,24 +846,126 @@ export const registrationRequestListResponseSchema = z.object({
 });
 export type RegistrationRequestListResponse = z.infer<typeof registrationRequestListResponseSchema>;
 
+/**
+ * How an audit row's actor is answerable (#1908, ADMIN-W6).
+ *
+ * Before this wave every un-attributed row rendered as one word, "system": an
+ * anonymous failed login, a server-initiated write and the shell BREAK-GLASS 2FA
+ * reset — the single highest-privilege event in the product — were
+ * indistinguishable in the console.
+ *
+ *  - `account`  — `actor_id` resolved to a live account; `actor` carries it.
+ *  - `shell`    — `meta.via === 'break_glass_script'`: written by the shell-only
+ *                 break-glass script (`scripts/adminTwoFactorBreakGlass.ts`),
+ *                 which deliberately has no session and no actor. A FACT stamped
+ *                 by the writer, not a guess.
+ *  - `unattributed` — `actor_id` is NULL and nothing says why. This is the
+ *    HONEST union of the issue's "system" and "deleted actor": `ON DELETE SET
+ *    NULL` destroys the only evidence that could tell them apart, so claiming
+ *    "the acting account was deleted" from a NULL column would be a heuristic
+ *    presented as a record. The copy says "no longer resolvable" instead.
+ */
+export const AUDIT_ACTOR_KINDS = ['account', 'shell', 'unattributed'] as const;
+export const auditActorKindSchema = z.enum(AUDIT_ACTOR_KINDS);
+export type AuditActorKind = z.infer<typeof auditActorKindSchema>;
+
+/**
+ * The resolved actor, joined on the audit page's own rows. Username and account
+ * kind ONLY — never the e-mail: an operator reading the log needs to know WHO
+ * acted, not how to reach them (§6.12, §10).
+ */
+export const auditActorSchema = z
+  .object({
+    id: z.string().uuid(),
+    username: usernameSchema,
+    kind: roleSchema,
+  })
+  .strict();
+export type AuditActor = z.infer<typeof auditActorSchema>;
+
 export const auditLogEntrySchema = z.object({
   id: z.string().uuid(),
   actorId: z.string().uuid().nullable(),
+  /** Resolved from `actorId` in the same statement as the page (#1908). */
+  actor: auditActorSchema.nullable(),
+  actorKind: auditActorKindSchema,
   action: z.string(),
   targetType: z.string().nullable(),
   targetId: z.string().nullable(),
   ip: z.string().nullable(),
+  /**
+   * Free-form context. Secret-shaped keys are replaced with a fixed marker on
+   * the WRITE path (`auditService`), so what is stored is already redacted and
+   * no reader can reconstruct a value this field never held.
+   */
   meta: z.unknown().nullable(),
   createdAt: z.string().datetime(),
 });
 export type AuditLogEntry = z.infer<typeof auditLogEntrySchema>;
 
+/**
+ * Named filter sets, so the queries worth running are one click instead of
+ * folklore an operator has to remember (#1908 §3).
+ *
+ *  - `break_glass`   — the shell 2FA reset, the product's highest-privilege event.
+ *  - `auth_failures` — every failed authentication signal in one view.
+ *  - `admin_actions` — what the console itself did, as opposed to what accounts did.
+ *
+ * The action vocabulary each expands to lives in `auditService` beside
+ * `AuditAction`, so a preset can never name a string the product does not write.
+ */
+export const AUDIT_PRESETS = ['break_glass', 'auth_failures', 'admin_actions'] as const;
+export const auditPresetSchema = z.enum(AUDIT_PRESETS);
+export type AuditPreset = z.infer<typeof auditPresetSchema>;
+
+/**
+ * The audit vocabulary's own shape: `<domain>.<snake_case_event>`, plus the
+ * TRAILING-DOT form (`user.`) that means "every event in this domain".
+ *
+ * Deliberately a charset, not a free string. `action` is the one filter that
+ * reaches a pattern match, and a value that cannot contain `%`, `_` or a
+ * backslash cannot become a wildcard no matter what the repository does with it
+ * — the escaping there is then belt to this braces, not the only guard (§10).
+ */
+const AUDIT_ACTION_FILTER = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*\.?$/;
+
+/**
+ * `GET /admin/audit` and `GET /admin/users/{id}/audit`.
+ *
+ * Still `.strict()`: an unknown key is still a 400. Every added key is OPTIONAL,
+ * so every caller that shipped before this wave keeps working unchanged.
+ *
+ * Paging is unchanged on purpose — keyset on `desc(id)`, and NO filter-scoped
+ * total. A `COUNT(*)` over a filtered 400-day audit table (`BT_AUDIT_RETENTION_
+ * DAYS` defaults to 400) is the one query on this page that can hurt production,
+ * and W2's reason for a total — a multi-column sort whose cursor would have to
+ * encode the sort key — does not apply here: the ordering is fixed and the ids
+ * are UUIDv7, i.e. time-sortable. Please do not "fix" this into offset paging.
+ */
 export const auditQuerySchema = z
   .object({
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
+    /** Exact action, or a trailing-dot domain prefix (`user.` ⇒ every `user.*`). */
+    action: z.string().trim().min(1).max(64).regex(AUDIT_ACTION_FILTER).optional(),
+    actorId: z.string().uuid().optional(),
+    targetId: z.string().uuid().optional(),
+    targetType: z.string().trim().min(1).max(32).optional(),
+    /** Half-open window `[from, to)` on `created_at`. */
+    from: z.string().datetime().optional(),
+    to: z.string().datetime().optional(),
+    preset: auditPresetSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((query, ctx) => {
+    if (query.from === undefined || query.to === undefined) return;
+    if (Date.parse(query.from) < Date.parse(query.to)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['to'],
+      message: 'The end of the range must be after its start.',
+    });
+  });
 export type AuditQuery = z.infer<typeof auditQuerySchema>;
 
 export const auditLogListResponseSchema = z.object({
@@ -724,6 +973,91 @@ export const auditLogListResponseSchema = z.object({
   nextCursor: z.string().uuid().nullable(),
 });
 export type AuditLogListResponse = z.infer<typeof auditLogListResponseSchema>;
+
+/**
+ * `GET /admin/security/signals` — aggregate authentication signals (#1908 §5).
+ *
+ * DERIVED, never captured. Every number here is a `GROUP BY` over `audit_log`
+ * rows the product already writes; this wave adds no column, no table and no new
+ * capture. In particular there is deliberately NO `user_agent` on `audit_log`:
+ * sessions keep their raw UA in Redis and the admin projection already reduces
+ * it to a coarse device label, and that boundary stays where it is.
+ *
+ * It is also a READ and only a read. No lockout, no forced logout, no session
+ * revoke — those are §6.12 kill-list capabilities and none of them is built.
+ *
+ * The payload is COUNTS ONLY: no user id, no IP, no device, no geo, no
+ * per-account profile. `.strict()` is half of what holds that line; the other
+ * half is an explicit no-identifiers assertion over the serialized body in
+ * `adminAudit.test.ts`.
+ */
+export const AUDIT_SIGNAL_WINDOWS = ['24h', '7d'] as const;
+export const auditSignalWindowSchema = z.enum(AUDIT_SIGNAL_WINDOWS);
+export type AuditSignalWindow = z.infer<typeof auditSignalWindowSchema>;
+
+export const adminSecuritySignalsQuerySchema = z
+  .object({
+    window: auditSignalWindowSchema.default('24h'),
+  })
+  .strict();
+export type AdminSecuritySignalsQuery = z.infer<typeof adminSecuritySignalsQuerySchema>;
+
+/**
+ * The four reasons `authService` records on `login.fail`, plus `other` for a
+ * row whose reason this build does not know. An unrecognised value is BUCKETED
+ * rather than echoed: `meta.reason` is server-written today, and a projection
+ * that passes arbitrary meta text through to the console would be a seam for
+ * whatever a future writer puts there.
+ */
+export const LOGIN_FAILURE_REASONS = [
+  'unknown_user',
+  'locked',
+  'bad_password',
+  'disabled',
+  'other',
+] as const;
+export const loginFailureReasonSchema = z.enum(LOGIN_FAILURE_REASONS);
+export type LoginFailureReason = z.infer<typeof loginFailureReasonSchema>;
+
+export const adminSecuritySignalsResponseSchema = z
+  .object({
+    window: auditSignalWindowSchema,
+    /** The half-open window `[from, to)` the counts were taken over. */
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    loginFailures: z
+      .object({
+        total: z.number().int().nonnegative(),
+        byReason: z.array(
+          z
+            .object({
+              reason: loginFailureReasonSchema,
+              count: z.number().int().nonnegative(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+    twoFactorVerifyFail: z.number().int().nonnegative(),
+    passkeyLoginFail: z.number().int().nonnegative(),
+    pinVerifyFail: z.number().int().nonnegative(),
+    reauthFail: z.number().int().nonnegative(),
+    apiKeyScopeDenied: z.number().int().nonnegative(),
+    adminLogins: z.number().int().nonnegative(),
+    /** How many DISTINCT admin accounts signed in — a count, never a roster. */
+    adminActors: z.number().int().nonnegative(),
+    breakGlass: z.number().int().nonnegative(),
+    /**
+     * Break-glass events across the whole retention window, not just this one —
+     * what the standing banner reports, so the product's highest-privilege event
+     * is visible without anyone thinking to look for it. Counted through a
+     * bounded subquery; `retentionTotalCapped` says the true figure is larger.
+     */
+    breakGlassRetentionTotal: z.number().int().nonnegative(),
+    breakGlassRetentionCapped: z.boolean(),
+  })
+  .strict();
+export type AdminSecuritySignalsResponse = z.infer<typeof adminSecuritySignalsResponseSchema>;
 
 /** One email send-log row (PROJECTPLAN.md §6.10) — no body, no secrets. */
 export const emailLogEntrySchema = z.object({
@@ -1043,6 +1377,33 @@ export const ANNOUNCEMENT_BODY_MAX = 2000;
  */
 export const ANNOUNCEMENT_NOTIFICATION_TYPE = 'account.notice';
 
+/**
+ * Where one announcement stands in the delivery lifecycle (#1909).
+ *
+ * Derived **server-side** from `active` / `startsAt` / `endsAt` / `publishedAt`
+ * and the server clock, never in the browser: two clients on two machines with
+ * two clock skews would otherwise disagree about whether a row is `scheduled`
+ * or `publishing`, and the operator screen would contradict the job.
+ *
+ * - `draft` — not flagged active. Nothing is shown and nothing is delivered.
+ * - `scheduled` — active, `startsAt` still in the future. The publish job
+ *   defers BOTH the banner and the inbox fan-out until the window opens.
+ * - `publishing` — active and due now; the job owns it and has not stamped
+ *   `publishedAt` yet (a sweep tick away, or mid-walk).
+ * - `published` — the fan-out completed and `publishedAt` is stamped.
+ * - `expired` — `endsAt` has passed. Terminal: the banner hides it and the job
+ *   refuses it, so it can never be delivered however it is re-saved.
+ */
+export const ANNOUNCEMENT_DELIVERY_STATES = [
+  'draft',
+  'scheduled',
+  'publishing',
+  'published',
+  'expired',
+] as const;
+export const announcementDeliveryStateSchema = z.enum(ANNOUNCEMENT_DELIVERY_STATES);
+export type AnnouncementDeliveryState = z.infer<typeof announcementDeliveryStateSchema>;
+
 /** One admin-composed announcement — reads and writes share this shape. */
 export const announcementSchema = z
   .object({
@@ -1064,12 +1425,30 @@ export const announcementSchema = z
     endsAt: z.string().datetime().nullable(),
     /**
      * The active flag the admin toggles: `false` hides it entirely, even inside
-     * the window (a dry-run save). Publishing (flip from off → on) fans an
-     * inbox row out to every user (idempotent by the shared eventKey below).
+     * the window (a dry-run save). `true` ARMS the announcement — it does not
+     * send it (#1909). The `announcements.publishDue` job fans one inbox row
+     * out to every user once the window has opened, idempotently per recipient
+     * via the shared eventKey below. Saving never delivers anything.
      */
     active: z.boolean(),
-    /** When the row was last published (flipped on). NULL until first publish. */
+    /** When the fan-out completed. NULL until the publish job stamps it. */
     publishedAt: z.string().datetime().nullable(),
+    /**
+     * Server-derived lifecycle state (#1909). The browser renders this; it does
+     * not compute it — see {@link announcementDeliveryStateSchema}.
+     */
+    deliveryState: announcementDeliveryStateSchema,
+    /**
+     * The outcome of the last completed publication pass: recipients confirmed
+     * to hold their inbox row, and recipients whose insert failed.
+     * `deliveredCount + failedCount` is the number of accounts walked.
+     *
+     * NULL on a row that has never been through the job (pre-#1909 rows keep
+     * NULL forever — the counts were not recorded then, and inventing a zero
+     * would be indistinguishable from "measured, and nothing failed").
+     */
+    deliveredCount: z.number().int().nullable(),
+    failedCount: z.number().int().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -1086,6 +1465,9 @@ export type AnnouncementListResponse = z.infer<typeof announcementListResponseSc
  * `POST /admin/announcements` — create a new (possibly inactive) announcement.
  * EN and DE title/body are ALL required (§13.4 binding — every user-facing
  * string ships with both keys).
+ *
+ * The request persists and returns; it never walks the user table (#1909). The
+ * `announcements.publishDue` job owns delivery.
  */
 export const createAnnouncementRequestSchema = z
   .object({
@@ -1109,8 +1491,9 @@ export type CreateAnnouncementRequest = z.infer<typeof createAnnouncementRequest
 
 /**
  * `PATCH /admin/announcements/:id` — partial update. At least one field
- * required; unknown fields rejected. Flipping `active` from off to on triggers
- * the fan-out; a re-publish is a no-op via the shared eventKey.
+ * required; unknown fields rejected. Saving never fans out on the request
+ * path (#1909): the publish job picks the row up once its window has opened,
+ * and a re-publish is a no-op per recipient via the shared eventKey.
  */
 export const updateAnnouncementRequestSchema = z
   .object({
@@ -1137,6 +1520,45 @@ export const updateAnnouncementRequestSchema = z
     { message: 'Provide at least one field to update.' },
   );
 export type UpdateAnnouncementRequest = z.infer<typeof updateAnnouncementRequestSchema>;
+
+/**
+ * `POST /admin/announcements/:id/redeliver` — 202 Accepted (ADMIN-W7c, #1943).
+ *
+ * The console's answer to a published announcement standing at "N failed" with
+ * no action attached to it. The route does NOT deliver: a fan-out is a walk of
+ * the entire user table, so it hands ONE targeted pass to the existing
+ * `announcements.publishDue` queue and returns the job identity. The per-user
+ * `eventKey` unique index makes the re-walk insert exactly the rows that are
+ * missing, and the pass REPLACES `deliveredCount` / `failedCount` from its own
+ * outcome, so a retry can neither re-stamp `publishedAt` nor double-count.
+ *
+ * `deliveredCount` / `failedCount` are the counts as they stood when the
+ * operator asked — the state being retried, not the result. The result arrives
+ * on the next `GET /admin/announcements`.
+ */
+export const announcementRedeliverResponseSchema = z
+  .object({
+    announcementId: z.string().uuid(),
+    /**
+     * The BullMQ job id the pass carries. Two clicks inside the manual dedupe
+     * window deliberately return the SAME id: one re-walk delivers everything a
+     * second identical one would, so the queue collapses them.
+     */
+    jobId: z.string(),
+    /**
+     * Which pass this is. Manual redelivery uses its own attempt number, above
+     * the automatic ladder (0 = first publication, 1 = its single bounded
+     * retry), so an operator-initiated pass is never confused with the job's own
+     * and never schedules a retry of its own.
+     */
+    attempt: z.number().int(),
+    /** Recipients still missing their row when the operator asked. */
+    failedCount: z.number().int(),
+    /** Recipients confirmed delivered when the operator asked. */
+    deliveredCount: z.number().int().nullable(),
+  })
+  .strict();
+export type AnnouncementRedeliverResponse = z.infer<typeof announcementRedeliverResponseSchema>;
 
 // ── Backup / restore-drill readiness (#1406 W1) ──────────────────────────────
 // The production stack's `backup-scheduler` writes a machine-readable status

@@ -807,7 +807,7 @@ describe('grant revocation', () => {
     const disabled = await adminAgent
       .patch(`/api/v1/admin/users/${client!.userId}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     expect(disabled.status).toBe(200);
 
     const [grant] = await harness.db
@@ -844,7 +844,7 @@ describe('grant revocation', () => {
     const enabled = await adminAgent
       .patch(`/api/v1/admin/users/${client!.userId}`)
       .set(...XRW)
-      .send({ status: 'active' });
+      .send({ status: 'active', reason: 'Review closed, account restored.' });
     expect(enabled.status).toBe(200);
 
     expect(
@@ -937,7 +937,11 @@ describe('grant revocation', () => {
 
     let disableFinished = false;
     const disable = harness.ctx.admin
-      .updateUser(userId, { status: 'disabled' }, { id: admin.id })
+      .updateUser(
+        userId,
+        { status: 'disabled', reason: 'Suspended pending review.' },
+        { id: admin.id },
+      )
       .then(() => {
         disableFinished = true;
       });
@@ -949,7 +953,11 @@ describe('grant revocation', () => {
     releaseGrantStep.resolve();
     const tokens = await exchange;
     await disable;
-    await harness.ctx.admin.updateUser(userId, { status: 'active' }, { id: admin.id });
+    await harness.ctx.admin.updateUser(
+      userId,
+      { status: 'active', reason: 'Review closed, account restored.' },
+      { id: admin.id },
+    );
 
     // The suspension observes the completed grant before re-enable, so this
     // pre-suspension exchange cannot leave a live bearer credential behind.

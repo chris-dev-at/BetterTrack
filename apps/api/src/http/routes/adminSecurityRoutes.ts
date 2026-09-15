@@ -1,11 +1,14 @@
 import { Router, type Request } from 'express';
 
 import {
+  adminSecuritySignalsQuerySchema,
+  adminSecuritySignalsResponseSchema,
   adminTwoFactorEmailStartRequestSchema,
   twoFactorConfirmRequestSchema,
   twoFactorDisableRequestSchema,
   twoFactorEmailConfirmRequestSchema,
   updateAdminSessionPolicyRequestSchema,
+  type AdminSecuritySignalsQuery,
   type AdminTwoFactorEmailStartRequest,
   type TwoFactorConfirmRequest,
   type TwoFactorDisableRequest,
@@ -18,7 +21,7 @@ import type { SessionSecurityContext } from '../../services/sessions/sessionServ
 import type { AppContext } from '../context';
 import { clearSessionCookie } from '../cookies';
 import { adminTwoFactorOptionsForRoute, requireAdminTwoFactor } from '../middleware/session';
-import { validateBody } from '../middleware/validate';
+import { validateBody, validateQuery } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
 
 const sessionSecurityContextOf = (req: Request): SessionSecurityContext => {
@@ -179,6 +182,9 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
  *
  * There is deliberately NO step-up 2FA re-challenge on the write (#430 rejected):
  * the security guarantee is the early-expiring admin session, not a re-prompt.
+ *
+ * ADMIN-W6 (#1908) adds `GET /security/signals` here for the same reason: it is
+ * a post-gate `/security/*` read, not part of the bootstrap enroll set.
  */
 export function registerAdminSessionPolicyRoutes(router: Router, ctx: AppContext): void {
   router.get('/security/session-policy', async (_req, res) => {
@@ -195,6 +201,29 @@ export function registerAdminSessionPolicyRoutes(router: Router, ctx: AppContext
         ip: req.ip,
       });
       res.json(toAdminSessionPolicy(policy));
+    },
+  );
+
+  /**
+   * Aggregate authentication signals (#1908 §5), registered FLAT onto the admin
+   * router beside the session policy and behind the same `requireAdmin` +
+   * mandatory-2FA gates as every other console read.
+   *
+   * A READ, and only a read: counts derived from audit rows that already exist.
+   * It adds no capture (no `user_agent` column, no IP list, no device
+   * fingerprint, no geo, no per-account risk score) and no ACTION — no lockout,
+   * no forced logout, no session revoke, all of which are §6.12 kill-list
+   * capabilities. The response is parsed through the strict contract on the way
+   * out, so a projection that ever grew an identifier would fail here rather
+   * than ship it.
+   */
+  router.get(
+    '/security/signals',
+    validateQuery(adminSecuritySignalsQuerySchema),
+    async (req, res) => {
+      const { window } = req.valid?.query as AdminSecuritySignalsQuery;
+      const signals = await ctx.admin.securitySignals(window);
+      res.json(adminSecuritySignalsResponseSchema.parse(signals));
     },
   );
 }
