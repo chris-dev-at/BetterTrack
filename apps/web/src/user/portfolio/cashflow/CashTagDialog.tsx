@@ -55,6 +55,10 @@ export function CashTagDialog({ existing, onClose }: CashTagDialogProps) {
     onError: (err) => {
       if (err instanceof ApiError && err.code === 'CASH_TAG_NAME_TAKEN') {
         setFormError(t('cashflow.tags.dialog.nameTaken'));
+        // The per-user tag cap (#1963) — a refusal the user can act on, so it
+        // gets its own translated line rather than the server's English text.
+      } else if (err instanceof ApiError && err.code === 'CASH_TAG_LIMIT_REACHED') {
+        setFormError(t('cashflow.tags.dialog.limitReached'));
       } else {
         setFormError(t('cashflow.tags.dialog.saveError'));
       }

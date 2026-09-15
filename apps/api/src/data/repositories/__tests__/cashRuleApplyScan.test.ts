@@ -1,0 +1,228 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { sql as sqlTag } from 'drizzle-orm';
+import { expect, it } from 'vitest';
+
+import { CASH_MOVEMENT_NOTE_MAX } from '@bettertrack/contracts';
+
+import {
+  applyCashRulesForOwner,
+  CASH_RULE_APPLY_MOVEMENT_SCAN_MAX,
+  type RuleTagStampExecutor,
+} from '../cashRuleTagStamp';
+
+/**
+ * THE RE-APPLY SCAN IS PAGED AND BOUNDED (#1743).
+ *
+ * `POST /cash/rules/apply` used to issue one `SELECT "id", "note" FROM
+ * "portfolio_cash_movements" WHERE …` per portfolio with no LIMIT and no
+ * cursor, and match in JS — so a long-lived ledger was materialized whole, on a
+ * freely repeatable request.
+ *
+ * Driven against a recording executor rather than a database, because what is
+ * being pinned is the SHAPE OF THE TRAFFIC: how many statements, with which
+ * LIMIT, carrying which cursor. A PGlite test would tag the right movements
+ * while saying nothing about whether it read them 500 at a time or all at once.
+ * `cashRuleTagging.test.ts` covers the end-to-end result over a real ledger.
+ */
+
+const USER = '018f0000-0000-7000-8000-0000000000aa';
+const PORTFOLIO = '018f0000-0000-7000-8000-0000000000b1';
+const TAG = '018f0000-0000-7000-8000-0000000000c1';
+
+const dialect = new PgDialect();
+
+interface Recorded {
+  text: string;
+  params: unknown[];
+}
+
+/** One synthetic movement, newest first by construction. */
+function ledger(size: number): { id: string; note: string; cursorExecutedAt: string }[] {
+  return Array.from({ length: size }, (_, i) => ({
+    id: `018f0000-0000-7000-8000-${String(i).padStart(12, '0')}`,
+    note: `SPAR market ${i}`,
+    cursorExecutedAt: `2026-01-01 00:00:00.${String(1_000_000 - i).padStart(6, '0')}+00`,
+  }));
+}
+
+/**
+ * Serves the rules, the portfolio list and keyset pages of `rows`, honouring
+ * the LIMIT and the cursor the statement actually carries — so a scan that
+ * forgot either would read the same page forever and fail loudly here.
+ */
+function executor(rows: ReturnType<typeof ledger>): {
+  executor: RuleTagStampExecutor;
+  scans: Recorded[];
+} {
+  const scans: Recorded[] = [];
+  const inst: RuleTagStampExecutor = {
+    async execute(query: ReturnType<typeof sqlTag>) {
+      const { sql: text, params } = dialect.sqlToQuery(query);
+      if (text.includes('FROM "cash_rules"')) {
+        return {
+          rows: [
+            {
+              id: '018f0000-0000-7000-8000-0000000000d1',
+              matchType: 'contains',
+              pattern: 'SPAR',
+              priority: 0,
+              enabled: true,
+              tagIds: [TAG],
+            },
+          ],
+        };
+      }
+      if (text.includes('FROM "portfolios"')) return { rows: [{ id: PORTFOLIO }] };
+      if (text.includes('INSERT INTO "cash_movement_tags"')) {
+        // Echo one row per (movement, tag) pair, as the RETURNING would. The
+        // params are the pairs in order, then the portfolio id the statement
+        // re-proves ownership through.
+        const movementIds = params.slice(0, -1).filter((_, i) => i % 2 === 0);
+        return { rows: movementIds.map((movement_id) => ({ movement_id })) };
+      }
+      if (text.includes('FROM "portfolio_cash_movements"')) {
+        scans.push({ text, params });
+        // Positions from the END, never from the front: the note ceiling is a
+        // bound parameter of its own since #1954, so counting forwards would
+        // make this fake agree with a scan that had lost its clip.
+        const limit = Number(params.at(-1));
+        const cursorId = text.includes('("executed_at", "id") <') ? String(params.at(-2)) : null;
+        let start = 0;
+        if (cursorId !== null) {
+          const at = rows.findIndex((row) => row.id === cursorId);
+          // `findIndex` is the assertion, not `at + 1`: a cursor naming a row
+          // that does not exist returns -1, and -1 + 1 = 0 silently restarts the
+          // walk at the first page — which is exactly the bug a paging test is
+          // here to catch. The old form asserted `start >= 0`, which no cursor
+          // could ever fail.
+          expect(at, 'cursor names a row that exists').toBeGreaterThanOrEqual(0);
+          start = at + 1;
+        }
+        return { rows: rows.slice(start, start + limit) };
+      }
+      throw new Error(`unexpected statement: ${text}`);
+    },
+  };
+  return { executor: inst, scans };
+}
+
+it('walks a ledger larger than one page in keyset pages, and reports a complete pass', async () => {
+  const rows = ledger(1_200);
+  const { executor: exec, scans } = executor(rows);
+
+  const outcome = await applyCashRulesForOwner(exec, USER);
+
+  expect(outcome).toEqual({ movementsTagged: 1_200, complete: true });
+  // 500 + 500 + 200: three pages, and the short one ends the walk without a
+  // fourth round trip to prove the ledger is exhausted.
+  expect(scans).toHaveLength(3);
+  for (const scan of scans) {
+    expect(scan.text).toContain('LIMIT');
+    expect(Number(scan.params.at(-1))).toBe(500);
+  }
+  // The first page is unanchored; every later one carries the previous page's
+  // last row as its cursor, on both halves of the tie-break.
+  expect(scans[0]!.text).not.toContain('("executed_at", "id") <');
+  expect(scans[1]!.params.at(-2)).toBe(rows[499]!.id);
+  expect(scans[1]!.params.at(-3)).toBe(rows[499]!.cursorExecutedAt);
+  expect(scans[2]!.params.at(-2)).toBe(rows[999]!.id);
+});
+
+it('asks Postgres for a CLIPPED note, so one page is bounded in bytes too', async () => {
+  // #1954. The page had a LIMIT but selected `"note"` whole, so a 500-row page
+  // materialized 500 unbounded notes — and `note` is a `text` column that no
+  // lane writing one is obliged to clip (a restored vault row carries whatever
+  // the document held). Clipping in JS afterwards bounds MATCHING, never the
+  // fetch. What is pinned here is therefore the statement, not the outcome:
+  // every scan asks for the ceiling by name.
+  const { executor: exec, scans } = executor(ledger(600));
+
+  await applyCashRulesForOwner(exec, USER);
+
+  expect(scans.length).toBeGreaterThan(0);
+  for (const scan of scans) {
+    expect(scan.text).toContain('left("note"');
+    // The clip's argument is the contract's own ceiling, bound as a parameter —
+    // never an inlined number that could drift away from it.
+    expect(Number(scan.params[0])).toBe(CASH_MOVEMENT_NOTE_MAX);
+    // …and it is the SELECT that carries it, not a WHERE or an ORDER BY.
+    expect(scan.text.slice(0, scan.text.indexOf('FROM'))).toContain('left("note"');
+  }
+});
+
+it('stops at the scan bound and says the pass was partial', async () => {
+  const rows = ledger(CASH_RULE_APPLY_MOVEMENT_SCAN_MAX + 1_000);
+  const { executor: exec, scans } = executor(rows);
+
+  const outcome = await applyCashRulesForOwner(exec, USER);
+
+  expect(outcome.complete).toBe(false);
+  const limits = scans.map((scan) => Number(scan.params.at(-1)));
+  // Exactly the bound was read into pages — no page overshoots it, and the
+  // count reported is the work actually done rather than the ledger's size.
+  expect(limits.slice(0, -1).reduce((total, limit) => total + limit, 0)).toBe(
+    CASH_RULE_APPLY_MOVEMENT_SCAN_MAX,
+  );
+  expect(outcome.movementsTagged).toBe(CASH_RULE_APPLY_MOVEMENT_SCAN_MAX);
+  // The closing statement is the one-row probe: with the budget spent, the walk
+  // still has to ASK whether anything is left rather than assume it is. Here a
+  // row comes back, which is what makes the pass honestly partial.
+  expect(limits.at(-1)).toBe(1);
+});
+
+it('reports a ledger that ends exactly on the bound as a complete pass', async () => {
+  // The walk only learns it is finished by reading, so a ledger whose last page
+  // fills the budget to the byte used to be reported as partial — telling a
+  // user whose every movement was checked that only the newest ones were.
+  const rows = ledger(CASH_RULE_APPLY_MOVEMENT_SCAN_MAX);
+  const { executor: exec, scans } = executor(rows);
+
+  const outcome = await applyCashRulesForOwner(exec, USER);
+
+  expect(outcome).toEqual({
+    movementsTagged: CASH_RULE_APPLY_MOVEMENT_SCAN_MAX,
+    complete: true,
+  });
+  // Every page was full, so exhaustion could not be inferred from a short one:
+  // the closing one-row probe came back empty and settled it.
+  expect(Number(scans.at(-1)!.params.at(-1))).toBe(1);
+});
+
+it('matches at most the contract note ceiling of whatever the ledger stored', async () => {
+  // A stored note is not bounded by the cash contract on every lane that writes
+  // one: the import apply path books service-direct with the raw CSV cell, and
+  // the column is `text`. The re-run therefore clips the string it matches, so
+  // one page stays bounded in BYTES and not only in rows (#1743).
+  const buried = ledger(1);
+  buried[0]!.note = `${'x'.repeat(CASH_MOVEMENT_NOTE_MAX)} SPAR`;
+  expect(await applyCashRulesForOwner(executor(buried).executor, USER)).toEqual({
+    movementsTagged: 0,
+    complete: true,
+  });
+
+  // The same needle inside the ceiling still tags — the bound is what is
+  // pinned here, not a rule that stopped working.
+  const reachable = ledger(1);
+  reachable[0]!.note = `SPAR ${'x'.repeat(CASH_MOVEMENT_NOTE_MAX)}`;
+  expect(await applyCashRulesForOwner(executor(reachable).executor, USER)).toEqual({
+    movementsTagged: 1,
+    complete: true,
+  });
+});
+
+it('reads nothing at all when the owner has no rules', async () => {
+  const { executor: exec, scans } = executor(ledger(10));
+  const noRules: RuleTagStampExecutor = {
+    async execute(query: ReturnType<typeof sqlTag>) {
+      const { sql: text } = dialect.sqlToQuery(query);
+      if (text.includes('FROM "cash_rules"')) return { rows: [] };
+      return exec.execute(query);
+    },
+  };
+
+  expect(await applyCashRulesForOwner(noRules, USER)).toEqual({
+    movementsTagged: 0,
+    complete: true,
+  });
+  expect(scans).toHaveLength(0);
+});

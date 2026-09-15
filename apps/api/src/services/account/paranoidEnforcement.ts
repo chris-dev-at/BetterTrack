@@ -469,6 +469,13 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'createRule',
     'updateRule',
     'deleteRule',
+    // The restore lane's gate (#1743, #1954, #1963). Bound like every other
+    // tag/rule method, on the same capability: no route reaches any of them —
+    // rehydration builds its own transaction-bound instance — but a method
+    // nobody classified is a method that could be reached unclassified later.
+    'restoreTags',
+    'restoreRules',
+    'restoreRuleTags',
     'applyRules',
     'previewRules',
   ]),

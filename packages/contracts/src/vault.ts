@@ -1,8 +1,17 @@
 import { z } from 'zod';
 
 import { MAX_PASSWORD_LENGTH } from './auth';
-import { CASH_TAGS_PER_ITEM_MAX, cashRuleMatchTypeSchema } from './cash';
-import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
+import {
+  CASH_RULE_PATTERN_MAX,
+  CASH_TAGS_PER_ITEM_MAX,
+  CASH_TAGS_PER_USER_MAX,
+  cashRuleMatchTypeSchema,
+} from './cash';
+import {
+  EXPENSE_RULE_PATTERN_MAX,
+  expenseDirectionSchema,
+  expenseRuleMatchTypeSchema,
+} from './expenses';
 import {
   IMPORT_ROW_CANDIDATE_LIMIT,
   importBatchStatusSchema,
@@ -1467,12 +1476,40 @@ const expenseTransactionRowSchema = z
   })
   .strict();
 
+/**
+ * A restored rule pattern is held to the SAME ceiling the HTTP write path
+ * applies (`createExpenseRuleRequestSchema` / `createCashRuleRequestSchema`),
+ * from the same constant — never a second limit (#1743).
+ *
+ * Without it the restore lane was the one way to install a pattern no request
+ * could ever create: a document is bounded only by `VAULT_MAX_BYTES_DEFAULT`
+ * (16 MB), so a multi-megabyte pattern could land in `cash_rules` /
+ * `expense_rules` and then be matched against every note, forever. RE2 makes
+ * matching linear rather than exponential, so the exposure is input size and
+ * cardinality — which is exactly what a ceiling closes.
+ *
+ * OVER-LENGTH IS REFUSED, NOT TRUNCATED: a silently shortened pattern is a
+ * DIFFERENT rule, and it would quietly tag movements the rule its owner wrote
+ * never would.
+ *
+ * `.trim()` is deliberately NOT mirrored from the request schema. The request
+ * schema trims what the user typed BEFORE it is stored, so a legitimately
+ * written row arrives here already trimmed; trimming again would rewrite a
+ * restored row rather than validate it, and a restore must give back what the
+ * document holds or refuse it. A whitespace-only pattern stays as harmless as
+ * it already is — the engine's needle is empty, so it matches nothing.
+ */
+const restoredExpenseRulePatternSchema = z.string().min(1).max(EXPENSE_RULE_PATTERN_MAX);
+
+/** As above, for cash rules — the cash lane's own constant. */
+const restoredCashRulePatternSchema = z.string().min(1).max(CASH_RULE_PATTERN_MAX);
+
 const expenseRuleRowSchema = z
   .object({
     userId: uuidSchema,
     categoryId: uuidSchema,
     matchType: expenseRuleMatchTypeSchema,
-    pattern: z.string(),
+    pattern: restoredExpenseRulePatternSchema,
     priority: z.number().int(),
     enabled: z.boolean(),
     createdAt: timestampSchema,
@@ -1549,7 +1586,7 @@ const cashRuleRowSchema = z
   .object({
     userId: uuidSchema,
     matchType: cashRuleMatchTypeSchema,
-    pattern: z.string(),
+    pattern: restoredCashRulePatternSchema,
     priority: z.number().int(),
     enabled: z.boolean(),
     createdAt: timestampSchema,
@@ -1798,6 +1835,148 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
 }
 
 /**
+ * THE CASH CLASSIFICATION SETS ARE CARDINALITIES, SO THE DOCUMENT BOUNDS THEM
+ * (#1954 the fan-out, #1963 the tag count and the link identity).
+ *
+ * Three facts about a restored cash lane that NO ROW SCHEMA CAN SEE, checked in
+ * ONE walk over the entities so a refused document costs one pass:
+ *
+ *  1. how many tags the account holds          — `CASH_TAGS_PER_USER_MAX`
+ *  2. how many tags one rule carries           — `CASH_TAGS_PER_ITEM_MAX`
+ *  3. that a `(ruleId, tagId)` link appears ONCE — `cash_rule_tags_rule_tag_unique`
+ *
+ * ── 1. THE TAG COUNT (#1963) ────────────────────────────────────────────────
+ *
+ * The HTTP path now caps it on create (`cashTagService.createTag`), and the
+ * document restates it because a restore never passes through that path. It is
+ * the supply side of the fan-out: 20 000 restorable tags are what made 20 000
+ * links to one rule reachable in the first place, and every tag is also a row in
+ * an unbounded read and a cascade target of every delete.
+ *
+ * ── 3. THE LINK IDENTITY (#1963) ────────────────────────────────────────────
+ *
+ * `cash_rule_tags` carries a UNIQUE (rule_id, tag_id) index and the restore
+ * repository inserts with no conflict handling deliberately — "a duplicate here
+ * means a malformed vault, which must fail loudly rather than be absorbed".
+ * Loudly meant a driver error inside the OPEN rehydration transaction: a 500
+ * raised after the document was proved and the write had begun. The pair is
+ * stated here so the same document is refused BEFORE any of that, as a 400 that
+ * says what is wrong.
+ *
+ * Refused rather than de-duplicated because no producer in the app can write
+ * this shape: every capture reads a rule's tag set from the table that unique
+ * index guards, so a repeated pair is a document nothing legitimate authored.
+ * Absorbing it with `onConflictDoNothing` would accept a payload we cannot
+ * explain and would make the fan-out cap count something other than what lands
+ * in the table. The pair check runs BEFORE the fan-out count, so a rule pushed
+ * past the cap BY duplicates is named as a duplicate rather than as an
+ * over-tagged rule.
+ *
+ * ── 2. A RULE'S TAG FAN-OUT IS A CARDINALITY (#1954) ────────────────────────
+ *
+ * `cash_rule_tags` is a link table: one row is `(ruleId, tagId)` and no row
+ * schema can see how many siblings it has. The HTTP path bounds the set at
+ * `CASH_TAGS_PER_ITEM_MAX` because it receives it as ONE array (`tagIdsSchema`);
+ * a restore receives the same set as N independent rows, so the bound has to be
+ * restated where the rows are together — here — or it is not restated at all.
+ *
+ * WHY IT MATTERS (§13.5: the server must not trust a vault payload). Restored
+ * rules are read back by `loadRules`, which aggregates their tags with an
+ * unbounded `array_agg`, and `applyCashRuleTags` then pushes one (movement, tag)
+ * pair PER TAG for every movement a rule matches. So the fan-out multiplies the
+ * re-apply pass and the per-batch import stamp alike: 20 000 scanned movements
+ * against a rule carrying 20 tags is 400 000 pairs, and the same rule carrying
+ * 20 000 tags is 400 million. The rule COUNT was capped in #1743 and this is the
+ * other half of the same product.
+ *
+ * REFUSES THE WHOLE DOCUMENT, never a prefix, for the reason `cashTagService`
+ * states at length: a rehydration is one transaction that loses nothing when it
+ * fails, while silently importing the first 20 links of a 500-link rule would
+ * leave the user with a rule that quietly means something else.
+ *
+ * FIRST OFFENDER WINS. The walk stops at the first rule past the ceiling rather
+ * than reporting every one: a document already refused does not become more
+ * refused, and a malformed document must not be able to make the server build an
+ * issue list proportional to its own size.
+ *
+ * COUNTS LIVE ROWS ONLY — see the tombstone note in the loop; it is the half of
+ * this refinement that keeps it in step with the service gate and keeps it off
+ * the paranoid exit path. It applies to all three checks: a soft-deleted tag is
+ * not a tag the account holds, and a tombstoned link beside a live one is an
+ * unlink followed by a relink, not a duplicate.
+ */
+function refineRestoredCashSets(
+  value: { readonly entities: readonly VaultStrictEntity[] },
+  ctx: z.RefinementCtx,
+): void {
+  const perRule = new Map<string, number>();
+  const seenLinks = new Set<string>();
+  let liveTags = 0;
+  for (const entity of value.entities) {
+    // LIVE ROWS ONLY. A tombstone is not a row the account carries: the restore
+    // service counts `liveEntities()` (`deletedAt === null`) and never writes a
+    // soft-deleted row, so counting them here would refuse documents the service
+    // accepts — two gates disagreeing about one document. It would also lock the
+    // EXIT: `paranoidDisable.ts`'s `toStrictRestoreDocument` parses every row of
+    // the unlocked vault through this schema, tombstones included, and throws
+    // `document-invalid` with no bypass. The day the client can soft-delete a
+    // `cashRuleTag` or a `cashTag` (§16 2026-08-19 item 6), a user who unlinked
+    // one tag from a fully-tagged rule — or deleted a tag — could no longer
+    // disable paranoid mode or move a portfolio out. The rows stay in the
+    // document either way — §4's merge rules key off them — they just do not
+    // count.
+    if (entity.deletedAt !== null) continue;
+
+    if (entity.kind === 'cashTag') {
+      liveTags += 1;
+      if (liveTags > CASH_TAGS_PER_USER_MAX) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.too_big,
+          type: 'array',
+          maximum: CASH_TAGS_PER_USER_MAX,
+          inclusive: true,
+          path: ['entities'],
+          message: `An account may hold at most ${CASH_TAGS_PER_USER_MAX} cash tags.`,
+        });
+        return;
+      }
+      continue;
+    }
+
+    if (entity.kind !== 'cashRuleTag') continue;
+
+    // The pair BEFORE the count: a rule pushed past the fan-out cap by repeats
+    // is a document with duplicate links, and saying so is the honest answer.
+    // `\u0000` cannot occur in a uuid, so the joined key is unambiguous.
+    const pair = `${entity.data.ruleId}\u0000${entity.data.tagId}`;
+    if (seenLinks.has(pair)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['entities'],
+        params: { code: 'CASH_RULE_TAG_DUPLICATE' },
+        message: 'A cash rule may link a tag only once.',
+      });
+      return;
+    }
+    seenLinks.add(pair);
+
+    const count = (perRule.get(entity.data.ruleId) ?? 0) + 1;
+    if (count > CASH_TAGS_PER_ITEM_MAX) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: 'array',
+        maximum: CASH_TAGS_PER_ITEM_MAX,
+        inclusive: true,
+        path: ['entities'],
+        message: `A cash rule may carry at most ${CASH_TAGS_PER_ITEM_MAX} tags.`,
+      });
+      return;
+    }
+    perRule.set(entity.data.ruleId, count);
+  }
+}
+
+/**
  * Strict v1 restore payload; newer versions are rejected without coercion.
  *
  * `mirrorProvenance` is ADDITIVE within v1 and `.default([])`: a document written
@@ -1813,7 +1992,8 @@ export const vaultStrictDocumentV1Schema = z
     mergeLog: z.array(vaultMergeRecordSchema).default([]),
     mirrorProvenance: z.array(vaultMirrorProvenanceSchema).default([]),
   })
-  .strict();
+  .strict()
+  .superRefine(refineRestoredCashSets);
 export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
 
 /**

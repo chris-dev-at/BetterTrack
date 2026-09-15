@@ -16,6 +16,7 @@ import type {
   TransactionInput,
 } from '@bettertrack/contracts';
 import {
+  CASH_MOVEMENT_NOTE_MAX,
   CASH_TAGS_PER_ITEM_MAX,
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
@@ -635,7 +636,17 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     // books nothing, so promising it a tag would promise something apply is
     // never going to do.
     if (flag !== 'mapped' || !isCashRowKind(row.kind)) return null;
-    const note = row.note?.trim() ?? '';
+    // BOUNDED BEFORE IT REACHES THE ENGINE (#1743). A note here comes from a CSV
+    // cell, bounded only by `IMPORT_MAX_FILE_BYTES` (5 MB) — orders of magnitude
+    // past `CASH_MOVEMENT_NOTE_MAX`, the longest note the cash write path
+    // accepts. Matching is linear in note length per rule (RE2), so an
+    // unbounded cell would make the per-row cost of staging a statement
+    // unbounded too. The stored note is untouched: only the string HANDED TO
+    // THE ENGINE is clipped, to the ceiling the contract already declares.
+    // `applyCashRuleTags` clips identically at book time, so a needle past the
+    // ceiling is untagged on BOTH paths — this is a parity clip, not a
+    // preview-only one.
+    const note = (row.note?.trim() ?? '').slice(0, CASH_MOVEMENT_NOTE_MAX);
     if (note === '') return null;
     const tags = tagsByRules(note, rules);
     if (tags.length === 0) return null;
@@ -1921,6 +1932,36 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         if (row.amountEur === null) {
           throw badRequest('Row is missing the cash amount.', 'IMPORT_ROW_INVALID');
         }
+        // THE STORED NOTE IS NOT CLIPPED HERE, DELIBERATELY (#1954).
+        //
+        // The obvious symmetry would be to book `row.note` at
+        // `CASH_MOVEMENT_NOTE_MAX`, the ceiling `cashEntryRequestSchema` holds
+        // every HTTP cash write to, since this path calls the service direct
+        // with the raw CSV cell and that schema never runs. It is not done, for
+        // three reasons that are worth more than the symmetry:
+        //
+        //  1. IT WOULD NOT ESTABLISH THE INVARIANT IT LOOKS LIKE IT DOES. The
+        //     column is `text` and the paranoid restore lane writes it from a
+        //     client-held document whose own `note` is deliberately unbounded
+        //     (`vault.ts` — bounding it there would make an EXISTING vault
+        //     unrestorable, which is a worse failure than a long note). So
+        //     "every stored note is within the ceiling" is not true after this
+        //     clip either, and code that believed it would be wrong.
+        //  2. IT WOULD PUT PREVIEW AND BOOKING BACK OUT OF STEP. The staged row
+        //     keeps the cell verbatim and the preview renders it; a clip here —
+        //     and only here — means the user confirms one memo and the ledger
+        //     stores a shorter one. Making them agree instead means clipping at
+        //     STAGING, i.e. truncating the user's own imported text before they
+        //     have seen it, which is a product decision and not a bound.
+        //  3. THE COST IT WOULD BOUND IS ALREADY BOUNDED WHERE IT IS SPENT. The
+        //     two passes that read a note are the re-apply scan, whose SELECT
+        //     now asks for `left("note", CASH_MOVEMENT_NOTE_MAX)`, and matching,
+        //     which `applyCashRuleTags` and `stagedRuleTags` clip to the same
+        //     ceiling on both paths. One import's total note bytes are bounded
+        //     by `IMPORT_MAX_FILE_BYTES` regardless.
+        //
+        // What DOES ride on this staying raw: a long memo is kept, and the
+        // matching bound is what decides whether a rule sees the tail of it.
         const entry = {
           amountEur: row.amountEur,
           ...(cashSourceId ? { sourceId: cashSourceId } : {}),

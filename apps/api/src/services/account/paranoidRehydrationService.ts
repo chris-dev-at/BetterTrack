@@ -38,6 +38,9 @@ import {
   createParanoidRehydrationTransactionRepository,
   withParanoidRehydrationTransaction,
 } from '../../data/repositories/paranoidVaultRepository';
+import { createCashRuleRepository } from '../../data/repositories/cashRuleRepository';
+import { createCashTagRepository } from '../../data/repositories/cashTagRepository';
+import { createCashTagService } from '../cash/cashTagService';
 import { createExpenseBudgetService } from '../expenses/budgetService';
 import { createExpenseService } from '../expenses/expenseService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -2894,7 +2897,17 @@ export function createParanoidRehydrationService(
         await sourceRows.restoreExpenseCategories(rows(entities, 'expenseCategory'));
         await stage('expenseCategories');
 
-        await sourceRows.restoreExpenseRules(rows(entities, 'expenseRule'));
+        // Through the service, not straight into the table: a document's rule
+        // rows must meet the same gate a written rule does — the regex has to
+        // compile, and the set has to fit the per-user cap (#1743).
+        const restoredExpenseRules = rows(entities, 'expenseRule').map((entity) => ({
+          ...entity,
+          matchType: entity.data.matchType,
+          pattern: entity.data.pattern,
+        }));
+        await expenseService.restoreRules(userId, restoredExpenseRules, {
+          insertRules: (restoredRows) => sourceRows.restoreExpenseRules(restoredRows),
+        });
         await stage('expenseRules');
 
         await sourceRows.restoreExpenseBudgets(rows(entities, 'expenseBudget'));
@@ -2922,11 +2935,47 @@ export function createParanoidRehydrationService(
         // ledger rather than trusted from a client-held document (a tampered
         // vault could otherwise suppress a real alert forever); the cost is at
         // most one re-alert of a month that is genuinely over budget.
-        await sourceRows.restoreCashTags(rows(entities, 'cashTag'));
+        const cashTagService = createCashTagService({
+          tags: createCashTagRepository(tx),
+          rules: createCashRuleRepository(tx),
+        });
+        // Through the service, like the rules below: the tag TABLE is capped per
+        // account (#1963), and a restore is the one path that reaches it without
+        // passing `createTag`. It is the supply side of the rule→tag fan-out
+        // #1954 capped — a document free to carry 20 000 tags is what made
+        // 20 000 links to one rule reachable.
+        await cashTagService.restoreTags(userId, rows(entities, 'cashTag'), {
+          insertTags: (restoredRows) => sourceRows.restoreCashTags(restoredRows),
+        });
         await stage('cashTags');
 
-        await sourceRows.restoreCashRules(rows(entities, 'cashRule'));
-        await sourceRows.restoreCashRuleTags(rows(entities, 'cashRuleTag'));
+        // Same gate as the expense rules above, for the same reason.
+        const restoredCashRules = rows(entities, 'cashRule').map((entity) => ({
+          ...entity,
+          matchType: entity.data.matchType,
+          pattern: entity.data.pattern,
+        }));
+        await cashTagService.restoreRules(userId, restoredCashRules, {
+          insertRules: (restoredRows) => sourceRows.restoreCashRules(restoredRows),
+        });
+        // …and the LINKS through their own gate (#1954). `restoreRules` caps how
+        // many rules a document may install; this caps how many TAGS each rule
+        // carries, which is the other factor of the same product — `loadRules`
+        // aggregates a rule's tags with an unbounded `array_agg` and
+        // `applyCashRuleTags` writes one pair per tag per matched movement. The
+        // document schema refuses an over-tagged rule at parse time; this is the
+        // gate on the TABLE, for any caller that did not come through that parse.
+        // It also refuses a REPEATED `(ruleId, tagId)` pair (#1963), which the
+        // table's unique index would otherwise turn into a driver error — and a
+        // 500 — from inside this open transaction.
+        const restoredCashRuleTags = rows(entities, 'cashRuleTag').map((entity) => ({
+          ...entity,
+          ruleId: entity.data.ruleId,
+          tagId: entity.data.tagId,
+        }));
+        await cashTagService.restoreRuleTags(userId, restoredCashRuleTags, {
+          insertRuleTags: (restoredRows) => sourceRows.restoreCashRuleTags(restoredRows),
+        });
         await stage('cashRules');
 
         await sourceRows.restoreCashBudgets(rows(entities, 'cashBudget'));

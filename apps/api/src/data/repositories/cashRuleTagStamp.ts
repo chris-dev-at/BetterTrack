@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 
-import type { CashRuleMatchType } from '@bettertrack/contracts';
+import { CASH_MOVEMENT_NOTE_MAX, type CashRuleMatchType } from '@bettertrack/contracts';
 
 import { tagsByRules } from '../../services/cash/cashRuleEngine';
 
@@ -93,6 +93,39 @@ function resultRows(result: unknown): unknown[] {
  * usual middle.
  */
 const LINK_CHUNK = 500;
+
+/**
+ * How many movements one keyset page of the on-demand re-run reads.
+ *
+ * The scan used to have neither a LIMIT nor a cursor: it selected every noted
+ * movement of every portfolio the user owns into one array and matched in JS,
+ * so a long-lived ledger was materialized whole on a single request (#1743).
+ * Paging keeps the resident set to one page regardless of ledger size, at one
+ * round trip per page — the same bargain `LINK_CHUNK` already makes for writes.
+ */
+const SCAN_PAGE = 500;
+
+/**
+ * The most noted movements ONE press of "apply to existing" may read.
+ *
+ * This is a BACKSTOP, not a pager: it is far above any personal-finance ledger
+ * (a decade of daily noted movements is ~3 600 rows), so a normal account never
+ * meets it and always gets a complete pass. It exists so that one request's
+ * cost has a ceiling at all — the endpoint is authenticated but freely
+ * repeatable, and matching is `O(scanned notes × rules)`, with the rule count
+ * now capped alongside it in `cashTagService`.
+ *
+ * NEWEST FIRST WITHIN EACH PORTFOLIO, and the budget is spent portfolio by
+ * portfolio — NOT newest-first across the whole account. A global recency order
+ * would need one sort over every portfolio's movements, which is the
+ * materialize-the-ledger cost this bound exists to remove; the per-portfolio
+ * walk rides the `(portfolio_id, executed_at)` index instead. The consequence
+ * is real and the user-facing copy says it: when the bound bites, it is "the
+ * most recent movements in each portfolio that was reached", and a portfolio
+ * the walk never got to is untouched. Pressing again re-covers the same window —
+ * the bound is not a cursor — which is why saying so honestly matters.
+ */
+export const CASH_RULE_APPLY_MOVEMENT_SCAN_MAX = 20_000;
 
 /**
  * The ENABLED rules of one owner, already in evaluation order.
@@ -217,6 +250,32 @@ async function linkRuleTags(
  * The engine decides WHICH tags (first match wins, its whole set, case
  * insensitively); this decides only that they get written and that they get
  * written safely. Returns the number of movements that gained a tag.
+ *
+ * ── THE MATCHED STRING IS BOUNDED (#1743) ─────────────────────────────────
+ *
+ * Only the first `CASH_MOVEMENT_NOTE_MAX` characters of a note are handed to
+ * the engine, because matching costs `O(note length × rules)` and this function
+ * is the single door BOTH callers go through — book time and the on-demand
+ * re-run — so bounding it here bounds every pass at once.
+ *
+ * It is NOT the same bound as the re-run's SELECT (#1954), and both are needed.
+ * The SELECT bounds what is READ, and only the re-run has a SELECT to put it in;
+ * this bounds what is MATCHED, and it is the only bound the book-time caller
+ * has, because that caller arrives holding rows it built from a write nobody
+ * selected. On the re-run the string is already at the ceiling when it gets
+ * here and this clip changes nothing.
+ *
+ * It is not theoretical. Every HTTP cash write validates `note` against that
+ * same ceiling (`cashEntryRequestSchema`), but the import apply path calls
+ * `depositCash`/`withdrawCash` SERVICE-DIRECT with the raw CSV cell, and
+ * `portfolio_cash_movements.note` is `text` — so a 5 MB memo can already be
+ * sitting in the ledger, and the re-run reads whatever is stored. Clipping the
+ * MATCHING INPUT here bounds the cost of both without touching what is stored.
+ *
+ * It also keeps import preview and import booking agreeing: `stagedRuleTags`
+ * clips the same way before previewing, so a needle sitting past the ceiling is
+ * untagged in BOTH — instead of previewing untagged and booking tagged, which
+ * is precisely the drift `importService` documents its divergences to avoid.
  */
 export async function applyCashRuleTags(
   executor: RuleTagStampExecutor,
@@ -227,7 +286,7 @@ export async function applyCashRuleTags(
   if (rules.length === 0) return 0;
   const pairs: [string, string][] = [];
   for (const movement of movements) {
-    const note = movement.note?.trim() ?? '';
+    const note = (movement.note?.trim() ?? '').slice(0, CASH_MOVEMENT_NOTE_MAX);
     if (note === '') continue;
     for (const tagId of tagsByRules(note, rules)) pairs.push([movement.id, tagId]);
   }
@@ -252,10 +311,35 @@ export async function applyCashRulesAtBookTime(
   await applyCashRuleTags(executor, portfolioId, movements, rules);
 }
 
+/** What one on-demand re-run did, and whether it reached the whole ledger. */
+export interface CashRuleApplyOutcome {
+  /** Movements that gained at least one tag in this run. */
+  movementsTagged: number;
+  /**
+   * `false` when {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} stopped the walk
+   * while movements it had not read were still there — the pass covered the
+   * newest movements of the portfolios it reached, and no more. A run that
+   * lands exactly on the bound with nothing left is `true`: the walk proves
+   * exhaustion by reading rather than inferring it from a spent budget.
+   */
+  complete: boolean;
+}
+
+/** One page of the keyset scan: the note to match, plus its cursor position. */
+interface ScannedMovement extends RuleTaggableMovement {
+  /**
+   * `executed_at` rendered as TEXT by Postgres and handed straight back as the
+   * next page's bound. Text, not a `Date`, because a driver that parses
+   * timestamps into JS Dates truncates microseconds — and a cursor that is a
+   * hair off either re-reads a page or silently skips a movement.
+   */
+  cursorExecutedAt: string;
+}
+
 /**
- * ON-DEMAND entry point: run the user's rules across every movement they own
- * that carries a note, in every portfolio they own. Returns how many movements
- * gained at least one tag.
+ * ON-DEMAND entry point: run the user's rules across the movements they own
+ * that carry a note, in every portfolio they own. Returns how many movements
+ * gained at least one tag, and whether the run reached the end of the ledger.
  *
  * WHY THIS EXISTS AT ALL. A rule is normally written after the movements it
  * describes — you look at a month of statements and only then decide that
@@ -267,17 +351,33 @@ export async function applyCashRulesAtBookTime(
  * means the same thing in every ledger I own" (`cashRuleRepository`). Tagging
  * one portfolio and leaving its sibling stale would contradict that.
  *
- * NOT CAPPED, and deliberately so. A cap here would silently leave part of a
- * ledger untagged while reporting a cheerful number, which is worse than the
- * cost it avoids: this reads two small columns at personal-finance scale, from
- * an explicit button press, not a hot path.
+ * BOUNDED AND PAGED (#1743). It used to select every noted movement of every
+ * portfolio into one array — the resident set grew with the ledger on a freely
+ * repeatable request. Now each portfolio is walked by keyset page of
+ * {@link SCAN_PAGE}, newest first, and the whole run stops at
+ * {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} scanned movements. Memory is one
+ * page of rows whatever the ledger holds — and one ROW is bounded too, because
+ * the SELECT itself asks for `left("note", CASH_MOVEMENT_NOTE_MAX)` (#1954).
+ * That distinction is the whole point: a page bounded only in rows is not
+ * bounded in bytes, and `note` is a `text` column no writer is obliged to clip —
+ * so 500 rows × one 5 MB memo was a resident set the page count said nothing
+ * about. Matching is clipped to the same ceiling in `applyCashRuleTags`, which
+ * is what bounds the BOOK-TIME caller (it is handed rows nobody selected); here
+ * the two agree and the second clip is a no-op. A run that hit the row bound
+ * says so instead of reporting a number that looks like a complete pass.
+ *
+ * The cursor is `(executed_at, id)`, matching the `ORDER BY` and the
+ * `(portfolio_id, executed_at)` index, so a page is a range read rather than a
+ * re-sort. `id` breaks ties: two movements booked in the same microsecond would
+ * otherwise make the cursor ambiguous, which is how paging loses or repeats a
+ * row.
  */
 export async function applyCashRulesForOwner(
   executor: RuleTagStampExecutor,
   userId: string,
-): Promise<number> {
+): Promise<CashRuleApplyOutcome> {
   const rules = await loadRules(executor, sql`${userId}::uuid`);
-  if (rules.length === 0) return 0;
+  if (rules.length === 0) return { movementsTagged: 0, complete: true };
 
   const portfolioRows = resultRows(
     await executor.execute(
@@ -286,20 +386,72 @@ export async function applyCashRulesForOwner(
   );
 
   let movementsTagged = 0;
+  let scanned = 0;
   for (const portfolioRow of portfolioRows) {
     const portfolioId = (portfolioRow as { id: string }).id;
-    // Only rows a rule could possibly match. `btrim` mirrors the engine's own
-    // treatment of a whitespace-only note as no note at all.
-    const movements = resultRows(
-      await executor.execute(sql`
-        SELECT "id", "note"
-        FROM "portfolio_cash_movements"
-        WHERE "portfolio_id" = ${portfolioId}::uuid
-          AND "note" IS NOT NULL
-          AND btrim("note") <> ''
-      `),
-    ) as RuleTaggableMovement[];
-    movementsTagged += await applyCashRuleTags(executor, portfolioId, movements, rules);
+    let cursor: { executedAt: string; id: string } | null = null;
+    for (;;) {
+      const remaining = CASH_RULE_APPLY_MOVEMENT_SCAN_MAX - scanned;
+      // A SPENT BUDGET IS NOT THE SAME AS A CUT-SHORT LEDGER. The walk only
+      // ever learns it is finished by reading a page and finding it short, so
+      // stopping the moment the budget runs out would report a run that landed
+      // exactly on the bound — 20 000 noted movements, or a last page that
+      // happens to fill the remainder — as partial, to a user whose pass was in
+      // fact complete. With nothing left to spend the loop therefore reads ONE
+      // row: it is bought from the same index range read, it is never tagged,
+      // and it answers the only question left. No row means this portfolio is
+      // done and the walk moves on; a row means the bound really did bite.
+      const probing = remaining <= 0;
+      const limit = probing ? 1 : Math.min(SCAN_PAGE, remaining);
+      const after =
+        cursor === null
+          ? sql``
+          : sql`AND ("executed_at", "id") < (${cursor.executedAt}::timestamptz, ${cursor.id}::uuid)`;
+      // Only rows a rule could possibly match. `btrim` mirrors the engine's own
+      // treatment of a whitespace-only note as no note at all.
+      const page = resultRows(
+        await executor.execute(sql`
+          SELECT
+            "id",
+            -- THE PAGE IS BOUNDED IN BYTES, NOT ONLY IN ROWS (#1954). The note
+            -- column is text and no lane that writes one is obliged to clip it:
+            -- a restored vault row carries whatever the document held. Clipping
+            -- in JS after the fetch would still materialize 500 unbounded notes
+            -- per page, so the ceiling is applied HERE and a full-length note
+            -- never exists in this process at all.
+            --
+            -- THE TWO ENFORCEMENTS COUNT DIFFERENT UNITS, and the difference is
+            -- a constant factor rather than a hole. left() counts CHARACTERS
+            -- (code points); zod's .max(), which bounds the same constant on
+            -- every write path, counts UTF-16 CODE UNITS. So 1000 code points of
+            -- astral text (emoji, historic scripts) is up to 2000 JS units and
+            -- up to 4 KB on the wire, where 1000 units of BMP text is ~1-3 KB.
+            -- A page is therefore bounded at ~2 MB rather than ~1.5 MB in the
+            -- worst case — still a bound, and still the point. Matching is
+            -- unaffected: applyCashRuleTags slices the result to 1000 UTF-16
+            -- units, and the first 1000 code points always contain the first
+            -- 1000 units, so the matched window is byte-identical to the one the
+            -- unclipped SELECT produced.
+            left("note", ${CASH_MOVEMENT_NOTE_MAX}) AS "note",
+            "executed_at"::text AS "cursorExecutedAt"
+          FROM "portfolio_cash_movements"
+          WHERE "portfolio_id" = ${portfolioId}::uuid
+            AND "note" IS NOT NULL
+            AND btrim("note") <> ''
+            ${after}
+          ORDER BY "executed_at" DESC, "id" DESC
+          LIMIT ${limit}
+        `),
+      ) as ScannedMovement[];
+      if (page.length === 0) break;
+      if (probing) return { movementsTagged, complete: false };
+      scanned += page.length;
+      movementsTagged += await applyCashRuleTags(executor, portfolioId, page, rules);
+      const last = page[page.length - 1]!;
+      cursor = { executedAt: last.cursorExecutedAt, id: last.id };
+      // A short page is the end of this portfolio; a full one may not be.
+      if (page.length < limit) break;
+    }
   }
-  return movementsTagged;
+  return { movementsTagged, complete: true };
 }

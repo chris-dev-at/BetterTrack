@@ -7,6 +7,7 @@ import type {
   ExpenseCategoryResponse,
   ExpenseRule,
   ExpenseRuleListResponse,
+  ExpenseRuleMatchType,
   ExpenseRuleResponse,
   ExpenseTransaction,
   ExpenseTransactionListQuery,
@@ -16,7 +17,7 @@ import type {
   UpdateExpenseRuleRequest,
   UpdateExpenseTransactionRequest,
 } from '@bettertrack/contracts';
-import { EXPENSE_TRANSACTION_LIST_DEFAULT } from '@bettertrack/contracts';
+import { EXPENSE_RULE_PATTERN_MAX, EXPENSE_TRANSACTION_LIST_DEFAULT } from '@bettertrack/contracts';
 
 import { badRequest, conflict, notFound } from '../../errors';
 import type {
@@ -62,6 +63,21 @@ export type ExpenseWriteHook = (userId: string) => Promise<void>;
 export interface ExpenseRestoreRow {
   categoryId: string | null;
   bookedOn: string;
+}
+
+/**
+ * The facts this service needs from a restored RULE row (#1743) — the cash
+ * lane's `CashRuleRestoreRow`, mirrored so the two engines stay in step. Writes
+ * are 410 here, but the restore lane still reaches this code.
+ */
+export interface ExpenseRuleRestoreRow {
+  matchType: ExpenseRuleMatchType;
+  pattern: string;
+}
+
+/** Caller-owned transaction seam for the bulk rule restore. */
+export interface ExpenseRuleRestoreScope<TRow extends ExpenseRuleRestoreRow> {
+  insertRules(rows: readonly TRow[]): Promise<void>;
 }
 
 /**
@@ -137,7 +153,29 @@ export interface ExpenseService {
     patch: UpdateExpenseRuleRequest,
   ): Promise<ExpenseRuleResponse>;
   deleteRule(userId: string, ruleId: string): Promise<void>;
+  /**
+   * Install restored rules through the same gate a written one passes: the
+   * regex must compile, and the set must fit the per-user cap (#1743).
+   */
+  restoreRules<TRow extends ExpenseRuleRestoreRow>(
+    userId: string,
+    rows: readonly TRow[],
+    scope: ExpenseRuleRestoreScope<TRow>,
+  ): Promise<void>;
 }
+
+/**
+ * How many auto-categorization rules one account may hold (#1743) — the cash
+ * lane's `CASH_RULES_PER_USER_MAX`, mirrored so neither engine is the cheap way
+ * round the other. Matching cost is `O(total description bytes × rules)`, so the
+ * rule count multiplies every categorization pass; 200 is far past a real rule
+ * set and is pinned by a test, so raising it is a deliberate edit.
+ *
+ * Like the cash cap, it is a backstop and not a hard maximum: count-then-create
+ * is not one transaction, so concurrent creates by one account can settle a few
+ * rows above it.
+ */
+export const EXPENSE_RULES_PER_USER_MAX = 200;
 
 const CATEGORY_NOT_FOUND = () => notFound('Category not found.', 'EXPENSE_CATEGORY_NOT_FOUND');
 const TRANSACTION_NOT_FOUND = () =>
@@ -149,6 +187,21 @@ const CATEGORY_NAME_TAKEN = () =>
   conflict('A category with that name already exists.', 'EXPENSE_CATEGORY_NAME_TAKEN');
 const RULE_REGEX_UNSUPPORTED = () =>
   badRequest('This regex pattern uses unsupported syntax.', 'EXPENSE_RULE_REGEX_UNSUPPORTED');
+/**
+ * 400, mirroring `cashTagService`'s decision (#1954): the per-user cap is a
+ * CONFLICT with account state, while an over-long pattern is a malformed row —
+ * exactly what the write path's request schema refuses with a 400.
+ */
+const RULE_PATTERN_TOO_LONG = () =>
+  badRequest(
+    `A rule pattern may be at most ${EXPENSE_RULE_PATTERN_MAX} characters.`,
+    'EXPENSE_RULE_PATTERN_TOO_LONG',
+  );
+const RULE_LIMIT_REACHED = () =>
+  conflict(
+    `You already have the maximum of ${EXPENSE_RULES_PER_USER_MAX} rules. Delete one to add another.`,
+    'EXPENSE_RULE_LIMIT_REACHED',
+  );
 
 /** A Postgres unique-constraint violation (23505) — both postgres-js and PGlite set `.code`. */
 function isUniqueViolation(err: unknown): boolean {
@@ -355,6 +408,11 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
         throw RULE_REGEX_UNSUPPORTED();
       }
       await assertOwnsCategory(userId, input.categoryId);
+      // CREATE only: an update cannot grow the set, so refusing one at the cap
+      // would strand a user who needs to fix exactly one of the rules they have.
+      if ((await rules.countForOwner(userId)) >= EXPENSE_RULES_PER_USER_MAX) {
+        throw RULE_LIMIT_REACHED();
+      }
       const record = await rules.create(userId, {
         categoryId: input.categoryId,
         matchType: input.matchType,
@@ -394,6 +452,36 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
     async deleteRule(userId, ruleId) {
       const deleted = await rules.delete(userId, ruleId);
       if (!deleted) throw RULE_NOT_FOUND();
+    },
+
+    /**
+     * THE RESTORE LANE'S GATE, mirroring `cashTagService.restoreRules` decision
+     * for decision (#1743, #1954): the pattern's length is bounded by the vault
+     * row schema AND re-checked here, an uncompilable `regex` is refused with
+     * the SAME typed error the HTTP path returns, and a document whose rules
+     * exceed the per-user cap fails the whole restore rather than importing a
+     * bounded prefix — a rehydration is one transaction and loses nothing when
+     * it fails, whereas a prefix would silently drop rules the user still
+     * believes they own.
+     *
+     * THE O(1) CAP RUNS BEFORE THE COMPILE LOOP (#1954), for the reason stated
+     * at length on the cash side: compiling every restored pattern through RE2
+     * is the expensive half, it happens inside the open rehydration transaction,
+     * and it evicts the shared compile cache — so a document that was never
+     * going to be accepted must not be able to buy that work with one count's
+     * worth of refusal.
+     */
+    async restoreRules(userId, rows, scope) {
+      if (rows.length === 0) return;
+      const existing = await rules.countForOwner(userId);
+      if (existing + rows.length > EXPENSE_RULES_PER_USER_MAX) throw RULE_LIMIT_REACHED();
+      for (const row of rows) {
+        if (row.pattern.length > EXPENSE_RULE_PATTERN_MAX) throw RULE_PATTERN_TOO_LONG();
+        if (row.matchType === 'regex' && !isSupportedExpenseRuleRegex(row.pattern)) {
+          throw RULE_REGEX_UNSUPPORTED();
+        }
+      }
+      await scope.insertRules(rows);
     },
   };
 }

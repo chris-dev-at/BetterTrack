@@ -1,16 +1,24 @@
+import { sql } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, expect, it } from 'vitest';
 
 import {
+  CASH_MOVEMENT_NOTE_MAX,
   cashRuleApplyResponseSchema,
   cashRulePreviewResponseSchema,
   cashRuleResponseSchema,
   cashTagResponseSchema,
   type CashMovement,
+  type CashRuleApplyResponse,
   type CashRuleMatchType,
   type CashTag,
 } from '@bettertrack/contracts';
 
+import {
+  applyCashRulesForOwner,
+  type RuleTagStampExecutor,
+} from '../data/repositories/cashRuleTagStamp';
+import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -131,13 +139,17 @@ async function tagsOf(agent: Agent, portfolioId: string, movementId: string): Pr
   return [...(movement!.tags ?? [])].sort();
 }
 
-async function applyRules(agent: Agent): Promise<number> {
+async function applyRun(agent: Agent): Promise<CashRuleApplyResponse> {
   const res = await agent
     .post('/api/v1/cash/rules/apply')
     .set(...XRW)
     .send();
   expect(res.status).toBe(200);
-  return cashRuleApplyResponseSchema.parse(res.body).movementsTagged;
+  return cashRuleApplyResponseSchema.parse(res.body);
+}
+
+async function applyRules(agent: Agent): Promise<number> {
+  return (await applyRun(agent)).movementsTagged;
 }
 
 /** The system tag with `systemKey`, for asserting a movement carries BOTH labels. */
@@ -466,4 +478,148 @@ it('patches a rule without touching its tags and reports the untouched tag set',
   expect([...cashRuleResponseSchema.parse(noop.body).rule.tagIds].sort()).toEqual(
     [groceries.id, household.id].sort(),
   );
+});
+
+// ── The re-run is paged and bounded ──────────────────────────────────────────
+
+it('tags a ledger LARGER THAN ONE PAGE, and reports the pass as complete', async () => {
+  // The scan reads `SCAN_PAGE` (500) movements at a time (#1743). This ledger
+  // spans three pages, so a cursor that re-read its first page — or dropped the
+  // rows after it — would tag 500 here instead of 1 200, and a scan that still
+  // loaded everything at once would pass this test only by accident of size.
+  const agent = await newUserAgent('paged@bettertrack.test', 'pageduser');
+  const portfolioId = await defaultPortfolioId(agent);
+  await deposit(agent, portfolioId, 100_000);
+
+  const sources = await agent.get(`/api/v1/portfolios/${portfolioId}/cash/sources`);
+  expect(sources.status).toBe(200);
+  const sourceId = (sources.body.sources as Array<{ id: string }>)[0]!.id;
+
+  const LEDGER = 1_200;
+  const base = Date.UTC(2026, 0, 1);
+  await harness.db.insert(schema.portfolioCashMovements).values(
+    Array.from({ length: LEDGER }, (_, i) => ({
+      portfolioId,
+      sourceId,
+      kind: 'deposit' as const,
+      amountEur: '1.000000',
+      // Distinct timestamps, so the keyset cursor has a total order to walk.
+      executedAt: new Date(base + i * 60_000),
+      note: i % 3 === 0 ? `SPAR market ${i}` : `OEBB ticket ${i}`,
+    })),
+  );
+
+  const groceries = await createTag(agent, 'Groceries');
+  await createRule(agent, { tagIds: [groceries.id], pattern: 'SPAR' });
+
+  const run = await applyRun(agent);
+
+  // Every third row matches, across all three pages — none of them stranded.
+  expect(run.movementsTagged).toBe(Math.ceil(LEDGER / 3));
+  expect(run.complete).toBe(true);
+
+  // Still idempotent at this size, and still honest about it.
+  expect(await applyRun(agent)).toEqual({ movementsTagged: 0, complete: true });
+});
+
+it('reads a note POSTGRES has already clipped, so one page is bounded in bytes', async () => {
+  // #1954. The scan had a LIMIT and a cursor but selected `"note"` whole, so a
+  // 500-row page materialized 500 notes of whatever length the ledger held —
+  // and `portfolio_cash_movements.note` is `text`, written by lanes that do not
+  // all bound it (the import apply path books the raw CSV cell; the paranoid
+  // restore lane writes whatever the client's document held, and that field is
+  // deliberately unbounded so an existing vault stays restorable). Clipping in
+  // JS after the fetch bounds MATCHING, never the fetch.
+  //
+  // So this asserts the one thing the JS clip cannot: what comes BACK from
+  // Postgres is already at the ceiling, while the stored row is far past it.
+  const user = await harness.seedUser({ email: 'bytes@bettertrack.test', username: 'bytesuser' });
+  const agent = request.agent(harness.app);
+  const login = await agent
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier: user.email, password: user.password });
+  expect(login.status).toBe(200);
+
+  const portfolioId = await defaultPortfolioId(agent);
+  await deposit(agent, portfolioId, 100_000);
+  const sources = await agent.get(`/api/v1/portfolios/${portfolioId}/cash/sources`);
+  expect(sources.status).toBe(200);
+  const sourceId = (sources.body.sources as Array<{ id: string }>)[0]!.id;
+
+  // Two stored notes far past the ceiling: one hiding the needle BEYOND it, one
+  // carrying it inside. Written straight to the table, which is the state the
+  // bound exists for — a ledger row that was booked by a lane the cash request
+  // schema never ran on.
+  const filler = 'x'.repeat(CASH_MOVEMENT_NOTE_MAX * 2);
+  const buriedNote = `${filler} SPAR beyond the ceiling`;
+  const reachableNote = `SPAR within the ceiling ${filler}`;
+  const base = Date.UTC(2026, 5, 1);
+  await harness.db.insert(schema.portfolioCashMovements).values([
+    {
+      portfolioId,
+      sourceId,
+      kind: 'deposit' as const,
+      amountEur: '1.000000',
+      executedAt: new Date(base),
+      note: buriedNote,
+    },
+    {
+      portfolioId,
+      sourceId,
+      kind: 'deposit' as const,
+      amountEur: '1.000000',
+      executedAt: new Date(base + 60_000),
+      note: reachableNote,
+    },
+  ]);
+
+  // The premise: both rows really are stored past the ceiling.
+  const stored = await harness.db.execute(
+    sql`SELECT length("note") AS "len" FROM "portfolio_cash_movements" WHERE "portfolio_id" = ${portfolioId}::uuid AND "note" IS NOT NULL ORDER BY "len" DESC`,
+  );
+  const storedLengths = (
+    ((stored as { rows?: unknown[] }).rows ?? stored) as { len: number | string }[]
+  ).map((row) => Number(row.len));
+  expect(storedLengths).toHaveLength(2);
+  for (const length of storedLengths) expect(length).toBeGreaterThan(CASH_MOVEMENT_NOTE_MAX);
+
+  const groceries = await createTag(agent, 'Groceries');
+  await createRule(agent, { tagIds: [groceries.id], pattern: 'SPAR' });
+
+  // Run the scan against the REAL database through a recording executor: what
+  // is being pinned is the length of the rows the SELECT hands back, which no
+  // assertion on the tagging outcome could distinguish from a JS-side clip.
+  const scannedNoteLengths: number[] = [];
+  const recording: RuleTagStampExecutor = {
+    async execute(query) {
+      const result = await harness.db.execute(query);
+      const rows = ((result as { rows?: unknown[] }).rows ?? result) as unknown[];
+      if (!Array.isArray(rows)) return result;
+      for (const row of rows) {
+        // The scan's rows are the only ones carrying the keyset cursor column.
+        if (row !== null && typeof row === 'object' && 'cursorExecutedAt' in row) {
+          scannedNoteLengths.push(String((row as unknown as { note: string }).note).length);
+        }
+      }
+      return result;
+    },
+  };
+
+  const outcome = await applyCashRulesForOwner(recording, user.id);
+
+  expect(scannedNoteLengths).toEqual([CASH_MOVEMENT_NOTE_MAX, CASH_MOVEMENT_NOTE_MAX]);
+  // …and the run still means what it says: the needle inside the ceiling tags,
+  // the one past it does not. The bound is what is pinned, not a broken rule.
+  expect(outcome).toEqual({ movementsTagged: 1, complete: true });
+  const tagged = await agent.get(`/api/v1/portfolios/${portfolioId}/cash`);
+  expect(tagged.status).toBe(200);
+  const byNote = new Map(
+    (tagged.body.movements as CashMovement[]).map((movement) => [
+      movement.note ?? '',
+      [...(movement.tags ?? [])],
+    ]),
+  );
+  expect(byNote.get(reachableNote)).toContain(groceries.id);
+  expect(byNote.get(buriedNote)).not.toContain(groceries.id);
 });
