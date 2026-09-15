@@ -29,7 +29,7 @@ import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
 import {
   AuditAction,
-  bearerScopeDeniedMetaSchema,
+  parseBearerScopeDeniedMeta,
   type AuditService,
   type BearerScopeDenialReason,
 } from '../audit/auditService';
@@ -415,9 +415,15 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       // the point where it becomes a durable row, so an out-of-vocabulary value
       // — or an extra key carrying credential material — throws here instead of
       // being persisted for the full audit retention. The refusal the caller is
-      // answering is unaffected: a throw can only come from a caller that
-      // bypassed the compile-time union.
-      const meta = bearerScopeDeniedMetaSchema.parse({ requiredScope, reason, method, path });
+      // answering still stands: a throw can only come from a caller that
+      // bypassed the compile-time union, and it surfaces as a REPORTED 500
+      // rather than a silent 400 (#1951 L1 — see `parseBearerScopeDeniedMeta`).
+      const meta = parseBearerScopeDeniedMeta('apiKeyService.recordScopeDenied', {
+        requiredScope,
+        reason,
+        method,
+        path,
+      });
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyScopeDenied,

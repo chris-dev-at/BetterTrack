@@ -41,7 +41,7 @@ import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import {
   AuditAction,
-  bearerScopeDeniedMetaSchema,
+  parseBearerScopeDeniedMeta,
   type AuditService,
   type BearerScopeDenialReason,
 } from '../audit/auditService';
@@ -824,8 +824,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     async recordScopeDenied({ userId, grantId, requiredScope, reason, method, path, ip }) {
       // The OAuth twin of the personal-key writer, through the SAME strict meta
       // contract (#1951 §1) — one schema, so the two shapes cannot drift and a
-      // bogus `reason` cannot reach the row on either rail.
-      const meta = bearerScopeDeniedMetaSchema.parse({
+      // bogus `reason` cannot reach the row on either rail. A failure here is a
+      // reported 500, never a silent 400 (#1951 L1).
+      const meta = parseBearerScopeDeniedMeta('oauthService.recordScopeDenied', {
         requiredScope,
         reason,
         method,

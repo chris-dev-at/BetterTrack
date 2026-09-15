@@ -118,9 +118,12 @@ describe('bearerScopeDeniedMetaSchema', () => {
     }
   });
 
-  it('refuses an unexpected key, so no writer can bolt credential material onto the row', () => {
+  it('refuses an unexpected key in the parse object (the spreading-writer shape)', () => {
     // §10: the row identifies the credential by the audit row's own targetId —
-    // never by carrying the secret. TEST VECTORS, not real credentials.
+    // never by carrying the secret. This guards a writer that SPREADS caller
+    // input; today's two writers destructure a fixed list, so an extra property
+    // never reaches the parse at all (pinned in `bearerDenialAudit.test.ts`).
+    // TEST VECTORS, not real credentials.
     for (const extra of [
       { token: 'btk_not-a-real-token' },
       { tokenHash: 'deadbeef' },
