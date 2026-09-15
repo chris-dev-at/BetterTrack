@@ -292,6 +292,13 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
   const { repo, friendship, groups, follows, itemFollows, profile, notify, logger, paranoid } =
     deps;
 
+  /**
+   * The `all_friends` rung's fan-out targets. `listFriends` is scoped by the one
+   * definition of a friend who counts (#1897), so this rung — like `group`
+   * already did, and like `specific_friends` does through `friendIdsOf` — never
+   * hands {@link emitShared} a disabled account: no `*.shared` notice is sent to
+   * someone who cannot sign in and would 404 on the item.
+   */
   async function allFriendRecipients(ownerId: string): Promise<string[]> {
     return friendship ? (await friendship.listFriends(ownerId)).map((friend) => friend.id) : [];
   }
