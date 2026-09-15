@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, lte, gte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull, lte, gte, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -27,6 +27,26 @@ export interface CreateAnnouncementInput {
   endsAt: Date | null;
   active: boolean;
   createdBy: string | null;
+}
+
+/**
+ * What one COMPLETED fan-out pass measured.
+ *
+ * `delivered` is the number of recipients confirmed to hold their inbox row at
+ * the end of the pass — `walked - failed` — not the number of rows this pass
+ * happened to INSERT. That distinction is the whole reason these counts can be
+ * trusted: a re-run inserts nothing (the eventKey index collapses it) yet every
+ * recipient is still delivered, and a pass resuming after a crash would
+ * otherwise report only the tail it had left to write. Counting confirmations
+ * rather than writes means the number cannot be double-counted by a retry and
+ * cannot be under-reported by a resume.
+ *
+ * `failed` is the recipients whose insert threw on that pass. `delivered +
+ * failed` is always the number of accounts walked.
+ */
+export interface AnnouncementDeliveryCounts {
+  delivered: number;
+  failed: number;
 }
 
 export interface UpdateAnnouncementInput {
@@ -159,6 +179,103 @@ export function createAnnouncementRepository(db: Database) {
         )
         .limit(1);
       return row !== undefined;
+    },
+
+    /**
+     * Announcements the publish job owes a fan-out at `at` (#1909).
+     *
+     * Due = flagged active **and** never stamped **and** the display window is
+     * open. The `ends_at > at` clause is the one that stops an operator
+     * activating a long-expired announcement and mailing the whole user base
+     * about it; note it is strict where the banner's own filter is inclusive,
+     * so an announcement is never delivered in the final instant of a window it
+     * is about to leave.
+     *
+     * Ordered oldest-first and bounded, so one run is a bounded unit of work and
+     * the next tick continues from the same predicate — there is no cursor to
+     * lose.
+     */
+    listDuePublications(at: Date, limit: number): Promise<AnnouncementRow[]> {
+      return db
+        .select()
+        .from(announcements)
+        .where(
+          and(
+            eq(announcements.active, true),
+            isNull(announcements.publishedAt),
+            or(isNull(announcements.startsAt), lte(announcements.startsAt, at)),
+            or(isNull(announcements.endsAt), gt(announcements.endsAt, at)),
+          ),
+        )
+        .orderBy(asc(announcements.createdAt))
+        .limit(limit);
+    },
+
+    /**
+     * **The per-announcement idempotency claim.** Stamp `published_at` and the
+     * pass's counts, but only if nobody has stamped it yet.
+     *
+     * Idempotency key: `announcements.id` **where `published_at IS NULL`** — a
+     * single conditional UPDATE, so the database decides the winner. Two workers
+     * that walked the same announcement concurrently both arrive here and
+     * exactly one row is affected; the loser returns `false` and records
+     * nothing, which is what keeps the audit log from carrying two publications
+     * of one announcement.
+     *
+     * Walk-then-claim (not claim-then-walk) is deliberate: a run that dies
+     * mid-walk never reaches this statement, so `published_at` stays NULL and
+     * the very next sweep tick re-publishes it. The per-recipient eventKey index
+     * is what makes that re-walk free of duplicates — the two layers cover each
+     * other, and neither alone is enough.
+     *
+     * `active = true` is in the predicate as well (#1941 review). The service
+     * re-reads and re-checks before it walks, so this is belt to that braces:
+     * an operator who switches an announcement off DURING the walk gets no
+     * stamp, which leaves the row re-publishable if they switch it back on
+     * rather than silently recording a publication they had just cancelled.
+     */
+    async claimPublication(
+      id: string,
+      publishedAt: Date,
+      counts: AnnouncementDeliveryCounts,
+    ): Promise<boolean> {
+      const rows = await db
+        .update(announcements)
+        .set({
+          publishedAt,
+          deliveredCount: counts.delivered,
+          failedCount: counts.failed,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(announcements.id, id),
+            isNull(announcements.publishedAt),
+            eq(announcements.active, true),
+          ),
+        )
+        .returning({ id: announcements.id });
+      return rows.length > 0;
+    },
+
+    /**
+     * Record a LATER pass over an already-stamped announcement — the bounded
+     * single retry after a partial delivery.
+     *
+     * Both counts are REPLACED, never accumulated: they describe the most recent
+     * completed pass over the whole recipient set, so a clean retry honestly
+     * reports every account delivered and 0 still failing. Accumulating would be
+     * the double-count this design exists to make impossible.
+     */
+    async recordDeliveryOutcome(id: string, counts: AnnouncementDeliveryCounts): Promise<void> {
+      await db
+        .update(announcements)
+        .set({
+          deliveredCount: counts.delivered,
+          failedCount: counts.failed,
+          updatedAt: new Date(),
+        })
+        .where(eq(announcements.id, id));
     },
 
     /** For tests: whether the announcement has ever been published (fan-out flag). */

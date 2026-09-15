@@ -4692,7 +4692,8 @@
         "status": "Status",
         "privacy": "Privacy",
         "lastLogin": "Last login",
-        "created": "Created"
+        "created": "Created",
+        "review": "Review"
       },
       "roles": {
         "admin": "admin",
@@ -4723,19 +4724,28 @@
       },
       "flags": {
         "mustChangePassword": "Must change password",
-        "chatBanned": "Chat banned"
+        "chatBanned": "Chat banned",
+        "underReview": "Under review"
       },
       "filters": {
         "anyRole": "Any kind",
         "anyStatus": "Any state",
         "anyPrivacy": "Any privacy mode",
         "pageSize": "Per page",
-        "reset": "Clear filters"
+        "reset": "Clear filters",
+        "anyReview": "Any review state",
+        "flagged": "Flagged only",
+        "notFlagged": "Not flagged"
       },
       "pagination": {
         "range": "{{first}}–{{last}} of {{total}}",
         "previous": "Previous",
         "next": "Next"
+      },
+      "bulkReason": {
+        "label": "Reason",
+        "hint": "Recorded on every account in this batch, and read by the next operator.",
+        "placeholder": "e.g. Coordinated signup wave from one address range."
       }
     },
     "accountDefaults": {
@@ -5529,10 +5539,6 @@
       "profile": "Profile",
       "saveProfile": "Save changes",
       "profileSaved": "Profile updated.",
-      "disabled": "Account disabled. Its sessions and bearer credentials were revoked.",
-      "enabled": "Account re-enabled.",
-      "chatBanned": "Banned from chat.",
-      "chatUnbanned": "Chat ban lifted.",
       "testEmailSent": "Test email sent to {{to}}.",
       "testEmailFailed": "The test email could not be sent.",
       "moreActions": "More actions",
@@ -5544,7 +5550,8 @@
         "support": "Support",
         "sharing": "Sharing",
         "activity": "Activity",
-        "notes": "Notes"
+        "notes": "Notes",
+        "moderation": "Moderation"
       },
       "actions": {
         "snapshot": "Copy support snapshot",
@@ -5681,7 +5688,78 @@
         }
       },
       "deleteTitle": "Delete account",
-      "deleteAction": "Delete account"
+      "deleteAction": "Delete account",
+      "moderation": {
+        "flaggedMarker": "flagged",
+        "flagTitle": "Review flag",
+        "flagOnDescription": "This account is flagged for a second look. The flag suspends nothing — it changes nothing the account can see.",
+        "flagOffDescription": "Mark this account for a second look without suspending it. Flagging changes nothing the account can see.",
+        "flag": "Flag for review",
+        "unflag": "Clear flag",
+        "loading": "Loading the moderation record…",
+        "empty": "No moderation action has been taken on this account.",
+        "unknownActor": "Operator no longer on the team",
+        "transition": "{{previous}} → {{next}}",
+        "reasonLabel": "Reason",
+        "reasonHint": "The next operator reads this. Say what happened, not what you decided.",
+        "reasonPlaceholder": "e.g. Two accounts reported harassment in chat on 14 Sep.",
+        "values": {
+          "active": "Active",
+          "disabled": "Disabled",
+          "allowed": "Chat allowed",
+          "banned": "Chat banned",
+          "user": "User",
+          "admin": "Administrator",
+          "flagged": "Flagged",
+          "unflagged": "Not flagged"
+        },
+        "actions": {
+          "disable": "Account disabled",
+          "enable": "Account re-enabled",
+          "chat_ban": "Chat banned",
+          "chat_unban": "Chat ban lifted",
+          "role_change": "Role changed",
+          "flag": "Flagged for review",
+          "unflag": "Review flag cleared",
+          "delete_reservation": "Reserved for deletion",
+          "password_reset": "Password reset"
+        },
+        "confirm": {
+          "disable": {
+            "title": "Disable this account",
+            "description": "Disabling {{username}} ends every session and revokes every API key and app grant immediately. Say why — the next operator will read it.",
+            "action": "Disable account"
+          },
+          "enable": {
+            "title": "Re-enable this account",
+            "description": "Re-enabling {{username}} lets them sign in again. Say why the suspension is over.",
+            "action": "Re-enable account"
+          },
+          "chatBan": {
+            "title": "Ban this account from chat",
+            "description": "{{username}} will not be able to send messages. Say why — the next operator will read it.",
+            "action": "Ban from chat"
+          },
+          "chatUnban": {
+            "title": "Lift the chat ban",
+            "description": "{{username}} will be able to send messages again. Say why the ban is over.",
+            "action": "Lift chat ban"
+          },
+          "flag": {
+            "title": "Flag this account for review",
+            "description": "Nothing happens to {{username}} — the flag is a note to whoever looks next. Say what you noticed.",
+            "action": "Flag for review"
+          }
+        },
+        "done": {
+          "disable": "Account disabled and recorded.",
+          "enable": "Account re-enabled and recorded.",
+          "chatBan": "Chat ban applied and recorded.",
+          "chatUnban": "Chat ban lifted and recorded.",
+          "flag": "Flagged for review and recorded.",
+          "unflag": "Review flag cleared and recorded."
+        }
+      }
     },
     "invites": {
       "title": "Invites",
@@ -5847,12 +5925,164 @@
         "target": "Target",
         "ip": "IP",
         "details": "Details"
+      },
+      "emptyFiltered": "No audit entries match these filters.",
+      "actorRole": {
+        "user": "User",
+        "admin": "Admin"
+      },
+      "actorKind": {
+        "account": "Account",
+        "shell": "Shell (break-glass)",
+        "unattributed": "System or removed account"
+      },
+      "preset": {
+        "break_glass": "Break-glass",
+        "auth_failures": "Auth failures",
+        "admin_actions": "Admin actions"
+      },
+      "filters": {
+        "presets": "Presets",
+        "action": "Action",
+        "actionHint": "Exact action, or a domain with a trailing dot (user.).",
+        "actor": "Actor ID",
+        "target": "Target ID",
+        "targetType": "Target type",
+        "from": "From",
+        "until": "Until",
+        "clear": "Clear filters"
+      },
+      "breakGlass": {
+        "banner": "{{count}}{{suffix}} break-glass two-factor resets are on record.",
+        "explainer": "A break-glass reset is run from a server shell, without a signed-in operator: it clears an administrator's two-factor enrolment so a locked-out admin can sign in again. Every one of them should match a change you know about.",
+        "show": "Show them"
+      },
+      "signals": {
+        "title": "Signals",
+        "subtitle": "Counts derived from the audit entries below. Nothing new is recorded to produce them.",
+        "show": "Show",
+        "hide": "Hide",
+        "loading": "Loading signals…",
+        "loginFailures": "Failed sign-ins",
+        "otherSignals": "Other signals",
+        "total": "Total",
+        "derived": "Counts only — no account, address or device is identified here, and no window longer than seven days can be asked for.",
+        "window": {
+          "24h": "24 hours",
+          "7d": "7 days"
+        },
+        "reason": {
+          "unknown_user": "Unknown account",
+          "locked": "Cooling down",
+          "bad_password": "Wrong password",
+          "disabled": "Account disabled",
+          "other": "Other"
+        },
+        "twoFactorVerifyFail": "Two-factor failures",
+        "passkeyLoginFail": "Passkey failures",
+        "pinVerifyFail": "PIN failures",
+        "reauthFail": "Re-authentication failures",
+        "apiKeyScopeDenied": "Scope denials",
+        "adminLogins": "Admin sign-ins",
+        "adminActors": "Distinct admins",
+        "breakGlass": "Break-glass resets"
+      },
+      "drawer": {
+        "title": "Audit entry",
+        "open": "Details",
+        "meta": "Details",
+        "noMeta": "This entry carries no additional detail.",
+        "diff": "What changed",
+        "field": "Field",
+        "before": "Before",
+        "after": "After",
+        "entryId": "Entry ID",
+        "state": {
+          "changed": "Changed",
+          "added": "Added",
+          "removed": "Removed",
+          "unchanged": "Unchanged"
+        }
       }
     },
     "pagination": {
       "range": "{{first}}–{{last}} of {{total}}",
       "previous": "Previous",
       "next": "Next"
+    },
+    "announcements": {
+      "title": "Announcements",
+      "description": "In-app notices for every account: a dismissible banner inside the display window, plus one inbox entry per user. EN and DE are both required — each user sees the version matching their language.",
+      "composer": {
+        "headingNew": "New announcement",
+        "headingEdit": "Editing announcement",
+        "severity": "Severity",
+        "active": "Active — publish when the window opens",
+        "activeHint": "Saving never sends anything. A background job publishes the announcement once its start time has passed, and the same window governs the banner and the inbox entry.",
+        "titleEn": "English title",
+        "bodyEn": "English body",
+        "titleDe": "German title",
+        "bodyDe": "German body",
+        "startsAt": "Starts at",
+        "startsAtHint": "Empty = publish as soon as it is active.",
+        "endsAt": "Ends at",
+        "endsAtHint": "Empty = no auto-off. A window that has already closed is never published.",
+        "timezone": "Times are {{zone}} wall-clock and are stored as UTC.",
+        "create": "Create announcement",
+        "creating": "Creating…",
+        "save": "Save changes",
+        "saving": "Saving…",
+        "cancel": "Cancel edit",
+        "created": "Announcement created.",
+        "createdScheduled": "Announcement created. It publishes when its window opens.",
+        "createdQueued": "Announcement created. Publication is queued.",
+        "updated": "Announcement updated."
+      },
+      "preview": {
+        "heading": "What users will see",
+        "description": "The banner as it renders in each language. Every account receives it.",
+        "empty": "Fill in a title and body to preview the banner.",
+        "locale": {
+          "en": "English",
+          "de": "German"
+        }
+      },
+      "list": {
+        "heading": "All announcements",
+        "loading": "Loading announcements…",
+        "empty": "No announcements yet. Compose one above.",
+        "retry": "Retry",
+        "columns": {
+          "severity": "Severity",
+          "title": "Title (EN)",
+          "window": "Window",
+          "delivery": "Delivery",
+          "reach": "Reach",
+          "actions": "Actions"
+        },
+        "startsImmediately": "Starts: immediately",
+        "starts": "Starts: {{date}}",
+        "endsNever": "Ends: never",
+        "ends": "Ends: {{date}}",
+        "reachPending": "Not yet delivered",
+        "reachDelivered": "{{delivered}} delivered",
+        "reachFailed": "{{failed}} failed",
+        "edit": "Edit",
+        "activate": "Activate",
+        "deactivate": "Deactivate"
+      },
+      "state": {
+        "draft": "Draft",
+        "scheduled": "Scheduled",
+        "publishing": "Publishing",
+        "published": "Published",
+        "expired": "Expired",
+        "draftDetail": "Not active — nobody sees it.",
+        "scheduledDetail": "Will publish on {{date}}.",
+        "publishingDetail": "Due now — the publish job is delivering it.",
+        "publishedDetail": "Published {{date}}.",
+        "expiredDetail": "Window closed {{date}} — it will not be published."
+      }
     }
   },
   "create": {

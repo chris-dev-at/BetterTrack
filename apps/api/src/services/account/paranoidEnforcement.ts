@@ -1185,6 +1185,17 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     reason:
       'Audit, email-log, problem, usage-event and digest-queue cleanup is global retention infrastructure.',
   }),
+  jobPolicy('announcementJobs.ts', 'createAnnouncementPublishJob', 'announcements.publishDue', {
+    capability: null,
+    mode: 'kept',
+    reason:
+      'An announcement is an operator broadcast, not account-owned content: the job reads ' +
+      'admin-authored rows and writes one inbox notice per account, carrying nothing about ' +
+      'anybody’s holdings. Killing it for a vaulted account would withhold the service notice ' +
+      'from exactly the accounts most invested in the service, to protect data the notice ' +
+      'never touches. The per-user rail it writes is the same `account.notice` inbox the ' +
+      'already-kept notification transport uses (#1909).',
+  }),
 ] as const;
 
 const servicesFor = (capability: ParanoidKilledCapability): readonly ParanoidServiceBinding[] =>

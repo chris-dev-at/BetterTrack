@@ -27,8 +27,16 @@ export const EM_DASH = '—';
  */
 export const DISCREET_MASK = '•••';
 
-/** Dates always display in Vienna wall-clock, regardless of host timezone (§5.5). */
-const DISPLAY_TIME_ZONE = 'Europe/Vienna';
+/**
+ * Dates always display in Vienna wall-clock, regardless of host timezone (§5.5).
+ *
+ * Exported so a surface that lets an operator ENTER a timestamp can convert in
+ * the same zone every readout renders in (#1909). A `<input type="datetime-local">`
+ * speaks the browser's zone and nothing else, so without naming this constant a
+ * composer would take "09:00" in one zone and every table on the page would
+ * echo it back in another.
+ */
+export const DISPLAY_TIME_ZONE = 'Europe/Vienna';
 
 /**
  * The active Intl locale. Defaults to `de-AT` (the app's original single dialect)

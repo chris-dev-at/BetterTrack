@@ -4692,7 +4692,8 @@
         "status": "Status",
         "privacy": "Privatsphäre",
         "lastLogin": "Letzte Anmeldung",
-        "created": "Erstellt"
+        "created": "Erstellt",
+        "review": "Prüfung"
       },
       "roles": {
         "admin": "Admin",
@@ -4723,19 +4724,28 @@
       },
       "flags": {
         "mustChangePassword": "Passwort muss geändert werden",
-        "chatBanned": "Chat gesperrt"
+        "chatBanned": "Chat gesperrt",
+        "underReview": "In Prüfung"
       },
       "filters": {
         "anyRole": "Alle Kontoarten",
         "anyStatus": "Alle Zustände",
         "anyPrivacy": "Alle Privatsphäre-Modi",
         "pageSize": "Pro Seite",
-        "reset": "Filter zurücksetzen"
+        "reset": "Filter zurücksetzen",
+        "anyReview": "Beliebiger Prüfstatus",
+        "flagged": "Nur markierte",
+        "notFlagged": "Nicht markierte"
       },
       "pagination": {
         "range": "{{first}}–{{last}} von {{total}}",
         "previous": "Zurück",
         "next": "Weiter"
+      },
+      "bulkReason": {
+        "label": "Begründung",
+        "hint": "Wird bei jedem Konto dieses Stapels protokolliert und von der nächsten Person gelesen.",
+        "placeholder": "z. B. Koordinierte Registrierungswelle aus einem Adressbereich."
       }
     },
     "accountDefaults": {
@@ -5529,10 +5539,6 @@
       "profile": "Profil",
       "saveProfile": "Änderungen speichern",
       "profileSaved": "Profil aktualisiert.",
-      "disabled": "Konto deaktiviert. Sitzungen und Bearer-Zugangsdaten wurden widerrufen.",
-      "enabled": "Konto wieder aktiviert.",
-      "chatBanned": "Für den Chat gesperrt.",
-      "chatUnbanned": "Chat-Sperre aufgehoben.",
       "testEmailSent": "Test-E-Mail an {{to}} gesendet.",
       "testEmailFailed": "Die Test-E-Mail konnte nicht gesendet werden.",
       "moreActions": "Weitere Aktionen",
@@ -5544,7 +5550,8 @@
         "support": "Support",
         "sharing": "Geteiltes",
         "activity": "Aktivität",
-        "notes": "Notizen"
+        "notes": "Notizen",
+        "moderation": "Moderation"
       },
       "actions": {
         "snapshot": "Support-Auszug kopieren",
@@ -5681,7 +5688,78 @@
         }
       },
       "deleteTitle": "Konto löschen",
-      "deleteAction": "Konto löschen"
+      "deleteAction": "Konto löschen",
+      "moderation": {
+        "flaggedMarker": "markiert",
+        "flagTitle": "Prüfmarkierung",
+        "flagOnDescription": "Dieses Konto ist zur erneuten Prüfung markiert. Die Markierung sperrt nichts — für das Konto ändert sich nichts.",
+        "flagOffDescription": "Dieses Konto zur erneuten Prüfung markieren, ohne es zu sperren. Für das Konto ändert sich dadurch nichts.",
+        "flag": "Zur Prüfung markieren",
+        "unflag": "Markierung aufheben",
+        "loading": "Moderationsprotokoll wird geladen…",
+        "empty": "Für dieses Konto wurde noch keine Moderationsmaßnahme ergriffen.",
+        "unknownActor": "Operator nicht mehr im Team",
+        "transition": "{{previous}} → {{next}}",
+        "reasonLabel": "Begründung",
+        "reasonHint": "Die nächste Person liest das hier. Beschreibe, was passiert ist — nicht, was du entschieden hast.",
+        "reasonPlaceholder": "z. B. Zwei Konten haben am 14. Sep. Belästigung im Chat gemeldet.",
+        "values": {
+          "active": "Aktiv",
+          "disabled": "Deaktiviert",
+          "allowed": "Chat erlaubt",
+          "banned": "Chat gesperrt",
+          "user": "Benutzer",
+          "admin": "Administrator",
+          "flagged": "Markiert",
+          "unflagged": "Nicht markiert"
+        },
+        "actions": {
+          "disable": "Konto deaktiviert",
+          "enable": "Konto reaktiviert",
+          "chat_ban": "Chat gesperrt",
+          "chat_unban": "Chat-Sperre aufgehoben",
+          "role_change": "Rolle geändert",
+          "flag": "Zur Prüfung markiert",
+          "unflag": "Prüfmarkierung aufgehoben",
+          "delete_reservation": "Zur Löschung vorgemerkt",
+          "password_reset": "Passwort zurückgesetzt"
+        },
+        "confirm": {
+          "disable": {
+            "title": "Dieses Konto deaktivieren",
+            "description": "Die Deaktivierung von {{username}} beendet sofort jede Sitzung und entzieht jeden API-Schlüssel und jede App-Freigabe. Begründe es — die nächste Person liest es.",
+            "action": "Konto deaktivieren"
+          },
+          "enable": {
+            "title": "Dieses Konto reaktivieren",
+            "description": "Nach der Reaktivierung kann sich {{username}} wieder anmelden. Begründe, warum die Sperre endet.",
+            "action": "Konto reaktivieren"
+          },
+          "chatBan": {
+            "title": "Dieses Konto für den Chat sperren",
+            "description": "{{username}} kann dann keine Nachrichten mehr senden. Begründe es — die nächste Person liest es.",
+            "action": "Für Chat sperren"
+          },
+          "chatUnban": {
+            "title": "Chat-Sperre aufheben",
+            "description": "{{username}} kann dann wieder Nachrichten senden. Begründe, warum die Sperre endet.",
+            "action": "Chat-Sperre aufheben"
+          },
+          "flag": {
+            "title": "Dieses Konto zur Prüfung markieren",
+            "description": "Für {{username}} ändert sich nichts — die Markierung ist ein Hinweis für die nächste Person. Beschreibe, was dir aufgefallen ist.",
+            "action": "Zur Prüfung markieren"
+          }
+        },
+        "done": {
+          "disable": "Konto deaktiviert und protokolliert.",
+          "enable": "Konto reaktiviert und protokolliert.",
+          "chatBan": "Chat-Sperre gesetzt und protokolliert.",
+          "chatUnban": "Chat-Sperre aufgehoben und protokolliert.",
+          "flag": "Zur Prüfung markiert und protokolliert.",
+          "unflag": "Prüfmarkierung aufgehoben und protokolliert."
+        }
+      }
     },
     "invites": {
       "title": "Einladungen",
@@ -5847,12 +5925,164 @@
         "target": "Ziel",
         "ip": "IP",
         "details": "Details"
+      },
+      "emptyFiltered": "Keine Audit-Einträge passen zu diesen Filtern.",
+      "actorRole": {
+        "user": "Benutzer",
+        "admin": "Admin"
+      },
+      "actorKind": {
+        "account": "Konto",
+        "shell": "Shell (Notfallzugriff)",
+        "unattributed": "System oder gelöschtes Konto"
+      },
+      "preset": {
+        "break_glass": "Notfallzugriff",
+        "auth_failures": "Fehlgeschlagene Anmeldungen",
+        "admin_actions": "Admin-Aktionen"
+      },
+      "filters": {
+        "presets": "Voreinstellungen",
+        "action": "Aktion",
+        "actionHint": "Exakte Aktion oder ein Bereich mit Punkt am Ende (user.).",
+        "actor": "Akteur-ID",
+        "target": "Ziel-ID",
+        "targetType": "Zieltyp",
+        "from": "Von",
+        "until": "Bis",
+        "clear": "Filter zurücksetzen"
+      },
+      "breakGlass": {
+        "banner": "Es sind {{count}}{{suffix}} Notfall-Zurücksetzungen der Zwei-Faktor-Authentifizierung verzeichnet.",
+        "explainer": "Eine Notfall-Zurücksetzung wird über eine Server-Shell ausgeführt, ohne angemeldeten Operator: sie löscht die Zwei-Faktor-Einrichtung eines Administrators, damit ein ausgesperrter Admin sich wieder anmelden kann. Jede einzelne davon sollte zu einer Änderung passen, von der Sie wissen.",
+        "show": "Anzeigen"
+      },
+      "signals": {
+        "title": "Signale",
+        "subtitle": "Kennzahlen aus den Audit-Einträgen unten. Dafür wird nichts zusätzlich aufgezeichnet.",
+        "show": "Anzeigen",
+        "hide": "Ausblenden",
+        "loading": "Signale werden geladen…",
+        "loginFailures": "Fehlgeschlagene Anmeldungen",
+        "otherSignals": "Weitere Signale",
+        "total": "Gesamt",
+        "derived": "Nur Kennzahlen — kein Konto, keine Adresse und kein Gerät wird hier benannt, und kein Zeitraum über sieben Tage ist abfragbar.",
+        "window": {
+          "24h": "24 Stunden",
+          "7d": "7 Tage"
+        },
+        "reason": {
+          "unknown_user": "Unbekanntes Konto",
+          "locked": "Sperrfrist aktiv",
+          "bad_password": "Falsches Passwort",
+          "disabled": "Konto deaktiviert",
+          "other": "Sonstige"
+        },
+        "twoFactorVerifyFail": "Zwei-Faktor-Fehlversuche",
+        "passkeyLoginFail": "Passkey-Fehlversuche",
+        "pinVerifyFail": "PIN-Fehlversuche",
+        "reauthFail": "Fehlgeschlagene erneute Anmeldungen",
+        "apiKeyScopeDenied": "Verweigerte Berechtigungen",
+        "adminLogins": "Admin-Anmeldungen",
+        "adminActors": "Verschiedene Admins",
+        "breakGlass": "Notfall-Zurücksetzungen"
+      },
+      "drawer": {
+        "title": "Audit-Eintrag",
+        "open": "Details",
+        "meta": "Details",
+        "noMeta": "Dieser Eintrag enthält keine weiteren Details.",
+        "diff": "Was sich geändert hat",
+        "field": "Feld",
+        "before": "Vorher",
+        "after": "Nachher",
+        "entryId": "Eintrags-ID",
+        "state": {
+          "changed": "Geändert",
+          "added": "Hinzugefügt",
+          "removed": "Entfernt",
+          "unchanged": "Unverändert"
+        }
       }
     },
     "pagination": {
       "range": "{{first}}–{{last}} von {{total}}",
       "previous": "Zurück",
       "next": "Weiter"
+    },
+    "announcements": {
+      "title": "Ankündigungen",
+      "description": "In-App-Hinweise für alle Konten: ein ausblendbares Banner innerhalb des Anzeigefensters und ein Posteingangs-Eintrag pro Nutzer. EN und DE sind beide erforderlich — jede Person sieht die Fassung in ihrer Sprache.",
+      "composer": {
+        "headingNew": "Neue Ankündigung",
+        "headingEdit": "Ankündigung bearbeiten",
+        "severity": "Dringlichkeit",
+        "active": "Aktiv — veröffentlichen, sobald das Fenster beginnt",
+        "activeHint": "Das Speichern versendet nichts. Ein Hintergrund-Job veröffentlicht die Ankündigung, sobald ihr Startzeitpunkt erreicht ist; dasselbe Fenster steuert Banner und Posteingang.",
+        "titleEn": "Englischer Titel",
+        "bodyEn": "Englischer Text",
+        "titleDe": "Deutscher Titel",
+        "bodyDe": "Deutscher Text",
+        "startsAt": "Beginnt am",
+        "startsAtHint": "Leer = veröffentlichen, sobald sie aktiv ist.",
+        "endsAt": "Endet am",
+        "endsAtHint": "Leer = kein automatisches Ende. Ein bereits abgelaufenes Fenster wird nie veröffentlicht.",
+        "timezone": "Zeiten gelten in der Zeitzone {{zone}} und werden als UTC gespeichert.",
+        "create": "Ankündigung anlegen",
+        "creating": "Wird angelegt…",
+        "save": "Änderungen speichern",
+        "saving": "Wird gespeichert…",
+        "cancel": "Bearbeitung abbrechen",
+        "created": "Ankündigung angelegt.",
+        "createdScheduled": "Ankündigung angelegt. Sie wird veröffentlicht, sobald ihr Fenster beginnt.",
+        "createdQueued": "Ankündigung angelegt. Die Veröffentlichung ist eingeplant.",
+        "updated": "Ankündigung aktualisiert."
+      },
+      "preview": {
+        "heading": "Was Nutzer sehen werden",
+        "description": "Das Banner, wie es in beiden Sprachen erscheint. Alle Konten erhalten es.",
+        "empty": "Titel und Text ausfüllen, um das Banner zu sehen.",
+        "locale": {
+          "en": "Englisch",
+          "de": "Deutsch"
+        }
+      },
+      "list": {
+        "heading": "Alle Ankündigungen",
+        "loading": "Ankündigungen werden geladen…",
+        "empty": "Noch keine Ankündigungen. Oben eine verfassen.",
+        "retry": "Erneut versuchen",
+        "columns": {
+          "severity": "Dringlichkeit",
+          "title": "Titel (EN)",
+          "window": "Fenster",
+          "delivery": "Zustellung",
+          "reach": "Reichweite",
+          "actions": "Aktionen"
+        },
+        "startsImmediately": "Beginn: sofort",
+        "starts": "Beginn: {{date}}",
+        "endsNever": "Ende: nie",
+        "ends": "Ende: {{date}}",
+        "reachPending": "Noch nicht zugestellt",
+        "reachDelivered": "{{delivered}} zugestellt",
+        "reachFailed": "{{failed}} fehlgeschlagen",
+        "edit": "Bearbeiten",
+        "activate": "Aktivieren",
+        "deactivate": "Deaktivieren"
+      },
+      "state": {
+        "draft": "Entwurf",
+        "scheduled": "Geplant",
+        "publishing": "Wird veröffentlicht",
+        "published": "Veröffentlicht",
+        "expired": "Abgelaufen",
+        "draftDetail": "Nicht aktiv — niemand sieht sie.",
+        "scheduledDetail": "Wird am {{date}} veröffentlicht.",
+        "publishingDetail": "Jetzt fällig — der Veröffentlichungs-Job stellt sie zu.",
+        "publishedDetail": "Veröffentlicht am {{date}}.",
+        "expiredDetail": "Fenster endete am {{date}} — sie wird nicht mehr veröffentlicht."
+      }
     }
   },
   "create": {

@@ -4,6 +4,8 @@ import {
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
   adminListQuerySchema,
+  adminModerationListResponseSchema,
+  adminUserFlagRequestSchema,
   adminUserListQuerySchema,
   adminUserNoteParamSchema,
   adminUserSupportQuerySchema,
@@ -16,6 +18,7 @@ import {
   updateAiSettingsRequestSchema,
   auditQuerySchema,
   bulkUserActionRequestSchema,
+  announcementListResponseSchema,
   createAnnouncementRequestSchema,
   createInviteRequestSchema,
   createOAuthClientRequestSchema,
@@ -36,6 +39,7 @@ import {
   updateUserRequestSchema,
   usageAnalyticsResponseSchema,
   type AdminListQuery,
+  type AdminUserFlagRequest,
   type AdminUserListQuery,
   type AdminUserNoteParam,
   type AdminUserSupportQuery,
@@ -63,6 +67,8 @@ import {
 } from '@bettertrack/contracts';
 
 import { notFound } from '../../errors';
+import type { AuditListFilters } from '../../data/repositories/auditRepository';
+import { AUDIT_PRESET_ACTIONS } from '../../services/audit/auditService';
 import type { AdminActor } from '../../services/admin/adminService';
 import type { AppContext } from '../context';
 import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
@@ -79,6 +85,7 @@ import {
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import {
   toAdminInvite,
+  toAdminModerationEntry,
   toAdminUser,
   toAdminUserAccess,
   toAdminUserNote,
@@ -92,6 +99,28 @@ import {
 } from '../serializers';
 
 const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.ip });
+
+/**
+ * Turn the validated audit query into the repository's filter set (#1908 §1).
+ *
+ * A `preset` expands here, from the vocabulary that lives beside `AuditAction`,
+ * and COMPOSES with an explicit `action` rather than replacing it — asking for
+ * `preset=admin_actions&action=user.` is "the admin actions in the user domain",
+ * which is what both keys plainly say.
+ */
+function auditFiltersOf(query: AuditQuery): AuditListFilters {
+  const preset = query.preset;
+  return {
+    ...(query.action !== undefined ? { action: query.action } : {}),
+    ...(preset !== undefined ? { actions: AUDIT_PRESET_ACTIONS[preset] } : {}),
+    ...(preset === 'break_glass' ? { breakGlassOnly: true } : {}),
+    ...(query.actorId !== undefined ? { actorId: query.actorId } : {}),
+    ...(query.targetId !== undefined ? { targetId: query.targetId } : {}),
+    ...(query.targetType !== undefined ? { targetType: query.targetType } : {}),
+    ...(query.from !== undefined ? { from: new Date(query.from) } : {}),
+    ...(query.to !== undefined ? { to: new Date(query.to) } : {}),
+  };
+}
 
 /**
  * Admin endpoints under /api/v1/admin (PROJECTPLAN.md §6.12, §8). The router is
@@ -112,7 +141,10 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   ): Promise<ReturnType<typeof toAdminUser>> => {
     const metadata = await ctx.paranoidTransitions.adminMetadata(row.id);
     if (!metadata) throw notFound('This account no longer exists.', 'USER_NOT_FOUND');
-    return toAdminUser(row, metadata);
+    // One primary-key probe on the flag table (#1907). Every single-account
+    // response carries the marker, so the console never has to ask twice.
+    const flagged = await ctx.admin.flaggedAmong([row.id]);
+    return toAdminUser(row, metadata, flagged.has(row.id));
   };
 
   router.use(limiters.admin);
@@ -169,12 +201,16 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     // unbounded list would hold one lock transaction per account while queueing
     // its own reads behind them, exhausting the pool on a real instance.
     const metadata = await ctx.paranoidTransitions.adminMetadataMany(rows.map((row) => row.id));
+    // ONE query for the whole page's review flags (#1907), the same shape the
+    // paranoid metadata read above uses — a per-row probe would be one query
+    // per rendered account.
+    const flagged = await ctx.admin.flaggedAmong(rows.map((row) => row.id));
     res.json({
       users: rows.flatMap((row) => {
         // Deleted between the list read and this one: drop the single stale row
         // rather than failing the whole page.
         const paranoidMetadata = metadata.get(row.id);
-        return paranoidMetadata ? [toAdminUser(row, paranoidMetadata)] : [];
+        return paranoidMetadata ? [toAdminUser(row, paranoidMetadata, flagged.has(row.id))] : [];
       }),
       // The count is for the FILTER, not the table — it is what the footer means
       // by "47 accounts" when a filter is on. Deliberately NOT `users.length`:
@@ -225,6 +261,51 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       res.json({ items: rows.map(toAdminUserSupportItem), total, openCount });
     },
   );
+
+  // ── Moderation depth (#1907 ADMIN-W5) ──────────────────────────────────────
+  // The record of every moderation action taken against this account, and the
+  // non-destructive review flag. None of the three is a new capability over the
+  // account: the record is a READ of decisions the console could already make,
+  // and the flag changes nothing the account can observe (§6.12 — `disabled`
+  // remains THE suspension, and no tier joins it).
+
+  router.get(
+    '/users/:id/moderation',
+    validateParams(idParamSchema),
+    validateQuery(adminListQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const query = req.valid?.query as AdminListQuery;
+      const { rows, total } = await ctx.admin.listModeration(id, query);
+      res.json(
+        adminModerationListResponseSchema.parse({
+          actions: rows.map(toAdminModerationEntry),
+          page: { total, limit: query.limit, offset: query.offset },
+        }),
+      );
+    },
+  );
+
+  router.post(
+    '/users/:id/flag',
+    validateParams(idParamSchema),
+    validateBody(adminUserFlagRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { reason } = req.valid?.body as AdminUserFlagRequest;
+      await ctx.admin.flagUser(id, reason, actorOf(req));
+      res.json({ ok: true });
+    },
+  );
+
+  // Idempotent: clearing an unflagged account succeeds and writes no action.
+  // A 404 here would make "unflag" fail whenever another operator cleared the
+  // same flag a moment earlier, which is a race, not an error.
+  router.delete('/users/:id/flag', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.admin.unflagUser(id, undefined, actorOf(req));
+    res.json({ ok: true });
+  });
 
   // Operator notes: admin-private annotations on an account. The only write W2
   // adds, and an additive one — a note changes nothing about the account.
@@ -513,11 +594,15 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     res.json(result);
   });
 
+  // Filtered, cursor-paged audit log (#1908 §1). Every filter is optional and
+  // the query schema is still `.strict()`, so an unknown key is still a 400 and
+  // every caller that predates this wave keeps working unchanged.
   router.get('/audit', validateQuery(auditQuerySchema), async (req, res) => {
     const query = req.valid?.query as AuditQuery;
     const { entries, nextCursor } = await ctx.admin.listAudit({
       limit: query.limit,
       cursor: query.cursor,
+      filters: auditFiltersOf(query),
     });
     res.json({ entries: entries.map(toAuditEntry), nextCursor });
   });
@@ -559,6 +644,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       const { entries, nextCursor } = await ctx.admin.listUserAudit(id, {
         limit: query.limit,
         cursor: query.cursor,
+        // The account scope is applied by the repository, never here: a
+        // `targetId` in the query can only narrow this page further, and cannot
+        // widen it to another account (§10 — ownership scoping lives in the
+        // repository, not in the controller).
+        filters: auditFiltersOf(query),
       });
       res.json({ entries: entries.map(toAuditEntry), nextCursor });
     },
@@ -618,14 +708,20 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     res.json({ ok: true });
   });
 
-  // ── Announcements (§13.4 V4-P5b) ────────────────────────────────────────
+  // ── Announcements (§13.4 V4-P5b; ADMIN-W7a #1909) ───────────────────────
   // Admin CRUD over composed announcements. Every mutation is audit-logged in
-  // the service; flipping `active` from off → on fans exactly one inbox row
-  // out to every user (deduped per-user via the shared eventKey). Delivery is
-  // banner + inbox only — no email/push/matrix routing runs.
+  // the service. **No write here delivers anything**: the request persists the
+  // row and returns, and the `announcements.publishDue` job fans exactly one
+  // inbox row out to every user once the display window has opened (deduped
+  // per-user via the shared eventKey). Delivery is banner + inbox only — no
+  // email/push/matrix routing runs.
   router.get('/announcements', async (_req, res) => {
     const announcements = await ctx.announcements.list();
-    res.json({ announcements });
+    // Parsed on the way out, like the invites and registration-token lists:
+    // this list gained server-derived fields (`deliveryState`, the delivery
+    // counts) and an unparsed `res.json` is how a projection and its contract
+    // drift apart without a test noticing.
+    res.json(announcementListResponseSchema.parse({ announcements }));
   });
 
   router.post('/announcements', validateBody(createAnnouncementRequestSchema), async (req, res) => {
