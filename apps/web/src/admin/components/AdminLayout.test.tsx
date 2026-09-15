@@ -29,23 +29,12 @@ import { ADMIN_DESTINATIONS } from '../adminWorkspaces';
 import { AdminLayout } from './AdminLayout';
 import { Modal } from './Modal';
 
-// Every CHILD ROW the six-workspace sidebar still offers (#1406 W1). Three
-// workspaces have since folded and contribute none: People (W2) and Operations
-// (W4) carry their pages as tabs — see ADMIN_PEOPLE_TAB_KEYS and
-// ADMIN_OPERATIONS_TAB_KEYS — and Support (W3) absorbed its one row into the
-// helpdesk landing itself. What remains here is Product & Comms and
-// Security & API, the two workspaces no package has folded.
-const ADMIN_NAV_KEYS = [
-  'admin.nav.settings',
-  'admin.nav.featureFlags',
-  'admin.nav.ai',
-  'admin.nav.accountDefaults',
-  'admin.nav.announcements',
-  'admin.nav.audit',
-  'admin.nav.security',
-  'admin.nav.oauthApps',
-  'admin.nav.apiKeys',
-] as const;
+// The sidebar offers NO child rows at all since #1406 W7c: every workspace that
+// had pages is folded, and Support (W3) absorbed its one row into the helpdesk
+// landing itself. The six workspace labels below are the whole rail — asserted
+// by 'the folded rail is six links and nothing else' further down. The nine keys
+// ADMIN_NAV_KEYS used to hold are now ADMIN_PRODUCT_TAB_KEYS and
+// ADMIN_SECURITY_TAB_KEYS: still real routes, still translated, no longer rows.
 
 const ADMIN_WORKSPACE_KEYS = [
   'admin.nav.sections.overview',
@@ -70,10 +59,9 @@ const ADMIN_WORKSPACE_LANDING_KEYS = [
   // Operations folded the same way in W4, landing on the health-and-queues
   // cockpit.
   'admin.nav.sections.operations',
-  // W7b: a LANDING, not a fold. These two keep W1's child rows and declare no
-  // `tabs` — the fold of Product & Comms and Security & API stays CUT (§16
-  // 2026-08-29 ruling 3, re-asserted 2026-09-02), and `WorkspaceTabs.test.tsx`
-  // is what holds that line.
+  // W7b gave these two a landing; W7c (§16 2026-09-14) folded them, so the
+  // landing is now also the first tab of the workspace's own strip — the same
+  // shape People and Operations have carried since W2 and W4.
   'admin.nav.sections.product',
   'admin.nav.sections.securityApi',
 ] as const;
@@ -105,6 +93,28 @@ const ADMIN_OPERATIONS_TAB_KEYS = [
   'admin.nav.marketData',
 ] as const;
 
+/**
+ * The Product & Comms and Security & API tabs after the W7c fold (§16
+ * 2026-09-14). These are the nine keys `ADMIN_NAV_KEYS` used to hold as SIDEBAR
+ * rows: the fold moved them onto the page's tab strip, reusing every key
+ * unchanged, so no new i18n key exists for the strip and every one of them must
+ * still translate.
+ */
+const ADMIN_PRODUCT_TAB_KEYS = [
+  'admin.nav.settings',
+  'admin.nav.featureFlags',
+  'admin.nav.ai',
+  'admin.nav.accountDefaults',
+  'admin.nav.announcements',
+] as const;
+
+const ADMIN_SECURITY_TAB_KEYS = [
+  'admin.nav.audit',
+  'admin.nav.security',
+  'admin.nav.oauthApps',
+  'admin.nav.apiKeys',
+] as const;
+
 const ADMIN_SHELL_KEYS = [
   'admin.nav.console',
   'admin.nav.loading',
@@ -112,9 +122,10 @@ const ADMIN_SHELL_KEYS = [
   'admin.palette.trigger',
   'admin.palette.shortcut',
   ...ADMIN_WORKSPACE_KEYS,
-  ...ADMIN_NAV_KEYS,
   ...ADMIN_PEOPLE_TAB_KEYS,
   ...ADMIN_OPERATIONS_TAB_KEYS,
+  ...ADMIN_PRODUCT_TAB_KEYS,
+  ...ADMIN_SECURITY_TAB_KEYS,
 ] as const;
 
 function Bomb(): never {
@@ -151,8 +162,19 @@ function AdminTestApp({
             <Route path="/admin/email" element={<p>Email page</p>} />
             <Route path="/admin/usage-analytics" element={<p>Usage page</p>} />
             <Route path="/admin/market-data" element={<p>Market data page</p>} />
-            {/* A narrow workspace, for the content-width test. */}
+            {/* The nine paths W7c folded, so the rail cue for the last two
+                workspaces is checked against REAL routes rather than a
+                not-found. `/admin/settings` is also the narrow workspace the
+                content-width test uses. */}
             <Route path="/admin/settings" element={<p>Settings page</p>} />
+            <Route path="/admin/feature-flags" element={<p>Feature flags page</p>} />
+            <Route path="/admin/ai" element={<p>AI page</p>} />
+            <Route path="/admin/account-defaults" element={<p>Account defaults page</p>} />
+            <Route path="/admin/announcements" element={<p>Announcements page</p>} />
+            <Route path="/admin/audit" element={<p>Audit page</p>} />
+            <Route path="/admin/security" element={<p>Security page</p>} />
+            <Route path="/admin/oauth-apps" element={<p>OAuth apps page</p>} />
+            <Route path="/admin/api-keys" element={<p>API keys page</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -349,11 +371,44 @@ test.each([
   expect(screen.getByRole('link', { name: 'People' }).className).toContain('border-l-transparent');
 });
 
-test('a workspace that is not folded keeps exact-match highlighting', () => {
+// W7c folds the last two, so the same cue has to hold for them. Nine paths, two
+// workspaces: a rail entry that goes dark on one of its own tabs is exactly the
+// regression W2 hit and fixed.
+test.each([
+  ['/admin/settings', 'Product & Comms'],
+  ['/admin/feature-flags', 'Product & Comms'],
+  ['/admin/ai', 'Product & Comms'],
+  ['/admin/account-defaults', 'Product & Comms'],
+  ['/admin/announcements', 'Product & Comms'],
+  ['/admin/audit', 'Security & API'],
+  ['/admin/security', 'Security & API'],
+  ['/admin/oauth-apps', 'Security & API'],
+  ['/admin/api-keys', 'Security & API'],
+])('the folded rail entry for %s stays marked on %s', (path, workspace) => {
+  render(<AdminTestApp initialPath={path} usersElement={<p>Users page</p>} />);
+
+  expect(screen.getByRole('link', { name: workspace }).className).toContain('border-l-sky-500');
+
+  // Control: the OTHER newly folded workspace must not light up on the same
+  // path, so "everything is active" cannot pass this test.
+  const other = workspace === 'Product & Comms' ? 'Security & API' : 'Product & Comms';
+  expect(screen.getByRole('link', { name: other }).className).toContain('border-l-transparent');
+  expect(screen.getByRole('link', { name: 'People' }).className).toContain('border-l-transparent');
+});
+
+/**
+ * A workspace with no children still highlights on its own route ONLY. Overview
+ * owns `/admin`, and `adminWorkspaceOwnsPath` is applied to folded workspaces
+ * alone — a prefix match on an unfolded `to` would let Overview claim the whole
+ * console.
+ */
+test('a workspace that folds nothing keeps exact-match highlighting', () => {
   render(<AdminTestApp initialPath="/admin/settings" usersElement={<p>Users page</p>} />);
 
-  expect(screen.getByRole('link', { name: 'Settings' }).className).toContain('border-l-sky-500');
-  expect(screen.getByRole('link', { name: 'People' }).className).toContain('border-l-transparent');
+  expect(screen.getByRole('link', { name: 'Overview' }).className).toContain(
+    'border-l-transparent',
+  );
+  expect(screen.getByRole('link', { name: 'Support' }).className).toContain('border-l-transparent');
 });
 
 test('every admin shell key is available in every supported locale', () => {
@@ -367,8 +422,14 @@ test('every admin shell key is available in every supported locale', () => {
 test.each(['en', 'de'] as const)('every navigation entry resolves through %s', (locale) => {
   renderAdmin('/admin/invites', locale);
 
-  for (const key of ADMIN_NAV_KEYS) {
-    expect(screen.getByRole('link', { name: localizedMessage(locale, key) })).toBeInTheDocument();
+  // Nothing but the six workspace labels is a rail row since W7c: the nine page
+  // rows that used to be asserted here are tabs now, and this is the assertion
+  // that a fold did not quietly leave one behind in the sidebar.
+  for (const key of [...ADMIN_PRODUCT_TAB_KEYS, ...ADMIN_SECURITY_TAB_KEYS]) {
+    expect(
+      screen.queryByRole('link', { name: localizedMessage(locale, key) }),
+      key,
+    ).not.toBeInTheDocument();
   }
   for (const key of ADMIN_WORKSPACE_KEYS) {
     expect(
@@ -420,17 +481,13 @@ test.each(['en', 'de'] as const)(
     const column = people.closest('div')!;
     expect(within(column).getAllByRole('link')).toEqual([people]);
 
-    // Control, same query: Product & Comms has NOT folded — W7 was cut, so it
-    // keeps W1's page rows — and its column still carries child rows. Without
-    // this, "one link in the column" could just mean the query never sees child
-    // rows at all. Since W7b its label is a LINK as well (a landing, not a
-    // fold), so the distinction the fold makes is the child rows, not the
-    // heading: folded ⇒ one link in the column, unfolded ⇒ many. (This control
-    // was Operations until W4 folded that too.)
-    const unfolded = within(nav).getByRole('heading', {
-      name: localizedMessage(locale, 'admin.nav.sections.product'),
-    });
-    expect(within(unfolded.closest('div')!).getAllByRole('link').length).toBeGreaterThan(1);
+    // Control: since W7c there is no unfolded workspace left to compare
+    // against, so the claim is made over the WHOLE rail instead — six
+    // workspaces, six links. A child row surviving anywhere raises that count,
+    // which is the same failure the per-column check caught and a stronger one,
+    // because it is not scoped to one workspace. (The control was Operations
+    // until W4 folded it, then Product & Comms until W7c folded that.)
+    expect(within(nav).getAllByRole('link')).toHaveLength(ADMIN_WORKSPACE_KEYS.length);
 
     for (const key of ADMIN_PEOPLE_TAB_KEYS) {
       expect(
@@ -470,13 +527,17 @@ test.each(['en', 'de'] as const)(
       name: localizedMessage(locale, 'admin.palette.title'),
     });
 
-    // Anchored: a folded tab's row also carries "People" as its workspace meta,
+    // Anchored: every folded tab's row carries "People" as its workspace meta,
     // so an unanchored needle would match three rows and prove nothing.
     for (const key of [
       'admin.nav.registration',
       'admin.nav.invites',
-      // /admin/users rides in on the workspace label itself.
-      'admin.nav.sections.people',
+      // The landing `/admin/users` is labelled with its own PAGE name since
+      // W7c — before that it wore the workspace label, which is what made
+      // "Users" stop matching it. The workspace name still matches it through
+      // `matchKeys`; that half is asserted in AdminCommandPalette.test.tsx,
+      // where the row's destination can be proven by navigating.
+      'admin.nav.users',
     ] as const) {
       expect(
         within(palette).getByRole('option', {
@@ -742,50 +803,79 @@ test('navigating from inside the drawer closes it', async () => {
 });
 
 /**
- * #1406 W7b. Every one of the six rail labels has to LEAD somewhere: two of them
- * were headings that navigated nowhere, so a third of the console's top-level
- * navigation was a caption. The fix is a `to`, and only a `to` — the nav fold of
- * these two workspaces stays cut (§16 2026-08-29 ruling 3).
+ * #1406 W7b gave every one of the six rail labels somewhere to LEAD — two of
+ * them were headings that navigated nowhere, so a third of the console's
+ * top-level navigation was a caption. W7c then folded the last two (§16
+ * 2026-09-14), so the rail IS those six links and nothing else: one navigation
+ * shape across the console.
  */
-test('all six workspace labels are links, and the two newest are landings not folds', () => {
+test('the folded rail is six workspace links and nothing else', () => {
   renderAdmin('/admin/settings');
 
   const nav = screen.getByRole('navigation', { name: 'Admin console' });
-  expect(within(nav).getByRole('link', { name: 'Product & Comms' })).toHaveAttribute(
-    'href',
+  const links = within(nav).getAllByRole('link');
+  expect(links.map((link) => link.textContent)).toEqual([
+    'Overview',
+    'Support',
+    'People',
+    'Operations',
+    'Product & Comms',
+    'Security & API',
+  ]);
+  expect(links.map((link) => link.getAttribute('href'))).toEqual([
+    '/admin',
+    '/admin/support',
+    '/admin/users',
+    '/admin/health',
     '/admin/settings',
-  );
-  expect(within(nav).getByRole('link', { name: 'Security & API' })).toHaveAttribute(
-    'href',
     '/admin/audit',
-  );
+  ]);
 
-  // …and the page rows they had in W1 are all still there, which is what makes
-  // this a landing rather than a fold.
-  for (const [name, href] of [
-    ['Settings', '/admin/settings'],
-    ['Feature flags', '/admin/feature-flags'],
-    ['Announcements', '/admin/announcements'],
-    ['Audit log', '/admin/audit'],
-    ['API keys', '/admin/api-keys'],
-  ] as const) {
-    expect(within(nav).getByRole('link', { name }), name).toHaveAttribute('href', href);
+  // The nine W1 page rows the fold absorbed are gone from the rail and live on
+  // the page's tab strip — the strip itself is asserted in WorkspaceTabs.test.
+  for (const name of ['Settings', 'Feature flags', 'Announcements', 'Audit log', 'API keys']) {
+    expect(within(nav).queryByRole('link', { name }), name).not.toBeInTheDocument();
   }
 });
 
-test('a landing that duplicates a page row does not become a second ⌘K destination', () => {
-  // `/admin/settings` is both Product & Comms' landing and its own page row. The
-  // palette must offer it ONCE, labelled with the page name an operator would
-  // type — two rows for one route is the kind of noise a palette dies of.
+test('a landing that is also a tab does not become a second ⌘K destination', () => {
+  // `/admin/settings` is both Product & Comms' landing and its own first tab.
+  // The palette must offer it ONCE, labelled with the page name an operator
+  // would type — two rows for one route is the kind of noise a palette dies of,
+  // and labelling it "Product & Comms" alone would cost the fold a ⌘K hit for
+  // "Settings", which is the reachability the fold promised not to spend.
   const settings = ADMIN_DESTINATIONS.filter((d) => d.to === '/admin/settings');
   expect(settings).toHaveLength(1);
   expect(settings[0]!.labelKey).toBe('admin.nav.settings');
+  expect(settings[0]!.matchKeys).toEqual(['admin.nav.sections.product']);
 
   const audit = ADMIN_DESTINATIONS.filter((d) => d.to === '/admin/audit');
   expect(audit).toHaveLength(1);
   expect(audit[0]!.labelKey).toBe('admin.nav.audit');
+  expect(audit[0]!.matchKeys).toEqual(['admin.nav.sections.securityApi']);
 
   // No duplicate anywhere in the registry, not just on these two.
   const paths = ADMIN_DESTINATIONS.map((d) => d.to);
   expect(paths).toHaveLength(new Set(paths).size);
+});
+
+// The W7c fold must cost no reachability either: the nine paths the rail stopped
+// listing are all still ⌘K destinations, each attributed to its own workspace so
+// the palette groups them correctly.
+test('the W7c fold costs no reachability — all nine folded paths stay destinations', () => {
+  for (const [to, workspaceKey] of [
+    ['/admin/settings', 'product'],
+    ['/admin/feature-flags', 'product'],
+    ['/admin/ai', 'product'],
+    ['/admin/account-defaults', 'product'],
+    ['/admin/announcements', 'product'],
+    ['/admin/audit', 'security'],
+    ['/admin/security', 'security'],
+    ['/admin/oauth-apps', 'security'],
+    ['/admin/api-keys', 'security'],
+  ] as const) {
+    const row = ADMIN_DESTINATIONS.find((destination) => destination.to === to);
+    expect(row, to).toBeDefined();
+    expect(row?.workspaceKey, to).toBe(workspaceKey);
+  }
 });

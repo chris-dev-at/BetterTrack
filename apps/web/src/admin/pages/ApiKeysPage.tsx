@@ -12,6 +12,7 @@ import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { ListPagination, useOffsetSnapBack, type ListPage } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   Badge,
@@ -64,6 +65,7 @@ export function ApiKeysPage() {
         title={t('admin.apiKeys.title')}
         description={t('admin.apiKeys.subtitle')}
       />
+      <WorkspaceTabs />
       <TiersPanel
         tiers={tiers.data?.tiers ?? []}
         loading={tiers.loading}
