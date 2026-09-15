@@ -23,6 +23,10 @@ import type { AppConfig } from '../../config/env';
 import type { ApiKeyService } from '../apiKeys/apiKeyService';
 import type { OAuthService } from '../oauth/oauthService';
 import type {
+  AdminModerationActionRow,
+  AdminModerationRepository,
+} from '../../data/repositories/adminModerationRepository';
+import type {
   AdminPeopleRepository,
   AdminUserNoteRow,
   AdminUserSharingCounts,
@@ -68,6 +72,8 @@ export interface AdminServiceDeps {
   userRepo: UserRepository;
   /** Cross-table reads + operator notes behind the People 360 tabs (#1406 W2). */
   people: AdminPeopleRepository;
+  /** The moderation record + the review flag (#1907 ADMIN-W5). */
+  moderation: AdminModerationRepository;
   inviteRepo: InviteRepository;
   /** Registration access tokens for the `invite_token` mode (§13.4 V4-P4a). */
   registrationTokenRepo: RegistrationTokenRepository;
@@ -122,6 +128,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     redis,
     userRepo,
     people,
+    moderation,
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,
@@ -247,11 +254,16 @@ export function createAdminService(deps: AdminServiceDeps) {
     actor: AdminActor,
     changedStatus: boolean,
     via?: 'bulk',
+    moderationId?: string,
   ): Promise<DisableCleanup> {
     const cleanup = await runDisableCleanup(target.id);
     const meta = {
       ...(via ? { via } : {}),
       ...(changedStatus ? {} : { repair: true }),
+      // The moderation row's ID, never its reason (#1907): the reason is a
+      // bounded column in one place, and copying free prose into the audit
+      // log's unbounded `meta` would create a second store of it.
+      ...(moderationId ? { moderationId } : {}),
       ...(cleanup.ok ? {} : { cleanup: 'incomplete', step: cleanup.step }),
     };
     await audit.record({
@@ -281,7 +293,11 @@ export function createAdminService(deps: AdminServiceDeps) {
     await invalidateAllRealtimePrincipals(target.id);
   }
 
-  async function finishEnableUser(target: UserRow, actor: AdminActor): Promise<void> {
+  async function finishEnableUser(
+    target: UserRow,
+    actor: AdminActor,
+    moderationId?: string,
+  ): Promise<void> {
     // Re-enabling must let the user back in immediately — drop any failed-login
     // / lockout state accrued before they were disabled.
     await clearLoginThrottle(redis, target.id);
@@ -291,6 +307,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       targetType: 'user',
       targetId: target.id,
       ip: actor.ip,
+      ...(moderationId ? { meta: { moderationId } } : {}),
     });
   }
 
@@ -306,47 +323,68 @@ export function createAdminService(deps: AdminServiceDeps) {
    */
   async function bulkDisableUsers(
     userIds: string[],
+    reason: string,
     actor: AdminActor,
   ): Promise<BulkUserActionOutcome[]> {
     // Stable target order prevents two overlapping bulk requests from taking
     // ordinary user-row locks in opposite order.
     const unique = [...new Set(userIds)].sort();
-    const { toDisable, skippedIds } = await userRepo.withSerializedAdminMutation(async (repo) => {
-      const selected: Array<{ target: UserRow; statusChanged: boolean }> = [];
-      const skipped: string[] = [];
+    const { toDisable, skippedIds } = await userRepo.withSerializedAdminMutation(
+      async (repo, tx) => {
+        // Bound to the caller's transaction (#1907): one row per affected
+        // account, committed with the suspensions themselves. A batch can
+        // therefore never leave 200 unreasoned suspensions behind.
+        const record = moderation.forTransaction(tx);
+        const selected: Array<{ target: UserRow; statusChanged: boolean; moderationId: string }> =
+          [];
+        const skipped: string[] = [];
 
-      for (const id of unique) {
-        const target = await repo.findByIdForUpdate(id);
-        if (!target || target.id === actor.id) {
-          skipped.push(id);
-          continue;
+        for (const id of unique) {
+          const target = await repo.findByIdForUpdate(id);
+          if (!target || target.id === actor.id) {
+            skipped.push(id);
+            continue;
+          }
+          // An already-suspended row is NOT skipped: it gets the same repair
+          // pass a repeat single disable gets. The last-admin guard is about
+          // ACTIVE admins, so such a row cannot take the count to zero.
+          let statusChanged = false;
+          if (target.status === 'active') {
+            if (target.role === 'admin' && (await repo.countActiveAdmins()) <= 1) {
+              skipped.push(id);
+              continue;
+            }
+            await repo.setStatus(target.id, 'disabled');
+            statusChanged = true;
+          }
+          // Every row the batch AFFECTS — suspended or repaired — carries the
+          // batch's one reason. A skipped row gets none: nothing was done to it.
+          const { id: moderationId } = await record.record({
+            userId: target.id,
+            actorId: actor.id,
+            action: 'disable',
+            reason,
+            previousValue: target.status,
+            nextValue: 'disabled',
+          });
+          selected.push({ target, statusChanged, moderationId });
         }
-        if (target.status !== 'active') {
-          // Already suspended — the last-admin guard is about ACTIVE admins, so
-          // this row cannot take the count to zero. Repair it instead.
-          selected.push({ target, statusChanged: false });
-          continue;
-        }
-        if (target.role === 'admin' && (await repo.countActiveAdmins()) <= 1) {
-          skipped.push(id);
-          continue;
-        }
-        await repo.setStatus(target.id, 'disabled');
-        selected.push({ target, statusChanged: true });
-      }
 
-      return { toDisable: selected, skippedIds: skipped };
-    });
+        return { toDisable: selected, skippedIds: skipped };
+      },
+    );
 
     // The transaction committed every status first. Cleanup cannot reopen an
     // account if one target's credential/session revocation fails.
     const outcomes = new Map<string, BulkUserActionOutcome['outcome']>(
       skippedIds.map((id) => [id, 'skipped'] as const),
     );
-    for (const { target, statusChanged } of toDisable) {
+    for (const { target, statusChanged, moderationId } of toDisable) {
       let complete: boolean;
       try {
-        complete = (await finishDisableUser(target, actor, statusChanged, 'bulk')).ok;
+        // The moderation row is already committed with the status: a row whose
+        // cleanup fails below still has its record, which is the point.
+        complete = (await finishDisableUser(target, actor, statusChanged, 'bulk', moderationId)).ok;
       } catch (err) {
         // The audit write itself failed. The suspension is already durable, so
         // the batch continues and this row is reported as needing repair.
@@ -376,6 +414,10 @@ export function createAdminService(deps: AdminServiceDeps) {
         ...(query.role !== undefined ? { role: query.role } : {}),
         ...(query.status !== undefined ? { status: query.status } : {}),
         ...(query.privacyMode !== undefined ? { privacyMode: query.privacyMode } : {}),
+        // Tri-state (#1907): `undefined` must reach the repository as "no
+        // filter", not as `false`, or the default list would silently hide
+        // every flagged account — the exact accounts an operator is looking for.
+        ...(query.flagged !== undefined ? { flagged: query.flagged } : {}),
         sort: query.sort,
         direction: query.direction,
         limit: query.limit,
@@ -474,6 +516,104 @@ export function createAdminService(deps: AdminServiceDeps) {
       });
     },
 
+    /**
+     * The Moderation tab (#1907 ADMIN-W5): why this account is in the state it
+     * is in, who decided, and whether it was ever reversed. Paged through the
+     * shared admin window bounds, newest first, ownership-scoped inside the
+     * repository so a request for account A can never surface account B's rows.
+     */
+    async listModeration(
+      id: string,
+      query: AdminListQuery,
+    ): Promise<{ rows: AdminModerationActionRow[]; total: number }> {
+      await loadUser(id);
+      return moderation.listFor(id, query.limit, query.offset);
+    },
+
+    /** Which of these accounts carry a review flag — one query for a page. */
+    flaggedAmong: (userIds: string[]) => moderation.flaggedAmong(userIds),
+
+    /**
+     * Raise (or re-state) the review flag — "watch this" without suspending
+     * anything. `disabled` remains THE suspension (§6.12): a flag changes
+     * nothing the account can observe, kills no session and revokes no
+     * credential, which is exactly why it can be raised on a suspicion.
+     *
+     * Idempotent: flagging twice leaves ONE flag row carrying the latest reason
+     * and appends a second action, because re-flagging with a new reason is a
+     * second decision an operator made and the record is the history.
+     */
+    async flagUser(id: string, reason: string, actor: AdminActor): Promise<void> {
+      await loadUser(id);
+      const trimmed = reason.trim();
+      if (!trimmed) {
+        throw badRequest('A reason is required for this change.', 'MODERATION_REASON_REQUIRED');
+      }
+      const moderationId = await moderation.inTransaction(async (queries) => {
+        const previous = await queries.flagFor(id);
+        await queries.upsertFlag({ userId: id, reason: trimmed, flaggedBy: actor.id });
+        const { id: recordId } = await queries.record({
+          userId: id,
+          actorId: actor.id,
+          action: 'flag',
+          reason: trimmed,
+          previousValue: previous ? 'flagged' : 'unflagged',
+          nextValue: 'flagged',
+        });
+        return recordId;
+      });
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.AdminUserFlagged,
+        targetType: 'user',
+        targetId: id,
+        ip: actor.ip,
+        meta: { moderationId },
+      });
+    },
+
+    /**
+     * Clear the review flag. Clearing an unflagged account is a no-op: it
+     * returns success (a 404 would make the console's "unflag" fail on a flag
+     * another operator just cleared) and writes NO action, because nothing was
+     * moderated and an invented row would be a lie in the one record that has
+     * to stay readable.
+     */
+    async unflagUser(id: string, reason: string | undefined, actor: AdminActor): Promise<void> {
+      await loadUser(id);
+      const removed = await moderation.inTransaction(async (queries) => {
+        const previous = await queries.flagFor(id);
+        if (!previous) return null;
+        // The DELETE is what decides, not the read above it: two operators
+        // clearing the same flag both see `previous` and only one of them
+        // actually removes a row. Without this, the loser would append an
+        // `unflag` for something it did not do.
+        if (!(await queries.deleteFlag(id))) return null;
+        const { id: recordId } = await queries.record({
+          userId: id,
+          actorId: actor.id,
+          action: 'unflag',
+          // No reason travels on the DELETE, so the record keeps the reason the
+          // flag itself carried — the row then reads as "this is the suspicion
+          // that was cleared", which is what an operator needs, and no prose is
+          // invented on anyone's behalf.
+          reason: reason?.trim() || previous.reason,
+          previousValue: 'flagged',
+          nextValue: 'unflagged',
+        });
+        return recordId;
+      });
+      if (removed === null) return;
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.AdminUserUnflagged,
+        targetType: 'user',
+        targetId: id,
+        ip: actor.ip,
+        meta: { moderationId: removed },
+      });
+    },
+
     async createUser(
       input: CreateUserRequest,
       actor: AdminActor,
@@ -525,8 +665,19 @@ export function createAdminService(deps: AdminServiceDeps) {
 
     async updateUser(id: string, input: UpdateUserRequest, actor: AdminActor): Promise<UserRow> {
       let enablePrepared = false;
+      const reason = input.reason?.trim();
+      // Defence in depth behind `updateUserRequestSchema`'s superRefine
+      // (#1907): the contract is what refuses the REQUEST, and this is what
+      // makes the invariant true for every caller of the service, test harness
+      // included. Generic and state-free (§10) — it names the missing field and
+      // discloses nothing about the account.
+      const moderates =
+        input.status === 'disabled' || input.chatBanned === true || input.role !== undefined;
+      if (moderates && !reason) {
+        throw badRequest('A reason is required for this change.', 'MODERATION_REASON_REQUIRED');
+      }
       const runMutation = () =>
-        userRepo.withSerializedAdminMutation(async (repo) => {
+        userRepo.withSerializedAdminMutation(async (repo, tx) => {
           const target = await repo.findByIdForUpdate(id);
           if (!target) throw notFound('User not found.', 'USER_NOT_FOUND');
 
@@ -552,13 +703,62 @@ export function createAdminService(deps: AdminServiceDeps) {
             return { kind: 'prepare-enable' as const, target };
           }
 
+          // Bound to THIS transaction (#1907). Each moderation row is written
+          // immediately after the state change it describes and before the
+          // remaining field edits, so any later failure in this callback — a
+          // taken e-mail, a taken username — rolls the row back together with
+          // the change. A suspension without its reason cannot be committed.
+          const record = moderation.forTransaction(tx);
+          let statusModerationId: string | undefined;
+          let roleModerationId: string | undefined;
+          let chatModerationId: string | undefined;
+
           if (statusChanged) {
             await repo.setStatus(target.id, input.status!);
+          }
+          if (input.status === 'disabled' && reason) {
+            // Recorded even when the status did not change: an explicit repeat
+            // disable is a repair an operator asked for, and it carries its own
+            // reason exactly like the first one did.
+            statusModerationId = (
+              await record.record({
+                userId: target.id,
+                actorId: actor.id,
+                action: 'disable',
+                reason,
+                previousValue: target.status,
+                nextValue: 'disabled',
+              })
+            ).id;
+          } else if (input.status === 'active' && statusChanged && reason) {
+            // A reversal needs no reason by contract — the console always sends
+            // one, and when it does the record answers "was it ever reversed?"
+            // without the operator reading the raw audit stream.
+            statusModerationId = (
+              await record.record({
+                userId: target.id,
+                actorId: actor.id,
+                action: 'enable',
+                reason,
+                previousValue: target.status,
+                nextValue: 'active',
+              })
+            ).id;
           }
 
           if (roleChanged) {
             const securityGeneration = await repo.setRole(target.id, input.role!);
             if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
+            roleModerationId = (
+              await record.record({
+                userId: target.id,
+                actorId: actor.id,
+                action: 'role_change',
+                reason: reason!,
+                previousValue: target.role,
+                nextValue: input.role!,
+              })
+            ).id;
           }
 
           let changedEmail: string | undefined;
@@ -594,6 +794,20 @@ export function createAdminService(deps: AdminServiceDeps) {
               : undefined;
           if (changedChatBan !== undefined) {
             await repo.setChatBanned(target.id, changedChatBan);
+            // A ban always carries a reason (the contract requires it); an
+            // unban records one whenever the caller supplied it.
+            if (reason) {
+              chatModerationId = (
+                await record.record({
+                  userId: target.id,
+                  actorId: actor.id,
+                  action: changedChatBan ? 'chat_ban' : 'chat_unban',
+                  reason,
+                  previousValue: target.chatBanned ? 'banned' : 'allowed',
+                  nextValue: changedChatBan ? 'banned' : 'allowed',
+                })
+              ).id;
+            }
           }
 
           const user = await repo.findById(target.id);
@@ -607,6 +821,9 @@ export function createAdminService(deps: AdminServiceDeps) {
             changedEmail,
             changedUsername,
             changedChatBan,
+            statusModerationId,
+            roleModerationId,
+            chatModerationId,
           };
         });
       let outcome = await runMutation();
@@ -624,12 +841,18 @@ export function createAdminService(deps: AdminServiceDeps) {
         // An explicit repeat disable repairs a previous fail-closed cleanup
         // failure without ever making the account active again — and is audited
         // whether or not it changed the status, so a repair is never silent.
-        const cleanup = await finishDisableUser(mutation.target, actor, mutation.statusChanged);
+        const cleanup = await finishDisableUser(
+          mutation.target,
+          actor,
+          mutation.statusChanged,
+          undefined,
+          mutation.statusModerationId,
+        );
         // Re-raise AFTER the audit row: the suspension stays fail-closed and the
         // operator's request still fails, but the record of it now survives.
         if (!cleanup.ok) throw cleanup.error;
       } else if (input.status === 'active' && mutation.statusChanged) {
-        await finishEnableUser(mutation.target, actor);
+        await finishEnableUser(mutation.target, actor, mutation.statusModerationId);
       }
 
       if (mutation.roleChanged) {
@@ -640,7 +863,10 @@ export function createAdminService(deps: AdminServiceDeps) {
           targetType: 'user',
           targetId: mutation.target.id,
           ip: actor.ip,
-          meta: { role: input.role },
+          meta: {
+            role: input.role,
+            ...(mutation.roleModerationId ? { moderationId: mutation.roleModerationId } : {}),
+          },
         });
       }
 
@@ -675,6 +901,9 @@ export function createAdminService(deps: AdminServiceDeps) {
           targetType: 'user',
           targetId: mutation.target.id,
           ip: actor.ip,
+          ...(mutation.chatModerationId
+            ? { meta: { moderationId: mutation.chatModerationId } }
+            : {}),
         });
       }
 
@@ -688,7 +917,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     ): Promise<BulkUserActionResponse> {
       switch (input.action) {
         case 'disable': {
-          const results = await bulkDisableUsers(input.userIds, actor);
+          const results = await bulkDisableUsers(input.userIds, input.reason.trim(), actor);
           const tally = (outcome: BulkUserActionOutcome['outcome']) =>
             results.filter((row) => row.outcome === outcome).length;
           return {
@@ -760,22 +989,43 @@ export function createAdminService(deps: AdminServiceDeps) {
       // inactive row and therefore cannot take the count from one to zero. If
       // later session or MIRRORCHAIN cleanup fails, any target (including an
       // ordinary user) deliberately remains disabled and fail-closed for retry.
-      const { target, statusChanged } = await userRepo.withSerializedAdminMutation(async (repo) => {
-        const lockedTarget = await repo.findByIdForUpdate(id);
-        if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
-        if (lockedTarget.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
-          throw badRequest('Username confirmation does not match.', 'CONFIRMATION_MISMATCH');
-        }
-        if (lockedTarget.id === actor.id) {
-          throw badRequest('You cannot delete your own account.', 'SELF_ACTION');
-        }
-        await ensureActiveAdminRemains(repo, lockedTarget, false);
-        if (lockedTarget.status !== 'disabled') {
-          await repo.setStatus(lockedTarget.id, 'disabled');
-          return { target: lockedTarget, statusChanged: true };
-        }
-        return { target: lockedTarget, statusChanged: false };
-      });
+      const { target, statusChanged, moderationId } = await userRepo.withSerializedAdminMutation(
+        async (repo, tx) => {
+          const lockedTarget = await repo.findByIdForUpdate(id);
+          if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
+          if (lockedTarget.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
+            throw badRequest('Username confirmation does not match.', 'CONFIRMATION_MISMATCH');
+          }
+          if (lockedTarget.id === actor.id) {
+            throw badRequest('You cannot delete your own account.', 'SELF_ACTION');
+          }
+          await ensureActiveAdminRemains(repo, lockedTarget, false);
+          const changed = lockedTarget.status !== 'disabled';
+          if (changed) await repo.setStatus(lockedTarget.id, 'disabled');
+          // The reservation is a real suspension that OUTLIVES a failed delete
+          // (#1907): the account stays locked out for retry, so it needs its
+          // row like any other suspension — otherwise the Moderation tab of a
+          // half-deleted account reads "no moderation action has been taken".
+          // Written in the reservation's own transaction; when the delete
+          // succeeds it cascades away with the account, so the record self-
+          // cleans and only an interrupted delete leaves a trace.
+          //
+          // The reason is SYSTEM-authored and says so. `DELETE
+          // /admin/users/:id` carries no operator reason (its confirmation is
+          // the typed username), and inventing prose in an operator's voice in
+          // the one record that has to stay readable would be worse than
+          // stating the mechanical fact.
+          const { id: recordId } = await moderation.forTransaction(tx).record({
+            userId: lockedTarget.id,
+            actorId: actor.id,
+            action: 'delete_reservation',
+            reason: 'Account deletion reserved by the console; cleanup pending.',
+            previousValue: lockedTarget.status,
+            nextValue: 'disabled',
+          });
+          return { target: lockedTarget, statusChanged: changed, moderationId: recordId };
+        },
+      );
       try {
         await sessions.destroyAllForUser(target.id);
         await removeRememberedDeviceBindings(redis, target.id);
@@ -809,6 +1059,9 @@ export function createAdminService(deps: AdminServiceDeps) {
               reason: 'delete_incomplete',
               cleanup: 'incomplete',
               statusChanged,
+              // Points AT the reservation's moderation row (#1907), which
+              // survived with the suspension it explains.
+              moderationId,
             },
           });
         } catch (auditError) {

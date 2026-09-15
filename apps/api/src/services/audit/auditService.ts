@@ -70,6 +70,15 @@ export const AuditAction = {
    */
   AdminUserNoteAdded: 'user.note_added',
   AdminUserNoteDeleted: 'user.note_deleted',
+  /**
+   * Review flag (#1907 ADMIN-W5). A flag suspends nothing — it is the
+   * non-destructive "look at this again" that stops `disabled` from being the
+   * only lever an operator has. `meta` carries the moderation-action id only,
+   * never the reason: the reason is a bounded column in
+   * `admin_moderation_actions` and belongs in exactly one place.
+   */
+  AdminUserFlagged: 'user.flagged',
+  AdminUserUnflagged: 'user.unflagged',
   /** Admin workspace hygiene for the helpdesk queue; no submitter lifecycle change. */
   FeedbackArchived: 'feedback.archived',
   FeedbackUnarchived: 'feedback.unarchived',

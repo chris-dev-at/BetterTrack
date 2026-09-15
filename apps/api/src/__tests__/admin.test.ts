@@ -577,7 +577,7 @@ describe('administrator role-transition generation (#888)', () => {
     const promoted = await adminAgent
       .patch(`/api/v1/admin/users/${target.id}`)
       .set(...XRW)
-      .send({ role: 'admin' });
+      .send({ role: 'admin', reason: 'Promoted to operate the console.' });
     cleanup.mockRestore();
 
     expect(promoted.status).toBe(200);
@@ -722,7 +722,7 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     const patched = await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     expect(patched.status).toBe(200);
 
     // Existing session is dead.
@@ -761,7 +761,7 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     const failed = await adminAgent
       .patch(`/api/v1/admin/users/${user.id}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     expect(failed.status).toBe(500);
 
     const [suspended] = await harness.db
@@ -778,7 +778,7 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     const enabled = await adminAgent
       .patch(`/api/v1/admin/users/${user.id}`)
       .set(...XRW)
-      .send({ status: 'active' });
+      .send({ status: 'active', reason: 'Review closed, account restored.' });
     expect(enabled.status).toBe(200);
 
     const [revokedKey] = await harness.db
@@ -809,7 +809,7 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     const failed = await adminAgent
       .patch(`/api/v1/admin/users/${user.id}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     expect(failed.status).toBe(500);
     revoke.mockRestore();
 
@@ -823,7 +823,13 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
       await harness.db.select().from(schema.auditLog).where(eq(schema.auditLog.targetId, user.id))
     ).filter((entry) => entry.action === 'user.disabled');
     expect(disabledRows).toHaveLength(1);
-    expect(disabledRows[0]!.meta).toEqual({ cleanup: 'incomplete', step: 'api_keys' });
+    expect(disabledRows[0]!.meta).toEqual({
+      // The moderation row committed WITH the status change, so the half-applied
+      // suspension still carries its reason (#1907) — the audit row points at it.
+      moderationId: expect.any(String),
+      cleanup: 'incomplete',
+      step: 'api_keys',
+    });
   });
 
   it('audits a repeat disable that only repairs, instead of recording nothing', async () => {
@@ -835,7 +841,7 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
       const res = await adminAgent
         .patch(`/api/v1/admin/users/${user.id}`)
         .set(...XRW)
-        .send({ status: 'disabled' });
+        .send({ status: 'disabled', reason: 'Suspended pending review.' });
       expect(res.status, `attempt ${attempt}`).toBe(200);
     }
 
@@ -846,7 +852,10 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     // The second call changed no status but did repair work — it is recorded as
     // a repair rather than disappearing from the log entirely.
     expect(disabledRows.map((entry) => entry.meta)).toEqual(
-      expect.arrayContaining([null, { repair: true }]),
+      expect.arrayContaining([
+        { moderationId: expect.any(String) },
+        { repair: true, moderationId: expect.any(String) },
+      ]),
     );
   });
 });
@@ -885,6 +894,9 @@ describe('interrupted admin delete (PROJECTPLAN.md §6.12)', () => {
       reason: 'delete_incomplete',
       cleanup: 'incomplete',
       statusChanged: true,
+      // The reservation's moderation row (#1907), which survived with the
+      // suspension it explains; the audit row points at it, never at its text.
+      moderationId: expect.any(String),
     });
     expect(entries.some((entry) => entry.action === 'user.deleted')).toBe(false);
   });
@@ -1045,11 +1057,11 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
     await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     const reenabled = await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
       .set(...XRW)
-      .send({ status: 'active' });
+      .send({ status: 'active', reason: 'Review closed, account restored.' });
     expect(reenabled.status).toBe(200);
 
     // Lockout was cleared by the re-enable, so the temp password works now.
@@ -1096,14 +1108,14 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
     const disableSelf = await adminAgent
       .patch(`/api/v1/admin/users/${admin.id}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     expect(disableSelf.status).toBe(400);
     expect(disableSelf.body.error.code).toBe('SELF_ACTION');
 
     const demoteSelf = await adminAgent
       .patch(`/api/v1/admin/users/${admin.id}`)
       .set(...XRW)
-      .send({ role: 'user' });
+      .send({ role: 'user', reason: 'Stepped down from the console.' });
     expect(demoteSelf.status).toBe(400);
     expect(demoteSelf.body.error.code).toBe('SELF_ACTION');
 
@@ -1127,7 +1139,7 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
     const demote = await adminAgent
       .patch(`/api/v1/admin/users/${second.id}`)
       .set(...XRW)
-      .send({ role: 'user' });
+      .send({ role: 'user', reason: 'Stepped down from the console.' });
     expect(demote.status).toBe(200);
     expect(demote.body.role).toBe('user');
   });
@@ -1147,11 +1159,15 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
           case 'disable':
             return harness.ctx.admin.updateUser(
               target.id,
-              { status: 'disabled' },
+              { status: 'disabled', reason: 'Suspended pending review.' },
               { id: actor.id },
             );
           case 'demote':
-            return harness.ctx.admin.updateUser(target.id, { role: 'user' }, { id: actor.id });
+            return harness.ctx.admin.updateUser(
+              target.id,
+              { role: 'user', reason: 'Stepped down from the console.' },
+              { id: actor.id },
+            );
           case 'delete':
             return harness.ctx.admin.deleteUser(target.id, target.username, { id: actor.id });
         }
@@ -1266,7 +1282,7 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
     const patched = await adminAgent
       .patch(`/api/v1/admin/users/${target.id}`)
       .set(...XRW)
-      .send({ role: 'user', email: existing.email });
+      .send({ role: 'user', email: existing.email, reason: 'Stepped down from the console.' });
     expect(patched.status).toBe(409);
     expect(patched.body.error.code).toBe('EMAIL_TAKEN');
 
@@ -1300,7 +1316,7 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     const bulk = await adminAgent
       .post('/api/v1/admin/users/bulk')
       .set(...XRW)
-      .send({ action: 'disable', userIds: [idA, idB] });
+      .send({ action: 'disable', reason: 'Bulk suspension under review.', userIds: [idA, idB] });
     expect(bulk.status).toBe(200);
     expect(bulk.body).toEqual({
       action: 'disable',
@@ -1334,7 +1350,11 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     const bulk = await adminAgent
       .post('/api/v1/admin/users/bulk')
       .set(...XRW)
-      .send({ action: 'disable', userIds: [userId, admin.id, userId] });
+      .send({
+        action: 'disable',
+        reason: 'Bulk suspension under review.',
+        userIds: [userId, admin.id, userId],
+      });
     expect(bulk.status).toBe(200);
     // The user disabled once; the actor and the duplicate id skipped.
     expect(bulk.body.disabled).toBe(1);
@@ -1360,7 +1380,11 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     // removes the HTTP route's self-skip from the equation. The batch itself
     // must disable one target and skip the last active administrator.
     const bulk = await harness.ctx.admin.bulkUserAction(
-      { action: 'disable', userIds: [first.id, second.id] },
+      {
+        action: 'disable',
+        reason: 'Bulk suspension under review.',
+        userIds: [first.id, second.id],
+      },
       { id: staleActor.id },
     );
     expect(bulk).toEqual({
@@ -1397,7 +1421,11 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     const bulk = await adminAgent
       .post('/api/v1/admin/users/bulk')
       .set(...XRW)
-      .send({ action: 'disable', userIds: [doomed.id, other.id] });
+      .send({
+        action: 'disable',
+        reason: 'Bulk suspension under review.',
+        userIds: [doomed.id, other.id],
+      });
     revoke.mockRestore();
 
     // No bare 500: the batch reports what happened to each row.
@@ -1416,12 +1444,18 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     const rows = await harness.db.select().from(schema.auditLog);
     const disabledFor = (userId: string) =>
       rows.find((entry) => entry.action === 'user.disabled' && entry.targetId === userId);
+    // `moderationId` points AT the moderation row (#1907) — the reason itself
+    // never travels into the audit log's unbounded `meta`.
     expect(disabledFor(doomed.id)?.meta).toEqual({
       via: 'bulk',
+      moderationId: expect.any(String),
       cleanup: 'incomplete',
       step: 'api_keys',
     });
-    expect(disabledFor(other.id)?.meta).toEqual({ via: 'bulk' });
+    expect(disabledFor(other.id)?.meta).toEqual({
+      via: 'bulk',
+      moderationId: expect.any(String),
+    });
     for (const id of [doomed.id, other.id]) {
       const [row] = await harness.db.select().from(schema.users).where(eq(schema.users.id, id));
       expect(row!.status).toBe('disabled');
@@ -1437,7 +1471,7 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     const bulk = await adminAgent
       .post('/api/v1/admin/users/bulk')
       .set(...XRW)
-      .send({ action: 'disable', userIds: [user.id] });
+      .send({ action: 'disable', reason: 'Bulk suspension under review.', userIds: [user.id] });
     expect(bulk.status).toBe(200);
     expect(bulk.body).toMatchObject({ disabled: 0, skipped: 0, repaired: 1, failed: 0 });
 
@@ -1446,7 +1480,11 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
       .from(schema.auditLog)
       .where(eq(schema.auditLog.targetId, user.id));
     const repair = rows.find((entry) => entry.action === 'user.disabled');
-    expect(repair?.meta).toEqual({ via: 'bulk', repair: true });
+    expect(repair?.meta).toEqual({
+      via: 'bulk',
+      repair: true,
+      moderationId: expect.any(String),
+    });
   });
 });
 
@@ -1464,14 +1502,14 @@ describe('per-user chat ban (PROJECTPLAN.md §13.4 V4-P0d)', () => {
     const banned = await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
       .set(...XRW)
-      .send({ chatBanned: true });
+      .send({ chatBanned: true, reason: 'Harassment reported in chat.' });
     expect(banned.status).toBe(200);
     expect(banned.body.chatBanned).toBe(true);
 
     const unbanned = await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
       .set(...XRW)
-      .send({ chatBanned: false });
+      .send({ chatBanned: false, reason: 'Ban lifted after review.' });
     expect(unbanned.status).toBe(200);
     expect(unbanned.body.chatBanned).toBe(false);
 

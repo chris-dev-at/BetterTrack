@@ -53,6 +53,7 @@ import { createPortfolioSettingsRepository } from '../data/repositories/portfoli
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createAdminModerationRepository } from '../data/repositories/adminModerationRepository';
 import { createAdminPeopleRepository } from '../data/repositories/adminPeopleRepository';
 import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
@@ -729,6 +730,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const userRepo = createUserRepository(db);
   // Cross-table reads + operator notes behind the People 360 tabs (#1406 W2).
   const adminPeopleRepo = createAdminPeopleRepository(db);
+  const adminModerationRepo = createAdminModerationRepository(db);
   const privacyLockDb = deps.lockDb ?? db;
   const paranoidSubjects = createParanoidEnforcementRepository(db);
   const paranoidGuard = createParanoidModeGuard({
@@ -1237,6 +1239,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     userRepo,
     people: adminPeopleRepo,
+    moderation: adminModerationRepo,
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,

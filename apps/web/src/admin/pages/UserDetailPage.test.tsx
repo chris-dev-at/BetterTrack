@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type {
+  AdminModerationListResponse,
   AdminUser,
   AdminUserAccessResponse,
   AdminUserNote,
@@ -90,6 +91,11 @@ const emptySharing: AdminUserSharingResponse = {
 
 const emptySupport: AdminUserSupportResponse = { items: [], total: 0, openCount: 0 };
 
+const emptyModeration: AdminModerationListResponse = {
+  actions: [],
+  page: { total: 0, limit: 25, offset: 0 },
+};
+
 function renderPage(locale = 'en', entry = '/admin/users/user-1') {
   return render(
     <I18nProvider initialLocale={locale}>
@@ -129,6 +135,10 @@ beforeEach(() => {
   vi.mocked(api.getUserSharing).mockResolvedValue(emptySharing);
   vi.mocked(api.getUserSupport).mockResolvedValue(emptySupport);
   vi.mocked(api.listUserNotes).mockResolvedValue({ notes: [] });
+  vi.mocked(api.listUserModeration).mockResolvedValue(emptyModeration);
+  vi.mocked(api.updateUser).mockResolvedValue(jane);
+  vi.mocked(api.flagUser).mockResolvedValue(undefined);
+  vi.mocked(api.unflagUser).mockResolvedValue(undefined);
   vi.mocked(api.listUserAudit).mockResolvedValue({ entries: [auditEntry], nextCursor: null });
   vi.mocked(api.listUserEmails).mockResolvedValue({ entries: [emailEntry], nextCursor: null });
 });
@@ -142,12 +152,21 @@ test('reads the one account it is showing instead of downloading the whole list'
   expect(api.listUsers).not.toHaveBeenCalled();
 });
 
-test('renders the six recovered tabs and lands on Summary', async () => {
+/**
+ * The 360 tab inventory, as SET EQUALITY rather than a presence loop (#1907): a
+ * tab that quietly disappears has to fail here, and a new one has to be added
+ * here deliberately — which is the moment it gets weighed against the §6.12
+ * kill list, exactly as `adminUserSeparation.test.ts` does for routes.
+ */
+test('renders the seven 360 tabs and lands on Summary', async () => {
   renderPage();
 
-  for (const label of ['Summary', 'Access', 'Support', 'Sharing', 'Activity', 'Notes']) {
-    expect(await screen.findByRole('tab', { name: new RegExp(label) })).toBeInTheDocument();
-  }
+  await screen.findByRole('tab', { name: /Summary/ });
+  expect(
+    // The count/marker chip is part of the tab's text content; the label is
+    // what this inventory is about.
+    screen.getAllByRole('tab').map((tab) => tab.textContent?.trim().replace(/\d+$/, '')),
+  ).toEqual(['Summary', 'Access', 'Support', 'Sharing', 'Activity', 'Moderation', 'Notes']);
   expect(screen.getByRole('tab', { name: /Summary/ })).toHaveAttribute('aria-selected', 'true');
   expect(await screen.findByDisplayValue('jane@bettertrack.test')).toBeInTheDocument();
 });
@@ -573,4 +592,187 @@ test('the support snapshot carries account facts and no vault contents', async (
   expect(body).not.toMatch(/holding/i);
   expect(body).not.toMatch(/drive/i);
   expect(body).not.toMatch(/decrypt/i);
+});
+
+// ── #1907 ADMIN-W5: moderation depth ─────────────────────────────────────────
+// The console half of "every moderation action carries a reason, is attributed
+// to a named operator, and lands in a record the next operator can read". The
+// server refuses an unreasoned suspension; these assert that the console never
+// even composes one, which is what an operator actually experiences.
+
+test('the Moderation tab opens from ?tab=moderation and renders the record', async () => {
+  vi.mocked(api.listUserModeration).mockResolvedValue({
+    actions: [
+      {
+        id: '00000000-0000-7000-8000-00000000aa01',
+        action: 'disable',
+        reason: 'Two accounts reported harassment in chat.',
+        previousValue: 'active',
+        nextValue: 'disabled',
+        actorId: 'admin-1',
+        actorUsername: 'rootadmin',
+        createdAt: '2026-09-10T08:00:00.000Z',
+      },
+      {
+        id: '00000000-0000-7000-8000-00000000aa02',
+        action: 'enable',
+        reason: 'Report withdrawn by both reporters.',
+        previousValue: 'disabled',
+        nextValue: 'active',
+        // The operator who decided is gone: a tombstone, never a lost row.
+        actorId: null,
+        actorUsername: null,
+        createdAt: '2026-09-11T08:00:00.000Z',
+      },
+    ],
+    page: { total: 2, limit: 25, offset: 0 },
+  });
+
+  renderPage('en', '/admin/users/user-1?tab=moderation');
+
+  expect(await screen.findByRole('tab', { name: /Moderation/ })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  expect(await screen.findByText('Two accounts reported harassment in chat.')).toBeInTheDocument();
+  expect(screen.getByText('Report withdrawn by both reporters.')).toBeInTheDocument();
+  expect(screen.getByText('rootadmin')).toBeInTheDocument();
+  expect(screen.getByText('Operator no longer on the team')).toBeInTheDocument();
+  expect(screen.getByText('Active → Disabled')).toBeInTheDocument();
+  await waitFor(() =>
+    expect(api.listUserModeration).toHaveBeenCalledWith('user-1', {}, expect.anything()),
+  );
+});
+
+test('the Moderation tab says so when nothing has ever been done to the account', async () => {
+  renderPage('en', '/admin/users/user-1?tab=moderation');
+
+  expect(
+    await screen.findByText('No moderation action has been taken on this account.'),
+  ).toBeInTheDocument();
+});
+
+test('disabling is not submittable without a reason, and sends the one that was typed', async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Disable' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Disable this account' });
+  const confirm = within(dialog).getByRole('button', { name: 'Disable account' });
+
+  // Blocked in the UI before the request goes out — not merely refused by the
+  // server after it does.
+  expect(confirm).toBeDisabled();
+  await user.click(confirm);
+  expect(api.updateUser).not.toHaveBeenCalled();
+
+  // Whitespace is not a reason (the column's CHECK says so too).
+  await user.type(within(dialog).getByLabelText('Reason'), '   ');
+  expect(confirm).toBeDisabled();
+
+  await user.type(within(dialog).getByLabelText('Reason'), 'Harassment reported by two accounts.');
+  await user.click(confirm);
+  // The leading whitespace typed above is trimmed off on the way out, so the
+  // record never opens with blank lines.
+  await waitFor(() =>
+    expect(api.updateUser).toHaveBeenCalledWith('user-1', {
+      status: 'disabled',
+      reason: 'Harassment reported by two accounts.',
+    }),
+  );
+});
+
+test('a chat ban is not submittable without a reason either', async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByDisplayValue('jane');
+  await user.click(screen.getByRole('button', { name: 'Ban from chat' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Ban this account from chat' });
+  const confirm = within(dialog).getByRole('button', { name: 'Ban from chat' });
+
+  expect(confirm).toBeDisabled();
+  await user.click(confirm);
+  expect(api.updateUser).not.toHaveBeenCalled();
+
+  await user.type(within(dialog).getByLabelText('Reason'), 'Slurs in three threads.');
+  await user.click(confirm);
+  await waitFor(() =>
+    expect(api.updateUser).toHaveBeenCalledWith('user-1', {
+      chatBanned: true,
+      reason: 'Slurs in three threads.',
+    }),
+  );
+});
+
+test('flagging needs a reason; clearing the flag does not, and neither suspends anything', async () => {
+  const user = userEvent.setup();
+  renderPage('en', '/admin/users/user-1?tab=moderation');
+
+  await user.click(await screen.findByRole('button', { name: 'Flag for review' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Flag this account for review' });
+  const confirm = within(dialog).getByRole('button', { name: 'Flag for review' });
+  expect(confirm).toBeDisabled();
+
+  await user.type(within(dialog).getByLabelText('Reason'), 'Two chargebacks in a week.');
+  await user.click(confirm);
+  await waitFor(() =>
+    expect(api.flagUser).toHaveBeenCalledWith('user-1', { reason: 'Two chargebacks in a week.' }),
+  );
+  // A flag is not a suspension tier (§6.12): it must never move the account's
+  // status or chat state on the way.
+  expect(api.updateUser).not.toHaveBeenCalled();
+
+  // Clearing it is non-destructive and reversible — no dialog, no reason.
+  vi.mocked(api.getUser).mockResolvedValue({ ...jane, flagged: true });
+  renderPage('en', '/admin/users/user-1?tab=moderation');
+  await user.click(await screen.findByRole('button', { name: 'Clear flag' }));
+  await waitFor(() => expect(api.unflagUser).toHaveBeenCalledWith('user-1'));
+});
+
+test('a flagged account is marked on the strip and in the badge row', async () => {
+  vi.mocked(api.getUser).mockResolvedValue({ ...jane, flagged: true });
+  renderPage();
+
+  expect(await screen.findByRole('tab', { name: /Moderation/ })).toHaveTextContent('flagged');
+  expect(screen.getByText('Under review')).toBeInTheDocument();
+});
+
+test('renders the moderation surface in German', async () => {
+  const user = userEvent.setup();
+  renderPage('de', '/admin/users/user-1?tab=moderation');
+
+  expect(await screen.findByRole('tab', { name: /Moderation/ })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  expect(screen.getByRole('button', { name: 'Zur Prüfung markieren' })).toBeInTheDocument();
+  expect(
+    await screen.findByText('Für dieses Konto wurde noch keine Moderationsmaßnahme ergriffen.'),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Deaktivieren' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Dieses Konto deaktivieren' });
+  expect(within(dialog).getByLabelText('Begründung')).toBeInTheDocument();
+  expect(within(dialog).getByRole('button', { name: 'Konto deaktivieren' })).toBeDisabled();
+});
+
+test('a failed moderation write keeps the dialog open and shows why inside it', async () => {
+  vi.mocked(api.updateUser).mockRejectedValue(
+    new ApiError(500, 'internal_error', 'Could not disable the account.'),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Disable' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Disable this account' });
+  await user.type(within(dialog).getByLabelText('Reason'), 'Harassment report.');
+  await user.click(within(dialog).getByRole('button', { name: 'Disable account' }));
+
+  // The page banner sits BEHIND the modal backdrop, so the failure has to
+  // render inside the dialog or the operator reads nothing at all.
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Something went wrong. Please try again.',
+  );
+  expect(within(dialog).getByRole('button', { name: 'Disable account' })).toBeEnabled();
 });

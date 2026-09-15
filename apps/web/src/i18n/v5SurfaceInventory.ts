@@ -2266,7 +2266,13 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // reviewed V5 inventory, not this ledger.)
 // 81 → 79 with #1699: the news and dividends home widgets leave this deferred
 // ledger for the reviewed V5-P5 inventory, taking their one read each with them.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 79;
+// 79 → 80 with the admin rebuild ADMIN-W5 (#1907): People 360's Moderation tab
+// reads one account's moderation record. It adds no state gap — the tab renders
+// `AsyncReadState` for BOTH loading and error at its own read site, and its
+// empty case is explicit ("no moderation action has been taken on this
+// account") rather than an empty list that reads as a failed load. The debt
+// ceiling below is therefore unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 80;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

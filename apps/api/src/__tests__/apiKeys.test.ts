@@ -206,7 +206,7 @@ describe('bearer auth boundaries', () => {
     const disabled = await adminAgent
       .patch(`/api/v1/admin/users/${key!.userId}`)
       .set(...XRW)
-      .send({ status: 'disabled' });
+      .send({ status: 'disabled', reason: 'Suspended pending review.' });
     expect(disabled.status).toBe(200);
 
     const suspended = await request(harness.app)
@@ -223,7 +223,7 @@ describe('bearer auth boundaries', () => {
     const enabled = await adminAgent
       .patch(`/api/v1/admin/users/${key!.userId}`)
       .set(...XRW)
-      .send({ status: 'active' });
+      .send({ status: 'active', reason: 'Review closed, account restored.' });
     expect(enabled.status).toBe(200);
 
     const revived = await request(harness.app).get('/api/v1/portfolios').set('Authorization', auth);

@@ -1955,10 +1955,18 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
 
     const cookieDisconnected = waitForDisconnect(cookieSocket);
     const keyDisconnected = waitForDisconnect(keySocket);
-    await harness.ctx.admin.updateUser(user.id, { status: 'disabled' }, { id: admin.id });
+    await harness.ctx.admin.updateUser(
+      user.id,
+      { status: 'disabled', reason: 'Suspended pending review.' },
+      { id: admin.id },
+    );
     await Promise.all([cookieDisconnected, keyDisconnected]);
 
-    await harness.ctx.admin.updateUser(user.id, { status: 'active' }, { id: admin.id });
+    await harness.ctx.admin.updateUser(
+      user.id,
+      { status: 'active', reason: 'Review closed, account restored.' },
+      { id: admin.id },
+    );
     expect(cookieSocket.connected).toBe(false);
     expect(keySocket.connected).toBe(false);
     await expect(connect(loginState.cookie)).rejects.toThrow(/UNAUTHORIZED/);
