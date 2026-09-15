@@ -4069,67 +4069,15 @@
       }
     },
     "enable": {
-      "title": "Paranoiden Modus aktivieren",
-      "step": "Schritt {{current}} von {{total}}",
-      "steps": {
-        "1": {
-          "title": "Was sich ändert"
-        },
-        "2": {
-          "title": "Verschlüsselten Speicher wählen"
-        },
-        "3": {
-          "title": "Tresor schützen"
-        },
-        "4": {
-          "title": "Daten werden übertragen"
-        }
-      },
-      "changesIntro": "BetterTrack verschiebt deine Finanzdaten in einen clientseitig verschlüsselten Tresor. Diese servergestützten Funktionen werden abgeschaltet:",
-      "killList": {
-        "sharing": "Teilen, geteilte Inhalte, Kommentare, Reaktionen und Mirrorchain",
-        "serverReads": "Server-Portfolioanalysen, Steuerexporte, Live-Modus und KI-Einblicke",
-        "imports": "Broker- und Bank-CSV-Importe",
-        "automation": "Serverseitige Daueraufträge und Portfolio-Jobs",
-        "publicProfile": "Dein öffentliches Profil und portfolio-bezogene API-Zugriffe"
-      },
-      "keptSummary": "Manuelle Portfolioarbeit, clientseitige Analysen und Steuern, Forecast, private Watchlists, Anlagen, Alarme, Freundschaften und Chat bleiben verfügbar.",
       "media": {
-        "server": {
-          "title": "Verschlüsselter BetterTrack-Speicher",
-          "body": "Bei BetterTrack verschlüsselt; nur du kannst die Daten lesen."
-        },
-        "driveCopy": "Zusätzlich eine geprüfte Kopie in meinem Google Drive speichern",
-        "driveAuthorizationRequired": "Verbinde Google Drive, bevor du fortfährst. So kannst du Anmelde- oder Popup-Probleme lösen, bevor du deine Tresor-Passphrase und dein Wiederherstellungspaket erstellst.",
-        "driveConnected": "Google Drive ist verbunden und für die verschlüsselte Kopie bereit.",
-        "preparingDrive": "Google-Anmeldung wird vorbereitet…",
-        "connectDrive": "Google Drive verbinden",
-        "reconnectDrive": "Google Drive erneut verbinden",
-        "retryDrivePreparation": "Google-Drive-Einrichtung erneut versuchen",
-        "connectingDrive": "Google Drive wird verbunden…",
-        "advanced": "Erweitert",
         "driveOnly": {
-          "title": "Nur Google Drive",
           "body": "Auf BetterTrack-Servern bleibt nichts — nicht einmal verschlüsselt. Diese Einrichtung schreibt nur nach Drive; wenn du später ein Portfolio in diesen Tresor hinein- oder herausverschiebst, bleibt dessen verschlüsselte Zwischenkopie allerdings auf dem Server, damit ein nicht angekommener Drive-Schreibvorgang noch wiederherstellbar ist. Diese Kopie läuft nach bis zu {{minutes}} Minuten von selbst ab und wird nie als Tresorspeicher ausgeliefert."
         }
       },
-      "passphraseDistinct": "Erstelle eine neue Tresor-Passphrase. Sie muss sich von deinem BetterTrack-Anmeldepasswort unterscheiden und wird nie an den Server gesendet.",
-      "passphrase": "Tresor-Passphrase",
-      "passphraseConfirm": "Tresor-Passphrase bestätigen",
-      "passphraseMismatch": "Wähle eine starke Tresor-Passphrase und gib sie zweimal gleich ein.",
-      "downloadRecoveryKit": "Wiederherstellungspaket herunterladen",
-      "downloadAgain": "Wiederherstellungspaket erneut herunterladen",
-      "kitStored": "Ich habe mein Wiederherstellungspaket sicher verwahrt.",
       "lostKeyAcknowledgment": "Wenn ich meine Tresor-Passphrase und mein Wiederherstellungspaket verliere, sind meine Daten für immer verloren. BetterTrack kann sie nicht wiederherstellen.",
-      "action": "Paranoiden Modus aktivieren",
       "done": "Der paranoide Modus ist aktiv. Dein verschlüsselter Tresor ist bereit.",
       "progress": {
-        "preparing": "Geschützte Übertragung wird vorbereitet…",
         "migrate": "Vollständige Portfoliodaten werden auf diesem Gerät gesammelt…",
-        "captureRequests": {
-          "one": "1 Datenbereich wurde sicher gesammelt.",
-          "other": "{{count}} Datenbereiche wurden sicher gesammelt."
-        },
         "validate": "Es wird geprüft, ob sich der vorbereitete Tresor öffnen und zurückholen lässt…",
         "encrypt": "Der Tresor wird auf diesem Gerät verschlüsselt…",
         "write-server": "Die verschlüsselte BetterTrack-Kopie wird gespeichert…",
@@ -4139,10 +4087,6 @@
         "commit": "Der paranoide Modus wird abgeschlossen…"
       },
       "errors": {
-        "drivePreparation": "Google Drive konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut. Dein Konto wurde nicht geändert.",
-        "driveNotConfigured": "Google Drive ist in dieser BetterTrack-Installation nicht eingerichtet und kann hier nicht als Tresorspeicher dienen. Deine Verbindung ist in Ordnung — wähle den verschlüsselten BetterTrack-Speicher oder bitte die Person, die diese Installation betreibt, Drive einzurichten. Dein Konto wurde nicht verändert.",
-        "driveAuthorization": "Google Drive konnte nicht verbunden werden. Erlaube das Google-Anmelde-Popup, wähle das richtige Konto und versuche es erneut. Dein Konto wurde nicht geändert.",
-        "driveReauthorization": "Google Drive muss erneut verbunden werden, bevor die Übertragung starten kann. Erlaube das Google-Anmelde-Popup und versuche es erneut. Dein Konto wurde nicht geändert.",
         "migrate": "Deine aktuellen Daten konnten nicht vollständig gesammelt werden. Es wurde nichts geändert; versuche es nach Wiederherstellung der Verbindung erneut.",
         "validate": "Der vorbereitete Tresor hat die Sicherheitsprüfung nicht bestanden, deshalb hat BetterTrack vor dem ersten Schreibvorgang abgebrochen. Es wurde nichts geändert und dein normales Konto ist unverändert.",
         "encrypt": "Dieser Browser konnte den Tresor nicht verschlüsseln. Es wurde nichts geändert.",
@@ -4150,17 +4094,7 @@
         "write-drive": "Die verschlüsselte Google-Drive-Kopie konnte nicht gespeichert werden. Prüfe deine Google-Anmeldung und versuche es erneut.",
         "verify-server": "Die BetterTrack-Kopie konnte nicht geprüft werden. Dein normales Konto ist unverändert.",
         "verify-drive": "Die Google-Drive-Kopie konnte nicht geprüft werden. Dein normales Konto ist unverändert.",
-        "commit": "BetterTrack hat den Modus nicht gewechselt. Dein normales Konto bleibt nutzbar; behebe den Übergangshinweis und versuche es erneut.",
-        "mirrorchainActive": "Verlasse dein MIRRORCHAIN-Gruppenportfolio und behalte dessen Abzweigung, bevor du den paranoiden Modus aktivierst.",
-        "importInFlight": "Schließe den aktiven Import ab oder brich ihn ab, bevor du den paranoiden Modus aktivierst.",
-        "exportInFlight": "Warte, bis der Kontoexport abgeschlossen ist, und aktiviere dann den paranoiden Modus.",
-        "mediaNotReady": "Die gewählte verschlüsselte Kopie war für den letzten Wechsel nicht bereit. Prüfe die Speicherorte und versuche es erneut.",
-        "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
-        "normalDataChanged": "Dein Konto hat sich geändert, während die verschlüsselte Kopie vorbereitet wurde, deshalb hat BetterTrack vor dem Löschen abgebrochen. Es ging nichts verloren — starte den Wechsel erneut, damit die neuesten Daten enthalten sind.",
-        "captureUnstable": "Dein Konto hat sich während des Sammelns immer wieder geändert, deshalb konnte keine vollständige Kopie erstellt werden und es wurde nichts geändert. Schließe BetterTrack in anderen Tabs und auf anderen Geräten und starte den Wechsel dann erneut.",
-        "rateLimited": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte {{seconds}} Sekunden und starte den Wechsel dann erneut.",
-        "rateLimitedUnknown": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte, bis das Anfragefenster zurückgesetzt wurde, und starte den Wechsel dann erneut.",
-        "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
+        "commit": "BetterTrack hat den Modus nicht gewechselt. Dein normales Konto bleibt nutzbar; behebe den Übergangshinweis und versuche es erneut."
       }
     },
     "unlock": {
