@@ -13,6 +13,7 @@ import {
 import { Button, PageHeader, cx } from '../components/ui';
 import { EDGE, STACK, TEXT_MICRO, TEXT_MUTED, TEXT_NUM } from '../components/tokens';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 
 /**
  * The Support workspace — a split-pane helpdesk (#1406 W3).
@@ -35,6 +36,7 @@ import { useResource } from '../useResource';
  */
 export function SupportPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [params, setParams] = useSearchParams();
   const query = useMemo(() => readSupportQuery(params), [params]);
 
@@ -104,7 +106,7 @@ export function SupportPage() {
   return (
     <div className={cx(STACK, 'min-w-0')}>
       <PageHeader
-        eyebrow={t('admin.nav.sections.support')}
+        eyebrow={eyebrow}
         title={t('admin.support.title')}
         description={t('admin.support.subtitle')}
         actions={

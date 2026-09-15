@@ -799,7 +799,11 @@ const ctx: JobContext = {
   deadLetter,
   redis: deadLetterConnection,
   logger,
-  isFeatureEnabled: (key) => featureFlags.isEnabled(key),
+  // A job has NO principal, so it reads the BASE switch and nothing else
+  // (#1910): a percentage rollout must never silently halve a background sweep.
+  // The named call is the point — an omitted principal argument would have made
+  // this a defaulted semantic instead of a stated one.
+  isFeatureEnabledGlobally: (key) => featureFlags.isEnabledGlobally(key),
 };
 
 const running = createJobWorkers({

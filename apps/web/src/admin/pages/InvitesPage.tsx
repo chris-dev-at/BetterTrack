@@ -13,6 +13,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { ListPagination, useOffsetSnapBack } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
@@ -52,6 +53,7 @@ const STATUS_TONE: Record<InviteStatus, 'amber' | 'green' | 'red' | 'neutral'> =
  */
 export function InvitesPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [email, setEmail] = useState('');
   const [created, setCreated] = useState<CreateInviteResponse | null>(null);
   const [revoking, setRevoking] = useState<AdminInvite | null>(null);
@@ -113,7 +115,7 @@ export function InvitesPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={t('admin.invites.title')}
         description={t('admin.invites.subtitle')}
       />

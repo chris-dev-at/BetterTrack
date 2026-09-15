@@ -46,6 +46,12 @@ import type { AppConfig } from '../config/env';
 import type { EventBus, RealtimePrincipalInvalidatedEvent, Unsubscribe } from '../events';
 import type { Logger } from '../logger';
 import { sha256Base64Url } from '../services/crypto/tokens';
+import {
+  SYSTEM_PRINCIPAL,
+  userPrincipal,
+  type FeatureFlagPrincipal,
+} from '../services/featureFlags/featureFlagResolution';
+import type { FeatureFlagResolver } from '../services/featureFlags/featureFlagService';
 import { LIVE_LOOP_COORDINATION_CHANNEL, type LiveModeService } from '../services/liveMode';
 import type { PresenceStore } from '../services/notifications/presence';
 import {
@@ -276,8 +282,16 @@ export interface RealtimeGatewayDeps {
    * Runtime feature kill-switch read (§13.5 V5-P2 arc (c)): consulted per
    * connection (`realtime`) and per live-watch (`liveMode`). Omitted ⇒ always
    * enabled, so a gateway built without it is byte-identical to before.
+   *
+   * A RESOLVER factory rather than a per-key read (#1910). A flag resolves
+   * against a principal now, and the sweep visits every connected socket — one
+   * `isEnabled(key, principal)` per socket would turn this gateway's documented
+   * "one flag read per sweep" into one Redis round trip per socket per sweep, on
+   * the exact path an incident makes hot. So: one configuration read hands back
+   * a pure function, and every principal in the pass is resolved against it with
+   * no further I/O.
    */
-  isFeatureEnabled?: (key: FeatureFlagKey) => Promise<boolean>;
+  featureFlagResolver?: () => Promise<FeatureFlagResolver>;
   /**
    * Resolve an asset the user may view (global or their own custom asset,
    * §10) to its provider ref for the poll loop; null when missing/foreign —
@@ -369,9 +383,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   // resolves identically to an HTTP request.
   const parseCookies: RequestHandler = cookieParser(config.sessionSecrets);
 
-  /** Runtime kill-switch read — always-on when no evaluator was injected. */
-  const featureEnabled = (key: FeatureFlagKey): Promise<boolean> =>
-    deps.isFeatureEnabled ? deps.isFeatureEnabled(key) : Promise.resolve(true);
+  /**
+   * One configuration read → a pure resolver. Always-on when no evaluator was
+   * injected, so a gateway built without the dep behaves exactly as before.
+   */
+  const featureResolver = (): Promise<FeatureFlagResolver> =>
+    deps.featureFlagResolver ? deps.featureFlagResolver() : Promise.resolve(() => true);
+
+  /** One flag, one principal, one read — for the paths that resolve exactly once. */
+  const featureEnabled = async (
+    key: FeatureFlagKey,
+    principal: FeatureFlagPrincipal,
+  ): Promise<boolean> => (await featureResolver())(key, principal);
 
   const bearerTokenFromHeader = (header: string | string[] | undefined): string | null => {
     if (typeof header !== 'string' || !header.startsWith(BEARER_PREFIX)) return null;
@@ -1261,7 +1284,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     // watches on the next op; the SPA falls back to its poll cadence. Watches
     // already registered are released by the sweep, which drains the shared
     // upstream loop instead of leaving it polling for nobody.
-    if (!(await featureEnabled('liveMode'))) {
+    //
+    // Resolved against THIS socket's user (#1910), so a partial `liveMode`
+    // rollout admits exactly the accounts it is rolled to and the ack a user
+    // gets here agrees with the answer their HTTP bootstrap gave them.
+    if (!(await featureEnabled('liveMode', userPrincipal(principal.userId)))) {
       respond({ ok: false, error: 'UNAVAILABLE' });
       return;
     }
@@ -1761,29 +1788,43 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   }
 
   /**
-   * Read the two kill switches that gate LONG-LIVED work, bounded so one stuck
-   * flag read cannot wedge the sweep's running guard. Fails OPEN: a flag-store
-   * blip must never disconnect every connected client, and the next sweep re-
-   * reads it. (Failing closed is right at the handshake, where refusing costs
-   * one connection; here it would cost all of them.)
+   * ONE configuration read for the whole sweep, bounded so a stuck flag read
+   * cannot wedge the sweep's running guard. Fails OPEN — it returns a resolver
+   * that says yes — because a flag-store blip must never disconnect every
+   * connected client, and the next sweep re-reads it. (Failing closed is right
+   * at the handshake, where refusing costs one connection; here it would cost
+   * all of them.)
+   *
+   * The pass then resolves each socket's own principal against this resolver in
+   * memory (#1910), which is what keeps the cost at one read per sweep rather
+   * than one per socket.
    */
-  async function killSwitchState(): Promise<{ realtime: boolean; liveMode: boolean }> {
+  async function killSwitchResolver(): Promise<FeatureFlagResolver> {
     try {
       return await withDeadline(
         REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS,
         'realtime kill-switch read timed out',
-        async () => {
-          const [realtime, liveMode] = await Promise.all([
-            featureEnabled('realtime'),
-            deps.liveMode ? featureEnabled('liveMode') : Promise.resolve(true),
-          ]);
-          return { realtime, liveMode };
-        },
+        () => featureResolver(),
       );
     } catch (err) {
       logger.warn({ err }, 'realtime kill-switch read failed');
-      return { realtime: true, liveMode: true };
+      return () => true;
     }
+  }
+
+  /**
+   * The principal a sweep resolves a socket against: its authenticated user,
+   * or `system` for a socket whose principal is not (yet) on `socket.data`.
+   *
+   * `system` rather than `anonymous` for that gap deliberately. An admitted
+   * socket always has a user; the only sockets without one are mid-handshake,
+   * and resolving those as `anonymous` would shed them whenever a flag is
+   * partially rolled — a rollout is not a reason to disconnect. `system` reads
+   * the base kill switch, so a genuine kill still sheds them.
+   */
+  function sweepPrincipal(socket: Socket): FeatureFlagPrincipal {
+    const userId = socket.data.principal?.userId;
+    return typeof userId === 'string' ? userPrincipal(userId) : SYSTEM_PRINCIPAL;
   }
 
   /**
@@ -1844,17 +1885,38 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * {@link REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS}. The kill-switch sheds
    * add no unbounded I/O to it — both decide synchronously and hand their
    * release work to the tracked cleanup paths.
+   *
+   * Since #1910 each socket is resolved against ITS OWN user, so narrowing a
+   * rollout sheds exactly the accounts that fell out of it and leaves the rest
+   * connected. The resolver is read once for the pass (see
+   * {@link killSwitchResolver}); the per-socket resolution is pure CPU.
    */
   async function sweepConnectedSockets(server: SocketIOServer): Promise<void> {
     const sockets = [...server.sockets.sockets.values()];
     if (sockets.length === 0) return;
-    const flags = await killSwitchState();
-    if (!flags.realtime) {
+    const resolve = await killSwitchResolver();
+    // The absolute kill switch first, and as one decision: `realtime` off for
+    // the `system` principal means off for everyone, so the whole fleet goes in
+    // one pass without resolving a principal per socket.
+    if (!resolve('realtime', SYSTEM_PRINCIPAL)) {
       for (const socket of sockets) shedDisabledRealtime(socket);
       return;
     }
-    if (!flags.liveMode) shedDisabledLiveWatches(sockets);
-    await Promise.allSettled(sockets.map((socket) => revalidateSocket(socket)));
+    const kept: Socket[] = [];
+    for (const socket of sockets) {
+      if (resolve('realtime', sweepPrincipal(socket))) {
+        kept.push(socket);
+        continue;
+      }
+      // Rolled back out from under this account: same shed, same reason frame,
+      // same client fallback as a fleet-wide kill.
+      shedDisabledRealtime(socket);
+    }
+    if (deps.liveMode) {
+      const liveShed = kept.filter((socket) => !resolve('liveMode', sweepPrincipal(socket)));
+      if (liveShed.length > 0) shedDisabledLiveWatches(liveShed);
+    }
+    await Promise.allSettled(kept.map((socket) => revalidateSocket(socket)));
   }
 
   function startPrincipalRevalidation(server: SocketIOServer): void {
@@ -2091,7 +2153,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           // OFF the gateway refuses the very next handshake — and the sweep
           // (see {@link REALTIME_FEATURE_SHED_MAX_DELAY_MS}) sheds the sockets
           // that were already established when the flip landed.
-          if (!(await featureEnabled('realtime'))) {
+          //
+          // TWO checks against ONE configuration read (#1910), and the order is
+          // the point. The ABSOLUTE switch is read first, before `authenticate`
+          // touches the session store: during the incident this switch exists
+          // for, the load has to simply go away, and authenticating a connection
+          // we are about to refuse is precisely the work being shed. The ROLLOUT
+          // can only be resolved once there is a user, so it is checked right
+          // after — same `UNAVAILABLE` frame, so a client cannot tell a targeted
+          // rollout apart from a fleet-wide kill.
+          const resolve = await featureResolver();
+          if (!resolve('realtime', SYSTEM_PRINCIPAL)) {
             disarmPreConnectCloseFence(socket);
             next(handshakeError('UNAVAILABLE'));
             return;
@@ -2100,6 +2172,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           if (!principal) {
             disarmPreConnectCloseFence(socket);
             next(handshakeError('UNAUTHORIZED'));
+            return;
+          }
+          if (!resolve('realtime', userPrincipal(principal.userId))) {
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
             return;
           }
           const lease: ConnectionLease = {

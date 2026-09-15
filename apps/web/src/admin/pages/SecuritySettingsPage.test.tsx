@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { AdminTwoFactorStatusResponse, MeResponse } from '@bettertrack/contracts';
@@ -35,9 +36,11 @@ const status: AdminTwoFactorStatusResponse = {
 
 function renderPage() {
   return render(
-    <AuthProvider>
-      <SecuritySettingsPage />
-    </AuthProvider>,
+    <MemoryRouter initialEntries={['/admin/security']}>
+      <AuthProvider>
+        <SecuritySettingsPage />
+      </AuthProvider>
+    </MemoryRouter>,
   );
 }
 
