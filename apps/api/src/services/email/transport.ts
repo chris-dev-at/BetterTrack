@@ -25,11 +25,35 @@ export interface MailTransport {
  */
 export function createSmtpTransport(email: AppConfig['email']): MailTransport {
   const port = email.port ?? 587;
+  // 465 is implicit TLS: the socket is encrypted before the greeting, so there
+  // is no plaintext phase to protect.
+  const secure = port === 465;
   const transporter = nodemailer.createTransport({
     host: email.host,
     port,
-    // 465 is implicit TLS; everything else negotiates STARTTLS.
-    secure: port === 465,
+    secure,
+    // Every other port starts in the clear and upgrades. `smtp-connection` only
+    // issues STARTTLS when the server ADVERTISES it in the EHLO capabilities,
+    // so a hostile relay — or anyone on the path who can rewrite that plaintext
+    // reply — strips the capability and the client walks on and sends
+    // `AUTH PLAIN <base64 SMTP_USER NUL SMTP_PASS>` over the open socket.
+    // `requireTLS` removes the server's vote: STARTTLS is sent regardless, and
+    // a server that will not upgrade fails the send with ETLS before the
+    // authentication phase is ever reached. Pinned on the wire in
+    // `__tests__/smtpWire.test.ts`.
+    requireTLS: !secure,
+    // The composer resolves an `html`/`text` body supplied as `{ path }` or
+    // `{ href }`, and `{ path }`/`{ href }` attachments, off the local
+    // filesystem or over the network, as the process, at DATA time.
+    // `OutgoingMail` is four plain strings today, so nothing reachable can ask
+    // for either — but three of Nodemailer's published advisories are bypasses
+    // of exactly these two flags, and the cost of a future caller widening
+    // `OutgoingMail` is an arbitrary-file-read / SSRF primitive reachable from
+    // whatever builds the mail. Closing both here makes that a rejected send
+    // instead: the file is never opened and the URL is never fetched (§10
+    // defence in depth).
+    disableFileAccess: true,
+    disableUrlAccess: true,
     auth: email.user ? { user: email.user, pass: email.pass } : undefined,
   });
 

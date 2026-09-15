@@ -1,5 +1,4 @@
-import { Router, type RequestHandler } from 'express';
-import multer, { MulterError, type Options as MulterOptions } from 'multer';
+import { Router } from 'express';
 
 import {
   applyImportRequestSchema,
@@ -7,13 +6,13 @@ import {
   importBatchIdParamSchema,
   importRowIdParamSchema,
   resolveImportRowRequestSchema,
-  IMPORT_MAX_FILE_BYTES,
   type ApplyImportRequest,
   type CreateImportBatchFields,
   type ResolveImportRowRequest,
 } from '@bettertrack/contracts';
 
 import { badRequest } from '../../errors';
+import { uploadCsvFile } from '../uploads';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
@@ -40,78 +39,7 @@ export function createImportsRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // response instead of racing the batch's atomic claim into a 409.
   const idempotency = createIdempotency(ctx);
 
-  // In-memory multipart parsing for the one CSV part — files are capped well
-  // below anything worth streaming to disk, and staging wants the text anyway.
-  // Multipart budget: two text fields (portfolioId + optional brokerId), one
-  // file, three parts, a field-size sentinel of 1,000,001 (Busboy truncates at
-  // equality, so this admits 1,000,000 payload bytes), and 32 header pairs per
-  // part (well above browser form data's usual 1–2).
-  //
-  // `parts` and `fileSize` are NOT sentinels — `fieldSize` still is. Multer
-  // 2.3.0 started handing Busboy `parts + 1` and `fileSize + 1`
-  // (make-middleware.js) so that its own limits read as "the most that is
-  // allowed" rather than "the first value refused"; every other limit is passed
-  // through untouched. So `parts: 3` admits exactly the three parts this route
-  // accepts, and `fileSize: IMPORT_MAX_FILE_BYTES` admits a file of exactly that
-  // many bytes and refuses N+1 — both pinned by tests. This used to read
-  // `parts: 4`, a sentinel written for the pre-2.3.0 semantics, which after the
-  // bump quietly admitted a FOURTH part; harmless only because `files: 1` and
-  // `fields: 2` are checked before the part count and reject it first.
-  //
-  // `fieldArrayIndexLimit` is multer's opt-in bound for GHSA-535w-7cp7-47q4:
-  // `append-field` reads `a[4294967294]` as an array index and materializes a
-  // sparse array of that length in `req.body`, and make-middleware checks the
-  // index ONLY when `limits` carries the key as an own property. No field this
-  // route accepts is an array, so 1 refuses every index a real client could
-  // send. Without it the sparse array is built and only the strict contract
-  // downstream refuses the unknown key — one layer too late, and a different
-  // error than every other multipart breach here.
-  //
-  // `headerPairs` is declarative: Busboy 1.6 ignores it and hard-codes
-  // MAX_HEADER_PAIRS = 2000 (lib/types/multipart.js:21). The bound that actually
-  // holds is its MAX_HEADER_SIZE = 16 KiB per part header block (:22), enforced
-  // by a hard `Malformed part header` error (:395-398) and reset per part, so
-  // header memory stays under 16 KiB x `parts`. That error is a plain Error, not
-  // a MulterError — hence the catch-all mapping in `uploadFile`.
-  const uploadLimits: NonNullable<MulterOptions['limits']> & {
-    // `@types/multer@2.2.0` is the latest published and predates multer 2.3.0's
-    // new limit, so the intersection names the one key it is missing while
-    // every other key stays checked against the published declarations.
-    fieldArrayIndexLimit: number;
-  } = {
-    fileSize: IMPORT_MAX_FILE_BYTES,
-    files: 1,
-    fields: 2,
-    parts: 3,
-    fieldSize: 1_000_001,
-    headerPairs: 32,
-    fieldArrayIndexLimit: 1,
-  };
-
-  const upload = multer({ storage: multer.memoryStorage(), limits: uploadLimits });
-
-  /**
-   * `upload.single('file')` with every multipart failure mapped onto the §8
-   * envelope. Multer wraps only its own limit breaches as `MulterError`; Busboy's
-   * framing errors (an over-16 KiB part header block, `Unexpected end of form`,
-   * an unparseable content-type) surface as plain `Error`s and would otherwise
-   * reach the terminal handler as an opaque 500 — reporting hostile input as a
-   * server fault. Every one of them is a malformed upload, so every one of them
-   * is the same 400; only the file-size breach earns more specific guidance.
-   */
-  const uploadFile: RequestHandler = (req, res, next) => {
-    upload.single('file')(req, res, (err?: unknown) => {
-      if (!err) {
-        next();
-        return;
-      }
-      const message =
-        err instanceof MulterError && err.code === 'LIMIT_FILE_SIZE'
-          ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
-          : 'Invalid file upload.';
-      next(badRequest(message, 'IMPORT_FILE_INVALID'));
-    });
-  };
+  const uploadFile = uploadCsvFile('IMPORT_FILE_INVALID');
 
   // GET /imports/brokers — the supported broker mappers, for the manual picker.
   router.get('/brokers', (_req, res) => {

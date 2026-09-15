@@ -1,5 +1,4 @@
-import { Router, type RequestHandler } from 'express';
-import multer, { MulterError, type Options as MulterOptions } from 'multer';
+import { Router } from 'express';
 
 import {
   createExpenseBudgetRequestSchema,
@@ -22,7 +21,6 @@ import {
   updateExpenseCategoryRequestSchema,
   updateExpenseRuleRequestSchema,
   updateExpenseTransactionRequestSchema,
-  IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_ROWS,
   type CreateExpenseBudgetRequest,
   type CreateExpenseCategoryRequest,
@@ -44,6 +42,7 @@ import {
 import { z } from 'zod';
 
 import { ApiError, badRequest } from '../../errors';
+import { uploadCsvFile } from '../uploads';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -122,83 +121,7 @@ export function createExpensesRouter(ctx: AppContext): Router {
     );
   });
 
-  // In-memory multipart parsing for the one CSV part of a bank-statement import —
-  // files are capped well below anything worth streaming to disk (§13.5 V5-P9).
-  // Multipart budget: two text fields (bankId + optional overrides), one file,
-  // three parts, a field-size sentinel of 1,000,001 (Busboy truncates at
-  // equality, so this admits the machine-generated ASCII overrides contract's
-  // 1,000,000-character maximum), and 32 header pairs per part (normally 1–2).
-  //
-  // NOTE: every route below `refuseRetiredExpenseWrite` that parses an upload is
-  // a POST, so the gate answers 410 before multer ever runs (§13.5 V5-P9 cash
-  // fusion retired the write surface). These limits are kept — and kept correct
-  // — because they are the only thing standing between a re-opened write path
-  // and an unbounded multipart parse; nothing here relies on being dead code.
-  //
-  // `parts` and `fileSize` are NOT sentinels — `fieldSize` still is. Multer
-  // 2.3.0 started handing Busboy `parts + 1` and `fileSize + 1`
-  // (make-middleware.js) so that its own limits read as "the most that is
-  // allowed" rather than "the first value refused"; every other limit is passed
-  // through untouched. So `parts: 3` admits exactly the three parts this route
-  // accepts, and `fileSize: IMPORT_MAX_FILE_BYTES` admits a file of exactly that
-  // many bytes and refuses N+1. This used to read `parts: 4`, a sentinel written
-  // for the pre-2.3.0 semantics, which after the bump quietly admitted a FOURTH
-  // part; harmless only because `files: 1` and `fields: 2` are checked before
-  // the part count and reject it first.
-  //
-  // `fieldArrayIndexLimit` is multer's opt-in bound for GHSA-535w-7cp7-47q4:
-  // `append-field` reads `a[4294967294]` as an array index and materializes a
-  // sparse array of that length in `req.body`, and make-middleware checks the
-  // index ONLY when `limits` carries the key as an own property. No field this
-  // route accepts is an array, so 1 refuses every index a real client could
-  // send. The behaviour is pinned on the live `/imports` twin, which shares
-  // these limits and is not behind a retirement gate.
-  //
-  // `headerPairs` is declarative: Busboy 1.6 ignores it and hard-codes
-  // MAX_HEADER_PAIRS = 2000 (lib/types/multipart.js:21). The bound that actually
-  // holds is its MAX_HEADER_SIZE = 16 KiB per part header block (:22), enforced
-  // by a hard `Malformed part header` error (:395-398) and reset per part, so
-  // header memory stays under 16 KiB x `parts`. That error is a plain Error, not
-  // a MulterError — hence the catch-all mapping in `uploadFile`.
-  const uploadLimits: NonNullable<MulterOptions['limits']> & {
-    // `@types/multer@2.2.0` is the latest published and predates multer 2.3.0's
-    // new limit, so the intersection names the one key it is missing while
-    // every other key stays checked against the published declarations.
-    fieldArrayIndexLimit: number;
-  } = {
-    fileSize: IMPORT_MAX_FILE_BYTES,
-    files: 1,
-    fields: 2,
-    parts: 3,
-    fieldSize: 1_000_001,
-    headerPairs: 32,
-    fieldArrayIndexLimit: 1,
-  };
-
-  const upload = multer({ storage: multer.memoryStorage(), limits: uploadLimits });
-
-  /**
-   * `upload.single('file')` with every multipart failure mapped onto the §8
-   * envelope. Multer wraps only its own limit breaches as `MulterError`; Busboy's
-   * framing errors (an over-16 KiB part header block, `Unexpected end of form`,
-   * an unparseable content-type) surface as plain `Error`s and would otherwise
-   * reach the terminal handler as an opaque 500 — reporting hostile input as a
-   * server fault. Every one of them is a malformed upload, so every one of them
-   * is the same 400; only the file-size breach earns more specific guidance.
-   */
-  const uploadFile: RequestHandler = (req, res, next) => {
-    upload.single('file')(req, res, (err?: unknown) => {
-      if (!err) {
-        next();
-        return;
-      }
-      const message =
-        err instanceof MulterError && err.code === 'LIMIT_FILE_SIZE'
-          ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
-          : 'Invalid file upload.';
-      next(badRequest(message, 'EXPENSE_IMPORT_FILE_INVALID'));
-    });
-  };
+  const uploadFile = uploadCsvFile('EXPENSE_IMPORT_FILE_INVALID');
 
   // ── Categories ──
 
