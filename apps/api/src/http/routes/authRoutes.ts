@@ -71,6 +71,7 @@ import {
 } from '../cookies';
 import {
   ACCOUNT_SECURITY_SCOPE,
+  isAdminRoleBearerPrincipal,
   passkeyManagementRouteAcceptsBearer,
   recordBearerScopeDenied,
 } from '../middleware/bearerAuth';
@@ -126,9 +127,22 @@ const securityMutationContextOf = (req: Request): SecurityMutationContext => {
  *
  * Exactly one row per refusal: the global guard short-circuits before routing
  * whenever it answers, so the two writers can never both run for one request.
+ *
+ * ## The account-kind backstop (#1958)
+ *
+ * A bearer-backed admin principal 404s here exactly as it does on the rail and
+ * on the portfolio-vault / per-vault twins — the boundary is one shared
+ * predicate, so the five twins state it identically. It precedes every other
+ * branch, so such a principal learns nothing about this surface and writes no
+ * `api_key.scope_denied` row: a 404 across the user/admin boundary is not a
+ * scope event, and the rail does not audit it either.
  */
 export function requireCookieSessionOrPasskeyManagementBearer(ctx: AppContext): RequestHandler {
   return function requireCookieSessionOrPasskeyManagementBearer(req, _res, next) {
+    if (isAdminRoleBearerPrincipal(req)) {
+      next(notFound());
+      return;
+    }
     const path = `/auth${req.path === '/' || req.path === '' ? '' : req.path}`;
     const routeAccepted = passkeyManagementRouteAcceptsBearer(req.method, path);
     const scoped =

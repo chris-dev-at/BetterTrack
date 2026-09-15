@@ -31,6 +31,7 @@ import { TelegramSetupError } from '../../services/notifications/telegramSetupSe
 
 import {
   ACCOUNT_SECURITY_SCOPE,
+  isAdminRoleBearerPrincipal,
   oauthGrantRouteAcceptsBearer,
   recordBearerScopeDenied,
   taxYearDocumentationRouteAcceptsBearer,
@@ -40,34 +41,78 @@ import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
- * Defense-in-depth for the bearer-callable tax-year documentation read. The
- * global policy makes the same decision before routing, but this guard remains
- * independently method/path-aware AND scope-aware so bypassing or regressing
- * that table cannot expose account documentation to an unrelated bearer.
+ * Defense-in-depth for the bearer-callable tax-year documentation read (§16
+ * 2026-08-17 / #1324; the list itself is the §16 2026-08-19 living-documentation
+ * marker). The global policy makes the same decision before routing, but this
+ * guard remains independently method/path-aware AND scope-aware so bypassing or
+ * regressing that table cannot expose account documentation to an unrelated
+ * bearer.
+ *
+ * ## Why it takes `ctx` (#1958 — the fifth twin of #1951 §2)
+ *
+ * The rail audits every bearer scope refusal it answers; a twin that refuses
+ * the IDENTICAL request silently would lose that row at exactly the moment it
+ * matters — this handler only ever answers when the global table has regressed,
+ * and a regression the owner cannot see in `api_key.scope_denied` is a
+ * regression nobody finds. So it writes the row itself, through the same
+ * {@link recordBearerScopeDenied} rail and the same closed `reason` vocabulary,
+ * with `.then(refuse, next)` so a rejected audit write (an out-of-vocabulary
+ * reason, a dead database) becomes a REPORTED 500 and never an admission.
+ *
+ * Exactly one row per refusal: the global guard short-circuits before routing
+ * whenever it answers, so the two writers can never both run for one request.
+ *
+ * ## Which refusals are audited, and with which reason
+ *
+ * Only a real bearer refused on a route the tax-year allowlist ACCEPTS is a
+ * scope denial. A caller with no credential has no principal to audit, and an
+ * off-allowlist method or path (`POST /settings/taxes/years`, any
+ * `/settings/taxes/years/{year}/…` sibling) is not a scope event at all — the
+ * global table classifies those session-only and audits nothing either.
+ *
+ * Inside that set exactly one reason is reachable: the allowlist accepted the
+ * route, so the credential was refused for the scope it LACKS and the row says
+ * `insufficient-scope`. `first-party-only` belongs to the grant twin below,
+ * whose global policy carries a trust ceiling this read does not.
+ *
+ * ## The account-kind backstop (#1958)
+ *
+ * A bearer-backed admin principal 404s here exactly as it does on the rail and
+ * on the other four twins, through one shared predicate. It precedes every
+ * other branch, so such a principal learns nothing about this surface and
+ * writes no `api_key.scope_denied` row: a 404 across the user/admin boundary is
+ * not a scope event, and the rail does not audit it either.
  */
-export const requireCookieSessionOrTaxYearDocumentationBearer: RequestHandler = (
-  req,
-  _res,
-  next,
-) => {
-  const bearerAllowed =
-    req.apiKey !== undefined &&
-    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-    taxYearDocumentationRouteAcceptsBearer(
-      req.method,
-      `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
-    );
-  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
-    next();
-    return;
-  }
-  next(
-    forbidden(
+export function requireCookieSessionOrTaxYearDocumentationBearer(ctx: AppContext): RequestHandler {
+  return function requireCookieSessionOrTaxYearDocumentationBearer(req, _res, next) {
+    if (isAdminRoleBearerPrincipal(req)) {
+      next(notFound());
+      return;
+    }
+    const path = `/settings${req.path === '/' || req.path === '' ? '' : req.path}`;
+    const routeAccepted = taxYearDocumentationRouteAcceptsBearer(req.method, path);
+    const scoped =
+      req.apiKey !== undefined && scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE);
+    if ((!req.apiKey && req.sessionId) || (scoped && routeAccepted)) {
+      next();
+      return;
+    }
+    const refusal = forbidden(
       'Tax-year documentation requires the owning session or account-security access.',
       'API_KEY_FORBIDDEN',
-    ),
-  );
-};
+    );
+    if (req.apiKey !== undefined && routeAccepted) {
+      // Reachable only with `!scoped` — the admit branch above took the scoped
+      // case — so this is the rail's `insufficient-scope`, one row, same reason.
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, 'insufficient-scope', path).then(
+        () => next(refusal),
+        next,
+      );
+      return;
+    }
+    next(refusal);
+  };
+}
 
 /**
  * Per-user settings endpoints (PROJECTPLAN.md §6.10, §6.11, §8). V1 exposes the
@@ -104,6 +149,14 @@ export const requireCookieSessionOrTaxYearDocumentationBearer: RequestHandler = 
  * already short-circuited the request, so this handler never runs; when it
  * admits and the twin refuses, this is the only writer.
  *
+ * ## The account-kind backstop (#1958)
+ *
+ * A bearer-backed admin principal 404s here exactly as it does on the rail and
+ * on the other four twins, through one shared predicate. It precedes every
+ * other branch, so such a principal learns nothing about grant management and
+ * writes no `api_key.scope_denied` row: a 404 across the user/admin boundary is
+ * not a scope event, and the rail does not audit it either.
+ *
  * ## Which refusals are audited, and with which reason
  *
  * Only a refusal of a real bearer credential on a route the grant allowlist
@@ -124,6 +177,10 @@ export const requireCookieSessionOrTaxYearDocumentationBearer: RequestHandler = 
  */
 export function requireCookieSessionOrFirstPartyOAuthGrant(ctx: AppContext): RequestHandler {
   return function requireCookieSessionOrFirstPartyOAuthGrant(req, _res, next) {
+    if (isAdminRoleBearerPrincipal(req)) {
+      next(notFound());
+      return;
+    }
     const path = `/settings${req.path === '/' || req.path === '' ? '' : req.path}`;
     const routeAccepted = oauthGrantRouteAcceptsBearer(req.method, path);
     const trustedClient = req.apiKey?.kind === 'oauth' && req.apiKey.firstParty;
@@ -178,6 +235,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
   // Built once per router, not per request: the guard closes over `ctx` only to
   // reach the audit rail.
   const firstPartyOAuthGrantAccess = requireCookieSessionOrFirstPartyOAuthGrant(ctx);
+  const taxYearDocumentationAccess = requireCookieSessionOrTaxYearDocumentationBearer(ctx);
 
   router.use(requireUser);
 
@@ -397,7 +455,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
   });
 
   // GET /settings/taxes/years — account-wide living documentation, newest first.
-  router.get('/taxes/years', requireCookieSessionOrTaxYearDocumentationBearer, async (req, res) => {
+  router.get('/taxes/years', taxYearDocumentationAccess, async (req, res) => {
     res.json(await ctx.tax.getYearChanges(req.authUser!.id));
   });
 
