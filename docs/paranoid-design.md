@@ -770,11 +770,7 @@ untouched** and is not part of this arc's diff.
   device-locked marker synchronously FIRST and then deletes the record, and the
   resume path refuses a persisted key while the marker is set and installs one
   only after the wrap-check proves it was derived from this endpoint's
-  password. The resume is also SPECULATIVE where a typed password is
-  authoritative: while an `unlock()` is in flight it installs nothing, so one
-  password raises exactly one vault-opened edge however the two are scheduled
-  and no session is installed only to be torn down by the unlock that followed
-  it (#1737). There is still NO "keep unlocked" checkbox — the device session is
+  password. There is still NO "keep unlocked" checkbox — the device session is
   the default and the only mode; the convenience path without any password
   remains plain custody, below. v1's persisted-VK `custody.ts` keep-unlocked
   stays retired.

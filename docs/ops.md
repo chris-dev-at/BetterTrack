@@ -545,15 +545,19 @@ no straggler accounts remain. Do not drop the quarantine by hand.
 
 Migration `0076` moved every `expense_*` row onto the portfolio cash ledger but left
 the old tables writable, so rows written through `/api/v1/expenses` after the deploy
-are missing from the fused tables. `pnpm catchup:cash-fusion` closes that gap and
-must run **before** the fused surfaces become the only ones.
+are missing from the fused tables. `pnpm --filter @bettertrack/api catchup:cash-fusion`
+closes that gap and must run **before** the fused surfaces become the only ones.
 
-Run it inside the api container, which already has the env:
+Run it inside the api container, which already has the env. The script is defined in
+`apps/api/package.json`, so go through the filter — that form works from the repo root
+and from anywhere else in the tree:
 
 ```bash
-pnpm catchup:cash-fusion --dry-run   # report only, writes nothing
-pnpm catchup:cash-fusion --apply
+pnpm --filter @bettertrack/api catchup:cash-fusion --dry-run   # report only, writes nothing
+pnpm --filter @bettertrack/api catchup:cash-fusion --apply
 ```
+
+(Standing in `apps/api` itself, `pnpm catchup:cash-fusion …` is the same command.)
 
 It prints one JSON line per owner with work, then one summary line, and exits `1` if
 any owner failed or was blocked. Safe to re-run: every inserted row's primary key is

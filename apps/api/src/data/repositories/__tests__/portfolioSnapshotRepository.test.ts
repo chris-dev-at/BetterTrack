@@ -80,7 +80,10 @@ describe('portfolio snapshot repository — saveComputation compare-and-set (#17
     // the only way to hit that exact instant deterministically. The marker it
     // writes rolls back with the transaction (a real concurrent markDirty, in
     // its own transaction, would survive); what is asserted is what the
-    // COMPUTATION committed, which is the half the race can corrupt.
+    // COMPUTATION committed, which is the half the race can corrupt. The other
+    // half — a committed marker on a SECOND connection surviving our rollback —
+    // needs a session PGlite does not have; #1934 carries it into the
+    // integration suite.
     await h.db.execute(sql`
       CREATE FUNCTION "bt_race_mark_dirty"() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN

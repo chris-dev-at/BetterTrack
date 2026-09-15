@@ -282,7 +282,10 @@ const FX_CAUSE_DEPTH = 4;
  *     `unconvertible` from an empty series was rejected because a cached-empty
  *     outage has the same shape, and re-freezing an outage is the strictly worse
  *     failure (this is defect 1 of issue #1729). Yahoo's answer for an unknown
- *     pair is the 404, so this is the corner, not the common case.
+ *     pair is the 404, so this is the corner, not the common case. The way out
+ *     is an escalation rather than a reclassification (N consecutive degraded
+ *     runs on one pair), which is tracked as #1933 together with bounding the
+ *     `warn` volume the degraded path costs on every read.
  *  2. A SPURIOUS upstream 404 is negative-cached and re-thrown as
  *     `AssetNotFoundError` (`providers/cache.ts`), so a probe inside that window
  *     reads a transient 404 as permanent. Bounded by the negative TTL rather

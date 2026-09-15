@@ -51,9 +51,10 @@ import {
  * the cent, or is untouched and reported as failed. One owner's failure never
  * abandons the rest.
  *
- * Run inside the api container, which already has the env:
- *   pnpm catchup:cash-fusion --dry-run   # report only, writes nothing
- *   pnpm catchup:cash-fusion --apply
+ * Run inside the api container, which already has the env. The filter makes the
+ * line copy-pasteable from the repo root as well as from `apps/api`:
+ *   pnpm --filter @bettertrack/api catchup:cash-fusion --dry-run   # report only
+ *   pnpm --filter @bettertrack/api catchup:cash-fusion --apply
  */
 
 export interface CatchUpCashFusionOptions {

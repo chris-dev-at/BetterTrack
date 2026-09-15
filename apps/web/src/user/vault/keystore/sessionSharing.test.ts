@@ -30,11 +30,7 @@ import {
   type EndpointSessionPersistence,
 } from './sessionPersistence';
 import { createIndexedDbEndpointKeystoreStorage, type EndpointKeystoreStorage } from './storage';
-import type {
-  EndpointPasswordMetadataV1,
-  EndpointUnlockResult,
-  FetchVaultHeaderEnvelope,
-} from './types';
+import type { EndpointPasswordMetadataV1, FetchVaultHeaderEnvelope } from './types';
 
 /**
  * VAULT-UX-B — §12-conformant cross-tab session sharing.
@@ -884,69 +880,6 @@ describe('endpoint session persistence (§12 as amended by the owner, 2026-09-03
     expect(persistence.size()).toBe(0);
     expect(await first.stateFor(VAULT_1)).toMatchObject({ session: 'locked' });
   });
-
-  /**
-   * #1737. `sessionResumeReentrancy.test.ts` asks this question against the
-   * real singleton, where the outcome hangs on the real argon2 finishing inside
-   * the resume's 300 ms grant window — true on a quiet machine, false on a
-   * loaded CI box, which is how it failed there and passed everywhere else.
-   * Here the KDF is slow BY CONSTRUCTION, so the losing ordering is the only
-   * one this test can take and the guard is what has to hold.
-   */
-  it('P8: a password whose KDF loses to the resume still installs exactly ONE session', async () => {
-    const persistence = createMemoryEndpointSessionPersistence();
-    let slowKdfMs = 0;
-    const kdf = fastArgon2();
-    const first = tab({
-      persistence,
-      transport: () => null,
-      argon2: async (options) => {
-        if (slowKdfMs > 0) await new Promise((resolve) => setTimeout(resolve, slowKdfMs));
-        return kdf(options);
-      },
-    });
-    await seedWrappedVault(first);
-    await first.unlock(PASSWORD);
-    await bus.settle();
-    expect(persistence.size()).toBe(1);
-
-    let opened = 0;
-    first.subscribeToVaultOpened(() => {
-      opened += 1;
-    });
-    // The shell's listener (`useEndpointVaultSession`): every session end sends
-    // the endpoint-state queries back for a resume — including the session end
-    // `unlock` itself raises, which is the resume that races the password.
-    const resumes: Promise<EndpointUnlockResult>[] = [];
-    const release = first.subscribeToSessionEnd(() => {
-      resumes.push(first.resumeSessionFromOpenTabs());
-    });
-    try {
-      // A drift teardown, no lock: the device record outlives the session.
-      first.endSession();
-      // The user types the password while that record still stands.
-      slowKdfMs = 400;
-      await expect(first.unlock(PASSWORD)).resolves.toEqual({ unlockedVaultIds: [VAULT_1] });
-      slowKdfMs = 0;
-
-      // Both session ends — the teardown's and the unlock's — reached the
-      // listener, so the loop below is not passing vacuously.
-      expect(resumes.length, 'the teardown and the unlock each asked to resume').toBe(2);
-      // Every resume the teardown and the unlock triggered yielded: the one
-      // that snapshotted the old generation to the generation guard, and the
-      // one the unlock's own session end started to the in-flight guard.
-      for (const resumed of await Promise.all(resumes)) {
-        expect(resumed, 'a resume racing a password restores nothing').toEqual({
-          unlockedVaultIds: [],
-        });
-      }
-      expect(opened, 'one password, one vault-opened edge').toBe(1);
-      expect(await first.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
-      await expect(first.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
-    } finally {
-      release();
-    }
-  });
 });
 
 /** The current endpoint password metadata, for tests that derive K_dev themselves. */
@@ -962,8 +895,6 @@ function tab(
     now?: () => number;
     storage?: EndpointKeystoreStorage;
     transport?: CreateEndpointSessionTransport;
-    /** Override the KDF to time a password against a racing resume (P8). */
-    argon2?: DevicePasswordArgon2;
     /**
      * The device-side session record (§12 as amended 2026-09-03). The sharing
      * and race suites above pin the CHANNEL in isolation, so they run without
@@ -975,7 +906,7 @@ function tab(
 ): EndpointVaultKeystore {
   const keystore = new EndpointVaultKeystore({
     storage: options.storage ?? storage,
-    argon2: options.argon2 ?? fastArgon2(),
+    argon2: fastArgon2(),
     randomBytes: deterministicRandom(),
     createSessionTransport: options.transport ?? bus.create,
     sessionGrantTimeoutMs: options.grantTimeoutMs ?? 25,
