@@ -8,7 +8,7 @@ import {
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
 import {
-  bearerScopeDenialReasonSchema,
+  parseBearerScopeDenialReason,
   type BearerScopeDenialReason,
 } from '../../services/audit/auditService';
 import { normalizeRoutePath } from '../../services/security/routePath';
@@ -1176,7 +1176,8 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
  * through, so an out-of-vocabulary reason is refused before either credential
  * kind is dispatched to. `async` so that refusal surfaces as a rejection on the
  * promise callers already branch on, not as a synchronous throw some of them
- * would handle differently.
+ * would handle differently — every caller routes that rejection to `next`,
+ * where it becomes a REPORTED 500 (#1951 L1) and never an admission.
  */
 export async function recordBearerScopeDenied(
   ctx: AppContext,
@@ -1185,7 +1186,7 @@ export async function recordBearerScopeDenied(
   reason: BearerScopeDenialReason,
   path = req.path,
 ): Promise<void> {
-  bearerScopeDenialReasonSchema.parse(reason);
+  parseBearerScopeDenialReason('recordBearerScopeDenied', reason);
   const common = {
     userId: req.authUser!.id,
     requiredScope,
