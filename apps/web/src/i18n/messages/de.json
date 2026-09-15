@@ -6545,6 +6545,7 @@
         "namePlaceholder": "z. B. Lebensmittel",
         "nameRequired": "Gib einen Namen ein.",
         "nameTaken": "Du hast bereits einen Tag mit diesem Namen.",
+        "limitReached": "Du hast bereits die maximale Anzahl an Tags. Lösche einen, um einen neuen anzulegen.",
         "color": "Farbe",
         "saveError": "Tag konnte nicht gespeichert werden. Bitte versuche es erneut."
       }

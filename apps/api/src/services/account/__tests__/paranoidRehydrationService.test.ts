@@ -1,4 +1,5 @@
 import {
+  CASH_TAGS_PER_ITEM_MAX,
   paranoidDisableRehydrationRequestSchema,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   type ParanoidDisableRehydrationRequest,
@@ -17,6 +18,8 @@ import {
   alerts,
   assetIdentities,
   assets,
+  cashRuleTags,
+  cashTags,
   conglomeratePositions,
   conglomerates,
   dividends,
@@ -4119,5 +4122,117 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_REFERENCE',
     });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+});
+
+/**
+ * THE CASH CLASSIFICATION SETS, END TO END (#1963).
+ *
+ * `cash_rule_tags` carries `uniqueIndex('cash_rule_tags_rule_tag_unique')` and
+ * `restoreCashRuleTags` inserts with no conflict handling deliberately. Before
+ * this, a document repeating one `(ruleId, tagId)` pair therefore reached that
+ * INSERT — inside the open rehydration transaction, after the whole graph had
+ * been proved and most of the account had been written — and answered 500 with a
+ * driver error. It is now named at the door.
+ */
+describe('restored cash tags and rule links', () => {
+  const CASH_TAG_ID = (index: number) =>
+    `018f0000-0000-7000-8000-5${index.toString(16).padStart(11, '0')}`;
+  const CASH_RULE_ID = '018f0000-0000-7000-8000-600000000001';
+  const CASH_RULE_TAG_ID = (index: number) =>
+    `018f0000-0000-7000-8000-7${index.toString(16).padStart(11, '0')}`;
+
+  /** `tagCount` tags, one rule, and the links the caller asks for. */
+  function withCashRule(
+    input: ParanoidDisableRehydrationRequest,
+    tagCount: number,
+    links: readonly { linkIndex: number; tagIndex: number }[],
+  ): ParanoidDisableRehydrationRequest {
+    for (let i = 0; i < tagCount; i += 1) {
+      input.document.entities.push(
+        entity(CASH_TAG_ID(i), 'cashTag', {
+          userId: restoreUserId,
+          name: `label-${i}`,
+          color: '#112233',
+          system: false,
+          systemKey: null,
+          createdAt: editedAt,
+          updatedAt: editedAt,
+        }),
+      );
+    }
+    input.document.entities.push(
+      entity(CASH_RULE_ID, 'cashRule', {
+        userId: restoreUserId,
+        matchType: 'contains',
+        pattern: 'SPAR',
+        priority: 0,
+        enabled: true,
+        createdAt: editedAt,
+        updatedAt: editedAt,
+      }),
+    );
+    for (const { linkIndex, tagIndex } of links) {
+      input.document.entities.push(
+        entity(CASH_RULE_TAG_ID(linkIndex), 'cashRuleTag', {
+          ruleId: CASH_RULE_ID,
+          tagId: CASH_TAG_ID(tagIndex),
+          createdAt: editedAt,
+        }),
+      );
+    }
+    return input;
+  }
+
+  it('refuses a document that links one tag to one rule TWICE, before it writes a row', async () => {
+    const { db, user } = await makeParanoid();
+    // Two link rows with their own distinct entity ids — the shape the document's
+    // own id-uniqueness check cannot see — carrying the SAME (rule, tag) pair.
+    const input = withCashRule(request(), 1, [
+      { linkIndex: 0, tagIndex: 0 },
+      { linkIndex: 1, tagIndex: 0 },
+    ]);
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+
+    // Nothing written, and the account is still where it was: the ciphertext
+    // survives, so the user can fix the document and come back.
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(cashTags).where(eq(cashTags.userId, user.id))).toEqual([]);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(1);
+    const [account] = await db
+      .select({ mode: users.privacyMode })
+      .from(users)
+      .where(eq(users.id, user.id));
+    expect(account?.mode).toBe('paranoid');
+  });
+
+  it('restores a rule carrying the maximum number of DISTINCT tags', async () => {
+    // The negative space of the two refusals above: a document sitting exactly
+    // on the fan-out cap with no repeated pair is ordinary and must restore.
+    const { db, user } = await makeParanoid();
+    const input = withCashRule(
+      request(),
+      CASH_TAGS_PER_ITEM_MAX,
+      Array.from({ length: CASH_TAGS_PER_ITEM_MAX }, (_unused, i) => ({
+        linkIndex: i,
+        tagIndex: i,
+      })),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+
+    expect(await db.select().from(cashTags).where(eq(cashTags.userId, user.id))).toHaveLength(
+      CASH_TAGS_PER_ITEM_MAX,
+    );
+    expect(
+      await db.select().from(cashRuleTags).where(eq(cashRuleTags.ruleId, CASH_RULE_ID)),
+    ).toHaveLength(CASH_TAGS_PER_ITEM_MAX);
   });
 });

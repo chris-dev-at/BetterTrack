@@ -6545,6 +6545,7 @@
         "namePlaceholder": "e.g. Groceries",
         "nameRequired": "Enter a name.",
         "nameTaken": "You already have a tag with that name.",
+        "limitReached": "You already have the maximum number of tags. Delete one to add another.",
         "color": "Colour",
         "saveError": "Couldn't save the tag. Please try again."
       }
