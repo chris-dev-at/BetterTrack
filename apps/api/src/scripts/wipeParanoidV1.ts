@@ -53,6 +53,7 @@ const client = postgres(databaseUrl, { max: 1 });
 const db = drizzle(client, { schema });
 
 const candidates = resultRows<{ user_id: string; attestation_id: string }>(
+  // eslint-disable-next-line sql/no-dynamic-identifier -- closed list of one: PARANOID_V1_WIPE_CANDIDATES_SQL is a module-level literal in paranoidV1TransitionSql.ts, executed verbatim so the suite can pin the statement an operator runs.
   await db.execute(sql.raw(PARANOID_V1_WIPE_CANDIDATES_SQL)),
 );
 

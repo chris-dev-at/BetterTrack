@@ -20,7 +20,7 @@ import {
   type PricePoint as DomainPricePoint,
   type ValueOverTimeAsset,
 } from '@bettertrack/domain/holdings';
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
+import { computeSeriesStats, modifiedDietzReturn } from '@bettertrack/domain/seriesStats';
 
 import {
   MarketDataSourceError,
@@ -311,6 +311,16 @@ async function derive(
       : computeSeriesStats(
           slicedValues.map((point) => ({ date: point.date, value: point.valueEur })),
         );
+  // The money-weighted headline of the same window (#1669): the sliced net
+  // worth and the very flows the TWR above is chained from. MAX anchors
+  // since inception (before day one, zero capital), a slice at its first
+  // plotted point — exactly the server's two anchors.
+  const moneyWeightedPct =
+    hasAnyMissing || slicedValues.length === 0
+      ? null
+      : modifiedDietzReturn(slicedValues, allFlows, {
+          anchor: range === 'MAX' ? 'inception' : 'first-point',
+        });
   const currentMissing = new Set<string>();
   for (const holding of holdings) {
     if (holding.quantity > QTY_EPSILON && holding.marketValueEur === null) {
@@ -337,6 +347,7 @@ async function derive(
     cashSources,
     series,
     stats,
+    moneyWeightedPct,
     freshness: stale ? 'stale' : 'fresh',
     missingAssetIds: [...currentMissing].sort(),
   };

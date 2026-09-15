@@ -72,6 +72,7 @@ import {
   FORECAST_RETURN_MIN_PCT,
 } from './calc';
 import { ForecastPage } from './ForecastPage';
+import { projectNetWorth } from './projection';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -421,6 +422,51 @@ test('prefill from portfolio fills current value + historical average return', a
   // The server's time-weighted return — never the value curve's 99 % (which is
   // mostly the user's own deposits), and never the vault-only 7 %.
   expect(rate.value).toBe('9.5');
+});
+
+test('a prefilled calculator and the projection answer with the same number (#1892)', async () => {
+  // One tab, one rate convention: the prefilled figure is an annualised
+  // time-weighted return — an EFFECTIVE annual rate — and both the projection
+  // engine and the calculator now compound it as one. The cards used to divide
+  // it nominally by their compounding steps, so the same prefill answered
+  // €492,680 here against the projection's €466,096 on the same question.
+  const user = userEvent.setup();
+  renderForecast();
+  await waitFor(() => expect(getAnalyticsSeries).toHaveBeenCalled());
+
+  await user.click(await screen.findByRole('button', { name: /Compound interest/i }));
+  await user.click(screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!);
+  const rate = screen.getByLabelText('Annual return (%)') as HTMLInputElement;
+  expect(rate.value).toBe('9.5');
+
+  // A lump sum only, over the projection's own default horizon.
+  const contribution = screen.getByLabelText('Monthly contribution (€)');
+  await user.clear(contribution);
+  await user.type(contribution, '0');
+  const years = screen.getByLabelText('Years');
+  await user.clear(years);
+  await user.type(years, '20');
+
+  const projection = projectNetWorth({
+    asOf: '2026-01-01',
+    startingNetWorth: 50000,
+    horizonYears: 20,
+    annualReturnPct: 9.5,
+    standingOrders: [],
+    monthlyDividend: 0,
+    whatIfPlans: [],
+  });
+  const projected = projection.base[projection.base.length - 1]!.value;
+  await waitFor(() =>
+    expect(screen.getByText('Final balance').parentElement).toHaveTextContent(
+      formatMoney(projected),
+    ),
+  );
+  // 50 000 · 1.095^20, not 50 000 · (1 + 0.095/12)^240.
+  expect(projected).toBeCloseTo(50000 * Math.pow(1.095, 20), 2);
+  expect(screen.getByText('Final balance').parentElement).not.toHaveTextContent(
+    formatMoney(50000 * Math.pow(1 + 0.095 / 12, 240)),
+  );
 });
 
 test('a normal account never samples the net-worth history for its return prefill', async () => {
