@@ -89,18 +89,10 @@ test('exactly four workspaces are folded, and the two childless ones are not', (
 // one of its tabs, in the order the rail listed them — that is what makes the
 // fold cost no bookmark and no muscle memory.
 test('the Product & Comms workspace is folded, and every pre-fold path survives as a tab', () => {
-  expect(product?.tabs?.map((tab) => tab.to)).toEqual([
-    '/admin/settings',
-    '/admin/feature-flags',
-    '/admin/ai',
-    '/admin/account-defaults',
-    '/admin/announcements',
-  ]);
-  expect(product?.pages).toEqual([]);
-  // The landing W7b gave it is the first tab, not a seventh destination.
-  expect(product?.to).toBe('/admin/settings');
-  // The W1 page rows, none of them lost — named individually so a dropped page
-  // fails by name rather than as an array diff.
+  // The W1 page rows, none of them lost — checked FIRST and one at a time, so a
+  // dropped page fails naming itself. After the exact-array assertion below it
+  // could never be the one that fails, which would make the "fails by name"
+  // claim decorative.
   for (const path of [
     '/admin/settings',
     '/admin/feature-flags',
@@ -113,6 +105,17 @@ test('the Product & Comms workspace is folded, and every pre-fold path survives 
       path,
     ).toBe(true);
   }
+  // …and nothing else, in the order the rail listed them.
+  expect(product?.tabs?.map((tab) => tab.to)).toEqual([
+    '/admin/settings',
+    '/admin/feature-flags',
+    '/admin/ai',
+    '/admin/account-defaults',
+    '/admin/announcements',
+  ]);
+  expect(product?.pages).toEqual([]);
+  // The landing W7b gave it is the first tab, not a sixth destination.
+  expect(product?.to).toBe('/admin/settings');
   // Every tab reuses the page row's OWN catalog key: the fold renames nothing,
   // so no new i18n key was needed for the strip.
   expect(product?.tabs?.map((tab) => tab.labelKey)).toEqual([
@@ -127,6 +130,13 @@ test('the Product & Comms workspace is folded, and every pre-fold path survives 
 });
 
 test('the Security & API workspace is folded, and every pre-fold path survives as a tab', () => {
+  // Same order as above: named individually first, exact array second.
+  for (const path of ['/admin/audit', '/admin/security', '/admin/oauth-apps', '/admin/api-keys']) {
+    expect(
+      security?.tabs?.some((tab) => tab.to === path),
+      path,
+    ).toBe(true);
+  }
   expect(security?.tabs?.map((tab) => tab.to)).toEqual([
     '/admin/audit',
     '/admin/security',
@@ -135,12 +145,6 @@ test('the Security & API workspace is folded, and every pre-fold path survives a
   ]);
   expect(security?.pages).toEqual([]);
   expect(security?.to).toBe('/admin/audit');
-  for (const path of ['/admin/audit', '/admin/security', '/admin/oauth-apps', '/admin/api-keys']) {
-    expect(
-      security?.tabs?.some((tab) => tab.to === path),
-      path,
-    ).toBe(true);
-  }
   expect(security?.tabs?.map((tab) => tab.labelKey)).toEqual([
     'admin.nav.audit',
     'admin.nav.security',

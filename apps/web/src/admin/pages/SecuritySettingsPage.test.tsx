@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -109,4 +109,21 @@ test('regenerating recovery codes shows the fresh set exactly once', async () =>
   expect(await screen.findByText('aaaa-1111')).toBeInTheDocument();
   expect(screen.getByText('cccc-3333')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: "I've saved these codes" })).toBeInTheDocument();
+});
+
+/**
+ * The page IS a tab of the Security & API workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Security & API tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Security & API' });
+  expect(within(nav).getByRole('link', { name: 'Security' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });

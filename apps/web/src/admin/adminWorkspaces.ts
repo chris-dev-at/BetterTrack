@@ -13,10 +13,11 @@
  * W7c Product & Comms and Security & API).** A folded workspace declares `tabs`,
  * and its rail entry collapses to a single item: the tab strip on the page
  * carries the in-workspace navigation the child rows used to, so nothing became
- * unreachable. `pages` is the pre-fold shape and is now empty everywhere — the
- * field stays because it is what a future workspace declares before it has been
- * folded, and because `WorkspaceTabs.test.tsx` asserts the inventory of who is
- * folded rather than assuming it.
+ * unreachable. `pages` is the pre-fold shape and is now empty on EVERY
+ * workspace; the field and the sidebar's rendering of it stay because removing
+ * them is a separate change, not because a new workspace may quietly use them —
+ * `WorkspaceTabs.test.tsx` asserts `pages: []` across the whole registry, so
+ * re-introducing a child row fails that assertion and has to be argued for.
  *
  * **W7c is the §16 2026-09-14 ruling UN-CUTTING the fold.** The 2026-08-29
  * ruling 3 cut it as a package with a stated precondition — "the fold is proven
@@ -68,10 +69,11 @@ export interface AdminWorkspace {
    */
   wide?: boolean;
   /**
-   * Child rows in the sidebar. Empty for a workspace whose pages became tabs —
-   * which, since W7c, is every workspace that has children at all. A new
-   * workspace declares its pages here and folds them in a deliberate step, so
-   * the shape is still expressible and the fold is still a decision.
+   * Child rows in the sidebar. Empty on every workspace since W7c, and pinned
+   * empty by `WorkspaceTabs.test.tsx` — the console has one navigation shape,
+   * and a workspace that wants page rows back must change that assertion first.
+   * The field is still typed and still rendered by `AdminLayout`, so the
+   * pre-fold shape remains expressible; it is not a quiet option.
    */
   pages: readonly AdminDestination[];
   /** In-workspace tab strip. Present once a workspace has been folded (W2). */
