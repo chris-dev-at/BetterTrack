@@ -51,7 +51,7 @@ interface WireCommand {
   secure: boolean;
 }
 
-type StubMode = 'accept' | 'refuse' | 'no-starttls';
+type StubMode = 'accept' | 'refuse' | 'no-starttls' | 'no-esmtp';
 
 interface StubSmtp {
   port: number;
@@ -81,6 +81,10 @@ function addressOf(line: string): string | null {
  *  - `no-starttls` advertises AUTH PLAIN but no STARTTLS, and answers the
  *    STARTTLS verb with a 502 — the downgrade a hostile relay or an on-path
  *    attacker offers, since the capability list is plaintext and unauthenticated;
+ *  - `no-esmtp` refuses EHLO outright with a 500, which is the OTHER downgrade:
+ *    `_actionEHLO` falls back to plain HELO, and HELO has no capability list at
+ *    all, so the client authenticates unconditionally — no stripped capability
+ *    needed, just a refused verb;
  *  - `refuse` is a server that is up but will not serve this session.
  */
 async function startStubSmtp(mode: StubMode = 'accept'): Promise<StubSmtp> {
@@ -146,6 +150,11 @@ async function startStubSmtp(mode: StubMode = 'accept'): Promise<StubSmtp> {
           state.commands.push({ line, secure });
           switch (line.split(' ')[0]?.toUpperCase()) {
             case 'EHLO': {
+              if (mode === 'no-esmtp') {
+                // A server that does not speak ESMTP. Nodemailer retries with HELO.
+                channel.write(`500 5.5.1 Command unrecognized${CRLF}`);
+                break;
+              }
               // Only PLAIN is advertised, so the AUTH exchange is a single
               // deterministic command rather than a LOGIN challenge pair.
               const startTls = mode === 'accept' && !secure ? `250-STARTTLS${CRLF}` : '';
@@ -422,6 +431,35 @@ describe('SMTP transport over a real socket', () => {
     expect(verbs).toEqual(['EHLO', 'STARTTLS']);
     expect(verbs).not.toContain('AUTH');
     // Nothing that reached this server carries the password, in any encoding.
+    const wire = stub.commands.map((cmd) => cmd.line).join('\n');
+    expect(wire).not.toContain('smtp-password');
+    expect(wire).not.toContain(Buffer.from(PLAIN_AUTH_SECRET, 'utf8').toString('base64'));
+    expect(stub.accepted).toBe(false);
+  });
+
+  it('never falls back to plain HELO and authenticates there', async () => {
+    // The OTHER downgrade `requireTLS` closes, and the cheaper one to mount: a
+    // server (or an on-path attacker) need not strip a capability, only refuse
+    // EHLO. `_actionEHLO` then retries with HELO — which carries no capability
+    // list at all, so there is nothing left to consult and the client
+    // authenticates unconditionally, in the clear. `requireTLS` turns that
+    // branch into an ECONNECTION ("EHLO failed but HELO does not support
+    // required STARTTLS") before HELO is ever sent.
+    stub = await startStubSmtp('no-esmtp');
+
+    await expect(
+      transportFor(stub.port).send({
+        to: 'recipient@example.test',
+        subject: 's',
+        html: '<p>h</p>',
+        text: 't',
+      }),
+    ).rejects.toMatchObject({ code: 'ECONNECTION' });
+
+    const verbs = stub.commands.map((cmd) => cmd.line.split(' ')[0]?.toUpperCase());
+    expect(verbs).toEqual(['EHLO']);
+    expect(verbs).not.toContain('HELO');
+    expect(verbs).not.toContain('AUTH');
     const wire = stub.commands.map((cmd) => cmd.line).join('\n');
     expect(wire).not.toContain('smtp-password');
     expect(wire).not.toContain(Buffer.from(PLAIN_AUTH_SECRET, 'utf8').toString('base64'));

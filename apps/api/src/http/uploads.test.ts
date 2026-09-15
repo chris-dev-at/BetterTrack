@@ -134,5 +134,8 @@ describe('uploadCsvFile', () => {
       true,
     );
     expect(Object.prototype.hasOwnProperty.call(csvUploadLimits, 'fieldNestingDepth')).toBe(true);
+    // …and frozen, because multer keeps the reference rather than copying it:
+    // an unfrozen export is a live handle on the running middleware's limits.
+    expect(Object.isFrozen(csvUploadLimits)).toBe(true);
   });
 });

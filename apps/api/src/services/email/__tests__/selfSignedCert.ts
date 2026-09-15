@@ -84,14 +84,17 @@ export function selfSignedLoopbackCert(): SelfSignedCert {
     setOf(sequence(objectIdentifier('2.5.4.3'), utf8String('bettertrack-smtp-stub'))),
   );
   const now = Date.now();
-  const hour = 60 * 60 * 1000;
+  // A day either side, not an hour: the notBefore has to absorb whatever clock
+  // skew the host carries, or a slightly fast machine fails the handshake with
+  // CERT_NOT_YET_VALID and turns the whole wire suite red for no reason.
+  const day = 24 * 60 * 60 * 1000;
 
   const tbsCertificate = sequence(
     explicit(0, integer(Buffer.from([2]))), // version v3
     integer(randomBytes(8)), // serialNumber
     sha256WithRsa,
     name, // issuer == subject: self-signed
-    sequence(utcTime(new Date(now - hour)), utcTime(new Date(now + hour))),
+    sequence(utcTime(new Date(now - day)), utcTime(new Date(now + day))),
     name,
     spki,
     explicit(

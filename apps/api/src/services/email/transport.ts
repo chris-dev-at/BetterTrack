@@ -42,15 +42,16 @@ export function createSmtpTransport(email: AppConfig['email']): MailTransport {
     // authentication phase is ever reached. Pinned on the wire in
     // `__tests__/smtpWire.test.ts`.
     requireTLS: !secure,
-    // The composer resolves `{ path }` attachments off the local filesystem and
-    // `{ href }` attachments (and `cid:`/remote references in an html body) over
-    // the network, as the process, at DATA time. `OutgoingMail` is four plain
-    // strings today, so nothing reachable can ask for either — but three of
-    // Nodemailer's published advisories are bypasses of exactly these two
-    // flags, and the cost of a future caller widening `OutgoingMail` is an
-    // arbitrary-file-read / SSRF primitive reachable from whatever builds the
-    // mail. Closing both here makes that a rejected send instead: the file is
-    // never opened and the URL is never fetched (§10 defence in depth).
+    // The composer resolves an `html`/`text` body supplied as `{ path }` or
+    // `{ href }`, and `{ path }`/`{ href }` attachments, off the local
+    // filesystem or over the network, as the process, at DATA time.
+    // `OutgoingMail` is four plain strings today, so nothing reachable can ask
+    // for either — but three of Nodemailer's published advisories are bypasses
+    // of exactly these two flags, and the cost of a future caller widening
+    // `OutgoingMail` is an arbitrary-file-read / SSRF primitive reachable from
+    // whatever builds the mail. Closing both here makes that a rejected send
+    // instead: the file is never opened and the URL is never fetched (§10
+    // defence in depth).
     disableFileAccess: true,
     disableUrlAccess: true,
     auth: email.user ? { user: email.user, pass: email.pass } : undefined,

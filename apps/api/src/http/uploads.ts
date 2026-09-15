@@ -32,7 +32,7 @@ export const csvUploadLimits: NonNullable<MulterOptions['limits']> & {
   // required, so neither guard can be dropped without a type error.
   fieldArrayIndexLimit: number;
   fieldNestingDepth: number;
-} = {
+} = Object.freeze({
   // `parts` and `fileSize` are NOT sentinels — `fieldSize` still is. Multer
   // 2.3.0 started handing Busboy `parts + 1` and `fileSize + 1`
   // (make-middleware.js) so that its own limits read as "the most that is
@@ -80,7 +80,15 @@ export const csvUploadLimits: NonNullable<MulterOptions['limits']> & {
   // `brokerId`, `bankId`, `overrides` all have none — while refusing the
   // bracket paths `append-field` would otherwise walk into `req.body`.
   fieldNestingDepth: 1,
-};
+  // Frozen because multer keeps the reference rather than copying it: without
+  // this, any importer could reach in and raise `fileSize` — or delete
+  // `fieldArrayIndexLimit`, whose guard multer consults by `hasOwnProperty` —
+  // on the live middleware, at runtime, from anywhere in the process. The
+  // annotation above still types the object as mutable, which is what multer's
+  // published `limits` declaration expects; `Object.freeze` only takes the
+  // writability away, and TypeScript does not treat readonly properties as an
+  // assignability difference.
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: csvUploadLimits });
 
