@@ -17,11 +17,13 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 
 import {
+  FEEDBACK_OPEN_STATUSES,
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
   FEEDBACK_TERMINAL_STATUSES,
   type AdminFeedbackListQuery,
   type CreateFeedbackRequest,
   type FeedbackMessageAuthorSide,
+  type FeedbackStatus,
   type UpdateFeedbackStatusRequest,
 } from '@bettertrack/contracts';
 
@@ -557,6 +559,56 @@ export function createFeedbackRepository(
       end`;
 
       /**
+       * Lifecycle grouping (#1341): open work as one block, the settled
+       * outcomes sunk to the bottom, each half in its own declared order. The
+       * key is built from the open/terminal PARTITION rather than from a
+       * position in `FEEDBACK_STATUSES`, because those two only agree while
+       * `declined`/`shipped` sit at that array's tail: an open seventh status
+       * would be appended there like any enum value and would then sort after
+       * the settled ones, quietly contradicting this sort's own label ("open
+       * work first"). Ordering off the partition instead means a new status
+       * lands wherever contracts classified it, with no second rule to keep in
+       * sync. The contracts test holds the partition exhaustive and disjoint,
+       * so every status gets exactly one index here.
+       */
+      const lifecycleStatusOrder = [
+        ...FEEDBACK_OPEN_STATUSES,
+        ...FEEDBACK_TERMINAL_STATUSES,
+      ] satisfies readonly FeedbackStatus[];
+      /**
+       * The sort keys are the only part of this `CASE` that is SQL text rather
+       * than a bind parameter, and they have to be: every arm of a `CASE` whose
+       * results are unknown-typed parameters leaves Postgres with no way to
+       * resolve the expression's type (`could not determine data type of
+       * parameter`), a failure PGlite does not reliably reproduce. So the
+       * positions go through `sql.raw` and each call is exempted from
+       * `sql/no-dynamic-identifier` one line at a time: the value is a `map`
+       * index (and the array's length) over `lifecycleStatusOrder`, a
+       * module-level `as const` partition — no user input can reach it. The
+       * status literals themselves stay bound parameters, which is why they are
+       * spelled `${status}` here rather than as SQL text like `priorityOrder`'s
+       * categories above: they come from the same closed list, but binding them
+       * keeps one more string out of the statement text for free.
+       *
+       * The `else` arm is unreachable in production — the column is the
+       * `feedback_status` pg enum and the partition covers it exhaustively, so
+       * every row matches a `WHEN`. It is kept so a status that somehow escapes
+       * the partition sorts last deterministically instead of producing a NULL
+       * key; do not go looking for the query that exercises it.
+       */
+      const lifecycleArms = lifecycleStatusOrder.map((status, index) => {
+        // eslint-disable-next-line sql/no-dynamic-identifier -- integer index into lifecycleStatusOrder, the closed FEEDBACK_OPEN_STATUSES + FEEDBACK_TERMINAL_STATUSES partition; never user input
+        const position = sql.raw(String(index));
+        return sql`when ${status} then ${position}`;
+      });
+      // eslint-disable-next-line sql/no-dynamic-identifier -- length of that same closed partition, one past its last index; never user input
+      const lifecycleFallback = sql.raw(String(lifecycleStatusOrder.length));
+      const lifecycleOrder = sql<number>`case ${feedback.status} ${sql.join(
+        lifecycleArms,
+        sql` `,
+      )} else ${lifecycleFallback} end`;
+
+      /**
        * Every ordering ends on the `id` tiebreak. Without it two rows sharing
        * the leading key can swap between page 1 and page 2 under a stable
        * filter, and one of them is then never shown to the operator at all.
@@ -568,7 +620,11 @@ export function createFeedbackRepository(
             ? // Longest-untouched first: the aging clock is the last lifecycle
               // move, not the filing date.
               [asc(feedback.lastStatusChangeAt), asc(feedback.id)]
-            : [desc(feedback.createdAt), desc(feedback.id)];
+            : params.sort === 'status'
+              ? // Newest first inside a lifecycle group, matching what the
+                // unsorted queue does within one status.
+                [lifecycleOrder, desc(feedback.createdAt), desc(feedback.id)]
+              : [desc(feedback.createdAt), desc(feedback.id)];
 
       const rows = await db
         .select(adminSelection)

@@ -344,6 +344,113 @@ describe('admin support inbox — W3 filters and thread state', () => {
     expect(newest.submissions.at(-1)?.subject).toBe('Watchlist sort order');
   });
 
+  /**
+   * The lifecycle rows the shared fixture cannot carry. `seedInbox()` files its
+   * five submissions in exactly the order the lifecycle groups them, so an
+   * assertion over that fixture alone stays green after the grouping is deleted
+   * and the route falls back to `desc(createdAt)`. These three invert the
+   * coincidence — the newest row of all is `working_on_it` (which the lifecycle
+   * rule puts third), a `declined` row outranks the `new` one by filing date,
+   * and the oldest row of all is `saved_as_future_idea` (fourth, not last) — and
+   * they supply the two statuses the fixture never reaches, so "every status
+   * takes the place the open/terminal partition gives it" is asserted rather
+   * than assumed. They are seeded here instead of in `seedInbox()` because every
+   * other test in this file asserts against that fixture's totals and clocks.
+   */
+  async function seedLifecycleExtras() {
+    return harness.db
+      .insert(schema.feedback)
+      .values([
+        {
+          userId: bob.id,
+          category: 'bug',
+          subject: 'Chart tooltip lags on a phone',
+          message: 'The tooltip trails my finger by half a second.',
+          status: 'working_on_it',
+          lastStatusChangeAt: at('2026-08-30T08:00:00.000Z'),
+          createdAt: at('2026-08-30T08:00:00.000Z'),
+          updatedAt: at('2026-08-30T08:00:00.000Z'),
+        },
+        {
+          userId: alice.id,
+          category: 'feature',
+          subject: 'Add a light theme toggle',
+          message: 'The dark theme is hard to read outdoors.',
+          status: 'declined',
+          declinedReason: 'Cut from v5; it belongs to the redesign.',
+          lastStatusChangeAt: at('2026-08-29T08:00:00.000Z'),
+          createdAt: at('2026-08-28T08:00:00.000Z'),
+          updatedAt: at('2026-08-29T08:00:00.000Z'),
+        },
+        {
+          userId: bob.id,
+          category: 'improvement',
+          subject: 'Multi-currency budgets',
+          message: 'A budget still assumes one currency per portfolio.',
+          status: 'saved_as_future_idea',
+          lastStatusChangeAt: at('2026-07-25T08:00:00.000Z'),
+          createdAt: at('2026-07-20T08:00:00.000Z'),
+          updatedAt: at('2026-07-25T08:00:00.000Z'),
+        },
+      ])
+      .returning();
+  }
+
+  it('groups by lifecycle status, open work first and newest inside a group', async () => {
+    await seedInbox();
+    await seedLifecycleExtras();
+
+    const grouped = await list({ sort: 'status' });
+    expect(grouped.submissions.map((row) => row.subject)).toEqual([
+      // The open half first, in its declared order — and the filing dates
+      // inside it run 08-25, 08-20, 08-30, 07-20, so this block is only
+      // reachable by the lifecycle key.
+      'Can I merge two custom assets?', // new
+      'Dividend total is off by one payout', // triaged
+      'Chart tooltip lags on a phone', // working_on_it — newest row of all
+      'Multi-currency budgets', // saved_as_future_idea — oldest row of all
+      // Then the settled outcomes, declined before shipped, newest leading
+      // inside each group.
+      'Add a light theme toggle', // declined, filed 08-28
+      'Allocation shows 100% twice', // declined, filed 08-03
+      'Forecast should honour paused orders', // shipped, filed 08-02
+      'Watchlist sort order', // shipped, filed 08-01
+    ]);
+
+    // The contrast that makes the assertion above discriminating: newest-first
+    // is the branch `sort: 'status'` falls through to if the lifecycle CASE is
+    // removed, and it produces a different order for six of the eight rows.
+    const newest = await list({ sort: 'newest' });
+    expect(newest.submissions.map((row) => row.subject)).toEqual([
+      'Chart tooltip lags on a phone',
+      'Add a light theme toggle',
+      'Can I merge two custom assets?',
+      'Dividend total is off by one payout',
+      'Allocation shows 100% twice',
+      'Forecast should honour paused orders',
+      'Watchlist sort order',
+      'Multi-currency budgets',
+    ]);
+
+    // Grouping is an ordering, not a filter: the whole queue is still returned.
+    expect(grouped.pagination.total).toBe(8);
+
+    // And it pairs with the status filter rather than replacing it. One
+    // lifecycle key survives the filter, so what is left is the newest-first
+    // tail the grouping shares with the unsorted queue.
+    const declinedOnly = await list({ sort: 'status', status: 'declined' });
+    expect(declinedOnly.submissions.map((row) => row.subject)).toEqual([
+      'Add a light theme toggle',
+      'Allocation shows 100% twice',
+    ]);
+
+    const shippedOnly = await list({ sort: 'status', status: 'shipped' });
+    expect(shippedOnly.submissions.map((row) => row.subject)).toEqual([
+      'Forecast should honour paused orders',
+      'Watchlist sort order',
+    ]);
+  });
+
   it('composes filters and keeps the total consistent with the page', async () => {
     await seedInbox();
 
