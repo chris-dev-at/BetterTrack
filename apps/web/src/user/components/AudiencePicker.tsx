@@ -10,6 +10,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Button, Icon, Input } from '../../ui/origin';
 import { useMutationFeedback } from '../hooks/useMutationFeedback';
@@ -54,6 +55,21 @@ export interface AudiencePickerProps {
 
 /** Cache window for the friend-circle list — the same one `/people` uses. */
 const GROUPS_STALE_MS = 30_000;
+
+/**
+ * `audienceService.GROUP_AUDIENCE_INVALID` — a `group` write that names no
+ * circle the caller owns. The one refusal an owner can act on from inside this
+ * dialog (the circle was deleted in another tab since the cached list was
+ * read), so it names itself instead of arriving as the generic retry copy
+ * (#1899) — the pattern `FriendGroupsSection` follows for the roster ceiling.
+ *
+ * NOTE: unlike `FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE` this code has no home in
+ * `@bettertrack/contracts` yet, so it is restated here rather than shared. If
+ * the server ever renames it, this branch degrades to the generic message — it
+ * never misreports. Lifting it into contracts is a contracts-package change,
+ * outside this client-side package's claim.
+ */
+const GROUP_AUDIENCE_INVALID_CODE = 'GROUP_AUDIENCE_INVALID';
 
 // ── Tier iconography (inline SVG, dependency-free — matches the app house style) ─
 function TierIcon({ audience, className }: { audience: ShareAudience; className?: string }) {
@@ -218,6 +234,16 @@ export function AudiencePicker({
   const snapshotReady = authoritativeKey !== null && snapshotKey === authoritativeKey;
   const audience: ShareAudience = selected ?? 'private';
   const initialAudience = audienceQuery.data?.audience;
+  const serverGroupId = audienceQuery.data?.groupId ?? null;
+  /**
+   * The share points at a circle that no longer exists (#1899).
+   * `share_audiences.group_id` is `ON DELETE SET NULL`, and the server refuses
+   * to WRITE a `group` audience without a circle it owns, so this shape can
+   * only come from a deletion: the tier outlived the circle and the enforcement
+   * layer now admits nobody. Save is (correctly) blocked in that state — this
+   * flag is what lets the dialog say why and offer the way out.
+   */
+  const shareCircleDeleted = initialAudience === 'group' && serverGroupId === null;
   const hasActivePublicLink = audienceQuery.data?.link.active === true;
   const nextSelection = {
     audience,
@@ -257,7 +283,23 @@ export function AudiencePicker({
         onClose();
       }
     },
+    onError: (error) => {
+      if (!(error instanceof ApiError) || error.code !== GROUP_AUDIENCE_INVALID_CODE) return;
+      // The circle vanished between the cached list read and Save. Drop the
+      // dead selection — re-submitting it can only be refused again, which is
+      // the loop this refusal used to sit in — and refresh the stale list so
+      // the owner re-picks from circles that still exist. Clearing to `null`
+      // keeps the tier and leaves Save blocked: the repair is a deliberate
+      // re-pick. It never falls back to `all_friends` or `public_link`, and it
+      // never carries a widening acknowledgment across the refusal.
+      setGroupId(null);
+      setWidenConfirmed(false);
+      void queryClient.invalidateQueries({ queryKey: ['social', 'groups'] });
+    },
   });
+  /** The refusal above, as the dialog renders it. */
+  const groupCircleGone =
+    mutation.error instanceof ApiError && mutation.error.code === GROUP_AUDIENCE_INVALID_CODE;
 
   const friends = friendsQuery.data?.friends ?? [];
   const filteredFriends = useMemo(() => {
@@ -394,11 +436,21 @@ export function AudiencePicker({
   // to Friend group" — an owner asked to acknowledge a widening (three people to
   // eighteen) whose recipients the dialog refused to name, although the circle's
   // name and live size are already loaded here.
-  function reachLabel(a: ShareAudience, gid: string | null): string {
+  //
+  // `circleDeleted` marks the one slot that used to misstate reach (#1899): a
+  // share whose circle was deleted resolves to NOBODY server-side, and the plain
+  // "Friend group" badge read as though a populated circle already saw the item
+  // — understating the very widening this acknowledgment exists to make
+  // explicit ("from Friend group to All friends" for a share nobody can see).
+  // The honest string wins; §6.9 never overstates reach.
+  function reachLabel(a: ShareAudience, gid: string | null, circleDeleted = false): string {
     if (a !== 'group') return t(`sharing.badge.${a}`);
+    if (circleDeleted) return t('sharing.audienceGroupDeleted');
     const circle = gid ? groups.find((g) => g.id === gid) : undefined;
-    // A circle deleted since the share was made resolves to nobody server-side
-    // (`ON DELETE SET NULL`), so there is no name to give: keep the plain badge.
+    // What remains here is not a deleted circle: either no circle is picked yet
+    // (Save is blocked until one is) or the id belongs to a circle this bounded
+    // list cannot name — created in another tab since the cached read. Neither
+    // supports a reach claim, so the plain badge stands.
     if (!circle) return t('sharing.badge.group');
     return t(`sharing.audienceGroupNamed.${circle.memberCount === 1 ? 'one' : 'other'}`, {
       name: circle.name,
@@ -416,6 +468,14 @@ export function AudiencePicker({
       <div className="flex flex-col gap-4">
         {mirrorSyncedCopy ? <Alert tone="info">{t('mirrorchain.share.syncedNotice')}</Alert> : null}
         {hasActivePublicLink ? <Alert tone="info">{t('sharing.publicActive')}</Alert> : null}
+        {/* The dead share, named. Stated calmly rather than as an alarm — it
+            describes the item's CURRENT reach (nobody) and points at the repair,
+            which is the tier list right below. Suppressed while the refusal
+            below is on screen: that one says the same thing about a live
+            attempt, and two notices for one fact is noise (#1899). */}
+        {shareCircleDeleted && !groupCircleGone ? (
+          <Alert tone="info">{t('sharing.groupDeletedNotice')}</Alert>
+        ) : null}
         <fieldset className="flex flex-col gap-2">
           <legend className="bt-label" style={{ marginBottom: 4 }}>
             {t('sharing.audienceLabel')}
@@ -576,7 +636,7 @@ export function AudiencePicker({
             <div className="flex flex-col gap-2">
               <p>
                 {t('sharing.audienceChangeConfirm', {
-                  from: reachLabel(initialAudience, audienceQuery.data?.groupId ?? null),
+                  from: reachLabel(initialAudience, serverGroupId, shareCircleDeleted),
                   to: reachLabel(audience, groupId),
                 })}
               </p>
@@ -625,7 +685,11 @@ export function AudiencePicker({
         {publicLinkKept && audience === 'public_link' ? (
           <Alert tone="success">{t('sharing.publicLinkKept')}</Alert>
         ) : null}
-        {mutation.isError ? <Alert tone="error">{t('sharing.error')}</Alert> : null}
+        {mutation.isError ? (
+          <Alert tone="error">
+            {groupCircleGone ? t('sharing.groupGoneError') : t('sharing.error')}
+          </Alert>
+        ) : null}
 
         <div className="flex justify-end gap-2">
           <Button onClick={onClose} variant="quiet">
