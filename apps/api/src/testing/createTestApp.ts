@@ -197,7 +197,9 @@ export interface TestHarness {
    * publisher/subscriber pair (`redis.duplicate()` x2 in `buildContext`) and,
    * on the PGlite path, the per-harness `RedisMock`. The real-service Redis
    * client is process-shared and is deliberately left open (#1485, #1914).
-   * Idempotent: a second call is a no-op.
+   * Idempotent: a second call is a no-op. Terminal: after `dispose()` the
+   * harness must not be used again — `ctx.events.publish()` rejects once the
+   * bus pair is closed, while `ctx.db`/`ctx.redis` would still answer.
    */
   dispose(): Promise<void>;
   seedAdmin(input?: Partial<Omit<SeededAdmin, 'id'>>): Promise<SeededAdmin>;
@@ -377,14 +379,18 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
   // That pair is the whole of it: `buildContext` builds no BullMQ registry under
   // test (`queues` is null when `config.isTest`), every other service rides the
   // passed-in client, and the realtime gateway's own `duplicate()` is opened by
-  // `attach()` — which a harness never calls — and closed by `realtime.close()`.
+  // `attach()` — which `createTestApp` itself never calls (gateway tests do,
+  // and close it through `realtime.close()`).
   let disposed = false;
 
   async function dispose(): Promise<void> {
     if (disposed) return;
     disposed = true;
-    await ctx.events.close();
-    await releaseOwnedRedis();
+    try {
+      await ctx.events.close();
+    } finally {
+      await releaseOwnedRedis();
+    }
   }
 
   const userRepo = createUserRepository(db);
