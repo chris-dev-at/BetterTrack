@@ -1,5 +1,7 @@
 # BetterTrack security and usability review
 
+_Archived 2026-09-02 — the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 Review date: 2026-07-26
 Reviewed revision: `68105467c910b6e64b8383ecb1b97f28ebb725a4`
 Review type: repository-wide source, configuration, deployment, privacy, and usability assessment
