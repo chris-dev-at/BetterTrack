@@ -258,6 +258,13 @@ async function linkRuleTags(
  * is the single door BOTH callers go through — book time and the on-demand
  * re-run — so bounding it here bounds every pass at once.
  *
+ * It is NOT the same bound as the re-run's SELECT (#1954), and both are needed.
+ * The SELECT bounds what is READ, and only the re-run has a SELECT to put it in;
+ * this bounds what is MATCHED, and it is the only bound the book-time caller
+ * has, because that caller arrives holding rows it built from a write nobody
+ * selected. On the re-run the string is already at the ceiling when it gets
+ * here and this clip changes nothing.
+ *
  * It is not theoretical. Every HTTP cash write validates `note` against that
  * same ceiling (`cashEntryRequestSchema`), but the import apply path calls
  * `depositCash`/`withdrawCash` SERVICE-DIRECT with the raw CSV cell, and
@@ -349,10 +356,15 @@ interface ScannedMovement extends RuleTaggableMovement {
  * repeatable request. Now each portfolio is walked by keyset page of
  * {@link SCAN_PAGE}, newest first, and the whole run stops at
  * {@link CASH_RULE_APPLY_MOVEMENT_SCAN_MAX} scanned movements. Memory is one
- * page of rows whatever the ledger holds — and one row is bounded too, because
- * `applyCashRuleTags` matches at most `CASH_MOVEMENT_NOTE_MAX` characters of a
- * note however long the stored text is. A run that hit the bound says so
- * instead of reporting a number that looks like a complete pass.
+ * page of rows whatever the ledger holds — and one ROW is bounded too, because
+ * the SELECT itself asks for `left("note", CASH_MOVEMENT_NOTE_MAX)` (#1954).
+ * That distinction is the whole point: a page bounded only in rows is not
+ * bounded in bytes, and `note` is a `text` column no writer is obliged to clip —
+ * so 500 rows × one 5 MB memo was a resident set the page count said nothing
+ * about. Matching is clipped to the same ceiling in `applyCashRuleTags`, which
+ * is what bounds the BOOK-TIME caller (it is handed rows nobody selected); here
+ * the two agree and the second clip is a no-op. A run that hit the row bound
+ * says so instead of reporting a number that looks like a complete pass.
  *
  * The cursor is `(executed_at, id)`, matching the `ORDER BY` and the
  * `(portfolio_id, executed_at)` index, so a page is a range read rather than a
@@ -399,7 +411,17 @@ export async function applyCashRulesForOwner(
       // treatment of a whitespace-only note as no note at all.
       const page = resultRows(
         await executor.execute(sql`
-          SELECT "id", "note", "executed_at"::text AS "cursorExecutedAt"
+          SELECT
+            "id",
+            -- THE PAGE IS BOUNDED IN BYTES, NOT ONLY IN ROWS (#1954). The note
+            -- column is text and no lane that writes one is obliged to clip it:
+            -- a restored vault row carries whatever the document held. Clipping
+            -- in JS after the fetch would still materialize 500 unbounded notes
+            -- per page, so the ceiling is applied HERE and a full-length note
+            -- never exists in this process at all. left() counts characters,
+            -- which is what CASH_MOVEMENT_NOTE_MAX means everywhere else.
+            left("note", ${CASH_MOVEMENT_NOTE_MAX}) AS "note",
+            "executed_at"::text AS "cursorExecutedAt"
           FROM "portfolio_cash_movements"
           WHERE "portfolio_id" = ${portfolioId}::uuid
             AND "note" IS NOT NULL

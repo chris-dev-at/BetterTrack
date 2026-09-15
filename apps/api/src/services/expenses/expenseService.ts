@@ -17,7 +17,7 @@ import type {
   UpdateExpenseRuleRequest,
   UpdateExpenseTransactionRequest,
 } from '@bettertrack/contracts';
-import { EXPENSE_TRANSACTION_LIST_DEFAULT } from '@bettertrack/contracts';
+import { EXPENSE_RULE_PATTERN_MAX, EXPENSE_TRANSACTION_LIST_DEFAULT } from '@bettertrack/contracts';
 
 import { badRequest, conflict, notFound } from '../../errors';
 import type {
@@ -187,6 +187,16 @@ const CATEGORY_NAME_TAKEN = () =>
   conflict('A category with that name already exists.', 'EXPENSE_CATEGORY_NAME_TAKEN');
 const RULE_REGEX_UNSUPPORTED = () =>
   badRequest('This regex pattern uses unsupported syntax.', 'EXPENSE_RULE_REGEX_UNSUPPORTED');
+/**
+ * 400, mirroring `cashTagService`'s decision (#1954): the per-user cap is a
+ * CONFLICT with account state, while an over-long pattern is a malformed row —
+ * exactly what the write path's request schema refuses with a 400.
+ */
+const RULE_PATTERN_TOO_LONG = () =>
+  badRequest(
+    `A rule pattern may be at most ${EXPENSE_RULE_PATTERN_MAX} characters.`,
+    'EXPENSE_RULE_PATTERN_TOO_LONG',
+  );
 const RULE_LIMIT_REACHED = () =>
   conflict(
     `You already have the maximum of ${EXPENSE_RULES_PER_USER_MAX} rules. Delete one to add another.`,
@@ -446,22 +456,31 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
 
     /**
      * THE RESTORE LANE'S GATE, mirroring `cashTagService.restoreRules` decision
-     * for decision (#1743): the pattern's length is bounded by the vault row
-     * schema, an uncompilable `regex` is refused with the SAME typed error the
-     * HTTP path returns, and a document whose rules exceed the per-user cap
-     * fails the whole restore rather than importing a bounded prefix — a
-     * rehydration is one transaction and loses nothing when it fails, whereas a
-     * prefix would silently drop rules the user still believes they own.
+     * for decision (#1743, #1954): the pattern's length is bounded by the vault
+     * row schema AND re-checked here, an uncompilable `regex` is refused with
+     * the SAME typed error the HTTP path returns, and a document whose rules
+     * exceed the per-user cap fails the whole restore rather than importing a
+     * bounded prefix — a rehydration is one transaction and loses nothing when
+     * it fails, whereas a prefix would silently drop rules the user still
+     * believes they own.
+     *
+     * THE O(1) CAP RUNS BEFORE THE COMPILE LOOP (#1954), for the reason stated
+     * at length on the cash side: compiling every restored pattern through RE2
+     * is the expensive half, it happens inside the open rehydration transaction,
+     * and it evicts the shared compile cache — so a document that was never
+     * going to be accepted must not be able to buy that work with one count's
+     * worth of refusal.
      */
     async restoreRules(userId, rows, scope) {
       if (rows.length === 0) return;
+      const existing = await rules.countForOwner(userId);
+      if (existing + rows.length > EXPENSE_RULES_PER_USER_MAX) throw RULE_LIMIT_REACHED();
       for (const row of rows) {
+        if (row.pattern.length > EXPENSE_RULE_PATTERN_MAX) throw RULE_PATTERN_TOO_LONG();
         if (row.matchType === 'regex' && !isSupportedExpenseRuleRegex(row.pattern)) {
           throw RULE_REGEX_UNSUPPORTED();
         }
       }
-      const existing = await rules.countForOwner(userId);
-      if (existing + rows.length > EXPENSE_RULES_PER_USER_MAX) throw RULE_LIMIT_REACHED();
       await scope.insertRules(rows);
     },
   };
