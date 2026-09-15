@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNotNull, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNotNull, lt, lte, sql } from 'drizzle-orm';
 
 import type { ExpenseDirection, ExpenseRuleMatchType } from '@bettertrack/contracts';
 
@@ -555,6 +555,18 @@ export function createExpenseRuleRepository(db: Database) {
         .where(eq(expenseRules.userId, userId))
         .orderBy(asc(expenseRules.priority), asc(expenseRules.createdAt), asc(expenseRules.id));
       return rows.map(toRule);
+    },
+
+    /**
+     * How many rules the owner already has — read by the per-user cap in
+     * `expenseService` (#1743), which needs a number rather than every row.
+     */
+    async countForOwner(userId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: count() })
+        .from(expenseRules)
+        .where(eq(expenseRules.userId, userId));
+      return Number(row?.count ?? 0);
     },
 
     /** A single rule scoped to its owner (§8): null when unknown or foreign. */

@@ -9,6 +9,7 @@ import type { Application } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CASH_MOVEMENT_NOTE_MAX,
   importPreviewResponseSchema,
   type ApplyImportResponse,
   type ImportPreviewResponse,
@@ -266,6 +267,57 @@ describe('cash-rule tagging at import staging', () => {
     const booked = await ledgerTagsByNote(agent, pid);
     const spende = [...booked.entries()].find(([note]) => note.includes('Spende Rotes Kreuz'));
     expect(spende?.[1]).toContain(donation);
+  });
+
+  it('bounds the memo it hands the engine to the note ceiling the contract declares', async () => {
+    // A staged note comes from a CSV cell, bounded only by
+    // `IMPORT_MAX_FILE_BYTES` (5 MB) — while `CASH_MOVEMENT_NOTE_MAX` is the
+    // longest note any cash write accepts. Matching is linear in note length
+    // per rule, so the string handed to the engine is clipped to that ceiling
+    // (#1743). The stored note is untouched; only matching is bounded.
+    const { agent, pid } = await setup();
+    const tail = await createTag(agent, 'Tail');
+    await createRule(agent, { tagIds: [tail], pattern: 'tailneedle' });
+
+    const header = 'Buchtag;Valuta;Buchungsinformationen;TA-Nr.;Betrag';
+    const padding = 'x'.repeat(CASH_MOVEMENT_NOTE_MAX);
+    const buried = await upload(
+      agent,
+      pid,
+      `${header}\n02.04.2024;02.04.2024;Einzahlung SEPA ${padding} TAILNEEDLE;200091;1.000,00\n`,
+    );
+    // Past the ceiling, so the engine never sees it — no suggestion at all.
+    expect(rowByNote(buried, 'TAILNEEDLE').ruleTagIds).toBeUndefined();
+
+    // AND BOOKING AGREES. The apply path calls `depositCash` service-direct
+    // with the raw cell, so `cashEntryRequestSchema`'s note ceiling never runs
+    // and the book-time engine sees whatever the CSV held. `applyCashRuleTags`
+    // clips there too, which is what keeps this row untagged in the ledger
+    // instead of previewing untagged and booking tagged.
+    await apply(agent, buried.batch.id);
+    const bookedBuried = [...(await ledgerTagsByNote(agent, pid)).entries()].find(([note]) =>
+      note.includes('TAILNEEDLE'),
+    );
+    // `not.toContain` and not `toEqual([])`: the movement still earns the
+    // app-owned tag its KIND assigns (`cashSystemTagStamp`). What must be
+    // absent is the RULE's tag.
+    expect(bookedBuried?.[1]).toBeDefined();
+    expect(bookedBuried?.[1]).not.toContain(tail);
+
+    // The SAME needle, inside the ceiling, still tags — so what is pinned here
+    // is the bound, not a rule that stopped working — at preview and at book
+    // time alike.
+    const reachable = await upload(
+      agent,
+      pid,
+      `${header}\n03.04.2024;03.04.2024;Einzahlung SEPA TAILNEEDLE Bonus;200092;1.100,00\n`,
+    );
+    expect(rowByNote(reachable, 'TAILNEEDLE').ruleTagIds).toEqual([tail]);
+    await apply(agent, reachable.batch.id);
+    const bookedReachable = [...(await ledgerTagsByNote(agent, pid)).entries()].find(([note]) =>
+      note.includes('TAILNEEDLE Bonus'),
+    );
+    expect(bookedReachable?.[1]).toContain(tail);
   });
 
   it('is stable across re-reads of the same staged batch', async () => {
