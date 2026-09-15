@@ -26,10 +26,10 @@ import { Writable } from 'node:stream';
 
 import { pino, stdSerializers, type LoggerOptions } from 'pino';
 
-import { redactForLog, SECRET_KEYS } from '../logger';
+import { LOG_REDACTION, redactForLog, SECRET_KEYS } from '../logger';
 
-/** The policy exactly as main ships it, and the backstop this branch keeps. */
-const BACKSTOP_PATHS = [
+/** The policy exactly as main shipped it before #1926 — the baseline row. */
+const LEGACY_PATHS = [
   'req.headers.cookie',
   'req.headers.authorization',
   '*.password',
@@ -40,7 +40,17 @@ const BACKSTOP_PATHS = [
   '*.passwordHash',
   '*.tokenHash',
 ];
-const BACKSTOP = Object.freeze({ paths: BACKSTOP_PATHS, remove: true });
+const LEGACY = Object.freeze({ paths: LEGACY_PATHS, remove: true });
+
+/**
+ * The backstop this branch actually ships: the same nine, plus one TOP-LEVEL
+ * path per key so `child({ token })` and `info('ctx %o', { password })` — the
+ * two surfaces `formatters.log` never sees — are covered at depth 1. Top-level
+ * paths compile to a per-key censor rather than a wildcard walk, and the
+ * `A -> A+` rows below are what says that is free.
+ */
+const BACKSTOP = LOG_REDACTION;
+const BACKSTOP_PATHS = (LOG_REDACTION as { paths: string[] }).paths;
 
 /**
  * The rejected alternative: every key at depths 1–3 as `@pinojs/redact` paths.
@@ -135,12 +145,25 @@ function bench(logger: ReturnType<typeof makeLogger>, obj: object, iterations: n
   return best;
 }
 
+/**
+ * A 10 000-element array of small objects — the shape that costs the walk most
+ * per byte, because every element is a node with keys to test while the
+ * serializer has very little text to write per node.
+ */
+function payloadArrayHeavy() {
+  return {
+    job: 'catalog.enrich',
+    rows: Array.from({ length: 10_000 }, (_, i) => ({ id: i, s: `SYM${i}`, ok: true })),
+  };
+}
+
 const VARIANTS: [string, Variant][] = [
   ['no redaction at all', {}],
-  ['A backstop only (main today)', { redact: BACKSTOP }],
-  ['B full depth-1..3 wildcard ladder', { redact: LADDER }],
-  ['C shipped: backstop + walk + err', { redact: BACKSTOP, walk: true, errSerializer: true }],
-  ['D walk only, no pino redact', { walk: true, errSerializer: true }],
+  ['A  legacy 9 paths (pre-#1926 main)', { redact: LEGACY }],
+  ['A+ shipped backstop (9 + top-level)', { redact: BACKSTOP }],
+  ['B  full depth-1..3 wildcard ladder', { redact: LADDER }],
+  ['C  shipped: backstop + walk + err', { redact: BACKSTOP, walk: true, errSerializer: true }],
+  ['D  walk only, no pino redact', { walk: true, errSerializer: true }],
 ];
 
 function main(): void {
@@ -150,20 +173,26 @@ function main(): void {
   console.log(`node ${process.version}`);
   console.log(
     `payloads: ${JSON.stringify(small).length} B / ${JSON.stringify(large).length} B; ` +
-      `paths: backstop ${BACKSTOP_PATHS.length}, ladder ${LADDER_PATHS.length}; ` +
-      `walked keys ${SECRET_KEYS.length}`,
+      `paths: legacy ${LEGACY_PATHS.length}, backstop ${BACKSTOP_PATHS.length}, ` +
+      `ladder ${LADDER_PATHS.length}; walked keys ${SECRET_KEYS.length}`,
   );
 
+  const arrayHeavy = payloadArrayHeavy();
   const smallResults = VARIANTS.map(([, variant]) => bench(makeLogger(variant), small, 20_000));
   const largeResults = VARIANTS.map(([, variant]) => bench(makeLogger(variant), large, 200));
+  const arrayResults = VARIANTS.map(([, variant]) => bench(makeLogger(variant), arrayHeavy, 200));
   const smallBase = smallResults[1]!;
   const largeBase = largeResults[1]!;
+  const arrayBase = arrayResults[1]!;
 
-  console.log(`\n${'variant'.padEnd(36)}${'1 KB'.padStart(20)}${'300 KB'.padStart(20)}`);
+  console.log(
+    `\n${'variant'.padEnd(36)}${'1 KB'.padStart(20)}${'300 KB'.padStart(20)}${'10k array'.padStart(20)}`,
+  );
   VARIANTS.forEach(([label], i) => {
     const s = `${(smallResults[i]! / 1_000).toFixed(2)} µs (${(smallResults[i]! / smallBase).toFixed(2)}×)`;
     const l = `${(largeResults[i]! / 1_000).toFixed(2)} µs (${(largeResults[i]! / largeBase).toFixed(2)}×)`;
-    console.log(label.padEnd(36) + s.padStart(20) + l.padStart(20));
+    const a = `${(arrayResults[i]! / 1_000).toFixed(2)} µs (${(arrayResults[i]! / arrayBase).toFixed(2)}×)`;
+    console.log(label.padEnd(36) + s.padStart(20) + l.padStart(20) + a.padStart(20));
   });
 
   // The error path separately: it is the one the `err` serializer taxes.
@@ -171,7 +200,7 @@ function main(): void {
     body: { email: 'user@example.com', password: 'nope' },
     cause: { request: { headers: { authorization: 'Bearer x' } } },
   });
-  const errBase = bench(makeLogger({ redact: BACKSTOP }), { err: decorated }, 20_000);
+  const errBase = bench(makeLogger({ redact: LEGACY }), { err: decorated }, 20_000);
   const errShipped = bench(
     makeLogger({ redact: BACKSTOP, walk: true, errSerializer: true }),
     { err: decorated },

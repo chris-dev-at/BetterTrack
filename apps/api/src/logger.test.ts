@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Writable } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
@@ -58,6 +60,18 @@ function logOne(payload: Record<string, unknown>): Record<string, unknown> {
   const line = { ...lines[0] };
   for (const own of ['level', 'time', 'pid', 'hostname', 'msg']) delete line[own];
   return line;
+}
+
+/**
+ * A stack is only a stack if it names the error and has a frame. `typeof x ===
+ * 'string'` is satisfied by `''`, which is precisely the value a rebuilt error
+ * used to log — the assertion passed while the diagnostic was gone.
+ */
+function expectRealStack(stack: unknown, firstLine: string): void {
+  expect(typeof stack).toBe('string');
+  const text = stack as string;
+  expect(text.split('\n')[0]).toBe(firstLine);
+  expect(text).toMatch(/\n\s+at /);
 }
 
 describe('logger redaction (§10)', () => {
@@ -289,9 +303,13 @@ describe('logger redaction — the error serializer (§10, #1926)', () => {
     expect(JSON.stringify(line)).not.toContain('super-secret-value');
     expect(serialized.type).toBe('Error');
     expect(serialized.message).toBe('upstream refused the write');
-    expect(typeof serialized.stack).toBe('string');
     expect(serialized.statusCode).toBe(502);
     expect(serialized.body).toEqual({ email: 'user@example.com' });
+    // NOT `typeof stack === 'string'`: that assertion passes on '', which is
+    // exactly what a rebuilt error used to log. V8 installs `stack` as an own
+    // ACCESSOR over an internal slot, so copying its descriptor onto the clone
+    // produced a getter with nothing behind it.
+    expectRealStack(serialized.stack, 'Error: upstream refused the write');
   });
 
   it('strips a secret carried down a non-error `cause` chain (depth 4+)', () => {
@@ -331,7 +349,68 @@ describe('logger redaction — the error serializer (§10, #1926)', () => {
 
     expect(serialized.type).toBe('TypeError');
     expect(serialized.message).toBe('plain failure');
-    expect(typeof serialized.stack).toBe('string');
+    expectRealStack(serialized.stack, 'TypeError: plain failure');
+  });
+
+  it.each([
+    [
+      'a removed secret',
+      () => Object.assign(new Error('secret sibling'), { password: 'super-secret-value' }),
+      'Error: secret sibling',
+    ],
+    [
+      'a nested change only',
+      () => Object.assign(new Error('nested only'), { ctx: { deep: { token: 'x' } } }),
+      'Error: nested only',
+    ],
+    [
+      'a [Circular] substitution only',
+      () => {
+        const err = Object.assign(new Error('cyclic only'), { ctx: {} as Record<string, unknown> });
+        err.ctx.self = err;
+        return err;
+      },
+      'Error: cyclic only',
+    ],
+  ])('keeps a real stack when the error is rebuilt for %s', (_label, build, firstLine) => {
+    // Three independent triggers for the rebuild path, because any one of them
+    // used to empty the stack — the defect was in the rebuild, not in what
+    // caused it.
+    const serialized = logOne({ err: build() }).err as Record<string, unknown>;
+
+    expectRealStack(serialized.stack, firstLine);
+  });
+
+  it('survives an Error carrying an enumerable getter, and redacts what it returns', () => {
+    // `Object.defineProperty(clone, key, { ...accessorDescriptor, value })`
+    // throws `TypeError: Invalid property descriptor` — out of `logger.info`,
+    // taking the caller down instead of logging.
+    const err = new Error('boom');
+    Object.defineProperty(err, 'ctx', {
+      enumerable: true,
+      configurable: true,
+      get: () => ({ apiKey: 'super-secret-value', id: 'keep-me' }),
+    });
+
+    const line = logOne({ err });
+    const serialized = line.err as Record<string, unknown>;
+
+    expect(JSON.stringify(line)).not.toContain('super-secret-value');
+    expect(serialized.ctx).toEqual({ id: 'keep-me' });
+    expectRealStack(serialized.stack, 'Error: boom');
+  });
+
+  it('does not let a getter that throws take down the log call', () => {
+    const payload = { id: 'keep-me' } as Record<string, unknown>;
+    Object.defineProperty(payload, 'hostile', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        throw new Error('nope');
+      },
+    });
+
+    expect(() => logOne({ ctx: payload, password: 'super-secret-value' })).not.toThrow();
   });
 
   it('never mutates what the caller handed it', () => {
@@ -405,6 +484,8 @@ describe('logger redaction — precision (#1926)', () => {
       'passwordHash',
       'pin',
       'pinHash',
+      'recoveryCode',
+      'recoveryCodes',
       'token',
       'tokenHash',
       'accessToken',
@@ -442,6 +523,8 @@ describe('logger redaction — precision (#1926)', () => {
       'apikey',
       'api_key',
       'privateKey',
+      'private_key',
+      'encryptionKey',
       'otpauthUri',
       'recoveryCodeHashes',
       'mnemonic',
@@ -467,7 +550,11 @@ describe('logger redaction — precision (#1926)', () => {
     // `formatters.log` never sees. Left byte-identical to pre-#1926 main.
     const policy = LOG_REDACTION as { paths: string[]; remove: boolean };
 
-    expect(policy.paths).toEqual([
+    // The nine depth-2 wildcards are the expensive half and stay exactly as
+    // pre-#1926 main had them; everything after is one TOP-LEVEL path per key,
+    // which the benchmark measured at 1.01x and which is what closes
+    // `child({ token })` and `info('ctx %o', { password })`.
+    expect(policy.paths.slice(0, 9)).toEqual([
       'req.headers.cookie',
       'req.headers.authorization',
       '*.password',
@@ -478,6 +565,11 @@ describe('logger redaction — precision (#1926)', () => {
       '*.passwordHash',
       '*.tokenHash',
     ]);
+    expect(policy.paths.slice(9)).toEqual(
+      SECRET_KEYS.map((key) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : `["${key}"]`)),
+    );
+    expect(policy.paths).toHaveLength(9 + SECRET_KEYS.length);
+    expect(policy.remove).toBe(true);
   });
 });
 
@@ -537,5 +629,213 @@ describe('redactForLog \u2014 the escape hatch a call site can apply by hand', (
 
     expect(walked).not.toContain('super-secret-value');
     expect(walked).toContain('[Redacted: max depth]');
+  });
+});
+
+describe('logger redaction — toJSON, prototypes and opaque values (#1926 review)', () => {
+  it('redacts what `toJSON` RENDERS, not the object that defines it', () => {
+    // The walk cannot see a key `toJSON` materialises out of a private field —
+    // and `toJSON` is what actually gets serialized, so it is what the policy
+    // has to inspect.
+    class Connection {
+      constructor(
+        readonly host: string,
+        private readonly pw: string,
+      ) {}
+      toJSON() {
+        return { host: this.host, password: this.pw };
+      }
+    }
+
+    expect(logOne({ c: new Connection('db', 'super-secret-value') })).toEqual({
+      c: { host: 'db' },
+    });
+    expect(logOne({ a: { b: { c: new Connection('db', 'super-secret-value') } } })).toEqual({
+      a: { b: { c: { host: 'db' } } },
+    });
+  });
+
+  it('does not let an OWN `toJSON` re-inject after the redaction ran', () => {
+    // The object is rebuilt (it lost `password`), and an own `toJSON` carried
+    // onto the rebuilt copy would run afterwards and put the secret back.
+    const leaky = {
+      id: 'keep-me',
+      password: 'super-secret-value',
+      toJSON() {
+        return { id: 'keep-me', token: 'super-secret-value' };
+      },
+    };
+
+    const line = logOne({ a: { b: leaky } });
+
+    expect(JSON.stringify(line)).not.toContain('super-secret-value');
+    expect(line).toEqual({ a: { b: { id: 'keep-me' } } });
+  });
+
+  it('redacts a prototype `toJSON` on an object with nothing else to redact', () => {
+    // Nothing on the instance is a secret key, so clone-on-write returns it by
+    // reference — and the prototype's `toJSON` then renders one.
+    class Conn {
+      host = 'db';
+      constructor(private readonly pw = 'super-secret-value') {}
+      toJSON() {
+        return { host: this.host, apiKey: this.pw };
+      }
+    }
+
+    const line = logOne({ a: { b: new Conn() } });
+
+    expect(JSON.stringify(line)).not.toContain('super-secret-value');
+    expect(line).toEqual({ a: { b: { host: 'db' } } });
+  });
+
+  it('applies the policy to an Error that defines its own `toJSON`', () => {
+    const err = Object.assign(new Error('x'), {
+      password: 'super-secret-value',
+      toJSON() {
+        return { stage: 'upload', apiKey: 'super-secret-value' };
+      },
+    });
+
+    const line = logOne({ err });
+
+    expect(JSON.stringify(line)).not.toContain('super-secret-value');
+    expect(line).toEqual({ err: { stage: 'upload' } });
+  });
+
+  it('renders a URL without its query string', () => {
+    // `URL.prototype.toJSON` returns `href`, and a provider URL's query string
+    // is exactly where an `?apikey=…` lives. Origin + pathname keeps the
+    // diagnostic value and drops the credential, the fragment and any userinfo.
+    const line = logOne({
+      a: { b: { target: new URL('https://api.example.test/v8/quote?apikey=super-secret-value') } },
+    });
+
+    expect(JSON.stringify(line)).not.toContain('super-secret-value');
+    expect(line).toEqual({ a: { b: { target: 'https://api.example.test/v8/quote' } } });
+  });
+
+  it('survives a `toJSON` that throws, rather than taking the log call down', () => {
+    const hostile = {
+      toJSON() {
+        throw new Error('nope');
+      },
+    };
+
+    expect(logOne({ ctx: hostile })).toEqual({ ctx: '[Redacted: toJSON threw]' });
+  });
+
+  it('leaves Date, RegExp and Buffer to their own serialization', () => {
+    // The walk must not recurse them: a Buffer's numeric indices are not keys,
+    // and walking 32 bytes of key material one element at a time would be both
+    // wrong and expensive. `redactForLog` is asserted directly here because
+    // what a Buffer finally LOOKS like in a line is pino's business, not this
+    // policy's — its redaction engine has mangled a Buffer to "[unable to
+    // serialize…]" since long before #1926, with or without this diff.
+    const at = new Date('2026-09-15T08:00:00.000Z');
+    const blob = Buffer.from('ab');
+    const re = /^bt_/u;
+    const payload = { at, blob, re, password: 'super-secret-value' };
+
+    const walked = redactForLog(payload) as Record<string, unknown>;
+
+    expect(walked.at).toBe(at);
+    expect(walked.blob).toBe(blob);
+    expect(walked.re).toBe(re);
+    expect(walked.password).toBeUndefined();
+    // And a Date still reaches the line as its ISO string.
+    expect(logOne({ at })).toEqual({ at: '2026-09-15T08:00:00.000Z' });
+  });
+
+  it('drops an own `__proto__` key without polluting Object.prototype', () => {
+    // The shape `JSON.parse` produces. Assigning it onto the rebuilt object
+    // would set that object's PROTOTYPE rather than a key — the classic
+    // pollution primitive — so the subtree is dropped outright.
+    const parsed = JSON.parse(
+      '{"__proto__":{"password":"super-secret-value","polluted":"yes"},"id":"keep-me"}',
+    ) as Record<string, unknown>;
+
+    const line = logOne({ p: parsed });
+
+    expect(JSON.stringify(line)).not.toContain('super-secret-value');
+    expect(line).toEqual({ p: { id: 'keep-me' } });
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe('logger redaction — the backstop surfaces (#1926 review)', () => {
+  it('redacts a child logger`s top-level bindings', () => {
+    // Bindings are formatted ONCE at `.child()` time and emitted verbatim on
+    // every line after, so `formatters.log` never sees them. Only the pino-level
+    // backstop covers this, which is why it carries a top-level path per key.
+    const written: string[] = [];
+    const destination = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        written.push(chunk.toString());
+        callback();
+      },
+    });
+    const child = createLogger(productionConfig(), destination).child({
+      token: 'super-secret-value',
+      apiKey: 'super-secret-value',
+      encryptionKey: 'super-secret-value',
+      recoveryCodes: ['super-secret-value'],
+      svc: 'jobs',
+    });
+
+    child.info({ id: 'keep-me' }, 'probe');
+    const line = JSON.parse(written.join('').trim()) as Record<string, unknown>;
+
+    expect(written.join('')).not.toContain('super-secret-value');
+    expect(line.svc).toBe('jobs');
+    expect(line.id).toBe('keep-me');
+  });
+
+  it('redacts an object interpolated into the message with %o / %j', () => {
+    const written: string[] = [];
+    const destination = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        written.push(chunk.toString());
+        callback();
+      },
+    });
+    const logger = createLogger(productionConfig(), destination);
+
+    logger.info('ctx %o', { password: 'super-secret-value', id: 'keep-me' });
+    logger.info('ctx %j', { apiKey: 'super-secret-value', id: 'keep-me' });
+
+    expect(written.join('')).not.toContain('super-secret-value');
+    expect(written.join('')).toContain('keep-me');
+  });
+
+  it('holds the residual carve-out closed: no child loggers exist in apps/api/src', () => {
+    // A child binding nested at depth 3+ or inside an array is NOT covered —
+    // covering it needs the depth-2 ladder the benchmark rejected. The hole is
+    // unreachable rather than fixed, and this is what keeps it unreachable: add
+    // a `.child(` and read `LOG_REDACTION` before deleting this assertion.
+    const root = import.meta.dirname;
+    // `logger.ts` names the call in prose (it documents this very carve-out),
+    // and this file creates one deliberately to prove depth-1 bindings are
+    // covered. Everything else in `apps/api/src` is production code.
+    const exempt = new Set([join(root, 'logger.ts'), join(root, 'logger.test.ts')]);
+    const offenders: string[] = [];
+    const visit = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          visit(full);
+        } else if (
+          entry.name.endsWith('.ts') &&
+          !exempt.has(full) &&
+          readFileSync(full, 'utf8').includes('.child(')
+        ) {
+          offenders.push(full.slice(root.length + 1));
+        }
+      }
+    };
+    visit(root);
+
+    expect(offenders).toEqual([]);
   });
 });
