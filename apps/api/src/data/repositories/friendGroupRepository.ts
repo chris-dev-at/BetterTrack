@@ -1,17 +1,10 @@
 import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
 import { FRIEND_GROUPS_MAX, FRIEND_GROUP_MEMBERS_MAX } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import {
-  friendGroupMembers,
-  friendGroups,
-  friendships,
-  portfolios,
-  shareAudiences,
-  users,
-} from '../schema';
+import { friendGroupMembers, friendGroups, portfolios, shareAudiences, users } from '../schema';
+import { activeFriendOf } from './activeFriend';
 
 /**
  * Friend-group persistence (§13.5 V5-P8). A group is a named circle owned by one
@@ -43,30 +36,17 @@ export interface FriendGroupRow {
 
 export function createFriendGroupRepository(db: Database) {
   /**
-   * The live friendship between two COLUMNS (a group's owner and one of its
-   * members), in the order-independent form every enforcement read uses. The
-   * `friendships` table stores one row per pair with no canonical side, so both
-   * orientations have to be tried.
-   */
-  function friendshipBetween(ownerCol: AnyPgColumn, memberCol: AnyPgColumn) {
-    return or(
-      and(eq(friendships.userA, ownerCol), eq(friendships.userB, memberCol)),
-      and(eq(friendships.userB, ownerCol), eq(friendships.userA, memberCol)),
-    );
-  }
-
-  /**
    * The active roster of a set of groups, keyed by group id. A member whose
-   * account vanished OR was disabled is excluded by the inner join — a disabled
-   * account can neither sign in nor be authorized by the enforcement layer, so
-   * counting it would let the owner surface claim a reach that does not exist
-   * (§6.9). Every roster read in this file goes through here, so `GET
+   * account vanished OR was disabled is excluded by {@link activeFriendOf} — a
+   * disabled account can neither sign in nor be authorized by the enforcement
+   * layer, so counting it would let the owner surface claim a reach that does
+   * not exist (§6.9). Every roster read in this file goes through here, so `GET
    * /social/groups`, the My-items reach summary and the `*.shared` fan-out can
    * never disagree about who is in a circle.
    *
    * Membership is DERIVED, never trusted from the roster table alone: the
-   * friendship inner join re-derives the reach exactly as the `specific_friends`
-   * rung does beside it (#1780). Unfriending already prunes rosters inside the
+   * shared predicate re-derives the reach exactly as the `specific_friends`
+   * rung does beside it (#1780, #1897). Unfriending already prunes rosters inside the
    * unfriend transaction (#1710), so a stale row should not exist — but the
    * enforcement SQL always ANDs the friendship join, so a row that somehow
    * survives grants nothing while still being reported here as reach, and the
@@ -88,9 +68,15 @@ export function createFriendGroupRepository(db: Database) {
       })
       .from(friendGroupMembers)
       .innerJoin(friendGroups, eq(friendGroups.id, friendGroupMembers.groupId))
-      .innerJoin(users, and(eq(users.id, friendGroupMembers.memberId), eq(users.status, 'active')))
-      .innerJoin(friendships, friendshipBetween(friendGroups.ownerId, friendGroupMembers.memberId))
-      .where(inArray(friendGroupMembers.groupId, [...groupIds]))
+      // `users` is joined for the member's public identity only; whether they
+      // count at all is the shared predicate's answer, not this join's.
+      .innerJoin(users, eq(users.id, friendGroupMembers.memberId))
+      .where(
+        and(
+          inArray(friendGroupMembers.groupId, [...groupIds]),
+          activeFriendOf(friendGroups.ownerId, friendGroupMembers.memberId),
+        ),
+      )
       .orderBy(asc(users.username))
       .limit(groupIds.length * FRIEND_GROUP_MEMBERS_MAX);
     for (const r of memberRows) {
@@ -229,10 +215,10 @@ export function createFriendGroupRepository(db: Database) {
 
     /**
      * The group's current member ids (live roster) — used for share-event
-     * fan-out. Disabled accounts are excluded by the same inner join the roster
+     * fan-out. Disabled accounts are excluded by the same predicate the roster
      * reads use: they cannot sign in, so notifying them would be a `*.shared`
      * row nobody can act on, and it would contradict the reach the owner sees.
-     * The friendship join is the same one {@link rostersOf} applies, so the
+     * {@link activeFriendOf} is the definition {@link rostersOf} applies, so the
      * fan-out reaches exactly the people the enforcement layer would admit — a
      * roster row that outlived its friendship never becomes a `*.shared` notice
      * pointing at an item its recipient 404s on (#1780).
@@ -242,15 +228,12 @@ export function createFriendGroupRepository(db: Database) {
         .select({ memberId: friendGroupMembers.memberId })
         .from(friendGroupMembers)
         .innerJoin(friendGroups, eq(friendGroups.id, friendGroupMembers.groupId))
-        .innerJoin(
-          users,
-          and(eq(users.id, friendGroupMembers.memberId), eq(users.status, 'active')),
+        .where(
+          and(
+            eq(friendGroupMembers.groupId, groupId),
+            activeFriendOf(friendGroups.ownerId, friendGroupMembers.memberId),
+          ),
         )
-        .innerJoin(
-          friendships,
-          friendshipBetween(friendGroups.ownerId, friendGroupMembers.memberId),
-        )
-        .where(eq(friendGroupMembers.groupId, groupId))
         .limit(FRIEND_GROUP_MEMBERS_MAX);
       return rows.map((r) => r.memberId);
     },
@@ -269,22 +252,39 @@ export function createFriendGroupRepository(db: Database) {
     },
 
     /**
-     * How many members one circle already holds — the ceiling check
-     * `addGroupMember` runs. Counts the RAW roster rows (no friendship/active
-     * join): the ceiling bounds what is STORED, which is what makes the roster
-     * read bounded in the first place.
-     *
-     * A raw row that grants nothing is invisible in {@link rostersOf}, so the
-     * owner can neither see nor remove it — the ceiling must therefore never
-     * refuse an add on its behalf. {@link pruneUnreachableMembers} clears those
-     * rows before the refusal is reached (#1830), which keeps this count and the
-     * `memberCount` the owner reads in agreement at the boundary that matters.
+     * How many roster rows one circle STORES — raw, no friendship/active
+     * predicate. It is not the ceiling (that is {@link countActiveMembers}): it
+     * is what tells the add path whether stale rows are worth clearing, and it
+     * bounds what the roster read has to scan.
      */
     async countMembers(groupId: string): Promise<number> {
       const [row] = await db
         .select({ count: sql<number>`count(*)`.mapWith(Number) })
         .from(friendGroupMembers)
         .where(eq(friendGroupMembers.groupId, groupId));
+      return row?.count ?? 0;
+    },
+
+    /**
+     * How many members one circle actually HOLDS — the population
+     * {@link rostersOf} returns and the `memberCount` the owner reads, counted
+     * through the same {@link activeFriendOf} definition. This is the ceiling
+     * `addGroupMember` enforces (§13.5 V5-P8, #1780, #1897): a row the roster
+     * will never return is invisible to the owner, so it has no Remove button
+     * and must not consume the budget — refusing an add on its behalf is a
+     * refusal with an unclearable, unnameable cause.
+     */
+    async countActiveMembers(groupId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)`.mapWith(Number) })
+        .from(friendGroupMembers)
+        .innerJoin(friendGroups, eq(friendGroups.id, friendGroupMembers.groupId))
+        .where(
+          and(
+            eq(friendGroupMembers.groupId, groupId),
+            activeFriendOf(friendGroups.ownerId, friendGroupMembers.memberId),
+          ),
+        );
       return row?.count ?? 0;
     },
 
@@ -312,14 +312,13 @@ export function createFriendGroupRepository(db: Database) {
         .where(
           and(
             eq(friendGroupMembers.groupId, groupId),
+            // The group's OWN owner row resolves the owner side, so the shared
+            // definition cannot be evaluated against the wrong user.
             sql`not exists (
               select 1
-              from ${users}
-              join ${friendGroups} on ${friendGroups.id} = ${friendGroupMembers.groupId}
-              join ${friendships}
-                on (${friendships.userA} = ${friendGroups.ownerId} and ${friendships.userB} = ${users.id})
-                or (${friendships.userB} = ${friendGroups.ownerId} and ${friendships.userA} = ${users.id})
-              where ${users.id} = ${friendGroupMembers.memberId} and ${users.status} = 'active'
+              from ${friendGroups}
+              where ${friendGroups.id} = ${friendGroupMembers.groupId}
+                and ${activeFriendOf(friendGroups.ownerId, friendGroupMembers.memberId)}
             )`,
           ),
         )
@@ -429,17 +428,21 @@ export function createFriendGroupRepository(db: Database) {
         );
     },
 
-    /** Whether `memberId` is an accepted friend of `ownerId` (order-independent). */
+    /**
+     * Whether `memberId` is a friend of `ownerId` who counts — the gate on an
+     * add, answered by the SAME {@link activeFriendOf} definition the roster
+     * reads apply. Anything this returns `true` for is something
+     * {@link rostersOf} will return, so an accepted add is always an add the
+     * owner can then see (#1897).
+     *
+     * Both sides are bound ids, so the predicate stands alone; the `users` row
+     * in the WHERE is only what gives the query a subject to select.
+     */
     async isFriend(ownerId: string, memberId: string): Promise<boolean> {
       const [row] = await db
-        .select({ userA: friendships.userA })
-        .from(friendships)
-        .where(
-          or(
-            and(eq(friendships.userA, ownerId), eq(friendships.userB, memberId)),
-            and(eq(friendships.userB, ownerId), eq(friendships.userA, memberId)),
-          ),
-        )
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, memberId), activeFriendOf(ownerId, memberId)))
         .limit(1);
       return row !== undefined;
     },
