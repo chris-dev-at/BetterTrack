@@ -179,10 +179,12 @@ export type DividendsResponse = z.infer<typeof dividendsResponseSchema>;
  * calendar, dividend projection, news digest). Those reads fan out one provider
  * call per held/watched asset onto a shared, deliberately small outbound queue
  * (§5.3), so the server caps the fan-out per request. Present and `true` ONLY
- * when the caller's book exceeded that cap and the response therefore covers a
- * deterministic subset of it (held before watchlist-only, then by symbol);
- * absent means the whole book was covered. Optional so a complete roll-up keeps
- * exactly the shape it has always had.
+ * when the response covers a deterministic subset of what was asked for: the
+ * caller's book exceeded that cap (held before watchlist-only, then by symbol),
+ * or — on the dividend calendar — a single asset's forward calendar exceeded
+ * {@link DIVIDEND_CALENDAR_MAX_ENTRIES}' per-asset half and kept its soonest
+ * events. Absent means everything was covered. Optional so a complete roll-up
+ * keeps exactly the shape it has always had.
  */
 export const rollupTruncatedSchema = z.literal(true).optional();
 
@@ -212,6 +214,18 @@ export const dividendCalendarEntrySchema = z
 export type DividendCalendarEntry = z.infer<typeof dividendCalendarEntrySchema>;
 
 /**
+ * Entries one dividend-calendar response may carry: the per-request provider
+ * fan-out cap (`MARKET_INTEL_ROLLUP_MAX_ASSETS`, 50 assets) × the per-asset
+ * event bound (`DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET`, 24 announced events —
+ * the same number the per-asset read applies to the same provider array). Both
+ * halves live in `apps/api/src/services/marketIntel/`, where every bound on a
+ * provider payload belongs; this states the product they make, because a schema
+ * that puts no ceiling on an array lets whatever a provider sends become the
+ * response. A response that hit either cap carries {@link rollupTruncatedSchema}.
+ */
+export const DIVIDEND_CALENDAR_MAX_ENTRIES = 50 * 24;
+
+/**
  * `GET /assets/portfolio/dividend-calendar` — the caller's upcoming ex/pay
  * events across held + watchlist assets, ascending by the earliest of
  * ex-date/pay-date. `available: false` (gate off) ⇒ empty and hidden.
@@ -219,7 +233,7 @@ export type DividendCalendarEntry = z.infer<typeof dividendCalendarEntrySchema>;
 export const dividendCalendarResponseSchema = z
   .object({
     available: z.boolean(),
-    entries: z.array(dividendCalendarEntrySchema),
+    entries: z.array(dividendCalendarEntrySchema).max(DIVIDEND_CALENDAR_MAX_ENTRIES),
     truncated: rollupTruncatedSchema,
   })
   .strict();

@@ -10,6 +10,11 @@ import type {
 } from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
 
+import {
+  DIVIDEND_CALENDAR_MAX_ENTRIES,
+  dividendCalendarResponseSchema,
+} from '@bettertrack/contracts';
+
 import type { AssetRepository } from '../../../data/repositories/assetRepository';
 import { cachedIntel, createStubMarketData } from '../../../testing/marketDataStubs';
 import {
@@ -20,6 +25,8 @@ import {
   NEWS_HEADLINES_MAX,
   SPLIT_EVENTS_MAX,
 } from '../marketIntelService';
+import { DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET } from '../portfolioMarketIntelService';
+import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../rollupBudget';
 
 /**
  * Every per-asset intel payload is bounded in the READ SERVICE (#1873), where
@@ -262,5 +269,44 @@ describe('marketIntel — per-asset payload bounds (#1873)', () => {
     expect(spl.history).toHaveLength(SPLIT_EVENTS_MAX);
     expect(spl.history[0]).toEqual(split(day(12), 2));
     expect(spl.history.at(-1)).toEqual(split(day(SPLIT_EVENTS_MAX + 11), 2));
+  });
+});
+
+/**
+ * The roll-up's own ceiling (#1894). The per-asset bound above is one half of
+ * it; the fan-out cap is the other, and the contract states the product so a
+ * schema no longer lets whatever a provider sends become the response body.
+ */
+describe('dividend calendar: the contract ceiling is the two service bounds', () => {
+  it('states exactly MARKET_INTEL_ROLLUP_MAX_ASSETS × the per-asset bound', () => {
+    expect(DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET).toBe(DIVIDEND_UPCOMING_MAX_EVENTS);
+    expect(MARKET_INTEL_ROLLUP_MAX_ASSETS * DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET).toBe(
+      DIVIDEND_CALENDAR_MAX_ENTRIES,
+    );
+  });
+
+  it('refuses a body over that ceiling instead of documenting a bound it does not hold', () => {
+    const entry = {
+      assetId: 'a-aapl',
+      symbol: 'AAPL',
+      name: 'Apple Inc.',
+      source: 'holding' as const,
+      exDate: day(1),
+      payDate: null,
+      amount: 0.25,
+      currency: 'USD',
+    };
+    const overCeiling = Array.from({ length: DIVIDEND_CALENDAR_MAX_ENTRIES + 1 }, () => entry);
+
+    expect(
+      dividendCalendarResponseSchema.safeParse({ available: true, entries: overCeiling }).success,
+    ).toBe(false);
+    expect(
+      dividendCalendarResponseSchema.safeParse({
+        available: true,
+        entries: overCeiling.slice(0, DIVIDEND_CALENDAR_MAX_ENTRIES),
+        truncated: true,
+      }).success,
+    ).toBe(true);
   });
 });
