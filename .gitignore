@@ -8,7 +8,6 @@ coverage/
 .env.*
 !.env.example
 !.env.production.example
-!.env.devbox.example
 
 # logs / os
 *.log

@@ -1,5 +1,7 @@
 # Control Center — functional inventory
 
+_Archived 2026-09-02 — the Origin redesign record; the shipped design language now lives in `apps/web/src/styles/origin.css`, and the ground-up v6 redesign is tracked in #544._
+
 What the Control Center can actually do today, control by control, before the R2
 restructure. One table per panel: **control** → **what it does** → **what is behind
 it** → **verdict**.
