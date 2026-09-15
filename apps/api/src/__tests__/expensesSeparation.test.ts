@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -116,15 +116,31 @@ function walkModules(dir: string): string[] {
   return out;
 }
 
-/** The expense-owned API modules, discovered rather than listed. */
-const EXPENSE_FILES: string[] = [
-  ...EXPENSE_DIRS.flatMap((dir) => walkModules(join(API_SRC, dir))),
-  ...EXPENSE_MODULES.map((rel) => join(API_SRC, rel)),
-]
-  .map((full) => toPosix(relative(API_SRC, full)))
-  .sort();
+/**
+ * The expense-owned API modules, discovered rather than listed. A FUNCTION, not
+ * a frozen constant: the negative-space probe plants a module in one of these
+ * directories and has to see the set grow, which is what "a new mapper is
+ * scanned automatically" actually means.
+ */
+function discoverExpenseFiles(): string[] {
+  return [
+    ...EXPENSE_DIRS.flatMap((dir) => walkModules(join(API_SRC, dir))),
+    ...EXPENSE_MODULES.map((rel) => join(API_SRC, rel)),
+  ]
+    .map((full) => toPosix(relative(API_SRC, full)))
+    .sort();
+}
+
+const EXPENSE_FILES: string[] = discoverExpenseFiles();
 
 const EXPENSE_FILE_SET = new Set(EXPENSE_FILES);
+
+/**
+ * Stand-in for an `import()` whose target is an expression rather than a
+ * literal. Deliberately not a module-looking string: it must never fall through
+ * `resolveSpecifier`’s `package` branch, which is exactly how it used to escape.
+ */
+const COMPUTED_SPECIFIER = '<computed import() target>';
 
 interface Specifier {
   /** The literal text of the `from '…'` clause. */
@@ -175,10 +191,14 @@ function specifiersOf(rel: string): Specifier[] {
       node.arguments.length > 0
     ) {
       const argument = node.arguments[0]!;
-      // A computed `import()` target cannot be resolved statically, so it is
-      // reported rather than skipped — an unreadable edge is not a clean one.
+      // A computed `import()` target — `import(mod)` — cannot be read
+      // statically. It is recorded under {@link COMPUTED_SPECIFIER}, which
+      // {@link resolveSpecifier} maps to `unresolved` so the fence REFUSES it:
+      // an edge it cannot read is not an edge it may pass. Skipping it silently
+      // is a hole wide enough to drive `import(process.env.X ??
+      // '../../../domain/cashLedger')` through.
       out.push({
-        text: ts.isStringLiteral(argument) ? argument.text : '<dynamic>',
+        text: ts.isStringLiteral(argument) ? argument.text : COMPUTED_SPECIFIER,
         typeOnly: false,
       });
     }
@@ -195,9 +215,16 @@ type Resolved =
 
 /** Resolve a specifier the way the bundler does: `./x` → `x.ts`, then `x/index.ts`. */
 function resolveSpecifier(fromRel: string, specifier: string): Resolved {
+  // FIRST, before any other branch: a computed target names no module the fence
+  // can read, so it resolves to nothing and is refused rather than waved past
+  // as if it were a package name.
+  if (specifier === COMPUTED_SPECIFIER) return { kind: 'unresolved' };
   if (!specifier.startsWith('.')) return { kind: 'package', name: specifier };
   const base = resolve(dirname(join(API_SRC, fromRel)), specifier);
-  for (const candidate of [`${base}.ts`, join(base, 'index.ts')]) {
+  // `.js` maps back to its `.ts` source: an explicit-extension relative import
+  // is still a readable edge, and calling it unresolved would be a false red.
+  const literal = base.replace(/\.(js|mjs|cjs)$/, '');
+  for (const candidate of [`${base}.ts`, `${literal}.ts`, join(base, 'index.ts')]) {
     if (existsSync(candidate) && statSync(candidate).isFile()) {
       return { kind: 'internal', rel: toPosix(relative(API_SRC, candidate)) };
     }
@@ -250,6 +277,43 @@ function walkInto(rel: string): boolean {
   return EXPENSE_FILE_SET.has(rel) || rel.startsWith('services/imports/') || isReExportBarrel(rel);
 }
 
+/**
+ * Every wall breach in ONE module's own import list, as readable lines. Shared
+ * by the per-file check and by the negative-space probe below, so the probe
+ * exercises the fence itself rather than a second copy of its rules that could
+ * quietly disagree with it.
+ */
+function directBreaches(rel: string): string[] {
+  const breaches: string[] = [];
+  for (const specifier of specifiersOf(rel)) {
+    // Legacy raw-text rule (kept: it also catches what the resolver cannot).
+    for (const fragment of FORBIDDEN_IMPORT_FRAGMENTS) {
+      if (specifier.text.includes(fragment)) {
+        breaches.push(
+          `${rel} imports "${specifier.text}" which breaches the wall (contains "${fragment}")`,
+        );
+      }
+    }
+    // Resolved rule: catches `from '../../domain'` and every alias of it.
+    const resolved = resolveSpecifier(rel, specifier.text);
+    if (resolved.kind === 'unresolved') {
+      breaches.push(
+        `${rel} imports "${specifier.text}", which this fence cannot resolve to a module — ` +
+          'resolve it or teach the fence, but do not let it pass unread',
+      );
+      continue;
+    }
+    const forbidden = forbiddenRootOf(resolved);
+    if (forbidden !== null) {
+      breaches.push(
+        `${rel} imports "${specifier.text}" which resolves into the forbidden module root ` +
+          `"${forbidden}"`,
+      );
+    }
+  }
+  return breaches;
+}
+
 describe('expense module — strict separation from portfolio money (AC #2)', () => {
   it('discovers the expense-owned modules instead of trusting a hand-written list', () => {
     // The walk replaces a five-entry list that silently omitted both of these.
@@ -279,28 +343,8 @@ describe('expense module — strict separation from portfolio money (AC #2)', ()
   });
 
   it.each(EXPENSE_FILES)('%s imports nothing from portfolio/tax/domain', (rel) => {
-    for (const specifier of specifiersOf(rel)) {
-      // Legacy raw-text rule (kept: it also catches what the resolver cannot).
-      for (const fragment of FORBIDDEN_IMPORT_FRAGMENTS) {
-        expect(
-          specifier.text.includes(fragment),
-          `${rel} imports "${specifier.text}" which breaches the wall (contains "${fragment}")`,
-        ).toBe(false);
-      }
-      // Resolved rule: catches `from '../../domain'` and every alias of it.
-      const resolved = resolveSpecifier(rel, specifier.text);
-      expect(
-        resolved.kind === 'unresolved',
-        `${rel} imports "${specifier.text}", which this fence cannot resolve to a module — ` +
-          'resolve it or teach the fence, but do not let it pass unread',
-      ).toBe(false);
-      const forbidden = forbiddenRootOf(resolved);
-      expect(
-        forbidden,
-        `${rel} imports "${specifier.text}" which resolves into the forbidden module root ` +
-          `"${forbidden}"`,
-      ).toBeNull();
-    }
+    const breaches = directBreaches(rel);
+    expect(breaches, breaches.join('\n')).toEqual([]);
   });
 
   it('cannot reach the money math through a barrel or the shared import framework', () => {
@@ -327,6 +371,15 @@ describe('expense module — strict separation from portfolio money (AC #2)', ()
           breaches.push(`${[...chain, specifier.text].join(' -> ')}  (root "${forbidden}")`);
           continue;
         }
+        // An edge the fence cannot read is not an edge it may pass: a computed
+        // `import()` deeper in a barrel would otherwise reach the money math
+        // with the walk reporting a clean graph.
+        if (resolved.kind === 'unresolved') {
+          breaches.push(
+            `${[...chain, specifier.text].join(' -> ')}  (unreadable — the fence cannot resolve it)`,
+          );
+          continue;
+        }
         if (resolved.kind !== 'internal' || !walkInto(resolved.rel)) continue;
         hops += 1;
         queue.push({ rel: resolved.rel, chain: [...chain, resolved.rel] });
@@ -339,6 +392,53 @@ describe('expense module — strict separation from portfolio money (AC #2)', ()
     expect(hops).toBeGreaterThan(5);
     expect(seen.size).toBeGreaterThan(EXPENSE_FILES.length);
     expect(breaches, breaches.join('\n')).toEqual([]);
+  });
+
+  /**
+   * NEGATIVE SPACE. Every test above asserts the tree is clean, which a fence
+   * that reads nothing also satisfies. This one plants a real breach in a real
+   * module of the walked set and requires the fence to say so.
+   *
+   * The breach is the one that got through review: a COMPUTED `import()`.
+   * `import(mod)` carries no literal for the parser to read, and the fence used
+   * to record it as a pseudo-package specifier, which is neither a forbidden
+   * root nor unresolved — so `const mod = process.env.X ?? '…/domain/cashLedger'`
+   * loaded the money math with all 19 tests green.
+   */
+  it('reports a computed import() target rather than waving it through', () => {
+    const rel = 'services/expenses/computedImportProbe.ts';
+    const file = join(API_SRC, rel);
+    // The exact shape that escaped: no literal specifier anywhere in the file,
+    // so nothing here can be caught by reading strings.
+    writeFileSync(
+      file,
+      "const mod = process.env.X ?? '../../../domain/cashLedger';\n" +
+        'export const load = () => import(mod);\n',
+      'utf8',
+    );
+    try {
+      // Planting it in an owned directory is enough to be scanned — no list edit.
+      expect(discoverExpenseFiles()).toContain(rel);
+
+      const breaches = directBreaches(rel);
+      expect(
+        breaches.length,
+        `expected the fence to refuse ${rel}, got: ${breaches.join(' | ')}`,
+      ).toBeGreaterThan(0);
+      const report = breaches.join('\n');
+      expect(report).toContain('cannot resolve to a module');
+      expect(report).toContain(COMPUTED_SPECIFIER);
+
+      // And precision, not just recall: the SAME module with a literal target
+      // resolves cleanly, so the rule refuses unreadable edges rather than every
+      // `import()`.
+      writeFileSync(file, "export const load = () => import('./ruleEngine');\n", 'utf8');
+      expect(directBreaches(rel)).toEqual([]);
+    } finally {
+      rmSync(file, { force: true });
+    }
+    expect(existsSync(file), 'the probe module is removed again').toBe(false);
+    expect(discoverExpenseFiles()).not.toContain(rel);
   });
 
   it('the expense repository only imports expense tables from the schema', () => {
