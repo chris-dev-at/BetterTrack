@@ -23,6 +23,7 @@ import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { ActorValue, AuditEntryDrawer, stringify } from '../components/AuditEntryDrawer';
 import { EmailLogTable } from '../components/EmailLogTable';
 import { Modal } from '../components/Modal';
 import {
@@ -1024,7 +1025,14 @@ function UserEmailLog({ userId, email }: { userId: string; email: string }) {
   return <EmailLogTable load={load} emptyLabel={t('admin.emailLog.emptyForUser', { email })} />;
 }
 
-/** Compact per-user audit history, cursor-paged newest-first (§6.12). */
+/**
+ * Compact per-user audit history, cursor-paged newest-first (§6.12).
+ *
+ * ADMIN-W6 (#1908): the rows are the same rows the global log shows, so this
+ * mirror reuses the shared row drawer and actor rendering rather than growing a
+ * second renderer for them — and the truncated `JSON.stringify` cell it used to
+ * end in is now a summary with the detail behind the drawer.
+ */
 function UserAuditLog({ userId }: { userId: string }) {
   const t = useT();
   const { clearSession, requireTwoFactorSetup } = useAuth();
@@ -1032,6 +1040,7 @@ function UserAuditLog({ userId }: { userId: string }) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [selected, setSelected] = useState<AuditLogEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
@@ -1092,6 +1101,7 @@ function UserAuditLog({ userId }: { userId: string }) {
           <tr>
             <Th>{t('admin.userDetail.activity.when')}</Th>
             <Th>{t('admin.userDetail.activity.action')}</Th>
+            <Th>{t('admin.audit.columns.actor')}</Th>
             <Th>{t('admin.userDetail.activity.details')}</Th>
           </tr>
         </thead>
@@ -1102,13 +1112,24 @@ function UserAuditLog({ userId }: { userId: string }) {
                 {formatDateTime(entry.createdAt)}
               </Td>
               <Td className="font-medium text-neutral-200">{entry.action}</Td>
-              <Td className="max-w-xs truncate text-neutral-500" title={metaSummary(entry.meta)}>
-                {metaSummary(entry.meta)}
+              <Td>
+                <ActorValue entry={entry} />
+              </Td>
+              <Td>
+                <span className="flex items-center justify-between gap-2">
+                  <span className="max-w-[12rem] truncate text-neutral-500">
+                    {metaSummary(entry.meta)}
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(entry)}>
+                    {t('admin.audit.drawer.open')}
+                  </Button>
+                </span>
               </Td>
             </tr>
           ))}
         </tbody>
       </DataTable>
+      <AuditEntryDrawer entry={selected} onClose={() => setSelected(null)} />
       {cursor ? (
         <div className="flex justify-center">
           <Button
@@ -1128,11 +1149,7 @@ function UserAuditLog({ userId }: { userId: string }) {
 function metaSummary(meta: unknown): string {
   if (meta === null || meta === undefined) return '—';
   if (typeof meta === 'string') return meta;
-  try {
-    return JSON.stringify(meta);
-  } catch {
-    return '—';
-  }
+  return stringify(meta);
 }
 
 // ── Notes ───────────────────────────────────────────────────────────────────

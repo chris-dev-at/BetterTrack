@@ -820,6 +820,13 @@
       "when": 1789489273670,
       "tag": "0116_announcement_delivery_counts",
       "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1789492850000,
+      "tag": "0117_audit_log_filter_indexes",
+      "breakpoints": true
     }
   ]
 }

@@ -846,24 +846,126 @@ export const registrationRequestListResponseSchema = z.object({
 });
 export type RegistrationRequestListResponse = z.infer<typeof registrationRequestListResponseSchema>;
 
+/**
+ * How an audit row's actor is answerable (#1908, ADMIN-W6).
+ *
+ * Before this wave every un-attributed row rendered as one word, "system": an
+ * anonymous failed login, a server-initiated write and the shell BREAK-GLASS 2FA
+ * reset — the single highest-privilege event in the product — were
+ * indistinguishable in the console.
+ *
+ *  - `account`  — `actor_id` resolved to a live account; `actor` carries it.
+ *  - `shell`    — `meta.via === 'break_glass_script'`: written by the shell-only
+ *                 break-glass script (`scripts/adminTwoFactorBreakGlass.ts`),
+ *                 which deliberately has no session and no actor. A FACT stamped
+ *                 by the writer, not a guess.
+ *  - `unattributed` — `actor_id` is NULL and nothing says why. This is the
+ *    HONEST union of the issue's "system" and "deleted actor": `ON DELETE SET
+ *    NULL` destroys the only evidence that could tell them apart, so claiming
+ *    "the acting account was deleted" from a NULL column would be a heuristic
+ *    presented as a record. The copy says "no longer resolvable" instead.
+ */
+export const AUDIT_ACTOR_KINDS = ['account', 'shell', 'unattributed'] as const;
+export const auditActorKindSchema = z.enum(AUDIT_ACTOR_KINDS);
+export type AuditActorKind = z.infer<typeof auditActorKindSchema>;
+
+/**
+ * The resolved actor, joined on the audit page's own rows. Username and account
+ * kind ONLY — never the e-mail: an operator reading the log needs to know WHO
+ * acted, not how to reach them (§6.12, §10).
+ */
+export const auditActorSchema = z
+  .object({
+    id: z.string().uuid(),
+    username: usernameSchema,
+    kind: roleSchema,
+  })
+  .strict();
+export type AuditActor = z.infer<typeof auditActorSchema>;
+
 export const auditLogEntrySchema = z.object({
   id: z.string().uuid(),
   actorId: z.string().uuid().nullable(),
+  /** Resolved from `actorId` in the same statement as the page (#1908). */
+  actor: auditActorSchema.nullable(),
+  actorKind: auditActorKindSchema,
   action: z.string(),
   targetType: z.string().nullable(),
   targetId: z.string().nullable(),
   ip: z.string().nullable(),
+  /**
+   * Free-form context. Secret-shaped keys are replaced with a fixed marker on
+   * the WRITE path (`auditService`), so what is stored is already redacted and
+   * no reader can reconstruct a value this field never held.
+   */
   meta: z.unknown().nullable(),
   createdAt: z.string().datetime(),
 });
 export type AuditLogEntry = z.infer<typeof auditLogEntrySchema>;
 
+/**
+ * Named filter sets, so the queries worth running are one click instead of
+ * folklore an operator has to remember (#1908 §3).
+ *
+ *  - `break_glass`   — the shell 2FA reset, the product's highest-privilege event.
+ *  - `auth_failures` — every failed authentication signal in one view.
+ *  - `admin_actions` — what the console itself did, as opposed to what accounts did.
+ *
+ * The action vocabulary each expands to lives in `auditService` beside
+ * `AuditAction`, so a preset can never name a string the product does not write.
+ */
+export const AUDIT_PRESETS = ['break_glass', 'auth_failures', 'admin_actions'] as const;
+export const auditPresetSchema = z.enum(AUDIT_PRESETS);
+export type AuditPreset = z.infer<typeof auditPresetSchema>;
+
+/**
+ * The audit vocabulary's own shape: `<domain>.<snake_case_event>`, plus the
+ * TRAILING-DOT form (`user.`) that means "every event in this domain".
+ *
+ * Deliberately a charset, not a free string. `action` is the one filter that
+ * reaches a pattern match, and a value that cannot contain `%`, `_` or a
+ * backslash cannot become a wildcard no matter what the repository does with it
+ * — the escaping there is then belt to this braces, not the only guard (§10).
+ */
+const AUDIT_ACTION_FILTER = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*\.?$/;
+
+/**
+ * `GET /admin/audit` and `GET /admin/users/{id}/audit`.
+ *
+ * Still `.strict()`: an unknown key is still a 400. Every added key is OPTIONAL,
+ * so every caller that shipped before this wave keeps working unchanged.
+ *
+ * Paging is unchanged on purpose — keyset on `desc(id)`, and NO filter-scoped
+ * total. A `COUNT(*)` over a filtered 400-day audit table (`BT_AUDIT_RETENTION_
+ * DAYS` defaults to 400) is the one query on this page that can hurt production,
+ * and W2's reason for a total — a multi-column sort whose cursor would have to
+ * encode the sort key — does not apply here: the ordering is fixed and the ids
+ * are UUIDv7, i.e. time-sortable. Please do not "fix" this into offset paging.
+ */
 export const auditQuerySchema = z
   .object({
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
+    /** Exact action, or a trailing-dot domain prefix (`user.` ⇒ every `user.*`). */
+    action: z.string().trim().min(1).max(64).regex(AUDIT_ACTION_FILTER).optional(),
+    actorId: z.string().uuid().optional(),
+    targetId: z.string().uuid().optional(),
+    targetType: z.string().trim().min(1).max(32).optional(),
+    /** Half-open window `[from, to)` on `created_at`. */
+    from: z.string().datetime().optional(),
+    to: z.string().datetime().optional(),
+    preset: auditPresetSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((query, ctx) => {
+    if (query.from === undefined || query.to === undefined) return;
+    if (Date.parse(query.from) < Date.parse(query.to)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['to'],
+      message: 'The end of the range must be after its start.',
+    });
+  });
 export type AuditQuery = z.infer<typeof auditQuerySchema>;
 
 export const auditLogListResponseSchema = z.object({
@@ -871,6 +973,91 @@ export const auditLogListResponseSchema = z.object({
   nextCursor: z.string().uuid().nullable(),
 });
 export type AuditLogListResponse = z.infer<typeof auditLogListResponseSchema>;
+
+/**
+ * `GET /admin/security/signals` — aggregate authentication signals (#1908 §5).
+ *
+ * DERIVED, never captured. Every number here is a `GROUP BY` over `audit_log`
+ * rows the product already writes; this wave adds no column, no table and no new
+ * capture. In particular there is deliberately NO `user_agent` on `audit_log`:
+ * sessions keep their raw UA in Redis and the admin projection already reduces
+ * it to a coarse device label, and that boundary stays where it is.
+ *
+ * It is also a READ and only a read. No lockout, no forced logout, no session
+ * revoke — those are §6.12 kill-list capabilities and none of them is built.
+ *
+ * The payload is COUNTS ONLY: no user id, no IP, no device, no geo, no
+ * per-account profile. `.strict()` is half of what holds that line; the other
+ * half is an explicit no-identifiers assertion over the serialized body in
+ * `adminAudit.test.ts`.
+ */
+export const AUDIT_SIGNAL_WINDOWS = ['24h', '7d'] as const;
+export const auditSignalWindowSchema = z.enum(AUDIT_SIGNAL_WINDOWS);
+export type AuditSignalWindow = z.infer<typeof auditSignalWindowSchema>;
+
+export const adminSecuritySignalsQuerySchema = z
+  .object({
+    window: auditSignalWindowSchema.default('24h'),
+  })
+  .strict();
+export type AdminSecuritySignalsQuery = z.infer<typeof adminSecuritySignalsQuerySchema>;
+
+/**
+ * The four reasons `authService` records on `login.fail`, plus `other` for a
+ * row whose reason this build does not know. An unrecognised value is BUCKETED
+ * rather than echoed: `meta.reason` is server-written today, and a projection
+ * that passes arbitrary meta text through to the console would be a seam for
+ * whatever a future writer puts there.
+ */
+export const LOGIN_FAILURE_REASONS = [
+  'unknown_user',
+  'locked',
+  'bad_password',
+  'disabled',
+  'other',
+] as const;
+export const loginFailureReasonSchema = z.enum(LOGIN_FAILURE_REASONS);
+export type LoginFailureReason = z.infer<typeof loginFailureReasonSchema>;
+
+export const adminSecuritySignalsResponseSchema = z
+  .object({
+    window: auditSignalWindowSchema,
+    /** The half-open window `[from, to)` the counts were taken over. */
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    loginFailures: z
+      .object({
+        total: z.number().int().nonnegative(),
+        byReason: z.array(
+          z
+            .object({
+              reason: loginFailureReasonSchema,
+              count: z.number().int().nonnegative(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+    twoFactorVerifyFail: z.number().int().nonnegative(),
+    passkeyLoginFail: z.number().int().nonnegative(),
+    pinVerifyFail: z.number().int().nonnegative(),
+    reauthFail: z.number().int().nonnegative(),
+    apiKeyScopeDenied: z.number().int().nonnegative(),
+    adminLogins: z.number().int().nonnegative(),
+    /** How many DISTINCT admin accounts signed in — a count, never a roster. */
+    adminActors: z.number().int().nonnegative(),
+    breakGlass: z.number().int().nonnegative(),
+    /**
+     * Break-glass events across the whole retention window, not just this one —
+     * what the standing banner reports, so the product's highest-privilege event
+     * is visible without anyone thinking to look for it. Counted through a
+     * bounded subquery; `retentionTotalCapped` says the true figure is larger.
+     */
+    breakGlassRetentionTotal: z.number().int().nonnegative(),
+    breakGlassRetentionCapped: z.boolean(),
+  })
+  .strict();
+export type AdminSecuritySignalsResponse = z.infer<typeof adminSecuritySignalsResponseSchema>;
 
 /** One email send-log row (PROJECTPLAN.md §6.10) — no body, no secrets. */
 export const emailLogEntrySchema = z.object({

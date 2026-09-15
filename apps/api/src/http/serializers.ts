@@ -37,8 +37,8 @@ import type {
 import type { SessionListEntry } from '../services/sessions/sessionService';
 import { describeUserAgent } from '../services/sessions/deviceLabel';
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
+import { BREAK_GLASS_VIA, type AuditEntryRow } from '../data/repositories/auditRepository';
 import type {
-  AuditLogRow,
   EmailLogRow,
   InviteRow,
   ProblemRow,
@@ -383,15 +383,57 @@ export function toAdminSessionPolicy(policy: AdminSessionPolicy): AdminSessionPo
   };
 }
 
-export function toAuditEntry(row: AuditLogRow): AuditLogEntry {
+/**
+ * One audit row, with its actor resolved (#1908 §3).
+ *
+ * The three `actorKind` values answer a question the console could not answer
+ * before: a NULL `actor_id` used to render as the single word "system" whether
+ * it was an anonymous failed login, a server-initiated write, or the SHELL
+ * break-glass 2FA reset — the highest-privilege event the product has.
+ *
+ *  - `account` is the resolved join, and it OUTRANKS the marker. `actor_id` is
+ *    a foreign key the server set; `meta.via` is a string inside a free-form
+ *    payload. A row carrying both did not come from the shell script (which has
+ *    no session and always writes a null actor), so labelling it `shell` would
+ *    have named the wrong provenance for an action a real operator took. The
+ *    break-glass PRESET and the banner count are unaffected either way: both
+ *    filter on `action` + `meta.via` in the repository and never on this field,
+ *    so nothing can be hidden from them by an actor id.
+ *  - `shell` is a FACT about an UNATTRIBUTED row: `actor_id` is null and the
+ *    break-glass script stamped `meta.via`. Nothing else writes that marker.
+ *  - `unattributed` is the honest remainder. `ON DELETE SET NULL` destroys the
+ *    evidence that would separate "no human actor" from "the account that acted
+ *    has since been deleted", so this projection does NOT guess between them —
+ *    the copy says the row is no longer resolvable instead of asserting a
+ *    deletion that nothing in the row records.
+ *
+ * The e-mail is not in the row shape at all, so no caller can ship it by
+ * accident: the repository never selects it (§6.12).
+ */
+export function toAuditEntry(row: AuditEntryRow): AuditLogEntry {
+  const meta = row.meta ?? null;
+  const viaBreakGlass =
+    meta !== null &&
+    typeof meta === 'object' &&
+    !Array.isArray(meta) &&
+    (meta as Record<string, unknown>).via === BREAK_GLASS_VIA;
+  const actor =
+    row.actorId !== null && row.actorUsername !== null && row.actorRole !== null
+      ? { id: row.actorId, username: row.actorUsername, kind: row.actorRole }
+      : null;
+  // The column first, the payload second.
+  const shell = row.actorId === null && viaBreakGlass;
+
   return {
     id: row.id,
     actorId: row.actorId,
+    actor,
+    actorKind: actor ? 'account' : shell ? 'shell' : 'unattributed',
     action: row.action,
     targetType: row.targetType,
     targetId: row.targetId,
     ip: row.ip,
-    meta: row.meta ?? null,
+    meta,
     createdAt: toIsoRequired(row.createdAt),
   };
 }

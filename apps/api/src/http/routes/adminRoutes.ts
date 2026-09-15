@@ -67,6 +67,8 @@ import {
 } from '@bettertrack/contracts';
 
 import { notFound } from '../../errors';
+import type { AuditListFilters } from '../../data/repositories/auditRepository';
+import { AUDIT_PRESET_ACTIONS } from '../../services/audit/auditService';
 import type { AdminActor } from '../../services/admin/adminService';
 import type { AppContext } from '../context';
 import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
@@ -97,6 +99,28 @@ import {
 } from '../serializers';
 
 const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.ip });
+
+/**
+ * Turn the validated audit query into the repository's filter set (#1908 §1).
+ *
+ * A `preset` expands here, from the vocabulary that lives beside `AuditAction`,
+ * and COMPOSES with an explicit `action` rather than replacing it — asking for
+ * `preset=admin_actions&action=user.` is "the admin actions in the user domain",
+ * which is what both keys plainly say.
+ */
+function auditFiltersOf(query: AuditQuery): AuditListFilters {
+  const preset = query.preset;
+  return {
+    ...(query.action !== undefined ? { action: query.action } : {}),
+    ...(preset !== undefined ? { actions: AUDIT_PRESET_ACTIONS[preset] } : {}),
+    ...(preset === 'break_glass' ? { breakGlassOnly: true } : {}),
+    ...(query.actorId !== undefined ? { actorId: query.actorId } : {}),
+    ...(query.targetId !== undefined ? { targetId: query.targetId } : {}),
+    ...(query.targetType !== undefined ? { targetType: query.targetType } : {}),
+    ...(query.from !== undefined ? { from: new Date(query.from) } : {}),
+    ...(query.to !== undefined ? { to: new Date(query.to) } : {}),
+  };
+}
 
 /**
  * Admin endpoints under /api/v1/admin (PROJECTPLAN.md §6.12, §8). The router is
@@ -570,11 +594,15 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     res.json(result);
   });
 
+  // Filtered, cursor-paged audit log (#1908 §1). Every filter is optional and
+  // the query schema is still `.strict()`, so an unknown key is still a 400 and
+  // every caller that predates this wave keeps working unchanged.
   router.get('/audit', validateQuery(auditQuerySchema), async (req, res) => {
     const query = req.valid?.query as AuditQuery;
     const { entries, nextCursor } = await ctx.admin.listAudit({
       limit: query.limit,
       cursor: query.cursor,
+      filters: auditFiltersOf(query),
     });
     res.json({ entries: entries.map(toAuditEntry), nextCursor });
   });
@@ -616,6 +644,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       const { entries, nextCursor } = await ctx.admin.listUserAudit(id, {
         limit: query.limit,
         cursor: query.cursor,
+        // The account scope is applied by the repository, never here: a
+        // `targetId` in the query can only narrow this page further, and cannot
+        // widen it to another account (§10 — ownership scoping lives in the
+        // repository, not in the controller).
+        filters: auditFiltersOf(query),
       });
       res.json({ entries: entries.map(toAuditEntry), nextCursor });
     },

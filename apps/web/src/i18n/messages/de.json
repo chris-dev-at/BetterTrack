@@ -5925,6 +5925,84 @@
         "target": "Ziel",
         "ip": "IP",
         "details": "Details"
+      },
+      "emptyFiltered": "Keine Audit-Einträge passen zu diesen Filtern.",
+      "actorRole": {
+        "user": "Benutzer",
+        "admin": "Admin"
+      },
+      "actorKind": {
+        "account": "Konto",
+        "shell": "Shell (Notfallzugriff)",
+        "unattributed": "System oder gelöschtes Konto"
+      },
+      "preset": {
+        "break_glass": "Notfallzugriff",
+        "auth_failures": "Fehlgeschlagene Anmeldungen",
+        "admin_actions": "Admin-Aktionen"
+      },
+      "filters": {
+        "presets": "Voreinstellungen",
+        "action": "Aktion",
+        "actionHint": "Exakte Aktion oder ein Bereich mit Punkt am Ende (user.).",
+        "actor": "Akteur-ID",
+        "target": "Ziel-ID",
+        "targetType": "Zieltyp",
+        "from": "Von",
+        "until": "Bis",
+        "clear": "Filter zurücksetzen"
+      },
+      "breakGlass": {
+        "banner": "Es sind {{count}}{{suffix}} Notfall-Zurücksetzungen der Zwei-Faktor-Authentifizierung verzeichnet.",
+        "explainer": "Eine Notfall-Zurücksetzung wird über eine Server-Shell ausgeführt, ohne angemeldeten Operator: sie löscht die Zwei-Faktor-Einrichtung eines Administrators, damit ein ausgesperrter Admin sich wieder anmelden kann. Jede einzelne davon sollte zu einer Änderung passen, von der Sie wissen.",
+        "show": "Anzeigen"
+      },
+      "signals": {
+        "title": "Signale",
+        "subtitle": "Kennzahlen aus den Audit-Einträgen unten. Dafür wird nichts zusätzlich aufgezeichnet.",
+        "show": "Anzeigen",
+        "hide": "Ausblenden",
+        "loading": "Signale werden geladen…",
+        "loginFailures": "Fehlgeschlagene Anmeldungen",
+        "otherSignals": "Weitere Signale",
+        "total": "Gesamt",
+        "derived": "Nur Kennzahlen — kein Konto, keine Adresse und kein Gerät wird hier benannt, und kein Zeitraum über sieben Tage ist abfragbar.",
+        "window": {
+          "24h": "24 Stunden",
+          "7d": "7 Tage"
+        },
+        "reason": {
+          "unknown_user": "Unbekanntes Konto",
+          "locked": "Sperrfrist aktiv",
+          "bad_password": "Falsches Passwort",
+          "disabled": "Konto deaktiviert",
+          "other": "Sonstige"
+        },
+        "twoFactorVerifyFail": "Zwei-Faktor-Fehlversuche",
+        "passkeyLoginFail": "Passkey-Fehlversuche",
+        "pinVerifyFail": "PIN-Fehlversuche",
+        "reauthFail": "Fehlgeschlagene erneute Anmeldungen",
+        "apiKeyScopeDenied": "Verweigerte Berechtigungen",
+        "adminLogins": "Admin-Anmeldungen",
+        "adminActors": "Verschiedene Admins",
+        "breakGlass": "Notfall-Zurücksetzungen"
+      },
+      "drawer": {
+        "title": "Audit-Eintrag",
+        "open": "Details",
+        "meta": "Details",
+        "noMeta": "Dieser Eintrag enthält keine weiteren Details.",
+        "diff": "Was sich geändert hat",
+        "field": "Feld",
+        "before": "Vorher",
+        "after": "Nachher",
+        "entryId": "Eintrags-ID",
+        "state": {
+          "changed": "Geändert",
+          "added": "Hinzugefügt",
+          "removed": "Entfernt",
+          "unchanged": "Unverändert"
+        }
       }
     },
     "pagination": {

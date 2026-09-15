@@ -1,9 +1,13 @@
 import type { Database } from '../../data/db';
 import {
   createAuditRepository,
+  type AuditListFilters,
+  type AuditPage,
   type AuditRepository,
+  type AuditSignalCounts,
   type RecordAuditInput,
 } from '../../data/repositories/auditRepository';
+import { redactAuditMeta } from './auditRedaction';
 
 type LockedPrivacyMode = 'normal' | 'paranoid' | null;
 type WithAuditPrivacyMode = <T>(
@@ -194,6 +198,94 @@ export const AuditAction = {
   WebhookAutoDisabled: 'webhook.auto_disabled',
 } as const;
 
+/**
+ * The action vocabularies the `preset` filter expands to (#1908 §3).
+ *
+ * Derived from {@link AuditAction} rather than hand-written strings, so a
+ * preset can never name an action the product does not write — and renaming an
+ * action moves its preset with it instead of silently emptying the view.
+ */
+export const AUDIT_PRESET_ACTIONS = {
+  /**
+   * The shell break-glass 2FA reset. The action alone is not enough — an admin
+   * can also reset 2FA through the console — so the repository narrows it
+   * further by `meta.via`, which only the script stamps.
+   */
+  break_glass: [AuditAction.AdminTwoFactorReset],
+  /** Every failed authentication signal, in one view. */
+  auth_failures: [
+    AuditAction.LoginFail,
+    AuditAction.TwoFactorVerifyFail,
+    AuditAction.PasskeyLoginFail,
+    AuditAction.PasskeyManageReauthFail,
+    AuditAction.PinVerifyFail,
+    AuditAction.AuthReauthFail,
+    AuditAction.ApiKeyScopeDenied,
+    AuditAction.AccountDeleteFail,
+    AuditAction.ParanoidDiscardFail,
+    AuditAction.VaultDeleteReauthFail,
+    AuditAction.PortfolioVaultMoveInReauthFail,
+    AuditAction.PortfolioVaultMoveOutReauthFail,
+  ],
+  /**
+   * What the CONSOLE did, as opposed to what accounts did — the admin-only
+   * writes plus the admin sign-in that precedes them.
+   */
+  admin_actions: [
+    AuditAction.AdminLogin,
+    AuditAction.AdminTwoFactorReset,
+    AuditAction.UserCreated,
+    AuditAction.UserDisabled,
+    AuditAction.UserEnabled,
+    AuditAction.UserDeleted,
+    AuditAction.UserRoleChanged,
+    AuditAction.UserUsernameChanged,
+    AuditAction.UserEmailChanged,
+    AuditAction.UserPasswordReset,
+    AuditAction.UserChatBanned,
+    AuditAction.UserChatUnbanned,
+    AuditAction.AdminUserNoteAdded,
+    AuditAction.AdminUserNoteDeleted,
+    AuditAction.InviteCreated,
+    AuditAction.InviteRevoked,
+    AuditAction.RegistrationTokenCreated,
+    AuditAction.RegistrationTokenRevoked,
+    AuditAction.RegistrationRequestApproved,
+    AuditAction.RegistrationRequestRejected,
+    AuditAction.SettingsUpdated,
+    AuditAction.AccountDefaultsUpdated,
+    AuditAction.AdminSessionPolicyUpdated,
+    AuditAction.AiSettingsUpdated,
+    AuditAction.FeatureFlagChanged,
+    AuditAction.MonitoringExternalAccessChanged,
+    AuditAction.ProblemResolved,
+    AuditAction.ProblemReopened,
+    AuditAction.FeedbackArchived,
+    AuditAction.FeedbackUnarchived,
+    AuditAction.EmailTestSent,
+    AuditAction.ApiKeyTierCreated,
+    AuditAction.ApiKeyTierUpdated,
+    AuditAction.ApiKeyTierDeleted,
+    AuditAction.ApiKeyTierAssigned,
+    AuditAction.OAuthClientRegistered,
+    AuditAction.OAuthClientUpdated,
+    AuditAction.OAuthClientDeleted,
+  ],
+} as const satisfies Record<string, readonly string[]>;
+
+/**
+ * The actions the Signals section counts one by one (#1908 §5). The login
+ * failures are counted separately because they are grouped by `meta.reason`.
+ */
+export const AUDIT_SIGNAL_ACTIONS = [
+  AuditAction.TwoFactorVerifyFail,
+  AuditAction.PasskeyLoginFail,
+  AuditAction.PinVerifyFail,
+  AuditAction.AuthReauthFail,
+  AuditAction.ApiKeyScopeDenied,
+  AuditAction.AdminLogin,
+] as const;
+
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;
   /**
@@ -202,20 +294,40 @@ export interface AuditService {
    * must either commit or roll back together.
    */
   recordInTransaction(executor: Database, input: RecordAuditInput): Promise<void>;
-  list(params: { limit: number; cursor?: string }): ReturnType<AuditRepository['list']>;
+  list(params: { limit: number; cursor?: string; filters?: AuditListFilters }): Promise<AuditPage>;
   listForTarget(params: {
     targetId: string;
     limit: number;
     cursor?: string;
-  }): ReturnType<AuditRepository['listForTarget']>;
+    filters?: AuditListFilters;
+  }): Promise<AuditPage>;
+  signals(params: {
+    from: Date;
+    to: Date;
+    actions?: readonly string[];
+    groupLimit?: number;
+  }): Promise<AuditSignalCounts>;
+  breakGlassTotal(cap: number): Promise<{ count: number; capped: boolean }>;
 }
+
+/**
+ * Ceiling on the rows one `GROUP BY` in the Signals read may return. The
+ * vocabularies above are far smaller; this is what keeps a future one from
+ * turning a bounded aggregate into an unbounded read.
+ */
+const SIGNAL_GROUP_LIMIT = 50;
 
 export function createAuditService(
   auditRepo: AuditRepository,
   withPrivacyMode: WithAuditPrivacyMode = (_userId, run) => run(null),
 ): AuditService {
   return {
-    record: (input) => {
+    record: (rawInput) => {
+      // Secret redaction runs FIRST and on every action, before any other rule
+      // decides anything (#1908 §4). It is a write-path policy: a marker
+      // substituted here is durable, while a renderer-side filter would leave
+      // the real value in `audit_log` for the full 400-day retention.
+      const input = redactInput(rawInput);
       const meta = input.meta;
       if (
         input.action !== AuditAction.ApiKeyScopeDenied ||
@@ -232,6 +344,10 @@ export function createAuditService(
       // privacy lock through persistence so a denial racing paranoid enable is
       // either written first and scrubbed by enable, or written redacted after
       // the transition commits. Unknown/deleted actors fail closed as redacted.
+      //
+      // Untouched by the secret redaction above: `path` is not a secret-shaped
+      // key, so the paranoid rule is still the ONLY thing that rewrites it and
+      // still rewrites it to its own marker.
       return withPrivacyMode(input.actorId, (privacyMode) =>
         auditRepo.record({
           ...input,
@@ -239,8 +355,24 @@ export function createAuditService(
         }),
       );
     },
-    recordInTransaction: (executor, input) => createAuditRepository(executor).record(input),
+    recordInTransaction: (executor, input) =>
+      createAuditRepository(executor).record(redactInput(input)),
     list: (params) => auditRepo.list(params),
     listForTarget: (params) => auditRepo.listForTarget(params),
+    signals: (params) =>
+      auditRepo.signals({
+        from: params.from,
+        to: params.to,
+        actions: params.actions ?? AUDIT_SIGNAL_ACTIONS,
+        groupLimit: params.groupLimit ?? SIGNAL_GROUP_LIMIT,
+      }),
+    breakGlassTotal: (cap) => auditRepo.breakGlassTotal(cap),
   };
+}
+
+/** `meta` with every secret-shaped value replaced, leaving the row untouched. */
+function redactInput(input: RecordAuditInput): RecordAuditInput {
+  if (input.meta === undefined || input.meta === null) return input;
+  const meta = redactAuditMeta(input.meta);
+  return meta === input.meta ? input : { ...input, meta };
 }
