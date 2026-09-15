@@ -22,6 +22,7 @@ import {
   adminModerationListResponseSchema,
   accountDefaultsResponseSchema,
   adminFeatureFlagsResponseSchema,
+  adminSecuritySignalsResponseSchema,
   adminSessionPolicyResponseSchema,
   announcementListResponseSchema,
   announcementSchema,
@@ -80,7 +81,10 @@ import {
   type Announcement,
   type AnnouncementListResponse,
   type AppSettingsResponse,
+  type AdminSecuritySignalsResponse,
   type AuditLogListResponse,
+  type AuditPreset,
+  type AuditSignalWindow,
   type BulkUserActionRequest,
   type BulkUserActionResponse,
   type ChangePasswordRequest,
@@ -489,15 +493,58 @@ export async function sendTestEmail(body: TestEmailRequest): Promise<TestEmailRe
   return testEmailResponseSchema.parse(data);
 }
 
+/**
+ * The audit filter set (#1908 §1). Every key is optional and absent means "do
+ * not filter" — the query schema is `.strict()`, so an undefined value must not
+ * reach the wire as an empty string, which `apiRequest`'s query builder already
+ * drops.
+ */
+export interface AuditFilterParams {
+  cursor?: string;
+  limit?: number;
+  action?: string;
+  actorId?: string;
+  targetId?: string;
+  targetType?: string;
+  from?: string;
+  to?: string;
+  preset?: AuditPreset;
+}
+
 export async function listAudit(
-  params: { cursor?: string; limit?: number } = {},
+  params: AuditFilterParams = {},
   signal?: AbortSignal,
 ): Promise<AuditLogListResponse> {
   const data = await apiRequest<unknown>('/admin/audit', {
-    query: { cursor: params.cursor, limit: params.limit },
+    query: {
+      cursor: params.cursor,
+      limit: params.limit,
+      action: params.action,
+      actorId: params.actorId,
+      targetId: params.targetId,
+      targetType: params.targetType,
+      from: params.from,
+      to: params.to,
+      preset: params.preset,
+    },
     signal,
   });
   return auditLogListResponseSchema.parse(data);
+}
+
+/**
+ * Aggregate authentication signals (#1908 §5) — counts derived from existing
+ * audit rows over a window the server caps at 7 days.
+ */
+export async function getSecuritySignals(
+  window: AuditSignalWindow,
+  signal?: AbortSignal,
+): Promise<AdminSecuritySignalsResponse> {
+  const data = await apiRequest<unknown>('/admin/security/signals', {
+    query: { window },
+    signal,
+  });
+  return adminSecuritySignalsResponseSchema.parse(data);
 }
 
 // --- Admin: Problems (§13.5 V5-P2 arc (d)) ---------------------------------

@@ -1993,6 +1993,21 @@ const ADMIN_OVERLAY_SCENARIOS: readonly AdminOverlayScenario[] = [
       'A destructive confirmation in the shared console Modal, carrying a real account email that has to wrap at 360px.',
   },
   {
+    label: 'audit entry detail drawer',
+    sources: ['apps/web/src/admin/components/AuditEntryDrawer.tsx'],
+    route: '/admin/audit',
+    // Every deployment has rows here — the admin's own `admin.login` is written
+    // by the sign-in this sweep just performed — so the trigger is always
+    // present, and opening it changes nothing (#1908 §7).
+    action: { kind: 'click', selector: '#main-content table button:text-is("Details")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    // The close control plus the details button that opened it; a real entry
+    // adds its key/value rows on top.
+    minimumMeasured: 1,
+    justification:
+      'The row drawer replaces the truncated JSON cell and is the only way to read an audit entry\u2019s detail; it is the one console overlay that can hold a TABLE (the field-by-field diff), which is exactly the content a 360px phone has to fit.',
+  },
+  {
     label: 'user delete confirmation',
     sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
     route: '/admin/users/:userId',

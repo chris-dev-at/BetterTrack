@@ -51,7 +51,13 @@ const jane: AdminUser = {
 
 const auditEntry: AuditLogEntry = {
   id: '00000000-0000-7000-8000-000000000001',
-  actorId: 'admin-1',
+  actorId: '00000000-0000-7000-8000-0000000000a1',
+  actor: {
+    id: '00000000-0000-7000-8000-0000000000a1',
+    username: 'rootadmin',
+    kind: 'admin',
+  },
+  actorKind: 'account',
   action: 'user.email_changed',
   targetType: 'user',
   targetId: 'user-1',

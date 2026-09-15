@@ -245,6 +245,11 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
     enabled: boolean,
     actor: FeatureFlagActor,
   ): Promise<AdminFeatureFlag[]> {
+    // The value the flip moved AWAY from, read before the write (#1908 §4). A
+    // kill switch's history is the whole point of auditing it: "alerts was
+    // already off" and "alerts was just turned off" are different incidents and
+    // used to record identically.
+    const previous = (await getEffectiveFlags())[key];
     await repo.upsert(settingKey(key), enabled, actor.id);
     const propagated = await invalidateSnapshot();
     // `targetId` is a uuid column — the flag key rides in `meta`, not there.
@@ -253,7 +258,13 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
       action: AuditAction.FeatureFlagChanged,
       targetType: 'feature_flag',
       ip: actor.ip ?? null,
-      meta: { key, enabled, propagated },
+      meta: {
+        key,
+        enabled,
+        propagated,
+        before: { enabled: previous },
+        after: { enabled },
+      },
     });
     if (!propagated) {
       throw new ApiError(

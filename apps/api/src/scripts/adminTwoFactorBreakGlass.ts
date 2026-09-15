@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
 import type { Database } from '../data/db';
-import { createAuditRepository } from '../data/repositories/auditRepository';
+import { BREAK_GLASS_VIA, createAuditRepository } from '../data/repositories/auditRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { AuditAction, createAuditService } from '../services/audit/auditService';
@@ -55,11 +55,17 @@ export async function resetAdminTwoFactorEnrollment(
   if ((await twoFactorRepo.resetAllFactorsForAdmin(user.id)) === null) return null;
 
   // Security trail (§10): actorId is null — this ran from a shell, not a session.
+  //
+  // `BREAK_GLASS_VIA` is IMPORTED, never spelled again here: the console's
+  // break-glass preset, its standing banner count and its `shell` actor kind all
+  // key off this exact string, so a local copy that drifted would silently zero
+  // the visibility of the highest-privilege event in the product — a fail-open,
+  // and a quiet one (#1908 §3).
   await audit.record({
     action: AuditAction.AdminTwoFactorReset,
     targetType: 'user',
     targetId: user.id,
-    meta: { via: 'break_glass_script' },
+    meta: { via: BREAK_GLASS_VIA },
   });
 
   return { id: user.id, username: user.username, email: user.email };

@@ -617,8 +617,27 @@ export const auditLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // The retention sweep's `created_at < cutoff` walk (`deleteOlderThan`).
     index('audit_log_created_at_idx').on(t.createdAt),
-    index('audit_log_actor_id_idx').on(t.actorId),
+    /*
+     * Three `(column, id DESC)` indexes for the three filters the console's
+     * audit read composes (#1908 §2). `id` is a UUIDv7, i.e. time-sortable, and
+     * every paged read is `ORDER BY id DESC LIMIT n` — so carrying `id` in the
+     * index turns each filter into an index scan that stops at the page size
+     * instead of a filter-then-sort over the whole 400-day table.
+     *
+     * `audit_log_actor_id_id_idx` REPLACES the bare `audit_log_actor_id_idx`,
+     * which it subsumes: a lookup by `actor_id` alone uses this index's leading
+     * column, and the foreign-key coverage `check:schema-drift` requires is
+     * satisfied by a leading-column match. Keeping both would have cost every
+     * audit write a second index update for nothing.
+     *
+     * `target_id` had NO index at all before this wave, which is why People
+     * 360's per-account Activity tab sequentially scanned the table.
+     */
+    index('audit_log_actor_id_id_idx').on(t.actorId, t.id.desc()),
+    index('audit_log_target_id_id_idx').on(t.targetId, t.id.desc()),
+    index('audit_log_action_id_idx').on(t.action, t.id.desc()),
   ],
 );
 

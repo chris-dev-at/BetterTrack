@@ -10,6 +10,7 @@ import type {
 import type { Logger } from '../../logger';
 import type { AiSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import { auditFieldDiff } from '../audit/auditRedaction';
 import type { FeatureFlagService } from '../featureFlags/featureFlagService';
 import type { AiDailyCap } from './dailyCap';
 import { AiProviderError, AiUnavailableError } from './errors';
@@ -73,6 +74,22 @@ function errorDetail(err: unknown): string {
     return err.message || err.name || 'error';
   }
   return 'error';
+}
+
+/**
+ * The three admin-settable AI fields, narrowed to the ones this request
+ * addressed — so a save that only raises the daily cap records the cap, not the
+ * endpoint it left alone (#1908 §4).
+ */
+function pickAiAudit(
+  settings: Pick<AiSettings, 'endpoint' | 'model' | 'dailyCap'>,
+  request: UpdateAiSettingsRequest,
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  if (request.endpoint !== undefined) picked.endpoint = settings.endpoint;
+  if (request.model !== undefined) picked.model = settings.model;
+  if (request.dailyCap !== undefined) picked.dailyCap = settings.dailyCap;
+  return picked;
 }
 
 export function createAiService(deps: AiServiceDeps): AiService {
@@ -143,19 +160,25 @@ export function createAiService(deps: AiServiceDeps): AiService {
     input: UpdateAiSettingsRequest,
     actor: AiServiceActor,
   ): Promise<AiSettingsResponse> {
+    const previous = await appSettings.getAiSettings();
     const next = await appSettings.updateAiSettings(input, actor.id);
     // Endpoint/model/cap are non-secret, so recording them makes the change
     // fully auditable (unlike a cloud token, which this product never stores).
+    // Now as a before/after pair over the keys the request addressed (#1908 §4):
+    // "the local endpoint moved from A to B" is the fact an auditor needs, and
+    // the previous value was the half that used to be missing. `auditService`
+    // redacts secret-shaped keys on the way in regardless, so a field this form
+    // grows later cannot carry a credential into the row (#1656).
+    const changed = auditFieldDiff(pickAiAudit(previous, input), pickAiAudit(next, input)) ?? {
+      before: {},
+      after: {},
+    };
     await audit.record({
       actorId: actor.id,
       action: AuditAction.AiSettingsUpdated,
       targetType: 'ai_settings',
       ip: actor.ip ?? null,
-      meta: {
-        endpoint: input.endpoint,
-        model: input.model,
-        dailyCap: input.dailyCap,
-      },
+      meta: changed,
     });
     return serialize(next);
   }

@@ -5925,6 +5925,84 @@
         "target": "Target",
         "ip": "IP",
         "details": "Details"
+      },
+      "emptyFiltered": "No audit entries match these filters.",
+      "actorRole": {
+        "user": "User",
+        "admin": "Admin"
+      },
+      "actorKind": {
+        "account": "Account",
+        "shell": "Shell (break-glass)",
+        "unattributed": "System or removed account"
+      },
+      "preset": {
+        "break_glass": "Break-glass",
+        "auth_failures": "Auth failures",
+        "admin_actions": "Admin actions"
+      },
+      "filters": {
+        "presets": "Presets",
+        "action": "Action",
+        "actionHint": "Exact action, or a domain with a trailing dot (user.).",
+        "actor": "Actor ID",
+        "target": "Target ID",
+        "targetType": "Target type",
+        "from": "From",
+        "until": "Until",
+        "clear": "Clear filters"
+      },
+      "breakGlass": {
+        "banner": "{{count}}{{suffix}} break-glass two-factor resets are on record.",
+        "explainer": "A break-glass reset is run from a server shell, without a signed-in operator: it clears an administrator's two-factor enrolment so a locked-out admin can sign in again. Every one of them should match a change you know about.",
+        "show": "Show them"
+      },
+      "signals": {
+        "title": "Signals",
+        "subtitle": "Counts derived from the audit entries below. Nothing new is recorded to produce them.",
+        "show": "Show",
+        "hide": "Hide",
+        "loading": "Loading signals…",
+        "loginFailures": "Failed sign-ins",
+        "otherSignals": "Other signals",
+        "total": "Total",
+        "derived": "Counts only — no account, address or device is identified here, and no window longer than seven days can be asked for.",
+        "window": {
+          "24h": "24 hours",
+          "7d": "7 days"
+        },
+        "reason": {
+          "unknown_user": "Unknown account",
+          "locked": "Cooling down",
+          "bad_password": "Wrong password",
+          "disabled": "Account disabled",
+          "other": "Other"
+        },
+        "twoFactorVerifyFail": "Two-factor failures",
+        "passkeyLoginFail": "Passkey failures",
+        "pinVerifyFail": "PIN failures",
+        "reauthFail": "Re-authentication failures",
+        "apiKeyScopeDenied": "Scope denials",
+        "adminLogins": "Admin sign-ins",
+        "adminActors": "Distinct admins",
+        "breakGlass": "Break-glass resets"
+      },
+      "drawer": {
+        "title": "Audit entry",
+        "open": "Details",
+        "meta": "Details",
+        "noMeta": "This entry carries no additional detail.",
+        "diff": "What changed",
+        "field": "Field",
+        "before": "Before",
+        "after": "After",
+        "entryId": "Entry ID",
+        "state": {
+          "changed": "Changed",
+          "added": "Added",
+          "removed": "Removed",
+          "unchanged": "Unchanged"
+        }
       }
     },
     "pagination": {

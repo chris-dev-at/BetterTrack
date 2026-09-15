@@ -959,6 +959,11 @@ export const NON_V5_SURFACES = [
     note: 'Post-V5 admin rebuild W7a (#1909): the composer’s EN + DE banner preview; localized and tested in its own feature change.',
   },
   {
+    path: 'admin/components/AuditEntryDrawer.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W6 (#1406/#1908): the audit row detail drawer — the meta tree and the field-by-field diff — shared by the audit log and People 360’s Activity tab; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/LiveRefreshControl.tsx',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W4 (#1406): the Operations cockpit’s cadence picker and refresh button; localized and tested in its own feature change.',
@@ -2277,7 +2282,16 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // empty case is explicit ("no moderation action has been taken on this
 // account") rather than an empty list that reads as a failed load. The debt
 // ceiling below is therefore unchanged.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 80;
+//
+// 80 → 81 with the admin rebuild ADMIN-W6 (#1908): the audit page's Signals
+// read, the one new read of that wave. It renders `AsyncReadState` for both
+// loading and error at its own read site, so the debt ceiling below is
+// unchanged. Its sibling — the audit list itself — is NOT in this count: it
+// keeps the page's own effect-driven loader, which the #1848 pass gave the same
+// 401 / mandatory-2FA / catalogue-copy handling `useResource` has, and which no
+// gate counts in either direction. The row drawer (`AuditEntryDrawer.tsx`) adds
+// no read at all: it renders a row the page already holds.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 81;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

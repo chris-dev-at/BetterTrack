@@ -4,9 +4,13 @@ import type { Redis } from 'ioredis';
 
 import {
   ADMIN_USER_NOTE_PAGE_LIMIT,
+  LOGIN_FAILURE_REASONS,
   type AccountDefaultsResponse,
   type AdminListQuery,
+  type AdminSecuritySignalsResponse,
   type AdminUserListQuery,
+  type AuditSignalWindow,
+  type LoginFailureReason,
   type BulkUserActionOutcome,
   type BulkUserActionRequest,
   type BulkUserActionResponse,
@@ -52,6 +56,8 @@ import type {
   AppSettingsService,
 } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import { auditFieldDiff } from '../audit/auditRedaction';
+import type { AuditListFilters } from '../../data/repositories/auditRepository';
 import { clearLoginThrottle, removeRememberedDeviceBindings } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
 import type { EmailSendResult, EmailService } from '../email/emailService';
@@ -113,6 +119,52 @@ export interface AdminActor {
 }
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The two windows the Signals read offers (#1908 §5). Capped at 7 days by the
+ * contract's enum, so no caller can ask this aggregate to walk the whole
+ * 400-day retention window.
+ */
+const AUDIT_SIGNAL_WINDOW_MS: Record<AuditSignalWindow, number> = {
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+
+/**
+ * How far the standing break-glass banner counts before it says "more than
+ * this". A break-glass reset is a rare, hand-run shell event; a deployment with
+ * more than this many of them has a story the exact number does not add to, and
+ * the cap is what keeps the banner off an unbounded `COUNT(*)`.
+ */
+const BREAK_GLASS_BANNER_CAP = 500;
+
+const isLoginFailureReason = (value: string | null): value is LoginFailureReason =>
+  value !== null && (LOGIN_FAILURE_REASONS as readonly string[]).includes(value);
+
+/**
+ * The `{ before, after }` pair for a config write, narrowed to the keys the
+ * request actually addressed (#1908 §4).
+ *
+ * Narrowed deliberately: `AppSettings` and the account defaults both carry
+ * fields this request never mentioned, and recording their current values as
+ * part of "what changed" would make every settings row look like a rewrite of
+ * the whole panel. An empty pair is still recorded when nothing moved — a
+ * no-op save IS the fact in that case, and dropping `meta` entirely would make
+ * it indistinguishable from an old-format row.
+ */
+function settingsDiff<Stored extends object, Request extends object>(
+  previous: Stored,
+  next: Stored,
+  request: Request,
+): { before: Record<string, unknown>; after: Record<string, unknown> } {
+  const asRecord = (value: object) => value as Record<string, unknown>;
+  const keys = Object.keys(request).filter((key) => asRecord(request)[key] !== undefined);
+  const pick = (source: object): Record<string, unknown> =>
+    Object.fromEntries(
+      keys.filter((key) => Object.hasOwn(source, key)).map((key) => [key, asRecord(source)[key]]),
+    );
+  return auditFieldDiff(pick(previous), pick(next)) ?? { before: {}, after: {} };
+}
 
 /**
  * The loser of a decision race on one registration application (§6.12). A 409
@@ -863,8 +915,15 @@ export function createAdminService(deps: AdminServiceDeps) {
           targetType: 'user',
           targetId: mutation.target.id,
           ip: actor.ip,
+          // Before/after, not the new value alone (#1908 §4). `mutation.target`
+          // is the row as it was read FOR UPDATE, i.e. the state the change
+          // moved away from — so the row answers "who granted this admin role,
+          // and what did the account hold before" without a second lookup. The
+          // W5 moderation-action id rides alongside it; the reason text stays
+          // in the moderation record and never in `meta` (#1907).
           meta: {
-            role: input.role,
+            before: { role: mutation.target.role },
+            after: { role: input.role },
             ...(mutation.roleModerationId ? { moderationId: mutation.roleModerationId } : {}),
           },
         });
@@ -1345,16 +1404,79 @@ export function createAdminService(deps: AdminServiceDeps) {
       };
     },
 
-    listAudit: (params: { limit: number; cursor?: string }) => deps.audit.list(params),
+    listAudit: (params: { limit: number; cursor?: string; filters?: AuditListFilters }) =>
+      deps.audit.list(params),
 
-    /** One user's audit history (§6.12) — entries whose target is this user. */
-    async listUserAudit(userId: string, params: { limit: number; cursor?: string }) {
+    /**
+     * One user's audit history (§6.12) — entries whose target is this user.
+     * Filters compose with the target, which is applied by the repository and
+     * can therefore never be widened by a query key (#1908 §1).
+     */
+    async listUserAudit(
+      userId: string,
+      params: { limit: number; cursor?: string; filters?: AuditListFilters },
+    ) {
       await loadUser(userId); // 404 for an unknown user, like the other per-user reads.
       return deps.audit.listForTarget({
         targetId: userId,
         limit: params.limit,
         cursor: params.cursor,
+        filters: params.filters,
       });
+    },
+
+    /**
+     * Aggregate authentication signals over a bounded window (#1908 §5).
+     *
+     * Derived ENTIRELY from audit rows that already exist: no new capture, no
+     * new column, no new table. The payload is counts — no account id, no IP,
+     * no device label, no geo — and it is a read: nothing here locks, logs out
+     * or blocks anything, because those are §6.12 kill-list capabilities.
+     *
+     * The window is capped at 7 days by the contract's enum; the service turns
+     * it into an explicit half-open `[from, to)` so the response can state the
+     * exact range it counted rather than leaving the reader to infer it.
+     */
+    async securitySignals(window: AuditSignalWindow): Promise<AdminSecuritySignalsResponse> {
+      const to = new Date();
+      const from = new Date(to.getTime() - AUDIT_SIGNAL_WINDOW_MS[window]);
+      const [counts, retention] = await Promise.all([
+        deps.audit.signals({ from, to }),
+        deps.audit.breakGlassTotal(BREAK_GLASS_BANNER_CAP),
+      ]);
+
+      const byReason = new Map<LoginFailureReason, number>();
+      let loginFailureTotal = 0;
+      for (const row of counts.loginFailuresByReason) {
+        // An unrecognised reason is BUCKETED as `other`, never echoed: this
+        // projection must not become a seam through which whatever a future
+        // writer parks in `meta.reason` reaches the console.
+        const reason: LoginFailureReason = isLoginFailureReason(row.reason) ? row.reason : 'other';
+        byReason.set(reason, (byReason.get(reason) ?? 0) + row.count);
+        loginFailureTotal += row.count;
+      }
+
+      return {
+        window,
+        from: from.toISOString(),
+        to: to.toISOString(),
+        loginFailures: {
+          total: loginFailureTotal,
+          byReason: LOGIN_FAILURE_REASONS.filter((reason) => byReason.has(reason)).map(
+            (reason) => ({ reason, count: byReason.get(reason) ?? 0 }),
+          ),
+        },
+        twoFactorVerifyFail: counts.actionCounts[AuditAction.TwoFactorVerifyFail] ?? 0,
+        passkeyLoginFail: counts.actionCounts[AuditAction.PasskeyLoginFail] ?? 0,
+        pinVerifyFail: counts.actionCounts[AuditAction.PinVerifyFail] ?? 0,
+        reauthFail: counts.actionCounts[AuditAction.AuthReauthFail] ?? 0,
+        apiKeyScopeDenied: counts.actionCounts[AuditAction.ApiKeyScopeDenied] ?? 0,
+        adminLogins: counts.actionCounts[AuditAction.AdminLogin] ?? 0,
+        adminActors: counts.distinctAdminActors,
+        breakGlass: counts.breakGlass,
+        breakGlassRetentionTotal: retention.count,
+        breakGlassRetentionCapped: retention.capped,
+      };
     },
 
     /** Global email send log, newest first (PROJECTPLAN.md §6.10, §6.12). */
@@ -1384,6 +1506,11 @@ export function createAdminService(deps: AdminServiceDeps) {
      * every accepted change is recorded with the actor and what changed.
      */
     async updateSettings(input: UpdateAppSettingsRequest, actor: AdminActor): Promise<AppSettings> {
+      // Read the prior state BEFORE the write, so the row can carry what
+      // actually changed (#1908 §4). The old `meta: { changed: input }` recorded
+      // the submitted body and nothing else: an auditor could see that the
+      // registration mode is now `open`, never that it had been `closed`.
+      const previous = await appSettings.get();
       const settings = await appSettings.update(input, actor.id);
       await audit.record({
         actorId: actor.id,
@@ -1391,7 +1518,7 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetType: 'app_settings',
         targetId: null,
         ip: actor.ip,
-        meta: { changed: input },
+        meta: settingsDiff(previous, settings, input),
       });
       return settings;
     },
@@ -1408,6 +1535,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       input: UpdateAdminSessionPolicyRequest,
       actor: AdminActor,
     ): Promise<AdminSessionPolicy> {
+      const previous = await appSettings.getAdminSessionPolicy();
       const policy = await appSettings.setAdminSessionLifetimeHours(
         input.sessionLifetimeHours,
         actor.id,
@@ -1418,7 +1546,13 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetType: 'app_settings',
         targetId: null,
         ip: actor.ip,
-        meta: { changed: input },
+        // Before/after over the one field this route owns (#1908 §4): shortening
+        // every admin session to six hours and lengthening it to twenty-four
+        // used to record the same shape.
+        meta: auditFieldDiff(
+          { sessionLifetimeHours: previous.sessionLifetimeHours },
+          { sessionLifetimeHours: policy.sessionLifetimeHours },
+        ) ?? { before: {}, after: {} },
       });
       return policy;
     },
@@ -1477,6 +1611,7 @@ export function createAdminService(deps: AdminServiceDeps) {
           ),
         };
       }
+      const previousDefaults = await appSettings.getAccountDefaults();
       const defaults = await appSettings.updateAccountDefaults(effective, actor.id);
       await audit.record({
         actorId: actor.id,
@@ -1485,8 +1620,10 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetId: null,
         ip: actor.ip,
         // The EFFECTIVE change, not the request: what was actually persisted is
-        // what an auditor needs to see.
-        meta: { changed: effective },
+        // what an auditor needs to see — now as before/after over the keys the
+        // request addressed (#1908 §4), so a flipped default is legible as a
+        // move rather than as a restatement of the whole panel.
+        meta: settingsDiff(previousDefaults, defaults, effective),
       });
       return {
         ...defaults,
