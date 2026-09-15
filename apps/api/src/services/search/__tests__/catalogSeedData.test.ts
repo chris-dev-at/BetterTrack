@@ -75,6 +75,11 @@ describe('COMMON_SYMBOLS_SEED (§6.2(c) content)', () => {
 });
 
 describe('seedAssetCatalog with the shipped list', () => {
+  // Seeding the shipped list is one INSERT per entry through the repository, and
+  // on a loaded CI runner that walk alone can pass the 20 s default (it timed
+  // out on 2026-09-15 three times across unrelated PRs). The real fix — a
+  // batched seed — rides in #1737 (#1729); until it lands this test gets the
+  // budget the walk actually needs so a slow runner does not read as a failure.
   it('fills the catalog with instant, enrichment-free local hits', async () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const repo = createAssetRepository(h.db);
@@ -131,5 +136,5 @@ describe('seedAssetCatalog with the shipped list', () => {
     });
     const rows = await h.db.select({ id: schema.assets.id }).from(schema.assets);
     expect(rows).toHaveLength(COMMON_SYMBOLS_SEED.length);
-  });
+  }, 90_000);
 });
