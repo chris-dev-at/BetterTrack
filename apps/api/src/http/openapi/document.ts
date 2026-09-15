@@ -2554,7 +2554,9 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/assets/portfolio/dividend-calendar',
     tag: 'Assets',
-    summary: 'Upcoming dividend ex/pay dates across the caller’s held + watchlist assets.',
+    summary:
+      'Upcoming dividend ex/pay dates — held + watchlist assets across every active portfolio, or one portfolio’s holdings via portfolioId.',
+    query: contracts.dividendCalendarQuerySchema,
     status: 200,
     response: R.DividendCalendarResponse,
   },

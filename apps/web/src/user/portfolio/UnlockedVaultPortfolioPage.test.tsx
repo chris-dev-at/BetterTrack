@@ -16,11 +16,26 @@ vi.mock('../../lib/portfolioApi', async (importOriginal) => ({
   getRecategorizationStatus: vi.fn(async () => ({ pending: 0 })),
   dismissRecategorization: vi.fn(async () => undefined),
 }));
+// The overview's dividend block reads the PORTFOLIO-SCOPED roll-ups (#1898), so
+// the scoped pair is what has to be stubbed here; the user-wide pair stays
+// mocked because the module is replaced whole.
 vi.mock('../../lib/marketIntelApi', () => ({
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY: ['portfolio', 'dividend-calendar'],
   PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY: ['portfolio', 'dividend-projection'],
-  getPortfolioDividendCalendar: vi.fn(async () => ({ entries: [] })),
+  PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY: (portfolioId: string) => [
+    'portfolio',
+    portfolioId,
+    'dividend-calendar',
+  ],
+  PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY: (portfolioId: string) => [
+    'portfolio',
+    portfolioId,
+    'dividend-projection',
+  ],
+  getPortfolioDividendCalendar: vi.fn(async () => ({ available: false, entries: [] })),
   getPortfolioDividendProjection: vi.fn(async () => ({ perPortfolio: [], totalEur: 0 })),
+  getPortfolioDividendCalendarFor: vi.fn(async () => ({ available: false, entries: [] })),
+  getPortfolioDividendProjectionFor: vi.fn(async () => ({ perPortfolio: [], totalEur: 0 })),
 }));
 vi.mock('../../lib/searchApi', () => ({ searchAssets: vi.fn() }));
 

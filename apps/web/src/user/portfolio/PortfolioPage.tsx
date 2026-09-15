@@ -20,10 +20,10 @@ import type {
 
 import { dismissRecategorization, getRecategorizationStatus } from '../../lib/portfolioApi';
 import {
-  PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
-  PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
-  getPortfolioDividendCalendar,
-  getPortfolioDividendProjection,
+  PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY,
+  PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY,
+  getPortfolioDividendCalendarFor,
+  getPortfolioDividendProjectionFor,
 } from '../../lib/marketIntelApi';
 import { type TranslateFn, useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
@@ -1385,8 +1385,10 @@ function RecategorizeBanner() {
 // ─── Dividend intelligence (§13.5 V5-P5, arc a) ─────────────────────────────────
 
 /**
- * Projected dividend income (monthly/yearly EUR) + the upcoming ex/pay calendar
- * across held + watchlist assets.
+ * Projected dividend income (monthly/yearly, in the caller's base currency) +
+ * the upcoming ex/pay calendar — both for THIS portfolio's holdings alone
+ * (#1898), like every other figure on this page. The user-wide roll-ups, which
+ * add the watchlist to the calendar, stay on the cross-portfolio Home widgets.
  *
  * Two different absences (#1681). The deployment's `MARKET_INTEL_ENABLED`
  * capability decides whether this block exists at all: off ⇒ NOTHING renders,
@@ -1418,22 +1420,30 @@ function dividendBasisNote(basis: DividendProjectionBasis | null, t: TranslateFn
   }
 }
 
-function DividendIntelSection() {
+function DividendIntelSection({ portfolioId }: { portfolioId: string | null }) {
   const t = useT();
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
   const [showAll, setShowAll] = useState(false);
   const marketIntel = useDeployCapability('marketIntel');
 
+  // Both reads carry the portfolio this block sits on, and its id is part of
+  // both query keys (#1898). The block stands between the allocation ring and
+  // the winners/losers list — every figure around it is this portfolio's — and
+  // its own copy says "this portfolio", while it used to read the USER-WIDE
+  // roll-ups: two portfolio pages printed the same monthly income, and a small
+  // book inherited a large sibling's over-cap refusal. The id in the key is what
+  // makes a topbar switch refetch instead of serving the previous portfolio's
+  // number out of the cache.
   const projection = useQuery({
-    queryKey: PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
-    queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
-    enabled: marketIntel,
+    queryKey: PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY(portfolioId ?? ''),
+    queryFn: ({ signal }) => getPortfolioDividendProjectionFor(portfolioId!, signal),
+    enabled: marketIntel && portfolioId !== null,
     staleTime: 3_600_000,
   });
   const calendar = useQuery({
-    queryKey: PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
-    queryFn: ({ signal }) => getPortfolioDividendCalendar(signal),
-    enabled: marketIntel,
+    queryKey: PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY(portfolioId ?? ''),
+    queryFn: ({ signal }) => getPortfolioDividendCalendarFor(portfolioId!, signal),
+    enabled: marketIntel && portfolioId !== null,
     staleTime: 3_600_000,
   });
 
@@ -2167,7 +2177,7 @@ export function PortfolioPage() {
           <WinnersLosersSection holdings={holdings} />
 
           <NormalModeOnly>
-            <DividendIntelSection />
+            <DividendIntelSection portfolioId={portfolioId} />
           </NormalModeOnly>
 
           <RecentTransactionsSection
