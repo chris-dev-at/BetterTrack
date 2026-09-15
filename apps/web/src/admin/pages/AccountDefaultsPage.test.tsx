@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -174,4 +174,21 @@ test('localizes an API mutation failure instead of rendering the server message'
     'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
   );
   expect(screen.queryByText(/defaults could not be saved/i)).not.toBeInTheDocument();
+});
+
+/**
+ * The page IS a tab of the Product & Comms workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Product & Comms tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Product & Comms' });
+  expect(within(nav).getByRole('link', { name: 'Account defaults' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });

@@ -13,6 +13,7 @@ import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   Badge,
@@ -175,6 +176,8 @@ export function FeatureFlagsPage() {
           </Button>
         }
       />
+
+      <WorkspaceTabs />
 
       {save.error ? <Alert tone="error">{save.error}</Alert> : null}
 

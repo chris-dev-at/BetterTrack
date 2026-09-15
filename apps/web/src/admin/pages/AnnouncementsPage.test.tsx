@@ -205,15 +205,25 @@ test('a closed admin session window signs the console out instead of a save bann
  * "publishes to every user on save" and the `startsAt` helper implied a filled
  * start meant "later", while the fan-out ran on the `active` flag alone.
  */
+// The page title is asserted as the page's HEADING rather than as text: since
+// the W7c fold (#1406) "Announcements" is also this page's own tab in the
+// Product & Comms strip, so a bare text query matches twice.
+const COMPOSER_KEYS = [
+  'admin.announcements.composer.active',
+  'admin.announcements.composer.startsAt',
+  'admin.announcements.composer.create',
+  'admin.announcements.preview.heading',
+] as const;
+
 test('renders the composer from the catalog in EN and in DE', async () => {
   const { unmount } = renderPage();
-  for (const key of [
-    'admin.announcements.title',
-    'admin.announcements.composer.active',
-    'admin.announcements.composer.startsAt',
-    'admin.announcements.composer.create',
-    'admin.announcements.preview.heading',
-  ]) {
+  expect(
+    await screen.findByRole('heading', {
+      level: 1,
+      name: localizedMessage('en', 'admin.announcements.title'),
+    }),
+  ).toBeInTheDocument();
+  for (const key of COMPOSER_KEYS) {
     expect(await screen.findByText(localizedMessage('en', key))).toBeInTheDocument();
   }
   // The old copy promised a send that no longer happens on save.
@@ -221,13 +231,13 @@ test('renders the composer from the catalog in EN and in DE', async () => {
   unmount();
 
   renderPage('de');
-  for (const key of [
-    'admin.announcements.title',
-    'admin.announcements.composer.active',
-    'admin.announcements.composer.startsAt',
-    'admin.announcements.composer.create',
-    'admin.announcements.preview.heading',
-  ]) {
+  expect(
+    await screen.findByRole('heading', {
+      level: 1,
+      name: localizedMessage('de', 'admin.announcements.title'),
+    }),
+  ).toBeInTheDocument();
+  for (const key of COMPOSER_KEYS) {
     expect(await screen.findByText(localizedMessage('de', key))).toBeInTheDocument();
   }
   // And the DE catalog is not silently falling back to English.
@@ -514,4 +524,21 @@ test('says a collapsed re-click is the same pass, and counts one recipient in th
   const second = await screen.findByText(/same pass your last click queued/);
   expect(second).toHaveTextContent('announcements.publishDue:cc:2:7');
   expect(api.redeliverAnnouncement).toHaveBeenCalledTimes(2);
+});
+
+/**
+ * The page IS a tab of the Product & Comms workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Product & Comms tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Product & Comms' });
+  expect(within(nav).getByRole('link', { name: 'Announcements' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });

@@ -339,3 +339,20 @@ test('leaves revoked keys out of the default view until the filter asks for them
   );
   expect(await screen.findByText('retired')).toBeInTheDocument();
 });
+
+/**
+ * The page IS a tab of the Security & API workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Security & API tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Security & API' });
+  expect(within(nav).getByRole('link', { name: 'API keys' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+});

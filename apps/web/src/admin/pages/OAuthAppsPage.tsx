@@ -17,6 +17,7 @@ import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { Modal } from '../components/Modal';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   Badge,
@@ -112,6 +113,8 @@ export function OAuthAppsPage() {
         title={t('admin.oauthApps.title')}
         description={t('admin.oauthApps.subtitle')}
       />
+
+      <WorkspaceTabs />
 
       <form
         onSubmit={onCreate}

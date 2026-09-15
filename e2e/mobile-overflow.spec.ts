@@ -228,6 +228,21 @@ const ADMIN_ANONYMOUS_ROUTES = ['/admin/login'] as const;
 /**
  * Every authenticated console destination (§6.12 workspaces). `:userId` is
  * resolved to a real user below; every other entry is its own concrete URL.
+ *
+ * **#1406 W7c adds NO route here.** Folding Product & Comms and Security & API
+ * moved nine pages from sidebar rows onto a shared `WorkspaceTabs` strip; all
+ * nine were already in this inventory, so the fold is measured by the entries
+ * below rather than by new ones — and `assertCompleteAdminRouteInventory()`
+ * rejects a duplicate, so adding them again would fail rather than pass twice.
+ *
+ * What the fold DOES add is up to five strip links to nine pages that had none.
+ * They are measured through `ADMIN_TAP_TARGET_SELECTORS`' `.admin-tap-target`
+ * clause, which `NavTabs` (`apps/web/src/admin/components/ui.tsx`) composes into
+ * every cell — asserted in `WorkspaceTabs.test.tsx` so a cell that drops the
+ * marker fails a unit test rather than silently leaving this sweep. The strip is
+ * `overflow-x-auto` with `shrink-0` cells, so the 360×800 profile below is where
+ * a strip that started pushing the PAGE sideways would show up; the seven-tab
+ * Operations strip (W4) is the widest one and it has been in this sweep since.
  */
 const ADMIN_CORE_ROUTES = [
   '/admin',
