@@ -3,6 +3,7 @@ import type { UsageFunnelStage } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
@@ -16,6 +17,7 @@ import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
  */
 export function UsageAnalyticsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const resource = useResource((signal) => api.getUsageAnalytics(signal), []);
   const { data, loading, error, reload } = resource;
 
@@ -23,7 +25,7 @@ export function UsageAnalyticsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <PageHeader
-          eyebrow={t('admin.nav.sections.operations')}
+          eyebrow={eyebrow}
           title={t('admin.usageAnalytics.title')}
           description={t('admin.usageAnalytics.subtitle')}
         />

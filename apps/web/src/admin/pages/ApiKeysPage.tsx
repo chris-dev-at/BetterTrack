@@ -9,6 +9,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { ListPagination, useOffsetSnapBack, type ListPage } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import {
@@ -40,6 +41,7 @@ function errorMessage(t: TranslateFn): string {
  */
 export function ApiKeysPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   // Bounded read (#1814): every user's keys used to arrive in one body, one
   // tier `<select>` per row. Revoked keys — which nothing prunes — are out of
   // the default window; the toggle puts them back so a retired key's audit
@@ -57,7 +59,11 @@ export function ApiKeysPage() {
 
   return (
     <div className="space-y-8">
-      <PageHeader title={t('admin.apiKeys.title')} description={t('admin.apiKeys.subtitle')} />
+      <PageHeader
+        eyebrow={eyebrow}
+        title={t('admin.apiKeys.title')}
+        description={t('admin.apiKeys.subtitle')}
+      />
       <TiersPanel
         tiers={tiers.data?.tiers ?? []}
         loading={tiers.loading}

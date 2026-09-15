@@ -507,7 +507,8 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   });
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c)): list the registry and
-  // flip one flag. Each flip is audit-logged in the service and invalidates the
+  // patch one flag's configuration — the switch plus its rollout targeting
+  // (#1910: percentage + allow/deny lists). Each flip is audit-logged in the service and invalidates the
   // shared snapshot, so the gated routers/gateway refuse on the very next
   // request/connection — no redeploy. `requireAdmin` on the parent router fences
   // this to admins (404 to everyone else).
@@ -521,8 +522,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     validateBody(updateFeatureFlagRequestSchema),
     async (req, res) => {
       const { key } = req.valid?.params as FeatureFlagKeyParam;
-      const { enabled } = req.valid?.body as UpdateFeatureFlagRequest;
-      const flags = await ctx.featureFlags.setFlag(key, enabled, actorOf(req));
+      // The whole patch, not a destructured `enabled` (#1910): every field is
+      // optional and the service merges onto the stored config, so a rollout
+      // edit and a kill-switch flip stay independent writes.
+      const patch = req.valid?.body as UpdateFeatureFlagRequest;
+      const flags = await ctx.featureFlags.setFlag(key, patch, actorOf(req));
       res.json({ flags });
     },
   );

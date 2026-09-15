@@ -14,6 +14,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { ListPagination, useOffsetSnapBack } from '../components/ListPagination';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
@@ -98,6 +99,7 @@ function modeMeta(t: TranslateFn): ModeMeta[] {
  */
 export function RegistrationPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const settings = useResource((signal) => api.getSettings(signal), []);
   const stats = useResource((signal) => api.getStats(signal), []);
   // A failed settings read is NOT the same as a mode that happens to be off: the
@@ -117,7 +119,7 @@ export function RegistrationPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={t('admin.registration.title')}
         description={t('admin.registration.subtitle')}
       />
