@@ -1,4 +1,5 @@
-import * as Sentry from '@sentry/node';
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { loadConfig, type AppConfig } from '../../config/env';
@@ -59,14 +60,19 @@ describe('initObservability (retired external tracker)', () => {
     expect(SENTRY_REFUSED_MESSAGE).toContain('admin Problems page');
   });
 
-  it('constructs no network client even with the DSN set, in either process', () => {
+  it('never imports the SDK, in either process — no client can exist to construct', () => {
     const config = configWithSentry();
     initObservability(config, testLogger(), { serverName: 'api' });
     initObservability(config, testLogger(), { serverName: 'worker' });
 
-    // The SDK was never initialised, so it holds no client — and therefore no
-    // transport pointed at an ingest endpoint.
-    expect(Sentry.getClient()).toBeUndefined();
+    // The seam this whole module rests on: it must not import the retired SDK
+    // at all, on any code path, so there is no `Sentry.init()` call anywhere
+    // that could construct a client or a transport pointed at an ingest
+    // endpoint. Read the wrapper's own source rather than the SDK's global
+    // registry — the dependency itself is gone (#1925), and this is a
+    // regression guard against it quietly coming back.
+    const source = readFileSync(new URL('./sentry.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/@sentry\/node/);
   });
 
   it('never carries the DSN onto the config, so no code path can reach it', () => {
