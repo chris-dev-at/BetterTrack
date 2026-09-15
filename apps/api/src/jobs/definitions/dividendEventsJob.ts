@@ -48,6 +48,15 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * run did not do. `suppressed` therefore means exactly one thing again: this
  * (holder, asset, ex-date) was already notified about, which is a clean no-op.
  *
+ * A date that MOVED is one notification, not two (#1758, #1948). Inside
+ * {@link DIVIDEND_EVENT_MATCH_DAYS} the proximity decides; from there out to
+ * {@link DIVIDEND_EVENT_AMENDMENT_DAYS} the payload has to evidence the move —
+ * the anchored ex-date is no longer listed and is still at least MATCH_DAYS
+ * away — before {@link payoutIdentity} confirms or refuses it, and the claim
+ * then MOVES to the new date so the answer cannot change as the old date
+ * approaches. Two payouts the provider still lists as two are never merged,
+ * however equal their amounts.
+ *
  * One case stays outside that guarantee, unchanged from before this arc: a
  * second payout on the regular one's OWN ex-date (a special declared for the
  * same day). The idempotency key IS `(holder, asset, ex-date)`, so the per-date
@@ -87,9 +96,41 @@ export const DIVIDEND_EVENT_MARKER_TTL_SECONDS = 45 * 24 * 60 * 60;
  * it. Inside those three days the distance is no longer the only evidence:
  * {@link payoutIdentity} decides, and says so when it cannot. (The #1758 ruling
  * still holds: exactly one notification per payout, with no "date changed"
- * follow-up.)
+ * follow-up — a move further than this is caught by
+ * {@link DIVIDEND_EVENT_AMENDMENT_DAYS}, on evidence rather than on distance.)
  */
 export const DIVIDEND_EVENT_MATCH_DAYS = 3;
+
+/**
+ * The band in which a MOVED ex-date can still be recognised as the same payout:
+ * the whole window a candidate can appear in at all, so no move a scan is able
+ * to observe falls outside it.
+ *
+ * {@link DIVIDEND_EVENT_MATCH_DAYS} is how far DISTANCE ALONE may merge two
+ * dates. From there up to here, distance merges nothing by itself: the marker
+ * first needs positive evidence that the payout it already notified about MOVED
+ * — the ex-date it anchored is no longer listed AND is still at least
+ * MATCH_DAYS away (see `anchorVacated` in {@link runDividendEventsScan}) — and
+ * only then is {@link payoutIdentity} consulted to confirm or refuse. A merge
+ * TRANSFERS the claim to the new date, so the decision is taken once rather than
+ * re-taken daily against evidence that decays. Without this band a provider
+ * firming an announced ex-date by 4–7 days took a fresh per-date lock and sent a
+ * SECOND `dividend.event` for one payout, against the #1758 ruling (#1948).
+ *
+ * It is deliberately NOT "an equal identity merges up to the horizon". A regular
+ * distributor pays the SAME amount every period, so an equal identity is no
+ * evidence at all that two dates are one payout: a weekly ETF's next payout
+ * would be swallowed exactly as in #1894. The identity can only ever confirm a
+ * move the payload itself has already evidenced.
+ *
+ * What the band therefore actually covers, with the shipped constants: every
+ * BACKWARD move of 4–7 days (a cadence never runs backwards), and a FORWARD move
+ * of at most `HORIZON − MATCH_DAYS` = 4 days. A longer forward move still sends
+ * a second notification — the residual logged in §16 — because at that distance
+ * it is indistinguishable from a one-slot calendar rolling on to the next
+ * payout, and swallowing a payout is the worse of the two failures.
+ */
+export const DIVIDEND_EVENT_AMENDMENT_DAYS = DIVIDEND_EVENT_HORIZON_DAYS;
 
 /**
  * What identifies a payout apart from its ex-date: the money it pays.
@@ -264,11 +305,21 @@ export async function runDividendEventsScan(
   const nowMs = now();
   const todayStart = new Date(nowMs).toISOString().slice(0, 10);
   const horizonEnd = new Date(nowMs + horizonDays * 86_400_000).toISOString().slice(0, 10);
+  // The earliest an anchored ex-date may sit and still count as VACATED when the
+  // provider stops listing it. A calendar that publishes one upcoming slot (the
+  // shipped Yahoo mapper does) rolls that slot on to the next payout as the
+  // current one arrives, which looks exactly like a move; only a date still this
+  // far out is evidence of one. See {@link DIVIDEND_EVENT_AMENDMENT_DAYS}.
+  const vacancyEarliestDay = new Date(nowMs + DIVIDEND_EVENT_MATCH_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
 
   // Resolved dividend events per distinct asset; `null` = the provider cannot
   // serve dividends for it (a permanent, expected answer for this run — NOT a
   // failure, which is tracked separately so it can be re-attempted).
   const eventsByAsset = new Map<string, DividendEvents | null>();
+  /** Per asset, every ex-date day its payload still lists (the vacated test). */
+  const listedDaysByAsset = new Map<string, Set<string>>();
   const attemptsByAsset = new Map<string, number>();
   const unresolvedAssets = new Set<string>();
   const scannedAssetIds = new Set<string>();
@@ -330,6 +381,47 @@ export async function runDividendEventsScan(
           }
           if (!events) continue;
 
+          // Every ex-date this payload still offers for the asset — the horizon
+          // filter below deliberately does NOT apply, because this set answers a
+          // question about a date the scan already notified about, not about a
+          // candidate. Memoised per asset: the payload is shared by every holder
+          // of it.
+          let listedDays = listedDaysByAsset.get(row.assetId);
+          if (!listedDays) {
+            listedDays = new Set(
+              events.upcoming
+                .map((event) => event.exDate?.slice(0, 10))
+                .filter((day): day is string => day !== undefined && day !== null),
+            );
+            listedDaysByAsset.set(row.assetId, listedDays);
+          }
+          /**
+           * The evidence that an anchored payout MOVED rather than simply
+           * happened. Two conditions, and the second is what makes the first
+           * mean anything against a one-slot calendar:
+           *
+           *  - the provider has stopped listing that ex-date. A date still
+           *    listed means the two payouts coexist — the provider itself says
+           *    they are two — so the candidate is a second payout, not a move;
+           *  - the date is still at least {@link DIVIDEND_EVENT_MATCH_DAYS}
+           *    away. `yahooMapping` publishes ONE upcoming slot, so a weekly
+           *    distributor's next payout REPLACES the current one in the payload
+           *    as that one arrives; without this, such a roll is
+           *    indistinguishable from a move and #1894's swallowed payout comes
+           *    straight back — permanently, now that the claim transfers.
+           *
+           * Together they bound a forward merge: the candidate must be inside
+           * the horizon and the anchored date at least MATCH_DAYS away, so a
+           * forward move can never span more than `horizonDays - MATCH_DAYS`
+           * days — four, well below the tightest real cadence. A BACKWARD move
+           * is unconstrained by that (a cadence never runs backwards) and the
+           * bound cannot bind there anyway: the candidate must itself still be
+           * due, which already puts the anchored date further out than the
+           * distance.
+           */
+          const anchorVacated = (anchorDay: string) =>
+            anchorDay >= vacancyEarliestDay && !listedDays!.has(anchorDay);
+
           // Upcoming events whose ex-date is inside the reminder horizon.
           const dueEvents = events.upcoming.filter((event) => {
             if (!event.exDate) return false;
@@ -348,6 +440,8 @@ export async function runDividendEventsScan(
                 anchorKey: dividendEventAnchorKey(userId, row.assetId),
                 dateKey: exDateKey,
                 matchDays: DIVIDEND_EVENT_MATCH_DAYS,
+                amendmentDays: DIVIDEND_EVENT_AMENDMENT_DAYS,
+                anchorVacated,
                 ttlSeconds: DIVIDEND_EVENT_MARKER_TTL_SECONDS,
                 identity: payoutIdentity(event, events.currency),
               });
