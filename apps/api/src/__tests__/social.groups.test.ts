@@ -121,6 +121,63 @@ async function sharedNotifications(userId: string) {
   return rows.filter((r) => r.type === 'portfolio.shared');
 }
 
+/**
+ * Insert `count` extra users and put them on `groupId`'s roster directly, so
+ * the stored roster can be filled without 199 round trips. `befriended` also
+ * writes the owner↔member friendship row, which is what decides whether the
+ * resulting rows are part of the roster the owner can SEE.
+ */
+async function fillRoster(
+  ownerId: string,
+  groupId: string,
+  count: number,
+  opts: { befriended: boolean; prefix?: string } = { befriended: false },
+): Promise<string[]> {
+  const prefix = opts.prefix ?? 'filler';
+  const filler = await harness.db
+    .insert(schema.users)
+    .values(
+      Array.from({ length: count }, (_, i) => ({
+        email: `${prefix}${i}@bt.test`,
+        username: `${prefix}${i}`,
+        passwordHash: 'x',
+      })),
+    )
+    .returning({ id: schema.users.id });
+  const ids = filler.map((u) => u.id);
+  if (opts.befriended) {
+    // Friendship rows are stored canonically (user_a < user_b), whichever way
+    // round the pair happens to sort.
+    await harness.db.insert(schema.friendships).values(
+      ids.map((id) => ({
+        userA: ownerId < id ? ownerId : id,
+        userB: ownerId < id ? id : ownerId,
+      })),
+    );
+  }
+  await harness.db
+    .insert(schema.friendGroupMembers)
+    .values(ids.map((id) => ({ groupId, memberId: id })));
+  return ids;
+}
+
+/** The RAW roster rows of a group — including any the owner cannot see. */
+async function storedRosterSize(groupId: string): Promise<number> {
+  const rows = await harness.db
+    .select()
+    .from(schema.friendGroupMembers)
+    .where(eq(schema.friendGroupMembers.groupId, groupId));
+  return rows.length;
+}
+
+/** Flip an account to `disabled`, exactly as the admin surface does (§6.12). */
+async function disableAccount(userId: string): Promise<void> {
+  await harness.db
+    .update(schema.users)
+    .set({ status: 'disabled' })
+    .where(eq(schema.users.id, userId));
+}
+
 async function shareToGroup(agent: Agent, portfolioId: string, groupId: string) {
   return agent
     .put(`/api/v1/social/audience/portfolio/${portfolioId}`)
@@ -697,55 +754,6 @@ describe('the friend-group surface is bounded (§13.5 V5-P8, #1780)', () => {
     expect(list.body.groups).toHaveLength(FRIEND_GROUPS_MAX);
   });
 
-  /**
-   * Insert `count` extra users and put them on `groupId`'s roster directly, so
-   * the stored roster can be filled without 199 round trips. `befriended` also
-   * writes the owner↔member friendship row, which is what decides whether the
-   * resulting rows are part of the roster the owner can SEE.
-   */
-  async function fillRoster(
-    ownerId: string,
-    groupId: string,
-    count: number,
-    opts: { befriended: boolean; prefix?: string } = { befriended: false },
-  ): Promise<string[]> {
-    const prefix = opts.prefix ?? 'filler';
-    const filler = await harness.db
-      .insert(schema.users)
-      .values(
-        Array.from({ length: count }, (_, i) => ({
-          email: `${prefix}${i}@bt.test`,
-          username: `${prefix}${i}`,
-          passwordHash: 'x',
-        })),
-      )
-      .returning({ id: schema.users.id });
-    const ids = filler.map((u) => u.id);
-    if (opts.befriended) {
-      // Friendship rows are stored canonically (user_a < user_b), whichever way
-      // round the pair happens to sort.
-      await harness.db.insert(schema.friendships).values(
-        ids.map((id) => ({
-          userA: ownerId < id ? ownerId : id,
-          userB: ownerId < id ? id : ownerId,
-        })),
-      );
-    }
-    await harness.db
-      .insert(schema.friendGroupMembers)
-      .values(ids.map((id) => ({ groupId, memberId: id })));
-    return ids;
-  }
-
-  /** The RAW roster rows of a group — including any the owner cannot see. */
-  async function storedRosterSize(groupId: string): Promise<number> {
-    const rows = await harness.db
-      .select()
-      .from(schema.friendGroupMembers)
-      .where(eq(schema.friendGroupMembers.groupId, groupId));
-    return rows.length;
-  }
-
   it('refuses a member past the roster ceiling, but still accepts an idempotent repeat', async () => {
     const { aliceAgent, alice, bob, carol } = await scenario();
     const groupId = await createGroup(aliceAgent, 'Family');
@@ -899,5 +907,152 @@ describe("the group rung's reported reach is derived from friendship (#1780)", (
     expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
     expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
     expect(await sharedNotifications(bob.id)).toHaveLength(1);
+  });
+});
+
+/**
+ * The seams that FEED a circle must apply the same definition of "a friend who
+ * counts" the circle itself applies (§6.9, #1897). The group side already
+ * excluded a `disabled` account from every roster read; the friends list behind
+ * the picker, the friendship gate on an add, the `specific_friends` reach count
+ * and the broad-rung fan-out did not — so the two halves disagreed about the
+ * same account, which is precisely the disagreement the group side exists to
+ * prevent.
+ */
+describe('one definition of an active friend holds at every seam (#1897)', () => {
+  async function newPortfolio(agent: Agent, name: string): Promise<string> {
+    const created = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name });
+    expect(created.status).toBe(201);
+    return created.body.portfolio.id as string;
+  }
+
+  async function myPortfolio(agent: Agent, portfolioId: string) {
+    const res = await agent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    return mySharedResponseSchema
+      .parse(res.body)
+      .portfolios.find((p) => p.portfolioId === portfolioId);
+  }
+
+  async function shareToFriends(agent: Agent, portfolioId: string, friendIds: string[]) {
+    return agent
+      .put(`/api/v1/social/audience/portfolio/${portfolioId}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds, confirmWiden: true });
+  }
+
+  const friendIdsOf = (body: { friends: { user: { id: string } }[] }) =>
+    body.friends.map((f) => f.user.id).sort();
+
+  it('drops a disabled account from the friends list that feeds group candidacy', async () => {
+    const { aliceAgent, bob, carol } = await scenario();
+    expect(friendIdsOf((await aliceAgent.get('/api/v1/social/friends')).body)).toEqual(
+      [bob.id, carol.id].sort(),
+    );
+
+    // The picker offers exactly this list as addable members, so an entry a
+    // roster would drop is an Add button that can never take effect.
+    await disableAccount(bob.id);
+    const after = await aliceAgent.get('/api/v1/social/friends');
+    expect(after.status).toBe(200);
+    expect(friendIdsOf(after.body)).toEqual([carol.id]);
+  });
+
+  it('refuses an add it cannot make take effect, by name, and stores nothing', async () => {
+    const { aliceAgent, bob } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await disableAccount(bob.id);
+
+    const refused = await addMember(aliceAgent, groupId, bob.id);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe('GROUP_MEMBER_NOT_FRIEND');
+    // A 200 over a row the roster then drops is what made the button silently
+    // do nothing; no row may be left behind to consume the ceiling either.
+    expect(await storedRosterSize(groupId)).toBe(0);
+    expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].memberCount).toBe(0);
+  });
+
+  it('reports the same reach for a named disabled friend and a circle holding only them', async () => {
+    const { aliceAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    const circlePid = await newPortfolio(aliceAgent, 'Circle');
+    expect((await shareToFriends(aliceAgent, pid, [bob.id])).status).toBe(200);
+    expect((await shareToGroup(aliceAgent, circlePid, groupId)).status).toBe(200);
+    expect((await myPortfolio(aliceAgent, pid))?.friendCount).toBe(1);
+    expect((await myPortfolio(aliceAgent, circlePid))?.group?.memberCount).toBe(1);
+
+    // Identical reach — the same single account, now unreachable — must read
+    // identically on both rungs: never `Specific friends · 1` beside
+    // `Family · reaches nobody`.
+    await disableAccount(bob.id);
+    expect((await myPortfolio(aliceAgent, pid))?.friendCount).toBe(0);
+    expect((await myPortfolio(aliceAgent, circlePid))?.group?.memberCount).toBe(0);
+  });
+
+  it('does not tick a disabled account as a selected specific-friend recipient', async () => {
+    const { aliceAgent, bob, carol, pid } = await scenario();
+    expect((await shareToFriends(aliceAgent, pid, [bob.id, carol.id])).status).toBe(200);
+    // Ascending by id, which is the order the read guarantees — spelled as a
+    // sort of the expectation rather than a literal pair, so this pins the
+    // guarantee itself instead of whichever of the two drew the lower uuid.
+    expect(
+      (await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`)).body.friendIds,
+    ).toEqual([bob.id, carol.id].sort());
+
+    await disableAccount(bob.id);
+    const audience = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);
+    expect(audience.status).toBe(200);
+    expect(audience.body.friendIds).toEqual([carol.id]);
+  });
+
+  it('sends no `*.shared` notice to a disabled account on any rung', async () => {
+    const { aliceAgent, bob, carol, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    const namedPid = await newPortfolio(aliceAgent, 'Named');
+    const circlePid = await newPortfolio(aliceAgent, 'Circle');
+    await disableAccount(bob.id);
+
+    expect(
+      (
+        await aliceAgent
+          .put(`/api/v1/social/audience/portfolio/${pid}`)
+          .set(...XRW)
+          .send({ audience: 'all_friends', confirmWiden: true })
+      ).status,
+    ).toBe(200);
+    expect((await shareToFriends(aliceAgent, namedPid, [bob.id])).status).toBe(200);
+    expect((await shareToGroup(aliceAgent, circlePid, groupId)).status).toBe(200);
+
+    // `group` already behaved; `all_friends` and `specific_friends` now do too.
+    expect(await sharedNotifications(bob.id)).toHaveLength(0);
+    // …and the fan-out itself still works: carol, an active friend, heard about
+    // the all-friends share.
+    expect(await sharedNotifications(carol.id)).toHaveLength(1);
+  });
+
+  it('keeps rows the roster will not return out of the member budget', async () => {
+    const { aliceAgent, alice, bob, carol } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+    const filler = await fillRoster(alice.id, groupId, FRIEND_GROUP_MEMBERS_MAX - 1, {
+      befriended: true,
+    });
+    expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].memberCount).toBe(
+      FRIEND_GROUP_MEMBERS_MAX,
+    );
+
+    // One member's account is disabled: that row is no longer part of the
+    // roster the owner reads, so it must not be what refuses the next add.
+    await disableAccount(filler[0]!);
+    const added = await addMember(aliceAgent, groupId, carol.id);
+    expect(added.status).toBe(200);
+    expect(added.body.memberCount).toBe(FRIEND_GROUP_MEMBERS_MAX);
+    // The ceiling still binds on members the owner can see and remove.
+    expect(await storedRosterSize(groupId)).toBe(FRIEND_GROUP_MEMBERS_MAX);
   });
 });
