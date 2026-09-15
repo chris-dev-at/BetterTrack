@@ -79,6 +79,10 @@ export default defineConfig({
       // #1485: disposing one harness must never close the worker-shared Redis
       // singleton that another harness is still using.
       'src/testing/createTestApp.test.ts',
+      // #1914: …and it must hand back the two pub/sub connections buildContext
+      // opens for the event bus. Only real Redis can be asked, via CLIENT LIST,
+      // whether a harness actually gave its sockets back.
+      'src/__tests__/harnessLifecycle.test.ts',
     ],
     pool: 'forks',
     poolOptions: {
