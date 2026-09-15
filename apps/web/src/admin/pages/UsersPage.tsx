@@ -18,6 +18,7 @@ import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { pageRange, useOffsetSnapBack } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
@@ -88,6 +89,7 @@ function isDirection(value: string | null): value is AdminUserSortDirection {
  */
 export function UsersPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [params, setParams] = useSearchParams();
 
   // ── Query state, read from the URL ─────────────────────────────────────────
@@ -253,7 +255,7 @@ export function UsersPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={t('admin.users.title')}
         description={t('admin.users.subtitle')}
         actions={

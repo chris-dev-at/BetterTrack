@@ -56,7 +56,11 @@ const ADMIN_WORKSPACE_KEYS = [
   'admin.nav.sections.securityApi',
 ] as const;
 
-/** The workspaces that own a landing route, so their label is also a link. */
+/**
+ * The workspaces that own a landing route, so their label is also a link —
+ * ALL SIX since #1406 W7b. Two of them were headings that navigated nowhere,
+ * which made a third of the console's rail a dead end.
+ */
 const ADMIN_WORKSPACE_LANDING_KEYS = [
   'admin.nav.sections.overview',
   'admin.nav.sections.support',
@@ -66,6 +70,12 @@ const ADMIN_WORKSPACE_LANDING_KEYS = [
   // Operations folded the same way in W4, landing on the health-and-queues
   // cockpit.
   'admin.nav.sections.operations',
+  // W7b: a LANDING, not a fold. These two keep W1's child rows and declare no
+  // `tabs` — the fold of Product & Comms and Security & API stays CUT (§16
+  // 2026-08-29 ruling 3, re-asserted 2026-09-02), and `WorkspaceTabs.test.tsx`
+  // is what holds that line.
+  'admin.nav.sections.product',
+  'admin.nav.sections.securityApi',
 ] as const;
 
 /**
@@ -413,9 +423,10 @@ test.each(['en', 'de'] as const)(
     // Control, same query: Product & Comms has NOT folded — W7 was cut, so it
     // keeps W1's page rows — and its column still carries child rows. Without
     // this, "one link in the column" could just mean the query never sees child
-    // rows at all. Its label is a heading rather than a link because that
-    // workspace has no landing route of its own; only folded workspaces put a
-    // link on the label. (This control was Operations until W4 folded that too.)
+    // rows at all. Since W7b its label is a LINK as well (a landing, not a
+    // fold), so the distinction the fold makes is the child rows, not the
+    // heading: folded ⇒ one link in the column, unfolded ⇒ many. (This control
+    // was Operations until W4 folded that too.)
     const unfolded = within(nav).getByRole('heading', {
       name: localizedMessage(locale, 'admin.nav.sections.product'),
     });
@@ -728,4 +739,53 @@ test('navigating from inside the drawer closes it', async () => {
 
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
   expect(screen.getByText('Users page')).toBeInTheDocument();
+});
+
+/**
+ * #1406 W7b. Every one of the six rail labels has to LEAD somewhere: two of them
+ * were headings that navigated nowhere, so a third of the console's top-level
+ * navigation was a caption. The fix is a `to`, and only a `to` — the nav fold of
+ * these two workspaces stays cut (§16 2026-08-29 ruling 3).
+ */
+test('all six workspace labels are links, and the two newest are landings not folds', () => {
+  renderAdmin('/admin/settings');
+
+  const nav = screen.getByRole('navigation', { name: 'Admin console' });
+  expect(within(nav).getByRole('link', { name: 'Product & Comms' })).toHaveAttribute(
+    'href',
+    '/admin/settings',
+  );
+  expect(within(nav).getByRole('link', { name: 'Security & API' })).toHaveAttribute(
+    'href',
+    '/admin/audit',
+  );
+
+  // …and the page rows they had in W1 are all still there, which is what makes
+  // this a landing rather than a fold.
+  for (const [name, href] of [
+    ['Settings', '/admin/settings'],
+    ['Feature flags', '/admin/feature-flags'],
+    ['Announcements', '/admin/announcements'],
+    ['Audit log', '/admin/audit'],
+    ['API keys', '/admin/api-keys'],
+  ] as const) {
+    expect(within(nav).getByRole('link', { name }), name).toHaveAttribute('href', href);
+  }
+});
+
+test('a landing that duplicates a page row does not become a second ⌘K destination', () => {
+  // `/admin/settings` is both Product & Comms' landing and its own page row. The
+  // palette must offer it ONCE, labelled with the page name an operator would
+  // type — two rows for one route is the kind of noise a palette dies of.
+  const settings = ADMIN_DESTINATIONS.filter((d) => d.to === '/admin/settings');
+  expect(settings).toHaveLength(1);
+  expect(settings[0]!.labelKey).toBe('admin.nav.settings');
+
+  const audit = ADMIN_DESTINATIONS.filter((d) => d.to === '/admin/audit');
+  expect(audit).toHaveLength(1);
+  expect(audit[0]!.labelKey).toBe('admin.nav.audit');
+
+  // No duplicate anywhere in the registry, not just on these two.
+  const paths = ADMIN_DESTINATIONS.map((d) => d.to);
+  expect(paths).toHaveLength(new Set(paths).size);
 });

@@ -2125,7 +2125,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     // Runtime kill-switches (§13.5 V5-P2 arc (c)): the handshake refuses new
     // sockets when `realtime` is flipped OFF, and `live.watch` acks UNAVAILABLE
     // when `liveMode` is OFF — both read per connection/op, no redeploy.
-    isFeatureEnabled: (key) => featureFlags.isEnabled(key),
+    //
+    // A resolver factory, not a per-key read (#1910): the gateway resolves each
+    // socket's own user against one configuration read, so a rollout reaches
+    // established sockets without costing the sweep a round trip per socket.
+    featureFlagResolver: () => featureFlags.resolver(),
     // Global asset or the caller's own custom asset (§10) → provider ref for
     // the shared loop; anything else is a NOT_FOUND-indistinguishable null.
     resolveWatchableAsset: async (userId, assetId) => {

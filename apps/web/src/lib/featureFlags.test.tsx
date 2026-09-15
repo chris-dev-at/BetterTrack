@@ -13,7 +13,7 @@ import { AddWidgetDrawer } from '../user/home/AddWidgetDrawer';
 import { COMMANDS, isCommandConfigured } from '../user/components/commands';
 import { useSectionNavChildren } from '../user/components/sectionNav';
 import { apiRequest } from './apiClient';
-import { useDeployCapabilities, useFeatureEnabled } from './featureFlags';
+import { FEATURE_FLAGS_QUERY_KEY, useDeployCapabilities, useFeatureEnabled } from './featureFlags';
 
 /** A deployment that HAS market intelligence — the healthy resolved answer. */
 const INTEL_ON = {
@@ -135,5 +135,47 @@ describe('bootstrap fallback — capabilities fail closed, flags fail open (§13
     await waitFor(() =>
       expect(nav.result.current.map((child) => child.to)).toContain('/assets/news'),
     );
+  });
+});
+
+/**
+ * The bootstrap is PRINCIPAL-DEPENDENT since #1910: a flag can be rolled out to
+ * a percentage of accounts or to a named allow list, so the map an anonymous
+ * visitor reads before logging in is not the map their account gets. The server
+ * answers `no-store` so no shared cache can mix two principals' answers; this is
+ * the client half of the same rule.
+ */
+describe('the principal-dependent bootstrap is re-read after login (#1910)', () => {
+  test('exports the query key the session door invalidates, so the two cannot drift', () => {
+    // `AuthContext.applyUser` — the single door into a session user — drops this
+    // exact key. A literal on either side would rot silently the first time the
+    // other one changed, and the symptom would be a feature staying hidden for a
+    // whole `staleTime` after login rather than a test failure.
+    expect(FEATURE_FLAGS_QUERY_KEY).toEqual(['feature-flags']);
+  });
+
+  test('invalidating that key re-reads the bootstrap and adopts the new answer', async () => {
+    // Anonymous first: `imports` is partially rolled, so the server reports it
+    // OFF pre-login.
+    vi.mocked(apiRequest).mockResolvedValueOnce({
+      ...INTEL_ON,
+      flags: { ...INTEL_ON.flags, imports: false },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const Wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const imports = renderHook(() => useFeatureEnabled('imports'), { wrapper: Wrapper });
+
+    await waitFor(() => expect(imports.result.current).toBe(false));
+    expect(apiRequest).toHaveBeenCalledTimes(1);
+
+    // …and the account IS in the rollout, which only the authenticated read can
+    // discover.
+    vi.mocked(apiRequest).mockResolvedValueOnce(INTEL_ON);
+    await client.invalidateQueries({ queryKey: FEATURE_FLAGS_QUERY_KEY });
+
+    await waitFor(() => expect(imports.result.current).toBe(true));
+    expect(apiRequest).toHaveBeenCalledTimes(2);
   });
 });

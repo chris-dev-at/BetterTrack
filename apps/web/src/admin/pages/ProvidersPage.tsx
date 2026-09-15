@@ -12,6 +12,7 @@ import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useLiveRefresh } from '../useLiveRefresh';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { LiveRefreshControl } from '../components/LiveRefreshControl';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
@@ -74,6 +75,7 @@ function at(value: string | null): string {
 
 export function ProvidersPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
 
   const providers = useResource((signal) => api.getOpsProviders(signal), []);
   const health = useResource((signal) => api.getAdminHealth(signal), []);
@@ -90,7 +92,7 @@ export function ProvidersPage() {
       <PageHeader
         actions={<LiveRefreshControl busy={providers.loading || health.loading} live={live} />}
         description={t('admin.ops.providers.subtitle')}
-        eyebrow={t('admin.nav.sections.operations')}
+        eyebrow={eyebrow}
         title={t('admin.ops.providers.title')}
       />
       <WorkspaceTabs />

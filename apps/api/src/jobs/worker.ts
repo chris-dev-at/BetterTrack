@@ -145,7 +145,7 @@ export async function runJobDefinition<N extends QueueName>(
   ctx: JobContext,
 ): Promise<void | JobRunSummary> {
   const flag = definition.featureFlag;
-  if (flag && !(await ctx.isFeatureEnabled(flag))) {
+  if (flag && !(await ctx.isFeatureEnabledGlobally(flag))) {
     ctx.logger.info(
       { queue: definition.name, flag },
       'job shed — the feature it produces for is switched off',
