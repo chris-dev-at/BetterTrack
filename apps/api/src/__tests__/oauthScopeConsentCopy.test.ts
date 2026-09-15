@@ -80,6 +80,10 @@ const ROUTINE_BEARER_WRITES: Readonly<Record<string, string>> = {
   'POST /mirrorchain/invites/{inviteId}/decline': 'Participation — declining an invitation.',
   'POST /mirrorchain/chains/{chainId}/leave':
     'Participation — the leave half of the group-portfolio copy.',
+  'POST /mirrorchain/chains/{chainId}/retry-sync':
+    "Participation — resuming the caller's own stalled copy from its watermark. It " +
+    'replays ops that copy was already entitled to and touches no other member, so it ' +
+    'opens no capability the group-portfolio copy does not already describe.',
   'POST /mirrorchain/chains': 'Administration — covered by "create and rename a group".',
   'POST /mirrorchain/chains/convert':
     'Administration — creating a chain from an existing portfolio.',
