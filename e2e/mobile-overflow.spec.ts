@@ -2080,6 +2080,18 @@ const ADMIN_OVERLAY_EXCLUSIONS: readonly AdminOverlayExclusion[] = [
     justification:
       'Same Modal panel; reaching it means publishing an announcement to every account on the deployment and then destroying it.',
   },
+  {
+    // Its own entry rather than `overlays: 2` on the delete exclusion above
+    // (#1943): the two dialogs are omitted for genuinely different reasons, and
+    // a merged count would let the next dialog added to this page slip in under
+    // a justification that never described it.
+    surface: 'announcement delivery-retry confirmation',
+    sources: ['apps/web/src/admin/pages/AnnouncementsPage.tsx'],
+    overlays: 1,
+    routes: ['/admin/announcements'],
+    justification:
+      'Same Modal panel, and its trigger renders only on a row whose fan-out actually failed — `failed_count` is written solely from a real per-recipient insert error mid-walk, which no admin API, no operator action and no e2e-reachable race can produce, so measuring it would mean fabricating a delivery failure.',
+  },
 ];
 
 const SHELLLESS_AUTH_ROUTES = new Set([

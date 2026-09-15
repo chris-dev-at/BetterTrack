@@ -416,9 +416,10 @@ test('confirms the retry, queues it, and reports what was queued', async () => {
   await waitFor(() => expect(api.redeliverAnnouncement).toHaveBeenCalledWith(failedDelivery.id));
   expect(api.redeliverAnnouncement).toHaveBeenCalledOnce();
   // The banner says what actually happened: a retry was QUEUED for the three
-  // recipients — not that they have been delivered to.
+  // recipients — not that they have been delivered to — and it names the pass,
+  // so a collapsed re-click below is recognisable rather than silent.
   const banner = await screen.findByText(/Retrying delivery to 3 recipients/);
-  expect(banner).toBeInTheDocument();
+  expect(banner).toHaveTextContent('announcements.publishDue:cc:2:1');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   // And the list is re-read, because the counts change on the worker.
   expect(api.listAnnouncements).toHaveBeenCalledTimes(2);
@@ -461,4 +462,53 @@ test('names a queue outage instead of a generic failure, and keeps the dialog op
   expect(alert).not.toHaveTextContent('The delivery queue is unavailable.');
   // Still open, so the operator can simply try again.
   expect(dialog).toBeInTheDocument();
+});
+
+/**
+ * Two clicks inside the server's manual dedupe window are deliberately ONE pass
+ * (the 202 returns the same job id, because a second identical re-walk would
+ * deliver exactly what the first one does). Saying "queued!" twice would read as
+ * the button doing nothing again — the console names the collapse instead.
+ */
+test('says a collapsed re-click is the same pass, and counts one recipient in the singular', async () => {
+  const singleFailure: Announcement = { ...failedDelivery, failedCount: 1, deliveredCount: 127 };
+  vi.mocked(api.listAnnouncements).mockResolvedValue({ announcements: [singleFailure] });
+  vi.mocked(api.redeliverAnnouncement).mockResolvedValue({
+    announcementId: singleFailure.id,
+    jobId: 'announcements.publishDue:cc:2:7',
+    attempt: 2,
+    failedCount: 1,
+    deliveredCount: 127,
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  const retry = localizedMessage('en', 'admin.announcements.list.redeliver');
+  const confirm = localizedMessage('en', 'admin.confirmations.redeliverAnnouncement.confirm');
+
+  await screen.findByText(singleFailure.titleEn);
+  await user.click(screen.getByRole('button', { name: retry }));
+  // One recipient reads as one recipient, in the dialog and in the banner.
+  const dialog = await screen.findByRole('dialog', {
+    name: localizedMessage('en', 'admin.confirmations.redeliverAnnouncement.title'),
+  });
+  expect(dialog).toHaveTextContent('1 recipient it did not reach');
+  expect(dialog).not.toHaveTextContent('1 recipients');
+  await user.click(within(dialog).getByRole('button', { name: confirm }));
+
+  const first = await screen.findByText(/Retrying delivery to 1 recipient —/);
+  expect(first).toHaveTextContent('announcements.publishDue:cc:2:7');
+  expect(first).not.toHaveTextContent('1 recipients');
+
+  // Same window, same job id back: the second click queued nothing new, and the
+  // banner says exactly that rather than repeating the success line.
+  await user.click(screen.getByRole('button', { name: retry }));
+  await user.click(
+    await screen.findByRole('button', {
+      name: confirm,
+    }),
+  );
+  const second = await screen.findByText(/same pass your last click queued/);
+  expect(second).toHaveTextContent('announcements.publishDue:cc:2:7');
+  expect(api.redeliverAnnouncement).toHaveBeenCalledTimes(2);
 });

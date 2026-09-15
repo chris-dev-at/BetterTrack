@@ -4518,6 +4518,7 @@
       "redeliverAnnouncement": {
         "title": "Fehlgeschlagene Zustellungen erneut senden?",
         "description": "„{{name}}“ erneut an die {{failed}} nicht erreichten Empfänger senden? Wer sie bereits hat, behält genau eine Kopie.",
+        "descriptionOne": "„{{name}}“ erneut an den {{failed}} nicht erreichten Empfänger senden? Wer sie bereits hat, behält genau eine Kopie.",
         "confirm": "Erneut zustellen",
         "pending": "Wird eingereiht…"
       },
@@ -6079,7 +6080,9 @@
         "deactivate": "Deaktivieren"
       },
       "redeliver": {
-        "queued": "Erneute Zustellung an {{failed}} Empfänger eingereiht. Die Liste aktualisiert sich, sobald sie gelaufen ist.",
+        "queued": "Erneute Zustellung an {{failed}} Empfänger eingereiht — Job {{jobId}}. Die Liste aktualisiert sich, sobald sie gelaufen ist.",
+        "queuedOne": "Erneute Zustellung an {{failed}} Empfänger eingereiht — Job {{jobId}}. Die Liste aktualisiert sich, sobald sie gelaufen ist.",
+        "sameJob": "Das ist derselbe Durchlauf wie beim letzten Klick (Job {{jobId}}), kein zweiter — er deckt bereits alle noch fehlenden Empfänger ab.",
         "unavailable": "Die Zustellungs-Warteschlange ist derzeit nicht erreichbar. Bitte in Kürze erneut versuchen."
       },
       "state": {

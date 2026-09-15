@@ -257,6 +257,14 @@ export function AnnouncementsPage() {
   const [deleting, setDeleting] = useState<Announcement | null>(null);
   const [redelivering, setRedelivering] = useState<Announcement | null>(null);
   const [rowNotice, setRowNotice] = useState<string | null>(null);
+  /**
+   * The job id the last accepted redelivery came back with. Two clicks inside
+   * the server's manual dedupe window are deliberately ONE pass — a second
+   * identical re-walk would deliver exactly what the first one does — and the
+   * 202 says so by returning the same id. Remembering it is what keeps that
+   * collapse from reading as "the button did nothing again".
+   */
+  const [lastRedeliverJobId, setLastRedeliverJobId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!saved) return;
@@ -354,7 +362,17 @@ export function AnnouncementsPage() {
     try {
       const accepted = await api.redeliverAnnouncement(row.id);
       setRedelivering(null);
-      setRowNotice(t('admin.announcements.redeliver.queued', { failed: accepted.failedCount }));
+      setRowNotice(
+        accepted.jobId === lastRedeliverJobId
+          ? t('admin.announcements.redeliver.sameJob', { jobId: accepted.jobId })
+          : t(
+              accepted.failedCount === 1
+                ? 'admin.announcements.redeliver.queuedOne'
+                : 'admin.announcements.redeliver.queued',
+              { failed: accepted.failedCount, jobId: accepted.jobId },
+            ),
+      );
+      setLastRedeliverJobId(accepted.jobId);
       announcements.reload();
     } catch (err) {
       if (!onFailure(err, 'surface')) setRowError(redeliverErrorMessage(t, err));
@@ -681,10 +699,15 @@ export function AnnouncementsPage() {
         >
           <div className="flex flex-col gap-4">
             <p className="text-[13px] text-neutral-400">
-              {t('admin.confirmations.redeliverAnnouncement.description', {
-                name: locale === 'de' ? redelivering.titleDe : redelivering.titleEn,
-                failed: redelivering.failedCount ?? 0,
-              })}
+              {t(
+                redelivering.failedCount === 1
+                  ? 'admin.confirmations.redeliverAnnouncement.descriptionOne'
+                  : 'admin.confirmations.redeliverAnnouncement.description',
+                {
+                  name: locale === 'de' ? redelivering.titleDe : redelivering.titleEn,
+                  failed: redelivering.failedCount ?? 0,
+                },
+              )}
             </p>
             {rowError ? <Alert tone="error">{rowError}</Alert> : null}
             <div className="flex justify-end gap-2">
