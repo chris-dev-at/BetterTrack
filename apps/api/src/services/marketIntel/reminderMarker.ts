@@ -22,7 +22,10 @@ import type { Redis } from 'ioredis';
  *    stays silent — the #1758 ruling: exactly one notification per event, with
  *    no "date changed" follow-up. A genuinely later event (a quarter for
  *    earnings, a month or a quarter for a payout) is far outside `matchDays` and
- *    claims freshly.
+ *    claims freshly. A caller that can IDENTIFY its event independently of the
+ *    date (see {@link ReminderMarkerSpec.identity}) also stores that identity
+ *    beside the date, so proximity alone can no longer merge two events the
+ *    payload itself says are different.
  *  - the per-date **lock**, taken with `SET NX`, which is what makes the claim
  *    atomic between two concurrent scans — the anchor's read-then-write pair is
  *    not.
@@ -60,11 +63,39 @@ export interface ReminderMarkerSpec {
   matchDays: number;
   /** TTL of both keys; far longer than the scan's window. */
   ttlSeconds: number;
+  /**
+   * What identifies this event APART from its date — for a payout, the money it
+   * pays (see `dividendEventsJob.payoutIdentity`). Supplied, it decides a
+   * within-`matchDays` collision on a DIFFERENT date instead of the distance
+   * alone (the anchor's own date is decided as `same-date` first): an equal
+   * identity is the same event (an amended date), a different one is a second
+   * event and claims freshly, and an identity the payload does not carry — or
+   * an anchor written before identities existed — is `ambiguous`: the claim
+   * still refuses (a duplicate notification is the worse failure) but says so,
+   * so the caller can count the drop as something other than a clean no-op.
+   *
+   * Omitted entirely (the earnings scan, whose reports carry nothing stable
+   * besides the date), the marker behaves exactly as it always has.
+   */
+  identity?: string | null;
 }
+
+/** Why a claim refused. */
+export type ReminderDuplicateReason =
+  /** This exact date is already claimed — the daily re-scan's normal outcome. */
+  | 'same-date'
+  /** The anchor names the same event on a nearby date — an amended date. */
+  | 'same-event'
+  /**
+   * A DIFFERENT nearby date, and nothing says whether it is the same event.
+   * Silent to avoid a double notification, and NOT a clean no-op: the caller
+   * counts it apart.
+   */
+  | 'ambiguous';
 
 export type ReminderClaim =
   /** A marker already covers this event — stay silent. */
-  | { status: 'duplicate' }
+  | { status: 'duplicate'; reason: ReminderDuplicateReason }
   /** The marker store failed; nothing was written, nothing may be emitted. */
   | { status: 'unavailable'; err: unknown }
   /**
@@ -72,6 +103,22 @@ export type ReminderClaim =
    * then — when the transport REFUSED the event, so the next scan retries.
    */
   | { status: 'claimed'; release: () => Promise<void> };
+
+/** The anchor's stored form: the date, plus the identity when one was supplied. */
+function encodeAnchor(dateKey: string, identity: string | null | undefined): string {
+  return identity === undefined || identity === null ? dateKey : `${dateKey}|${identity}`;
+}
+
+/**
+ * Split a stored anchor back into its date and identity. An anchor written
+ * before identities existed (a bare `YYYY-MM-DD`) parses to a null identity,
+ * which is what makes it ambiguous rather than silently matching.
+ */
+function decodeAnchor(raw: string): { dateKey: string; identity: string | null } {
+  const sep = raw.indexOf('|');
+  if (sep === -1) return { dateKey: raw, identity: null };
+  return { dateKey: raw.slice(0, sep), identity: raw.slice(sep + 1) };
+}
 
 /**
  * Claim the right to notify exactly once about one `(recipient, asset, date)`.
@@ -81,19 +128,40 @@ export type ReminderClaim =
  * same window.
  */
 export async function claimReminderMarker(spec: ReminderMarkerSpec): Promise<ReminderClaim> {
-  const { redis, lockKey, anchorKey, dateKey, matchDays, ttlSeconds } = spec;
+  const { redis, lockKey, anchorKey, dateKey, matchDays, ttlSeconds, identity } = spec;
   let locked = false;
   try {
     const anchor = await redis.get(anchorKey);
-    if (anchor !== null && dayDistance(anchor, dateKey) <= matchDays)
-      return { status: 'duplicate' };
+    if (anchor !== null) {
+      const previous = decodeAnchor(anchor);
+      if (dayDistance(previous.dateKey, dateKey) <= matchDays) {
+        // Distance ZERO is not a proximity question at all: it is the same date,
+        // which the per-date `SET NX` lock below would classify `same-date` on
+        // its own. Deciding it HERE, before the identity branches, is what keeps
+        // the ordinary daily re-scan a clean suppression — an event whose
+        // payload carries no identity (the only shipped dividend provider never
+        // sends an amount), or an anchor written before identities existed,
+        // would otherwise be called `ambiguous` on every remaining day of the
+        // window and turn every run after the first notification into a degraded
+        // one. Only a DIFFERENT nearby date is genuinely undecidable.
+        if (previous.dateKey === dateKey) return { status: 'duplicate', reason: 'same-date' };
+        // Without an identity concept the distance IS the rule, exactly as
+        // before. With one, only an equal identity keeps the marker silent for
+        // a date this far away; a different identity falls through and claims.
+        if (identity === undefined) return { status: 'duplicate', reason: 'same-event' };
+        if (identity !== null && previous.identity === identity)
+          return { status: 'duplicate', reason: 'same-event' };
+        if (identity === null || previous.identity === null)
+          return { status: 'duplicate', reason: 'ambiguous' };
+      }
+    }
 
     const acquired = await redis.set(lockKey, '1', 'EX', ttlSeconds, 'NX');
-    if (acquired !== 'OK') return { status: 'duplicate' };
+    if (acquired !== 'OK') return { status: 'duplicate', reason: 'same-date' };
     locked = true;
 
     // Anchored BEFORE the emit — see the ordering note above.
-    await redis.set(anchorKey, dateKey, 'EX', ttlSeconds);
+    await redis.set(anchorKey, encodeAnchor(dateKey, identity), 'EX', ttlSeconds);
 
     return {
       status: 'claimed',
@@ -104,6 +172,8 @@ export async function claimReminderMarker(spec: ReminderMarkerSpec): Promise<Rem
       release: async () => {
         try {
           await redis.del(lockKey);
+          // Restored VERBATIM, identity and all — the anchor's stored form is
+          // opaque to the rollback.
           if (anchor === null) await redis.del(anchorKey);
           else await redis.set(anchorKey, anchor, 'EX', ttlSeconds);
         } catch {

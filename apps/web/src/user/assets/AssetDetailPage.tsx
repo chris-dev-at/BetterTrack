@@ -44,6 +44,7 @@ import { nextUpcomingDividend } from '../../lib/dividendDates';
 import { useDeployCapability } from '../../lib/featureFlags';
 import {
   displayZoneDay,
+  displayZoneDayOf,
   formatDate,
   formatDateTime,
   formatPercent,
@@ -318,10 +319,16 @@ function DividendsSection({ assetId }: { assetId: string }) {
   // payout is still to come is the normal shape upstream (#1758): showing
   // "Next ex-date" for a day already gone is a date in the past under an
   // upcoming label, so only the pay date survives for that event.
+  // Each date is placed on the day it is RENDERED on, not on its UTC substring:
+  // a late-UTC stamp prints as the next Vienna day, and comparing the two
+  // differently hid the very date the page shows (#1827 fixed only the
+  // boundary).
   const today = displayZoneDay();
   const next = nextUpcomingDividend(upcoming, today);
-  const nextExDate = next?.exDate && next.exDate.slice(0, 10) >= today ? next.exDate : null;
-  const nextPayDate = next?.payDate && next.payDate.slice(0, 10) >= today ? next.payDate : null;
+  const nextExDay = displayZoneDayOf(next?.exDate);
+  const nextPayDay = displayZoneDayOf(next?.payDate);
+  const nextExDate = nextExDay !== null && nextExDay >= today ? next!.exDate : null;
+  const nextPayDate = nextPayDay !== null && nextPayDay >= today ? next!.payDate : null;
   // An amount whose denomination the payload never gave would be rendered in the
   // user's base currency by default, relabelling a $2.40 dividend as €2,40 —
   // the same hazard the Home widget guards against, and `currency` is genuinely
@@ -479,8 +486,8 @@ function EarningsSection({ assetId }: { assetId: string }) {
   // boundary as the calendar: the DISPLAY-zone day this date is rendered in
   // (#1827), on which a report dated today is still ahead.
   const today = displayZoneDay();
-  const next =
-    data.next && data.next.date && data.next.date.slice(0, 10) >= today ? data.next : null;
+  const nextDay = displayZoneDayOf(data.next?.date);
+  const next = data.next && nextDay !== null && nextDay >= today ? data.next : null;
   if (!next && data.recent.length === 0) return null;
 
   return (
