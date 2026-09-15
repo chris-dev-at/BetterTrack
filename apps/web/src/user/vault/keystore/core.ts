@@ -142,6 +142,13 @@ export class EndpointVaultKeystore {
   private readonly pendingGrants = new Map<string, (deviceKey: CryptoKey | null) => void>();
   /** One resume per tab at a time; concurrent callers share its outcome. */
   private sessionResume: Promise<EndpointUnlockResult> | null = null;
+  /**
+   * How many `unlock()` calls are between their first statement and their last.
+   * A counter rather than a flag: the surfaces can only ask for one password at
+   * a time, but nothing in this class enforces that, and a flag the second
+   * unlock cleared on the way out would re-open the window for the first.
+   */
+  private unlocksInFlight = 0;
   private deviceKey: EndpointDeviceKeyMaterial | null = null;
   private devicePasswordMetadata: EndpointPasswordMetadataV1 | null = null;
   private readonly wrappedEntropy = new Map<string, Uint8Array>();
@@ -281,6 +288,23 @@ export class EndpointVaultKeystore {
    * tabs over `sessionChannel.ts` for as long as one of them is open.
    */
   async unlock(devicePassword: string): Promise<EndpointUnlockResult> {
+    // A password is authoritative and a resume is speculative, so for as long
+    // as this runs the resume must yield to it (`runSessionResume`, step 0/3).
+    //
+    // Raised BEFORE `runUnlock` reaches `beginSessionChange`, because that
+    // notifies the session end SYNCHRONOUSLY: the shell's listener invalidates
+    // the endpoint-state queries inside it and the query that re-runs asks for
+    // a resume. The resume kicked off by this unlock's own session end must
+    // already see the counter standing.
+    this.unlocksInFlight += 1;
+    try {
+      return await this.runUnlock(devicePassword);
+    } finally {
+      this.unlocksInFlight -= 1;
+    }
+  }
+
+  private async runUnlock(devicePassword: string): Promise<EndpointUnlockResult> {
     const accountId = this.accountId;
     const generation = this.beginSessionChange();
     const snapshot = await this.storage.readEndpointSnapshot();
@@ -431,6 +455,25 @@ export class EndpointVaultKeystore {
     const accountId = this.accountId;
     const transport = this.transport;
     if (accountId == null) return nothing;
+    // (0) YIELD TO THE PASSWORD. A resume is speculative and an `unlock()` is
+    // authoritative, so a resume racing one has nothing worth doing: it skips
+    // the sibling broadcast and the crypto outright and refuses here.
+    //
+    // This is the boundary that decides the race in #1737, because the resume
+    // that matters is the one an unlock triggers ITSELF: `beginSessionChange`
+    // notifies the session end synchronously, the shell invalidates the
+    // endpoint-state queries inside it, and the query that re-runs asks for a
+    // resume — which therefore snapshots the very generation the unlock just
+    // minted, leaving the generation guard blind to it. Left to run, a resume
+    // backed by the device record beats any KDF slower than itself (a loaded
+    // CI box is enough) and installs FIRST; `unlock` then tears that session
+    // down through `clearSessionSecrets` and installs its own, so one password
+    // fires two vault-opened edges and that teardown zeroes whatever
+    // plain-custody content key and active borrow were standing.
+    //
+    // Yielding costs the user nothing: the unlock installs the same session
+    // from the same device password moments later.
+    if (this.unlocksInFlight > 0) return nothing;
     // (1) Fail closed, then arm the guard. Both statements are synchronous.
     if (isEndpointDeviceLocked(accountId)) return nothing;
     // SNAPSHOT the guard; do not mint one, and do not announce a session end.
@@ -524,6 +567,13 @@ export class EndpointVaultKeystore {
       // overwrite the unlock's raw K_dev and entropy un-zeroed (§12) and fire a
       // second vault-opened edge. The `finally` below zeroes our copies.
       if (this.deviceKey != null) return nothing;
+      // The same refusal as (0), re-read in the window where nothing may await
+      // — the discipline the generation, the account and the marker already
+      // follow. An unlock that began after (0) has necessarily bumped the
+      // generation too, so today this is a backstop rather than the boundary
+      // that decides; it is here so that a future edit which defers or
+      // re-orders `beginSessionChange` cannot silently re-open the window.
+      if (this.unlocksInFlight > 0) return nothing;
       this.deviceKey = deviceKey;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
