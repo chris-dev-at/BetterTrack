@@ -48,6 +48,13 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * run did not do. `suppressed` therefore means exactly one thing again: this
  * (holder, asset, ex-date) was already notified about, which is a clean no-op.
  *
+ * A date that MOVED is one notification, not two (#1758, #1948). Inside
+ * {@link DIVIDEND_EVENT_MATCH_DAYS} the proximity decides; from there out to
+ * {@link DIVIDEND_EVENT_AMENDMENT_DAYS} the payload has to evidence the move —
+ * the anchored ex-date is still in the future and the provider has stopped
+ * listing it — before {@link payoutIdentity} confirms or refuses it. Two payouts
+ * the provider still lists as two are never merged, however equal their amounts.
+ *
  * One case stays outside that guarantee, unchanged from before this arc: a
  * second payout on the regular one's OWN ex-date (a special declared for the
  * same day). The idempotency key IS `(holder, asset, ex-date)`, so the per-date
@@ -87,9 +94,32 @@ export const DIVIDEND_EVENT_MARKER_TTL_SECONDS = 45 * 24 * 60 * 60;
  * it. Inside those three days the distance is no longer the only evidence:
  * {@link payoutIdentity} decides, and says so when it cannot. (The #1758 ruling
  * still holds: exactly one notification per payout, with no "date changed"
- * follow-up.)
+ * follow-up — a move further than this is caught by
+ * {@link DIVIDEND_EVENT_AMENDMENT_DAYS}, on evidence rather than on distance.)
  */
 export const DIVIDEND_EVENT_MATCH_DAYS = 3;
+
+/**
+ * The band in which a MOVED ex-date can still be recognised as the same payout:
+ * the whole window a candidate can appear in at all, so no move a scan is able
+ * to observe falls outside it.
+ *
+ * {@link DIVIDEND_EVENT_MATCH_DAYS} is how far DISTANCE ALONE may merge two
+ * dates. From there up to here, distance merges nothing by itself: the marker
+ * first needs positive evidence from the payload that the payout it already
+ * notified about MOVED — its ex-date is still in the FUTURE and the provider no
+ * longer lists it — and only then is {@link payoutIdentity} consulted to confirm
+ * or refuse. Without this band a provider firming an announced ex-date by 4–7
+ * days took a fresh per-date lock and sent a SECOND `dividend.event` for one
+ * payout, against the #1758 ruling (#1948).
+ *
+ * It is deliberately NOT "an equal identity merges up to the horizon". A regular
+ * distributor pays the SAME amount every period, so an equal identity is no
+ * evidence at all that two dates are one payout: a weekly ETF's next payout
+ * would be swallowed exactly as in #1894. The identity can only ever confirm a
+ * move the payload itself has already evidenced.
+ */
+export const DIVIDEND_EVENT_AMENDMENT_DAYS = DIVIDEND_EVENT_HORIZON_DAYS;
 
 /**
  * What identifies a payout apart from its ex-date: the money it pays.
@@ -269,6 +299,8 @@ export async function runDividendEventsScan(
   // serve dividends for it (a permanent, expected answer for this run — NOT a
   // failure, which is tracked separately so it can be re-attempted).
   const eventsByAsset = new Map<string, DividendEvents | null>();
+  /** Per asset, every ex-date day its payload still lists (the vacated test). */
+  const listedDaysByAsset = new Map<string, Set<string>>();
   const attemptsByAsset = new Map<string, number>();
   const unresolvedAssets = new Set<string>();
   const scannedAssetIds = new Set<string>();
@@ -330,6 +362,31 @@ export async function runDividendEventsScan(
           }
           if (!events) continue;
 
+          // Every ex-date this payload still offers for the asset — the horizon
+          // filter below deliberately does NOT apply, because this set answers a
+          // question about a date the scan already notified about, not about a
+          // candidate. Memoised per asset: the payload is shared by every holder
+          // of it.
+          let listedDays = listedDaysByAsset.get(row.assetId);
+          if (!listedDays) {
+            listedDays = new Set(
+              events.upcoming
+                .map((event) => event.exDate?.slice(0, 10))
+                .filter((day): day is string => day !== undefined && day !== null),
+            );
+            listedDaysByAsset.set(row.assetId, listedDays);
+          }
+          /**
+           * The evidence that an anchored payout MOVED rather than simply
+           * happened: its ex-date is still in the FUTURE and the provider has
+           * stopped listing it. A date still listed means the two payouts
+           * coexist — the provider itself says they are two — and a date that
+           * has already arrived means the payout went ex, so a later nearby date
+           * is the next one. Both must stay notifiable: that is #1894.
+           */
+          const anchorVacated = (anchorDay: string) =>
+            anchorDay > todayStart && !listedDays!.has(anchorDay);
+
           // Upcoming events whose ex-date is inside the reminder horizon.
           const dueEvents = events.upcoming.filter((event) => {
             if (!event.exDate) return false;
@@ -348,6 +405,8 @@ export async function runDividendEventsScan(
                 anchorKey: dividendEventAnchorKey(userId, row.assetId),
                 dateKey: exDateKey,
                 matchDays: DIVIDEND_EVENT_MATCH_DAYS,
+                amendmentDays: DIVIDEND_EVENT_AMENDMENT_DAYS,
+                anchorVacated,
                 ttlSeconds: DIVIDEND_EVENT_MARKER_TTL_SECONDS,
                 identity: payoutIdentity(event, events.currency),
               });

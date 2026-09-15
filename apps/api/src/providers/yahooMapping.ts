@@ -421,11 +421,62 @@ function determineForwardYield(detail: YahooSummaryDetail): number | null {
 }
 
 /**
+ * The amount of ONE payout on a given ex-date, or null.
+ *
+ * WHICH YAHOO FIELD IS A PER-PAYOUT AMOUNT (#1948, `yahoo-finance2` 4.0.2 —
+ * `esm/src/modules/quoteSummary-iface.d.ts`):
+ *
+ *  - `summaryDetail.dividendRate` — the forward-ANNUALIZED regular rate. An
+ *    annual figure; dividing it by a guessed payout frequency is not a payout.
+ *  - `summaryDetail.trailingAnnualDividendRate` — the realized TTM SUM, specials
+ *    included. Also annual, and on a different basis (see #1741 below).
+ *  - `calendarEvents.exDividendDate` / `dividendDate` — the forward ex/pay dates,
+ *    carrying NO amount. This is why an upcoming payout had none.
+ *  - `defaultKeyStatistics.lastDividendValue` — a genuine PER-PAYOUT amount, and
+ *    the only one `quoteSummary` exposes. It names its own date in
+ *    `defaultKeyStatistics.lastDividendDate`.
+ *  - `chart(events:'div')` — `{ date, amount }` pairs: per-payout amounts for the
+ *    payouts inside the requested window.
+ *
+ * So Yahoo publishes no field that MEANS "the amount of the next payout". What it
+ * publishes is per-payout amounts that each name their own date, and this reads
+ * one onto the upcoming event exactly when that date IS the upcoming ex-date —
+ * which happens once a just-declared dividend has propagated into
+ * `lastDividendValue`. Nothing is derived from an annual figure: the number is
+ * rendered in the holder's notification and compared as a payout identity
+ * (`dividendEventsJob.payoutIdentity`), so a plausible guess here would be a
+ * wrong amount in an inbox and a wrong dedupe decision, both worse than a null.
+ *
+ * The chart's own series wins over `lastDividendValue` when both name the day:
+ * the chart's currency is what `scale` was derived from.
+ */
+function declaredAmountOn(
+  exDateIso: string | null,
+  chart: YahooChartEventsResult,
+  summary: YahooQuoteSummaryResult,
+  scale: number,
+): number | null {
+  if (!exDateIso) return null;
+  const day = exDateIso.slice(0, 10);
+  for (const d of chart.dividends ?? []) {
+    if (typeof d.amount !== 'number' || !Number.isFinite(d.amount)) continue;
+    if (toIsoOrNull(d.date)?.slice(0, 10) === day) return d.amount * scale;
+  }
+  const stats = summary.defaultKeyStatistics ?? {};
+  const value = stats.lastDividendValue;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return toIsoOrNull(stats.lastDividendDate)?.slice(0, 10) === day ? value * scale : null;
+}
+
+/**
  * Map Yahoo's `chart(events:'div')` history + `quoteSummary` calendar/detail into
  * the {@link DividendEvents} contract. Per-share amounts are scaled out of any
  * minor unit (London pence → GBP) exactly like prices, so a GBp payout is never
  * off by 100×. The chart's own currency wins for the amounts; `summaryDetail`
  * is a fallback and supplies the forward yield + trailing amount (arc e).
+ *
+ * The upcoming event's amount comes from {@link declaredAmountOn} — a per-payout
+ * figure Yahoo dates to that very ex-date, never one derived from an annual rate.
  */
 export function mapDividendEvents(
   chart: YahooChartEventsResult,
@@ -449,7 +500,14 @@ export function mapDividendEvents(
   const upcomingPay = toIsoOrNull(cal.dividendDate);
   const upcoming: DividendEvent[] =
     upcomingEx || upcomingPay
-      ? [{ exDate: upcomingEx, payDate: upcomingPay, amount: null, currency }]
+      ? [
+          {
+            exDate: upcomingEx,
+            payDate: upcomingPay,
+            amount: declaredAmountOn(upcomingEx, chart, summary, scale),
+            currency,
+          },
+        ]
       : [];
 
   const detail = summary.summaryDetail ?? {};

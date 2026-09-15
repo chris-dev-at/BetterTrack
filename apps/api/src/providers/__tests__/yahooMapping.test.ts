@@ -304,3 +304,136 @@ describe('mapDividendEvents — annual-amount basis + yield convention (#1741)',
     ).toBe(DIVIDEND_FORWARD_YIELD_MAX);
   });
 });
+
+describe('mapDividendEvents — the upcoming payout’s amount (#1948)', () => {
+  const EX = new Date('2026-08-08T00:00:00.000Z');
+  const EX_ISO = '2026-08-08T00:00:00.000Z';
+  const NO_DIVS: YahooChartEventsResult = {
+    meta: { currency: 'USD' },
+    dividends: [],
+    splits: [],
+  };
+
+  /** The `quoteSummary` half, in the shape `yahoo-finance2` 4.0.2 returns. */
+  function upcomingWith(summary: YahooQuoteSummaryResult, chart = NO_DIVS) {
+    return mapDividendEvents(chart, summary).upcoming[0]!;
+  }
+
+  it('reads `defaultKeyStatistics.lastDividendValue` when its date IS the upcoming ex-date', () => {
+    // The declared dividend has propagated into the per-payout field, which
+    // names the very ex-date the calendar publishes. That is the one case in
+    // which Yahoo actually states what the next payout pays.
+    const event = upcomingWith({
+      calendarEvents: { exDividendDate: EX, dividendDate: new Date('2026-08-15T00:00:00.000Z') },
+      summaryDetail: { currency: 'USD' },
+      defaultKeyStatistics: { lastDividendValue: 0.25, lastDividendDate: EX },
+    });
+    expect(event).toEqual({
+      exDate: EX_ISO,
+      payDate: '2026-08-15T00:00:00.000Z',
+      amount: 0.25,
+      currency: 'USD',
+    });
+  });
+
+  it('never borrows the PREVIOUS payout’s amount when the dates differ', () => {
+    // `lastDividendValue` usually still names the payout before this one. Its
+    // amount is not this payout's — and an amount is rendered in the holder's
+    // notification and compared as a payout identity, so a plausible-looking
+    // wrong number is worse than none.
+    const event = upcomingWith({
+      calendarEvents: { exDividendDate: EX },
+      summaryDetail: { currency: 'USD' },
+      defaultKeyStatistics: {
+        lastDividendValue: 0.24,
+        lastDividendDate: new Date('2026-05-09T00:00:00.000Z'),
+      },
+    });
+    expect(event.amount).toBeNull();
+  });
+
+  it('never derives the per-payout amount from an ANNUAL rate', () => {
+    // Both annual figures are present and nothing is dated to the ex-date:
+    // `dividendRate` (forward-annualized) and `trailingAnnualDividendRate` (the
+    // realized TTM sum) are amounts for a YEAR, not for a payout. Dividing by a
+    // guessed frequency would be a fabricated amount.
+    const event = upcomingWith({
+      calendarEvents: { exDividendDate: EX },
+      summaryDetail: { currency: 'USD', dividendRate: 1, trailingAnnualDividendRate: 0.97 },
+    });
+    expect(event.amount).toBeNull();
+    // The annual figure still travels where it belongs, with its basis.
+    const events = mapDividendEvents(NO_DIVS, {
+      calendarEvents: { exDividendDate: EX },
+      summaryDetail: { currency: 'USD', dividendRate: 1, trailingAnnualDividendRate: 0.97 },
+    });
+    expect(events.trailingAmount).toBeCloseTo(0.97, 6);
+    expect(events.trailingAmountBasis).toBe('trailing-12m');
+  });
+
+  it('prefers the chart’s own dated amount for that day', () => {
+    // The chart series is where `scale` comes from, so when both name the day
+    // the chart wins. (Here they disagree, which is exactly how the preference
+    // is observable.)
+    const event = upcomingWith(
+      {
+        calendarEvents: { exDividendDate: EX },
+        summaryDetail: { currency: 'USD' },
+        defaultKeyStatistics: { lastDividendValue: 0.99, lastDividendDate: EX },
+      },
+      { meta: { currency: 'USD' }, dividends: [{ amount: 0.25, date: EX }], splits: [] },
+    );
+    expect(event.amount).toBe(0.25);
+  });
+
+  it('scales a pence-quoted per-payout amount out of its minor unit', () => {
+    // 25p is £0.25 — the same rule the history amounts and the trailing amount
+    // already follow, applied to the figure the dedupe identity is built from.
+    const event = upcomingWith(
+      {
+        calendarEvents: { exDividendDate: EX },
+        summaryDetail: { currency: 'GBp' },
+        defaultKeyStatistics: { lastDividendValue: 25, lastDividendDate: EX },
+      },
+      { meta: { currency: 'GBp' }, dividends: [], splits: [] },
+    );
+    expect(event.currency).toBe('GBP');
+    expect(event.amount).toBeCloseTo(0.25, 10);
+  });
+
+  it('leaves the amount null when Yahoo sends no per-payout figure at all', () => {
+    const event = upcomingWith({
+      calendarEvents: { exDividendDate: EX, dividendDate: new Date('2026-08-15T00:00:00.000Z') },
+      summaryDetail: { currency: 'USD' },
+    });
+    expect(event.amount).toBeNull();
+  });
+
+  it('ignores a per-payout figure with no date, and a non-finite one', () => {
+    expect(
+      upcomingWith({
+        calendarEvents: { exDividendDate: EX },
+        summaryDetail: { currency: 'USD' },
+        defaultKeyStatistics: { lastDividendValue: 0.25 },
+      }).amount,
+    ).toBeNull();
+    expect(
+      upcomingWith({
+        calendarEvents: { exDividendDate: EX },
+        summaryDetail: { currency: 'USD' },
+        defaultKeyStatistics: { lastDividendValue: Number.NaN, lastDividendDate: EX },
+      }).amount,
+    ).toBeNull();
+  });
+
+  it('publishes no amount when the calendar gives only a pay date', () => {
+    // No ex-date to date the figure against: the event exists, the amount does
+    // not get attached on the strength of the pay date alone.
+    const event = upcomingWith({
+      calendarEvents: { dividendDate: new Date('2026-08-15T00:00:00.000Z') },
+      summaryDetail: { currency: 'USD' },
+      defaultKeyStatistics: { lastDividendValue: 0.25, lastDividendDate: EX },
+    });
+    expect(event).toMatchObject({ exDate: null, amount: null });
+  });
+});

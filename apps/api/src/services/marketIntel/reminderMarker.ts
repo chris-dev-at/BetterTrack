@@ -25,7 +25,9 @@ import type { Redis } from 'ioredis';
  *    claims freshly. A caller that can IDENTIFY its event independently of the
  *    date (see {@link ReminderMarkerSpec.identity}) also stores that identity
  *    beside the date, so proximity alone can no longer merge two events the
- *    payload itself says are different.
+ *    payload itself says are different — and, beyond the proximity window, can
+ *    still recognise an event that MOVED, on the payload's own evidence rather
+ *    than on distance (see {@link ReminderMarkerSpec.amendmentDays}).
  *  - the per-date **lock**, taken with `SET NX`, which is what makes the claim
  *    atomic between two concurrent scans — the anchor's read-then-write pair is
  *    not.
@@ -59,15 +61,42 @@ export interface ReminderMarkerSpec {
   anchorKey: string;
   /** The candidate date, `YYYY-MM-DD`. */
   dateKey: string;
-  /** How far a date may move and still be the same event. */
+  /** How far a date may move and still be the same event, on DISTANCE alone. */
   matchDays: number;
   /** TTL of both keys; far longer than the scan's window. */
   ttlSeconds: number;
   /**
+   * The outer band — beyond `matchDays` — in which a moved date may still be the
+   * same event, but only on EVIDENCE rather than on proximity: `anchorVacated`
+   * must say the anchored event is gone from the caller's current payload, and
+   * {@link identity} then confirms or refuses. Defaults to `matchDays` (no outer
+   * band), which is what the earnings scan uses.
+   *
+   * Widening `matchDays` instead would be the #1894 defect again: distance alone
+   * merges two dates, and two real events (a weekly distributor's payouts) sit
+   * that far apart. The band is inert without both an `identity` concept and an
+   * `anchorVacated` answer.
+   */
+  amendmentDays?: number;
+  /**
+   * Whether the date the anchor names is NO LONGER accounted for by the caller's
+   * current payload — i.e. it is still in the future, and the provider no longer
+   * lists an event on it. That is the positive evidence of a MOVE: the event
+   * did not happen beside the candidate, it became the candidate.
+   *
+   * False whenever the anchored date is still listed (the two events coexist:
+   * the provider itself says they are two) or has already arrived (it happened;
+   * a later nearby date is the next one). Never called outside the band above,
+   * and never for the anchor's own date.
+   */
+  anchorVacated?: (anchorDateKey: string) => boolean;
+  /**
    * What identifies this event APART from its date — for a payout, the money it
    * pays (see `dividendEventsJob.payoutIdentity`). Supplied, it decides a
    * within-`matchDays` collision on a DIFFERENT date instead of the distance
-   * alone (the anchor's own date is decided as `same-date` first): an equal
+   * alone — and, inside {@link amendmentDays}, confirms or refuses a move the
+   * payload has evidenced (the anchor's own date is decided as `same-date`
+   * first, and a date outside both windows is simply a new event): an equal
    * identity is the same event (an amended date), a different one is a second
    * event and claims freshly, and an identity the payload does not carry — or
    * an anchor written before identities existed — is `ambiguous`: the claim
@@ -129,19 +158,38 @@ function decodeAnchor(raw: string): { dateKey: string; identity: string | null }
  */
 export async function claimReminderMarker(spec: ReminderMarkerSpec): Promise<ReminderClaim> {
   const { redis, lockKey, anchorKey, dateKey, matchDays, ttlSeconds, identity } = spec;
+  const amendmentDays = Math.max(spec.amendmentDays ?? matchDays, matchDays);
   let locked = false;
   try {
     const anchor = await redis.get(anchorKey);
     if (anchor !== null) {
       const previous = decodeAnchor(anchor);
-      if (dayDistance(previous.dateKey, dateKey) <= matchDays) {
+      const distance = dayDistance(previous.dateKey, dateKey);
+      // The outer band: too far for proximity to mean anything, close enough
+      // that one event could have MOVED here. Nothing is merged on distance —
+      // the payload has to say the anchored event vacated its date, and the
+      // identity has to agree. A different identity falls through and claims,
+      // because a payout that was cancelled and replaced by a different one is
+      // a second notification, not a silent amendment.
+      if (
+        distance > matchDays &&
+        distance <= amendmentDays &&
+        identity !== undefined &&
+        spec.anchorVacated?.(previous.dateKey) === true
+      ) {
+        if (identity !== null && previous.identity === identity)
+          return { status: 'duplicate', reason: 'same-event' };
+        if (identity === null || previous.identity === null)
+          return { status: 'duplicate', reason: 'ambiguous' };
+      }
+      if (distance <= matchDays) {
         // Distance ZERO is not a proximity question at all: it is the same date,
         // which the per-date `SET NX` lock below would classify `same-date` on
         // its own. Deciding it HERE, before the identity branches, is what keeps
         // the ordinary daily re-scan a clean suppression — an event whose
-        // payload carries no identity (the only shipped dividend provider never
-        // sends an amount), or an anchor written before identities existed,
-        // would otherwise be called `ambiguous` on every remaining day of the
+        // payload carries no identity (a payout Yahoo dates no amount to, see
+        // `yahooMapping.declaredAmountOn`), or an anchor written before
+        // identities existed, would otherwise be `ambiguous` on every day of the
         // window and turn every run after the first notification into a degraded
         // one. Only a DIFFERENT nearby date is genuinely undecidable.
         if (previous.dateKey === dateKey) return { status: 'duplicate', reason: 'same-date' };
