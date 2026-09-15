@@ -91,10 +91,22 @@
  *    `sequence.concurrent`) interleave chains, which makes a transition
  *    meaningless. The first concurrent test switches the suite reaper off for
  *    that file for good; the file backstop still runs.
- * 4. A harness deliberately built inside one describe and reused by a *later*
- *    sibling describe is released before that second describe runs. Sharing
- *    across siblings means building it in the parent's `beforeAll` (or in the
- *    file's), which is what the ownership rules above are for.
+ * 4. A harness built during a test is owned by the innermost suite of the
+ *    RUNNING TEST's chain — not by the suite whose `beforeEach` declared it.
+ *    A `beforeEach` on a parent describe therefore hands each of its harnesses
+ *    to whichever child describe the current test sits in, and they are released
+ *    when that child ends. That is right for the usual pattern, where the hook
+ *    reassigns one variable per test, and wrong for a parent `beforeEach` that
+ *    accumulates harnesses into an array a *later* test of the same parent then
+ *    reads back. The same applies to a harness built inside one describe and
+ *    reused by a later sibling describe: it is released before that sibling
+ *    runs. Nothing in `apps/api` does either today: the only file that collects
+ *    harnesses into an array is this reaper's own proof file, and every other
+ *    file that keeps one in a module-scope variable reassigns it per test or
+ *    per suite. Sharing a harness across suites means building it in the
+ *    parent's `beforeAll` (or in the file's), which is what the ownership rules
+ *    above are for; the full PGlite suite is the standing check that no file
+ *    has started doing otherwise.
  *
  * A release that throws during a transition is not raised from the innocent test
  * whose `beforeEach` happened to trigger it; it is carried to the file-teardown
@@ -371,12 +383,17 @@ export function createHarnessRegistry(): HarnessRegistry {
       registerAfterAll(async () => {
         const report = await reap();
         const failures = [...carriedFailures, ...report.failures];
+        const reaped = report.reaped + carriedReaped;
+        // Terminal for this file, and the hook must stay idempotent: a second
+        // call has nothing left to reap and must not re-raise what this one
+        // already reported.
         carriedFailures.length = 0;
+        carriedReaped = 0;
         if (failures.length > 0) {
           throw new AggregateError(
             failures,
             `harness reaper: ${failures.length} of ${
-              failures.length + report.reaped + carriedReaped
+              failures.length + reaped
             } undisposed harness(es) failed to release`,
           );
         }
