@@ -778,8 +778,17 @@ function TwoFactorGroup() {
   );
 }
 
-/** The controls a passkey add/manage failure can be attributed to. */
-type PasskeyField = 'name' | 'password';
+/**
+ * The controls a passkey add/manage failure can be attributed to.
+ *
+ * Only the re-auth password. The name box is deliberately absent (review nit):
+ * the sole name refusal the contract can raise is `passkeyNameSchema`'s
+ * `min(1)`/`max(64)`, and neither is reachable — both forms gate submit on
+ * `name.trim().length === 0` and cap the input at `PASSKEY_NAME_MAX`. A `'name'`
+ * member with no producer made `error={fieldError('name')}` permanently
+ * `undefined`, i.e. wiring that read as coverage the code did not have.
+ */
+type PasskeyField = 'password';
 
 /**
  * Map a passkey add/manage failure to a localized message and the control it
@@ -854,11 +863,7 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
           <Alert tone="error">{formError}</Alert>
         </div>
       ) : null}
-      <Field
-        error={fieldError('name')}
-        htmlFor="passkey-add-name"
-        label={t('settings.security.passkeys.nameLabel')}
-      >
+      <Field htmlFor="passkey-add-name" label={t('settings.security.passkeys.nameLabel')}>
         <Input
           autoComplete="off"
           id="passkey-add-name"
@@ -971,7 +976,6 @@ function PasskeyRow({
           }}
         >
           <Field
-            error={fieldError('name')}
             htmlFor={`passkey-rename-${passkey.id}`}
             label={t('settings.security.passkeys.nameLabel')}
           >

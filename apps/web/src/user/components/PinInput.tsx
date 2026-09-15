@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useId, useRef } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
 import { useT } from '../../i18n';
@@ -51,7 +51,15 @@ export function PinInput({
   error,
 }: PinInputProps) {
   const t = useT();
-  const baseId = label.toLowerCase().replace(/\s+/g, '-');
+  // Per-instance, not label-derived (review nit): the previous slug
+  // (`label.toLowerCase().replace(/\s+/g, '-')`) made every id a function of the
+  // visible text, so two co-mounted `PinInput`s whose labels normalise alike —
+  // one locale collapsing "PIN" and "PIN bestätigen" differently, or any reused
+  // label — would emit duplicate box ids and cross-link `aria-describedby`, i.e.
+  // one field's error announced on another's boxes. `useId` is what `Field` and
+  // `TextField` already use, so the hazard is retired rather than avoided by
+  // convention.
+  const baseId = useId();
   const errorId = `${baseId}-error`;
   const hasError = error !== undefined;
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);

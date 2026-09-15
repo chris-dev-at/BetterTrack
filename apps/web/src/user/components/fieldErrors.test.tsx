@@ -11,7 +11,20 @@ import { useFieldErrors } from './fieldErrors';
  * once at mount, a step of a wizard). Blaming a field that is not rendered must
  * not swallow the failure.
  */
-function Harness({ showCode }: { showCode: boolean }) {
+function Harness({
+  showCode,
+  blame = 'code',
+  stubbornlyInvalid = false,
+}: {
+  showCode: boolean;
+  /** Which control the simulated failure blames — `null` = the submission. */
+  blame?: 'code' | null;
+  /**
+   * A control that reports itself invalid regardless of the hook, i.e. the one
+   * thing that would break the `aria-invalid` query's invariant.
+   */
+  stubbornlyInvalid?: boolean;
+}) {
   const { formRef, alertRef, fieldError, formError, fail } = useFieldErrors<'code'>();
   const [value, setValue] = useState('');
   const error = fieldError('code');
@@ -26,10 +39,16 @@ function Harness({ showCode }: { showCode: boolean }) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          fail('code', 'That code is not valid.');
+          fail(blame, 'That code is not valid.');
         }}
         ref={formRef}
       >
+        {stubbornlyInvalid ? (
+          <>
+            <label htmlFor="stubborn">Stubborn</label>
+            <input aria-invalid="true" id="stubborn" readOnly value="" />
+          </>
+        ) : null}
         {showCode ? (
           <>
             <label htmlFor="code">Code</label>
@@ -73,4 +92,23 @@ test('a blamed field that is not rendered falls back to the form-level alert', a
   const alert = await screen.findByRole('alert');
   expect(alert).toHaveTextContent('That code is not valid.');
   expect(alert).toHaveFocus();
+});
+
+// §6.1 is load-bearing on this: `LoginPage` blames NO field for a credential
+// failure, and `ForgotPasswordPage` blames none for anything. The hook must make
+// that structural rather than dependent on "nothing else sets `aria-invalid`" —
+// so a `field: null` failure runs no lookup at all, and a control that reports
+// itself invalid cannot divert focus away from the summary.
+test('a failure that blames no field never focuses a control, even a statically invalid one', async () => {
+  const u = userEvent.setup();
+  render(<Harness blame={null} showCode stubbornlyInvalid />);
+
+  await u.click(screen.getByRole('button', { name: 'Submit' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('That code is not valid.');
+  expect(alert).toHaveFocus();
+  expect(screen.getByLabelText('Stubborn')).not.toHaveFocus();
+  // And no field claims the message.
+  expect(screen.getByLabelText('Code')).not.toHaveAttribute('aria-invalid');
 });

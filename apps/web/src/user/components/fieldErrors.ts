@@ -42,14 +42,27 @@ export function useFieldErrors<F extends string = string>() {
 
   useEffect(() => {
     if (!failure) return;
+    if (failure.error.field === null) {
+      // Nothing is blamed, so nothing is looked up. This branch is load-bearing
+      // for §6.1 (`LoginPage` attributes NO credential failure to a field) and
+      // for `ForgotPasswordPage` (existence disclosure), and skipping the query
+      // makes that contract structural: no DOM state can divert focus onto a
+      // control, so "no field blamed" cannot degrade into blaming one.
+      // Guarded: jsdom gives every element a `focus`, but a caller may render
+      // the alert conditionally and unmount it before the effect runs.
+      alertRef.current?.focus?.();
+      return;
+    }
     // Invariant this query depends on (review nit): within one form, `aria-invalid`
     // is set ONLY by `fieldError`, and a failure blames at most one field — so the
     // first invalid control IS the blamed one, and "no invalid control" means the
     // blamed field is unmounted. A control carrying a static `aria-invalid="true"`
     // would break both halves (stealing focus, and suppressing the demote below),
-    // so keep validity in this hook rather than hardcoding it on a field.
+    // so keep validity in this hook rather than hardcoding it on a field. The
+    // reach of the invariant is now only the attributed path: the form-level
+    // branch above returns before the query runs.
     const invalid = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') ?? null;
-    if (invalid === null && failure.error.field !== null) {
+    if (invalid === null) {
       // The blamed control is not rendered (or sits outside the form), so its
       // message would be invisible: `fieldError` feeds a field nobody shows and
       // `formError` stays null. Demote to form-level rather than dropping the
@@ -58,9 +71,9 @@ export function useFieldErrors<F extends string = string>() {
       setFailure({ error: { field: null, message: failure.error.message } });
       return;
     }
-    // Guarded: jsdom gives every element a `focus`, but a caller may render the
-    // alert conditionally and unmount it before the effect runs.
-    (invalid ?? alertRef.current)?.focus?.();
+    // Non-null here: the demote above returned for the unmounted case, and the
+    // form-level case never reaches the query.
+    invalid.focus?.();
   }, [failure]);
 
   const fail = useCallback((field: F | null, message: string) => {

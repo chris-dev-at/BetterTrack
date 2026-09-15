@@ -23,6 +23,7 @@ import {
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
 import { Badge, Button, Field, Input, type BadgeTone } from '../../../ui/origin';
+import { useFieldErrors } from '../../components/fieldErrors';
 import { Alert } from '../../components/ui';
 import type {
   DriveConnectionActionResult,
@@ -91,9 +92,14 @@ function GoogleSection() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [unlinking, setUnlinking] = useState(false);
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The unlink re-auth password is the one control the server judges here, so a
+  // refused credential is that box's failure rather than the submission's
+  // (FRONTEND-09). Same shape as `ChangePasswordGroup` and the passkey forms:
+  // this block IS the `settings.security.google.*` copy V5-P0c moved out of
+  // Security, so it is an account-security form by the criterion's own words.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'password'>();
   // A connect failure the callback bounced back (e.g. email mismatch) — kept
-  // separate from the unlink-form `error` so the two never collide.
+  // separate from the unlink form's attribution so the two never collide.
   const [connectError] = useState<string | null>(() =>
     connectErrorMessage(t, searchParams.get('error')),
   );
@@ -126,17 +132,20 @@ function GoogleSection() {
     onSuccess: async () => {
       setUnlinking(false);
       setPassword('');
-      setError(null);
+      clear();
       setNotice(t('settings.security.google.unlinkedNotice'));
       await queryClient.invalidateQueries({ queryKey: GOOGLE_KEY });
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 401) {
-        setError(t('settings.security.google.wrongPassword'));
+        // The server judged what was typed into the password box.
+        fail('password', t('settings.security.google.wrongPassword'));
       } else if (err instanceof ApiError && err.code === 'GOOGLE_ONLY_SIGN_IN') {
-        setError(t('settings.security.google.onlyMethod'));
+        // A refusal about the ACCOUNT's sign-in methods, not about the
+        // credential — the password may well have been correct.
+        fail(null, t('settings.security.google.onlyMethod'));
       } else {
-        setError(t('settings.security.google.genericError'));
+        fail(null, t('settings.security.google.genericError'));
       }
     },
   });
@@ -211,14 +220,20 @@ function GoogleSection() {
           {status.canUnlink && unlinking ? (
             <Row stack>
               <PanelForm
+                formRef={formRef}
                 onSubmit={(e) => {
                   e.preventDefault();
-                  setError(null);
+                  clear();
                   unlink.mutate();
                 }}
               >
-                {error ? <Alert tone="error">{error}</Alert> : null}
+                {formError ? (
+                  <div ref={alertRef} tabIndex={-1}>
+                    <Alert tone="error">{formError}</Alert>
+                  </div>
+                ) : null}
                 <Field
+                  error={fieldError('password')}
                   htmlFor="google-unlink-password"
                   label={t('settings.security.google.passwordLabel')}
                 >
@@ -243,7 +258,7 @@ function GoogleSection() {
                   <Button
                     onClick={() => {
                       setUnlinking(false);
-                      setError(null);
+                      clear();
                       setPassword('');
                     }}
                     size="sm"

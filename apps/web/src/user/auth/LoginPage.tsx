@@ -661,10 +661,15 @@ function OAuthStaySignedInStep({
   const [stay, setStay] = useState(false);
   const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // This step renders two checkboxes and a button — no typed control, so there
+  // is nothing a failure could be attributed to and `fail` is always called with
+  // `field: null`. The hook is still the right shape: it supplies the other half
+  // of the criterion, which is that the error summary TAKES FOCUS rather than
+  // announcing into a region the user never reaches.
+  const { alertRef, formError, fail, clear } = useFieldErrors<never>();
 
   async function handleContinue() {
-    setError(null);
+    clear();
     setSubmitting(true);
     try {
       await onContinue({ stay, remember: showRemember && remember });
@@ -672,7 +677,7 @@ function OAuthStaySignedInStep({
       // Defensive: persist/remember failures are swallowed by the caller
       // (non-fatal), so this only fires on an unexpected error while landing —
       // surface it and let them retry; the (ephemeral) session is live regardless.
-      setError(t('common.genericError'));
+      fail(null, t('common.genericError'));
       setSubmitting(false);
     }
   }
@@ -680,7 +685,11 @@ function OAuthStaySignedInStep({
   return (
     <AuthCard subtitle={t('auth.oauthStay.subtitle')}>
       <div className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <p className="bt-muted text-sm">{t('auth.oauthStay.description')}</p>
         <label className="flex items-start gap-2.5">
           <input

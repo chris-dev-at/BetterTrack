@@ -141,6 +141,22 @@ describe('AuthorizedAppsPanel', () => {
     },
   );
 
+  // The no-badge shape is the fragile one for #1473: with no `Badge` between
+  // them, the JSX `{' '}` is the ONLY thing separating the app name from the
+  // verb, so a stray edit renders "Charting Buddycan:". The badged row's
+  // assertion above cannot catch that, and `toHaveTextContent` normalises
+  // whitespace — hence the exact `textContent` comparison, in both locales.
+  test.each([
+    ['en', 'can:'],
+    ['de', 'kann:'],
+  ])('keeps the third-party separator character-identical in %s', async (locale, canAccess) => {
+    vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
+    renderPanel(locale);
+
+    const label = (await screen.findByText('Charting Buddy')).parentElement!;
+    expect(label.textContent).toBe(`Charting Buddy ${canAccess}`);
+  });
+
   test('localizes feedback grant copy from the stable scope id', async () => {
     vi.mocked(listOAuthGrants).mockResolvedValue(FEEDBACK_GRANT);
     renderPanel('de');
