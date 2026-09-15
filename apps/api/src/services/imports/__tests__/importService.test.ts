@@ -384,6 +384,60 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
+  it('accepts an upload of EXACTLY the file-size limit and stages it normally', async () => {
+    const { agent, pid } = await setup();
+    // The sibling test above pins N+1; this pins N. Since multer 2.3.0 the
+    // middleware hands Busboy `fileSize + 1`, so IMPORT_MAX_FILE_BYTES is the
+    // largest size ACCEPTED rather than the first one refused — the boundary
+    // moved by one byte with that bump and nothing covered it.
+    //
+    // The padding is trailing spaces, which `parseCsv` skips as a blank line, so
+    // a byte-exact 5 MiB upload must stage exactly the rows the bare fixture
+    // does: the assertion is the staged preview, not merely "not a 400".
+    const head = `${FIXTURE.trimEnd()}\n`;
+    const body = Buffer.from(
+      head + ' '.repeat(IMPORT_MAX_FILE_BYTES - Buffer.byteLength(head, 'utf8')),
+      'utf8',
+    );
+    expect(body.byteLength).toBe(IMPORT_MAX_FILE_BYTES);
+
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .attach('file', body, 'export.csv');
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const preview = importPreviewResponseSchema.parse(res.body);
+    const bare = await upload(agent, pid, FIXTURE);
+    expect(preview.batch.brokerId).toBe(bare.batch.brokerId);
+    expect(preview.rows.map((row) => row.flag)).toEqual(bare.rows.map((row) => row.flag));
+  });
+
+  it('refuses a sparse-array field index with the same generic upload error', async () => {
+    const { agent, pid } = await setup();
+    // GHSA-535w-7cp7-47q4: `append-field` reads `a[4294967294]` as an array
+    // index and materializes a sparse array of that length in `req.body`.
+    // Multer's guard is OPT-IN — `make-middleware.js` consults it only when
+    // `limits` carries `fieldArrayIndexLimit` as an own property — so the bump
+    // that "fixed" the advisory changed nothing here on its own. Without the
+    // limit the array is built and the request is refused one layer later by the
+    // strict contract, as VALIDATION_ERROR; with it, the upload is refused where
+    // every other multipart breach is, before `req.body` is ever touched.
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .field('a[4294967294]', 'x')
+      .attach('file', Buffer.from(FIXTURE, 'utf8'), 'export.csv');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
   it('accepts the distinct-instrument cap and rejects cap+1 before queued resolution', async () => {
     const { user, pid } = await setup();
     const mapper: BrokerMapper = {
