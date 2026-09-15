@@ -87,6 +87,13 @@ describe('paranoid client money engine', () => {
     expect(outcome.value.freshness).toBe('fresh');
     expect(outcome.value.missingAssetIds).toEqual([]);
     expect(outcome.value.stats).toEqual(expected.stats);
+    // #1669: the twin's money-weighted MAX figure is the domain function over
+    // the same net-worth series and flows the TWR above is chained from.
+    expect(expected.moneyWeightedPct).not.toBeNull();
+    expect(outcome.value.moneyWeightedPct ?? Number.NaN).toBeCloseTo(
+      expected.moneyWeightedPct ?? Number.NaN,
+      12,
+    );
   });
 
   it('replays same-instant transactions in stable entity-id order', async () => {
