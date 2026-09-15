@@ -16,8 +16,13 @@ import { EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET, runEarningsReminderScan } from '.
 const NOW = Date.parse('2026-07-18T09:00:00.000Z');
 const day = (n: number) => new Date(NOW + n * 86_400_000).toISOString();
 
-/** A fixture row; `custom` marks an account-OWNED asset (`assets.owner_id`). */
-type IntelRow = UserIntelAssetWithUser & { custom?: boolean };
+/**
+ * A fixture row; `custom` marks an account-OWNED asset (`assets.owner_id`), and
+ * `excluded` marks an account the all-users watch query's recipient predicate
+ * drops — `role = 'user' AND status = 'active' AND privacyMode = 'normal'`
+ * (#1903): a disabled, paranoid or admin account.
+ */
+type IntelRow = UserIntelAssetWithUser & { custom?: boolean; excluded?: boolean };
 
 function asset(over: Partial<IntelRow>): IntelRow {
   return {
@@ -35,16 +40,28 @@ function asset(over: Partial<IntelRow>): IntelRow {
 
 /**
  * Models the production queries: the unguarded all-users watch query is
- * GLOBAL-only (it never selects an account-owned asset row), while the
- * per-user query the scan runs inside that account's transition lock returns
- * everything that account holds or watches.
+ * GLOBAL-only (it never selects an account-owned asset row) AND recipient-
+ * filtered — since #1903 it joins `users` and applies the very predicate
+ * `listNormalUserIds` uses, because it is the one pass that does not discover
+ * its recipients through that method. The per-user query the scan runs inside
+ * that account's transition lock returns everything that account holds or
+ * watches.
+ *
+ * `listNormalUserIds` deliberately still lists an `excluded` account here: the
+ * id list is read before the per-user lock is taken, so an account that flips
+ * to paranoid between the two is exactly what `runIfAllowed` guards.
  */
 function intelRepo(rows: IntelRow[]) {
-  const strip = ({ custom: _custom, ...row }: IntelRow): UserIntelAssetWithUser => row;
+  const strip = ({
+    custom: _custom,
+    excluded: _excluded,
+    ...row
+  }: IntelRow): UserIntelAssetWithUser => row;
+  const excludedUsers = new Set(rows.filter((row) => row.excluded).map((row) => row.userId));
   return {
     listAllWatchAssets: async () =>
       rows
-        .filter((row) => row.watched && !row.custom)
+        .filter((row) => row.watched && !row.custom && !excludedUsers.has(row.userId))
         .map((row) => ({ ...strip(row), held: false })),
     listNormalUserIds: async () => [...new Set(rows.map((row) => row.userId))],
     listUserWatchAndHoldAssets: async (userId: string) =>
@@ -454,7 +471,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     expect(notify.events[0]).toMatchObject({ assetId: 'watched', symbol: 'WATCH' });
   });
 
-  it('never reads a paranoid account custom watchlist asset, but keeps a normal one', async () => {
+  it('never reads a paranoid account watchlist asset, custom or global, but keeps a normal one', async () => {
     const rows = [
       asset({
         userId: 'paranoid',
@@ -465,6 +482,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
         held: false,
         watched: true,
         custom: true,
+        excluded: true,
       }),
       asset({
         userId: 'paranoid',
@@ -473,6 +491,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
         symbol: 'GLOBAL',
         held: false,
         watched: true,
+        excluded: true,
       }),
       asset({
         userId: 'normal',
@@ -493,8 +512,8 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       notify,
       isEnabled: optedIn,
       enabled: true,
-      // Only the paranoid account's guarded pass is refused; the global pass
-      // above it is unguarded and the normal account's pass runs.
+      // Only the paranoid account's guarded pass is refused; the normal
+      // account's pass runs.
       runIfAllowed: async (userId, action) => {
         if (userId === 'paranoid') return false;
         await action();
@@ -503,13 +522,16 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       now: () => NOW,
     });
 
-    // The paranoid account's OWN custom watchlist row is never processed —
-    // it is not in the global pass, and its guarded pass never runs.
+    // NEITHER paranoid row is processed. The custom one is account-owned, so it
+    // was never in the global pass to begin with; the GLOBAL one is excluded
+    // there too, because that query applies the recipient predicate
+    // (`privacyMode = 'normal'`) since #1903 — before that fix this scan was the
+    // one pass that reminded an account the rest of the lane excludes. Either
+    // way the paranoid account's own guarded pass never runs.
     expect(notify.events.map((event) => (event as { symbol: string }).symbol).sort()).toEqual([
       'BOAT',
-      'GLOBAL',
     ]);
-    expect(res.reminded).toBe(2);
+    expect(res.reminded).toBe(1);
   });
 });
 
