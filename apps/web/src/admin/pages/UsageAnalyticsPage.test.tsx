@@ -94,3 +94,22 @@ test('shows an error state when the fetch fails', async () => {
     expect(screen.getByText('Could not load usage analytics.')).toBeInTheDocument(),
   );
 });
+
+test('marks the activity panel stale when todayRollupStale is true (#1906)', async () => {
+  vi.mocked(api.getUsageAnalytics).mockResolvedValue({ ...usage, todayRollupStale: true });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Stale')).toBeInTheDocument());
+  expect(
+    screen.getByTitle(
+      "Today's numbers may be behind — the last refresh failed; the next scheduled rollup will catch up.",
+    ),
+  ).toBeInTheDocument();
+});
+
+test('shows no stale marker when todayRollupStale is false (#1906)', async () => {
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Activity')).toBeInTheDocument());
+  expect(screen.queryByText('Stale')).not.toBeInTheDocument();
+});

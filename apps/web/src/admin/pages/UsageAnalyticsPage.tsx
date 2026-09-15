@@ -100,6 +100,7 @@ export function UsageAnalyticsPage() {
             <Panel
               title={t('admin.usageAnalytics.activity')}
               hint={t('admin.usageAnalytics.windowHint', { days: data.windowDays })}
+              badge={data.todayRollupStale ? <StaleRollupBadge /> : null}
             >
               {data.series.length === 0 ? (
                 <Empty>{t('admin.usageAnalytics.noData')}</Empty>
@@ -130,16 +131,21 @@ function StatTile({ label, value }: { label: string; value: number }) {
 function Panel({
   title,
   hint,
+  badge,
   children,
 }: {
   title: string;
   hint?: string;
+  badge?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-medium text-neutral-100">{title}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium text-neutral-100">{title}</h3>
+          {badge}
+        </div>
         {hint ? <span className="text-xs text-neutral-400">{hint}</span> : null}
       </div>
       {children}
@@ -149,6 +155,25 @@ function Panel({
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="text-sm text-neutral-400">{children}</p>;
+}
+
+/**
+ * Non-alarming marker for `todayRollupStale` (#1906). Placed on the Activity
+ * panel rather than the DAU/WAU/MAU tiles or top-assets: those two read raw
+ * `usage_events` directly (`usageAnalyticsRepository.ts`) and are unaffected
+ * by a failed rollup refresh, while the activity series and feature counters
+ * are served from that rollup — the series' last point is literally today.
+ * `amber` (needs-attention, not `red`/broken) matches the console's tone
+ * vocabulary; the native `title` gives the explanatory tooltip without a new
+ * panel or copy the anti-bloat rule (§13.5) would flag.
+ */
+function StaleRollupBadge() {
+  const t = useT();
+  return (
+    <span title={t('admin.usageAnalytics.todayStale.tooltip')}>
+      <Badge tone="amber">{t('admin.usageAnalytics.todayStale.badge')}</Badge>
+    </span>
+  );
 }
 
 function Funnel({ points }: { points: { stage: UsageFunnelStage; count: number }[] }) {

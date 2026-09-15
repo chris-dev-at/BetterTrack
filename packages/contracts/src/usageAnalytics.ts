@@ -114,8 +114,13 @@ export const usageAnalyticsResponseSchema = z.object({
    * is served as the nightly cron last materialized it. The read deliberately
    * survives that failure — the rest of the payload is unaffected — but the
    * staleness travels with the numbers rather than living only in a log line.
+   *
+   * `.default(false)` is forward-compat only: the one producer (`overview()`)
+   * always sends it, so the inferred response type stays a required `boolean`
+   * — this just keeps a client on this contract from throwing if it ever
+   * parses a payload from an older API build that predates the field.
    */
-  todayRollupStale: z.boolean(),
+  todayRollupStale: z.boolean().default(false),
   generatedAt: z.string().datetime(),
 });
 export type UsageAnalyticsResponse = z.infer<typeof usageAnalyticsResponseSchema>;

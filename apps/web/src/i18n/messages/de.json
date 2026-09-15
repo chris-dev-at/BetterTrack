@@ -5270,6 +5270,10 @@
       "views": "{{count}} Aufrufe",
       "eventsLabel": "Ereignisse",
       "activeUsersLabel": "Aktive Nutzer",
+      "todayStale": {
+        "badge": "Veraltet",
+        "tooltip": "Die heutigen Zahlen könnten veraltet sein — die letzte Aktualisierung ist fehlgeschlagen; der nächste planmäßige Rollup gleicht das aus."
+      },
       "stage": {
         "registered": "Registriert",
         "activated": "Aktiviert",
