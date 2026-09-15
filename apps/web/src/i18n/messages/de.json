@@ -1035,7 +1035,7 @@
           "pausedManual": "Pausiert",
           "disabledAuto": "Automatisch deaktiviert"
         },
-        "disabledAutoHint": "Nach {{count}} aufeinanderfolgenden Fehlern deaktiviert. Aktiviere ihn wieder, um die Zustellung fortzusetzen.",
+        "disabledAutoHint": "Nach {{count}} aufeinanderfolgenden fehlgeschlagenen Zustellungen über mehr als eine Stunde deaktiviert. Aktiviere ihn wieder, um die Zustellung fortzusetzen.",
         "lastDelivery": "Letzte Zustellung {{at}}",
         "neverDelivered": "Noch keine Zustellungen",
         "pause": "Pausieren",

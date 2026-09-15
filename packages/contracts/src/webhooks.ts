@@ -267,25 +267,60 @@ export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
  * inside the window leaves the streak to expire on its own, with no user
  * action, and a streak can no longer be assembled out of blips months apart.
  *
- * Two things this window does NOT do, named so neither reads as solved (#1646
- * carries both):
- *
- * - It bounds only the MAXIMUM span of a streak, never a minimum. The retry
- *   ladder is well under a minute, so five events delivered during one
- *   five-minute 503 still burn five terminal failures inside the window and
- *   still auto-disable. A minimum-span rule (or a half-open probe before the
- *   disable) is the separate half of that problem.
- * - A genuinely dead receiver subscribed to events rarer than the window
- *   (gaps > 24 h) resets to 1 forever and never auto-disables, paying the retry
- *   ladder per event. Closing that needs a second, slower trip — e.g. N
- *   failures with no success since `last_success_at` for X days — not a longer
- *   window.
- *
- * Both residuals err the same way, which is the intended one: keeping a quiet
- * or briefly-unreachable subscription alive is the cheaper mistake — the loud
- * one is disabling a working receiver, which silently drops every later event.
+ * The window is only ONE of the two conditions a disable needs. It bounds a
+ * streak's MAXIMUM span; {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS} bounds the
+ * minimum, and {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} consecutive failures that
+ * survive a success are counted by the unbroken streak regardless of age. See
+ * the min-span constant for the full rule (#1646).
  */
 export const WEBHOOK_AUTO_DISABLE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The minimum elapsed span between a streak's FIRST failure and the failure
+ * that disables it. One hour: below this, the failures are a burst, not a dead
+ * receiver.
+ *
+ * The window alone could never express that. An age-only window bounds a
+ * streak's maximum span and never its minimum, so five events delivered during
+ * a single five-minute 503 burned five terminal failures minutes apart, all
+ * inside the 24 h window, and killed the subscription outright — issue #1592's
+ * second consequence bullet, closed here.
+ *
+ * A receiver still failing an hour after its first failure is not blipping.
+ * What this costs, stated: a subscription whose events are rare enough that all
+ * N failures land inside the span and then stop arriving sits at N with no
+ * further delivery to re-evaluate it, so it stays enabled. The disable is only
+ * ever decided ON a failure; nothing sweeps.
+ *
+ * Chosen over the alternative shape, a half-open probe delivery before the flip
+ * (see #1646): a probe invents traffic the user never subscribed to, needs its
+ * own delivery-log and signing semantics, and answers a question the next real
+ * delivery answers for free.
+ */
+export const WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS = 60 * 60 * 1000;
+
+/**
+ * The auto-disable rule, in full (#1592 + #1646). A subscription disables on a
+ * terminal failure when BOTH:
+ *
+ *  1. at least {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} consecutive terminal
+ *     failures have accumulated, on EITHER
+ *     - the windowed streak (`consecutive_failures`, decayed by
+ *       {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS}), or
+ *     - the unbroken streak (`unbroken_failure_streak`, never decayed by age —
+ *       only a success or a manual re-enable clears it), which is what lets a
+ *       genuinely dead receiver whose events are rarer than the window still
+ *       trip; and
+ *  2. the tripping streak spans at least
+ *     {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS} from its first failure.
+ *
+ * Note the first condition's windowed leg is mathematically subsumed by its
+ * unbroken leg — the unbroken streak is never smaller and its anchor never
+ * later, so a windowed trip implies an unbroken one. It is evaluated anyway:
+ * the two counters are written by one statement but read by separate rules, and
+ * an explicit disjunction keeps the windowed semantics of #1592 enforced rather
+ * than merely implied by an invariant a future writer could break.
+ */
 
 /** Hard cap on active subscriptions per user (anti-abuse / anti-bloat). */
 export const WEBHOOK_MAX_SUBSCRIPTIONS = 20;

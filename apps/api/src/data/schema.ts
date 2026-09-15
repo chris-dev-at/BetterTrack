@@ -4187,8 +4187,8 @@ export const webhookSubscriptions = pgTable(
     // AES-256-GCM envelope of the signing secret — never the plaintext.
     secretEncrypted: text('secret_encrypted').notNull(),
     enabled: boolean('enabled').notNull().default(true),
-    // 'auto' (N consecutive failures inside the auto-disable window, see
-    // `failure_window_started_at`) or 'manual' (paused); null while enabled.
+    // 'auto' (N consecutive failures on either streak below, spanning at least
+    // WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS) or 'manual' (paused); null while enabled.
     disabledReason: text('disabled_reason'),
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
     // Consecutive terminally-failed deliveries; reset to 0 on any success or
@@ -4200,6 +4200,20 @@ export const webhookSubscriptions = pgTable(
     // instead of extending it, so failures spread over months never add up to a
     // disable. Null exactly when `consecutive_failures` is 0.
     failureWindowStartedAt: timestamp('failure_window_started_at', { withTimezone: true }),
+    // The SECOND streak (#1646): consecutive terminal failures since the last
+    // success, never decayed by age. `consecutive_failures` restarts whenever a
+    // failure lands outside the window, so a dead receiver whose events are
+    // rarer than the window could never accumulate one — it reset to 1 forever
+    // and never auto-disabled. This counter does not reset on age; only a
+    // success or a manual re-enable clears it.
+    unbrokenFailureStreak: integer('unbroken_failure_streak').notNull().default(0),
+    // That streak's own anchor — the first failure after the last success, and
+    // the basis of the minimum-span check on this leg. It cannot be derived
+    // from `last_success_at`: a receiver that succeeded a year ago and then
+    // failed five times in five minutes would measure a one-year span and
+    // defeat the very burst protection the span exists for. Null exactly when
+    // `unbroken_failure_streak` is 0.
+    unbrokenStreakStartedAt: timestamp('unbroken_streak_started_at', { withTimezone: true }),
     lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
     lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

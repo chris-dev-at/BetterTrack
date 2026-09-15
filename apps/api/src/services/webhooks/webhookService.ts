@@ -195,6 +195,10 @@ export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
           // fresh window rather than resuming the one that disabled it.
           patch.consecutiveFailures = 0;
           patch.failureWindowStartedAt = null;
+          // Both streaks, or a sparse receiver re-enabled at N-1 unbroken
+          // failures would auto-disable again on its very next failure (#1646).
+          patch.unbrokenFailureStreak = 0;
+          patch.unbrokenStreakStartedAt = null;
           patch.disabledReason = null;
           patch.disabledAt = null;
         } else {

@@ -39,6 +39,21 @@ export interface UpdateWebhookSubscriptionPatch {
   disabledAt?: Date | null;
   consecutiveFailures?: number;
   failureWindowStartedAt?: Date | null;
+  unbrokenFailureStreak?: number;
+  unbrokenStreakStartedAt?: Date | null;
+}
+
+/**
+ * The two failure streaks after a terminal delivery, each with the anchor the
+ * minimum-span check measures from. `windowed*` decays with age
+ * (WEBHOOK_AUTO_DISABLE_WINDOW_MS); `unbroken*` does not and is cleared only by
+ * a success or a manual re-enable.
+ */
+export interface WebhookFailureStreaks {
+  windowedFailures: number;
+  windowStartedAt: Date | null;
+  unbrokenFailures: number;
+  unbrokenStartedAt: Date | null;
 }
 
 export function createWebhookSubscriptionRepository(db: Database) {
@@ -151,6 +166,11 @@ export function createWebhookSubscriptionRepository(db: Database) {
           // The streak is gone, so its window anchor goes with it — the column
           // is null exactly when the counter is 0.
           failureWindowStartedAt: null,
+          // A receiver that answers is not dead, whatever it did before: the
+          // age-independent streak clears here too, or a sparse receiver could
+          // never recover from failures it has already made up for (#1646).
+          unbrokenFailureStreak: 0,
+          unbrokenStreakStartedAt: null,
           lastDeliveryAt: at,
           lastSuccessAt: at,
           updatedAt: at,
@@ -159,15 +179,22 @@ export function createWebhookSubscriptionRepository(db: Database) {
     },
 
     /**
-     * A permanently-failed delivery: advance the WINDOWED streak, returning the
-     * new count.
+     * A permanently-failed delivery: advance BOTH failure streaks and return
+     * them with their anchors.
      *
-     * The streak is anchored at its first failure. A failure landing while that
-     * anchor is still inside `windowMs` extends the streak; one landing after
-     * it starts a fresh streak at 1 with a new anchor, so failures spread over
-     * months never accumulate into an auto-disable.
+     * - The WINDOWED streak is anchored at its first failure. A failure landing
+     *   while that anchor is still inside `windowMs` extends it; one landing
+     *   after it starts a fresh streak at 1, so failures spread over months
+     *   never accumulate into an auto-disable (#1592).
+     * - The UNBROKEN streak is the same count with age taken out: it advances
+     *   on every terminal failure and is cleared only by a success or a manual
+     *   re-enable. Without it a receiver whose events are rarer than the window
+     *   resets to 1 forever and can never trip, however dead it is (#1646).
+     *
+     * The caller decides; this only counts. Both anchors are null exactly when
+     * their counter is 0.
      */
-    async incrementFailure(id: string, at: Date, windowMs: number): Promise<number> {
+    async incrementFailure(id: string, at: Date, windowMs: number): Promise<WebhookFailureStreaks> {
       // Explicit `::timestamptz` on both interpolated instants, matching the
       // repository precedent (notificationRepository.markRead): the driver
       // sends them as untyped parameters otherwise and leaves the resolution to
@@ -176,26 +203,59 @@ export function createWebhookSubscriptionRepository(db: Database) {
       const atIso = at.toISOString();
       // Decided in SQL, not in JS: the whole read-decide-write is one atomic
       // statement, so concurrent failed deliveries for one subscription can
-      // neither lose a bump nor race on restarting the window.
+      // neither lose a bump nor race on restarting the window. The unbroken
+      // streak rides the same statement for the same reason.
       const withinWindow = sql`${webhookSubscriptions.failureWindowStartedAt} is not null and ${webhookSubscriptions.failureWindowStartedAt} > ${windowStartIso}::timestamptz`;
       const [row] = await db
         .update(webhookSubscriptions)
         .set({
           consecutiveFailures: sql`case when ${withinWindow} then ${webhookSubscriptions.consecutiveFailures} + 1 else 1 end`,
           failureWindowStartedAt: sql`case when ${withinWindow} then ${webhookSubscriptions.failureWindowStartedAt} else ${atIso}::timestamptz end`,
+          // No CASE: age never restarts this one.
+          unbrokenFailureStreak: sql`${webhookSubscriptions.unbrokenFailureStreak} + 1`,
+          unbrokenStreakStartedAt: sql`coalesce(${webhookSubscriptions.unbrokenStreakStartedAt}, ${atIso}::timestamptz)`,
           lastDeliveryAt: at,
           updatedAt: at,
         })
         .where(eq(webhookSubscriptions.id, id))
-        .returning({ consecutiveFailures: webhookSubscriptions.consecutiveFailures });
-      return row?.consecutiveFailures ?? 0;
+        .returning({
+          consecutiveFailures: webhookSubscriptions.consecutiveFailures,
+          failureWindowStartedAt: webhookSubscriptions.failureWindowStartedAt,
+          unbrokenFailureStreak: webhookSubscriptions.unbrokenFailureStreak,
+          unbrokenStreakStartedAt: webhookSubscriptions.unbrokenStreakStartedAt,
+        });
+      return {
+        windowedFailures: row?.consecutiveFailures ?? 0,
+        windowStartedAt: row?.failureWindowStartedAt ?? null,
+        unbrokenFailures: row?.unbrokenFailureStreak ?? 0,
+        unbrokenStartedAt: row?.unbrokenStreakStartedAt ?? null,
+      };
     },
 
-    /** Auto-disable after the streak crosses the threshold. */
-    async disable(id: string, reason: string, at: Date): Promise<void> {
+    /**
+     * Auto-disable after a streak crosses the threshold.
+     *
+     * `consecutiveFailures` is the count that actually tripped. It is written
+     * back because the two streaks can disagree: a sparse dead receiver trips on
+     * the unbroken streak while `consecutive_failures` — decayed by the window —
+     * still reads 1, and that is the number the API DTO and the panel's
+     * "Disabled after N consecutive failures" hint would otherwise show.
+     */
+    async disable(
+      id: string,
+      reason: string,
+      at: Date,
+      consecutiveFailures?: number,
+    ): Promise<void> {
       await db
         .update(webhookSubscriptions)
-        .set({ enabled: false, disabledReason: reason, disabledAt: at, updatedAt: at })
+        .set({
+          enabled: false,
+          disabledReason: reason,
+          disabledAt: at,
+          updatedAt: at,
+          ...(consecutiveFailures === undefined ? {} : { consecutiveFailures }),
+        })
         .where(eq(webhookSubscriptions.id, id));
     },
   };

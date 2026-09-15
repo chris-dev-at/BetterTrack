@@ -340,6 +340,12 @@ export interface CreateTestAppOptions {
    */
   webhookUrlResolver?: OutboundUrlResolver;
   /**
+   * Clock for the webhook dispatcher (§13.5 V5-P10). Lets a bridge-driven test
+   * space terminal failures across the auto-disable minimum span without
+   * sleeping; defaults to `Date.now`.
+   */
+  webhookNow?: () => number;
+  /**
    * Canned/recording fetch for the local-AI (Ollama) adapter (§13.5 V5-P12).
    * Lets a test drive the AI feature endpoints with no real network and assert
    * the model only ever reaches the configured local endpoint.
@@ -406,6 +412,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     budgetNow: options.budgetNow,
     webhookTransport: options.webhookTransport,
     webhookUrlResolver: options.webhookUrlResolver ?? publicTestResolver,
+    webhookNow: options.webhookNow,
     aiFetch: options.aiFetch,
     oauthLogoFetcher: options.oauthLogoFetcher,
   });

@@ -722,6 +722,13 @@ export interface BuildContextDeps {
    */
   webhookUrlResolver?: OutboundUrlResolver;
   /**
+   * Test seam (§13.5 V5-P10): the clock the webhook dispatcher stamps rows and
+   * measures auto-disable spans with. Defaults to `Date.now`; a test injects a
+   * controllable clock so the minimum-span rule
+   * (WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS) can be exercised without sleeping.
+   */
+  webhookNow?: () => number;
+  /**
    * Test seam (§13.5 V5-P12): the fetch the local-AI (Ollama) adapter uses.
    * Defaults to global `fetch`; tests inject a canned/recording fake so the AI
    * feature paths run with no real network — and so a test can assert the model
@@ -1087,6 +1094,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     logger,
     dnsResolver: deps.webhookUrlResolver,
+    now: deps.webhookNow,
   });
   // Delivery transport: durable BullMQ queue in production; a direct single
   // attempt under test (BullMQ can't run on ioredis-mock), mirroring the
