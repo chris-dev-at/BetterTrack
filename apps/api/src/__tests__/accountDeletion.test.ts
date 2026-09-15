@@ -152,7 +152,8 @@ async function userFkColumns(): Promise<{ table: string; column: string }[]> {
 /** Rows in `table.column` still keyed to `userId` — must be zero everywhere post-delete. */
 async function countKeyedRows(table: string, column: string, userId: string): Promise<number> {
   const res: { rows?: unknown[] } & unknown[] = (await harness.db.execute(
-    sql.raw(`select count(*)::int as "n" from "${table}" where "${column}" = '${userId}'`),
+    // eslint-disable-next-line sql/no-dynamic-identifier -- closed list: `table`/`column` are rows of userFkColumns() above — information_schema's own FK catalog for the database under test, never input. They go through sql.identifier (which quotes them) rather than into the string, and the account id is now a bound parameter instead of a value spliced into the statement.
+    sql`select count(*)::int as "n" from ${sql.identifier(table)} where ${sql.identifier(column)} = ${userId}`,
   )) as never;
   const rows = (res.rows ?? res) as { n: number }[];
   return rows[0]!.n;
