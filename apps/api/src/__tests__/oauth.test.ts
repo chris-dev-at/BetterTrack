@@ -28,7 +28,7 @@ import {
   type OAuthRepository,
 } from '../data/repositories/oauthRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
-import { createAuditService } from '../services/audit/auditService';
+import { AuditAction, createAuditService } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
 import {
   OAUTH_LOGO_MAX_BYTES,
@@ -989,13 +989,30 @@ describe('first-party grant scope healing (#1393)', () => {
     expect(beforeWidening.status).toBe(403);
     expect(apiErrorSchema.parse(beforeWidening.body).error.code).toBe('INSUFFICIENT_SCOPE');
 
-    const [seeded] = await seedFirstPartyClients(repo);
-    expect(seeded?.action).toBe('unchanged');
+    const audit = createAuditService(createAuditRepository(harness.db));
+    const [seeded] = await seedFirstPartyClients(repo, undefined, audit);
+    expect(seeded).toMatchObject({ action: 'unchanged', grantsWidened: 1 });
     const [widenedGrant] = await harness.db
       .select()
       .from(schema.oauthGrants)
       .where(eq(schema.oauthGrants.userId, user.id));
     expect(widenedGrant?.scopes).toContain('feedback:write');
+
+    const [wideningAudit] = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, AuditAction.OAuthGrantScopesWidened));
+    expect(wideningAudit).toMatchObject({
+      actorId: null,
+      targetType: 'oauth_grant',
+      targetId: beforeGrant!.id,
+      meta: {
+        clientId: mobile.clientId,
+        userId: user.id,
+        beforeScopes: ['portfolio:read'],
+        afterScopes: widenedGrant!.scopes,
+      },
+    });
 
     const oldSnapshot = await request(harness.app)
       .post('/api/v1/feedback')

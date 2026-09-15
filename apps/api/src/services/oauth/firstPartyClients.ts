@@ -1,6 +1,7 @@
 import { isValidRedirectUri, type ApiKeyScope } from '@bettertrack/contracts';
 
 import type { OAuthRepository } from '../../data/repositories/oauthRepository';
+import { AuditAction, type AuditService } from '../audit/auditService';
 
 /**
  * Canonical definition of a BetterTrack FIRST-PARTY OAuth client — the single
@@ -91,8 +92,13 @@ export const FIRST_PARTY_CLIENTS: readonly FirstPartyClientDefinition[] = [
 /** What {@link seedFirstPartyClients} did to one client row (for the seed log + tests). */
 export interface FirstPartyClientSeedResult {
   clientId: string;
-  /** `created` (row was missing), `converged` (widened in place), `unchanged` (no-op). */
+  /**
+   * Client-row action only: `created` (missing), `converged` (client row widened),
+   * or `unchanged` (client row no-op). Grant mutations are counted separately.
+   */
   action: 'created' | 'converged' | 'unchanged';
+  /** Active consent records whose stored scope array this run actually rewrote. */
+  grantsWidened: number;
   scopes: ApiKeyScope[];
   redirectUris: string[];
 }
@@ -104,6 +110,7 @@ export interface FirstPartyClientSeedResult {
  * are missing. The never-narrow union both the scope ceiling and the redirect URIs
  * converge through.
  */
+// Deliberately duplicated in the repository: services cannot be imported by the data layer.
 function unionPreservingOrder<T>(existing: readonly T[], additions: readonly T[]): T[] {
   const merged = [...existing];
   const seen = new Set<T>(existing);
@@ -139,6 +146,7 @@ function unionPreservingOrder<T>(existing: readonly T[], additions: readonly T[]
 export async function seedFirstPartyClients(
   repo: OAuthRepository,
   definitions: readonly FirstPartyClientDefinition[] = FIRST_PARTY_CLIENTS,
+  audit?: Pick<AuditService, 'record'>,
 ): Promise<FirstPartyClientSeedResult[]> {
   const results: FirstPartyClientSeedResult[] = [];
   for (const def of definitions) {
@@ -166,6 +174,7 @@ export async function seedFirstPartyClients(
       results.push({
         clientId: def.clientId,
         action: 'created',
+        grantsWidened: 0,
         scopes: row.scopes as ApiKeyScope[],
         redirectUris: row.redirectUris,
       });
@@ -181,13 +190,29 @@ export async function seedFirstPartyClients(
       mergedUris.length !== existing.redirectUris.length;
     // Run even when the client row itself is already current: an older active
     // grant can still predate the latest first-party product scope addition.
-    const row = await repo.reconcileFirstPartyClient(existing.id, {
+    const reconciliation = await repo.reconcileFirstPartyClient(existing.id, {
       scopes: mergedScopes,
       redirectUris: mergedUris,
     });
+    for (const grant of reconciliation?.widenedGrants ?? []) {
+      await audit?.record({
+        actorId: null,
+        action: AuditAction.OAuthGrantScopesWidened,
+        targetType: 'oauth_grant',
+        targetId: grant.grantId,
+        meta: {
+          clientId: def.clientId,
+          userId: grant.userId,
+          beforeScopes: grant.beforeScopes,
+          afterScopes: grant.afterScopes,
+        },
+      });
+    }
+    const row = reconciliation?.client;
     results.push({
       clientId: def.clientId,
       action: changed ? 'converged' : 'unchanged',
+      grantsWidened: reconciliation?.widenedGrants.length ?? 0,
       scopes: (row?.scopes ?? mergedScopes) as ApiKeyScope[],
       redirectUris: row?.redirectUris ?? mergedUris,
     });

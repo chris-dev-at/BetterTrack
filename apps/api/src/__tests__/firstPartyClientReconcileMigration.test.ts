@@ -21,7 +21,9 @@ import {
  * client on EVERY deploy — prod's auto-updater runs migrate.js but never seed.js, so
  * the #398 boot-seed never fires there and a stale restore keeps the client behind
  * (#386, #395, #405). Each migration must reproduce the seed's union-only convergence
- * purely in SQL: never narrow, only widen toward the canonical ceiling.
+ * purely in SQL: never narrow, only widen toward the canonical ceiling. Consequently,
+ * every new first-party scope still requires its own data migration; the boot
+ * reconcile is not coverage for production.
  *
  *   - 0029 (`0029_first_party_client_reconcile`) create-if-missing at its frozen
  *     12-scope ceiling, else widen scopes/redirect URIs — heals prod's missing chat
