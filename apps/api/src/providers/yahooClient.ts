@@ -174,6 +174,16 @@ export interface YahooDefaultKeyStatistics {
   trailingEps?: number | null;
   forwardEps?: number | null;
   priceToBook?: number | null;
+  /**
+   * The amount of ONE payout — the only per-payout figure `quoteSummary`
+   * exposes (every dividend number in `summaryDetail` beside it is annual). It
+   * names its own date in {@link YahooDefaultKeyStatistics.lastDividendDate},
+   * so it may only be read onto an event on that same day; see
+   * `yahooMapping.declaredAmountOn` (#1948).
+   */
+  lastDividendValue?: number | null;
+  /** The ex-date {@link YahooDefaultKeyStatistics.lastDividendValue} belongs to. */
+  lastDividendDate?: Date | number | string | null;
 }
 
 /** One row of a Yahoo income-statement history (annual or quarterly). */
