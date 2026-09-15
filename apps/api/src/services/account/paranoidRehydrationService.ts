@@ -38,6 +38,9 @@ import {
   createParanoidRehydrationTransactionRepository,
   withParanoidRehydrationTransaction,
 } from '../../data/repositories/paranoidVaultRepository';
+import { createCashRuleRepository } from '../../data/repositories/cashRuleRepository';
+import { createCashTagRepository } from '../../data/repositories/cashTagRepository';
+import { createCashTagService } from '../cash/cashTagService';
 import { createExpenseBudgetService } from '../expenses/budgetService';
 import { createExpenseService } from '../expenses/expenseService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -2894,7 +2897,17 @@ export function createParanoidRehydrationService(
         await sourceRows.restoreExpenseCategories(rows(entities, 'expenseCategory'));
         await stage('expenseCategories');
 
-        await sourceRows.restoreExpenseRules(rows(entities, 'expenseRule'));
+        // Through the service, not straight into the table: a document's rule
+        // rows must meet the same gate a written rule does — the regex has to
+        // compile, and the set has to fit the per-user cap (#1743).
+        const restoredExpenseRules = rows(entities, 'expenseRule').map((entity) => ({
+          ...entity,
+          matchType: entity.data.matchType,
+          pattern: entity.data.pattern,
+        }));
+        await expenseService.restoreRules(userId, restoredExpenseRules, {
+          insertRules: (restoredRows) => sourceRows.restoreExpenseRules(restoredRows),
+        });
         await stage('expenseRules');
 
         await sourceRows.restoreExpenseBudgets(rows(entities, 'expenseBudget'));
@@ -2925,7 +2938,19 @@ export function createParanoidRehydrationService(
         await sourceRows.restoreCashTags(rows(entities, 'cashTag'));
         await stage('cashTags');
 
-        await sourceRows.restoreCashRules(rows(entities, 'cashRule'));
+        // Same gate as the expense rules above, for the same reason.
+        const restoredCashRules = rows(entities, 'cashRule').map((entity) => ({
+          ...entity,
+          matchType: entity.data.matchType,
+          pattern: entity.data.pattern,
+        }));
+        const cashTagService = createCashTagService({
+          tags: createCashTagRepository(tx),
+          rules: createCashRuleRepository(tx),
+        });
+        await cashTagService.restoreRules(userId, restoredCashRules, {
+          insertRules: (restoredRows) => sourceRows.restoreCashRules(restoredRows),
+        });
         await sourceRows.restoreCashRuleTags(rows(entities, 'cashRuleTag'));
         await stage('cashRules');
 
