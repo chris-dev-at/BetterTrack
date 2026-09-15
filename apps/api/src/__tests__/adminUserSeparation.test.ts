@@ -29,18 +29,31 @@ const EXPORT_DOWNLOAD = /export|download|archive|bundle|dump|takeout/i;
  */
 const ADMIN_USER_SURFACES = [
   'DELETE /api/v1/admin/users/{id}',
+  // #1907 ADMIN-W5. Weighed against the kill list before being added here: it
+  // CLEARS a review flag, which is admin workspace state. It reads nothing the
+  // account owns, revokes no session, key or grant, and touches no suspension
+  // tier — `disabled` remains the one suspension (§6.12).
+  'DELETE /api/v1/admin/users/{id}/flag',
   'DELETE /api/v1/admin/users/{id}/notes/{noteId}',
   'GET /api/v1/admin/users',
   'GET /api/v1/admin/users/{id}',
   'GET /api/v1/admin/users/{id}/access',
   'GET /api/v1/admin/users/{id}/audit',
   'GET /api/v1/admin/users/{id}/emails',
+  // #1907 ADMIN-W5. A read of the console's OWN decisions about this account —
+  // action, operator, reason — never of anything the account holds. It is the
+  // opposite of portfolio browsing: the subject is the operator's conduct.
+  'GET /api/v1/admin/users/{id}/moderation',
   'GET /api/v1/admin/users/{id}/notes',
   'GET /api/v1/admin/users/{id}/sharing',
   'GET /api/v1/admin/users/{id}/support',
   'PATCH /api/v1/admin/users/{id}',
   'POST /api/v1/admin/users',
   'POST /api/v1/admin/users/bulk',
+  // #1907 ADMIN-W5. RAISES a review flag. Deliberately NOT a suspension tier:
+  // it kills no session, revokes no credential and changes nothing the account
+  // can observe, which is why an operator may raise it on a suspicion.
+  'POST /api/v1/admin/users/{id}/flag',
   'POST /api/v1/admin/users/{id}/notes',
   'POST /api/v1/admin/users/{id}/reset-password',
 ] as const;

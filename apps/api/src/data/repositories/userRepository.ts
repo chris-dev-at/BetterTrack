@@ -2,7 +2,7 @@ import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, or, sql } f
 import type { SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { users, type UserRow } from '../schema';
+import { adminUserFlags, users, type UserRow } from '../schema';
 
 /**
  * Filter + order + window for the admin People list (#1406 W2). Every field is
@@ -15,6 +15,13 @@ export interface AdminUserListFilters {
   role?: 'user' | 'admin';
   status?: 'active' | 'disabled';
   privacyMode?: 'normal' | 'paranoid';
+  /**
+   * Review flag (#1907 ADMIN-W5). Tri-state: `undefined` does not filter,
+   * `true` is "flagged only", `false` is "unflagged only" — three different
+   * questions, which is why the contract keeps the key optional outside its
+   * transform instead of defaulting it to `false`.
+   */
+  flagged?: boolean;
   sort: 'createdAt' | 'lastLoginAt' | 'username' | 'email';
   direction: 'asc' | 'desc';
   limit: number;
@@ -469,6 +476,14 @@ function createUserQueries(db: Database) {
       if (filters.role) conditions.push(eq(users.role, filters.role));
       if (filters.status) conditions.push(eq(users.status, filters.status));
       if (filters.privacyMode) conditions.push(eq(users.privacyMode, filters.privacyMode));
+      if (filters.flagged !== undefined) {
+        // EXISTS against the one-row-per-account flag table: a primary-key
+        // probe per candidate row, which is what that table exists to make
+        // possible (#1907). Reading "latest flag/unflag wins" out of the
+        // append-only record would sort a user's whole history per row.
+        const flagged = sql`exists (select 1 from ${adminUserFlags} where ${adminUserFlags.userId} = ${users.id})`;
+        conditions.push(filters.flagged ? flagged : sql`not ${flagged}`);
+      }
       const where = conditions.length > 0 ? and(...conditions) : undefined;
 
       const column = {
@@ -534,8 +549,17 @@ export function createUserRepository(db: Database) {
      *
      * The callback receives transaction-scoped queries only (no nested
      * transaction primitive), keeping every user-field edit in one commit.
+     *
+     * It ALSO receives the transaction handle itself, so a caller can bind a
+     * different repository's writes to this same commit — the moderation record
+     * (#1907 ADMIN-W5) does exactly that, which is how a suspension and its
+     * reason become one atomic fact instead of two hopeful ones. The handle is
+     * deliberately opaque to services: they hand it to a repository factory and
+     * never write SQL against it themselves (§10).
      */
-    async withSerializedAdminMutation<T>(mutation: (users: UserQueries) => Promise<T>): Promise<T> {
+    async withSerializedAdminMutation<T>(
+      mutation: (users: UserQueries, tx: Database) => Promise<T>,
+    ): Promise<T> {
       return db.transaction(async (tx) => {
         const transaction = tx as unknown as Database;
         await transaction
@@ -544,7 +568,7 @@ export function createUserRepository(db: Database) {
           .where(and(eq(users.role, 'admin'), eq(users.status, 'active')))
           .orderBy(users.id)
           .for('update');
-        return mutation(createUserQueries(transaction));
+        return mutation(createUserQueries(transaction), transaction);
       });
     },
   };

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   adminTwoFactorStatusResponseSchema,
+  auditLogListResponseSchema,
   meResponseSchema,
   twoFactorChallengeResponseSchema,
   twoFactorEnrollResponseSchema,
@@ -824,6 +825,41 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
     const gated = await agent.get('/api/v1/admin/users');
     expect(gated.status).toBe(403);
     expect(gated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+  });
+
+  /**
+   * ADMIN-W6 (#1908 §3). Before this wave the console rendered this row — the
+   * single highest-privilege event the product has — identically to an
+   * anonymous failed login: both are `actor_id IS NULL`, and both said "system".
+   */
+  it('is visible in the console as a shell event, not as a system row', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    await enrollAdminTotp(harness, admin);
+    await resetAdminTwoFactorEnrollment(harness.db, admin.email);
+
+    const agent = await harness.loginAdmin(admin);
+    const page = auditLogListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/audit?preset=break_glass')).body,
+    );
+    expect(page.entries).toHaveLength(1);
+    const entry = page.entries[0]!;
+    expect(entry.action).toBe('admin.two_factor_reset');
+    expect(entry.targetId).toBe(admin.id);
+    // The FACT the script stamps, not a guess from the null actor.
+    expect(entry.actorKind).toBe('shell');
+    expect(entry.actor).toBeNull();
+
+    // And an anonymous login failure, which is also actorless, stays apart.
+    await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set('X-Requested-With', 'BetterTrack')
+      .send({ identifier: 'nobody@test.dev', password: 'whatever-it-is-wrong' });
+    const failures = auditLogListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/audit?action=login.fail')).body,
+    );
+    expect(failures.entries.length).toBeGreaterThan(0);
+    for (const failure of failures.entries) expect(failure.actorKind).toBe('unattributed');
   });
 
   it('rejects a session captured before DB-only break-glass until fresh login', async () => {

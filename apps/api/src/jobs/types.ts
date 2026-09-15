@@ -71,6 +71,12 @@ export const QUEUE_NAMES = {
   apiKeyRequestLogCleanup: 'apiKeys.requestLogCleanup',
   // V5-P14 PL-01: bounded daily purge of identifying audit + email-log rows.
   dataRetentionCleanup: 'data.retentionCleanup',
+  // ADMIN-W7a (#1909): publication of admin-composed announcements. A short
+  // repeatable sweep publishes everything whose display window has opened, and
+  // a save with an already-open window enqueues one targeted pass so "publish
+  // now" does not wait a cron interval. Never enqueued from a request path for
+  // its side effects — the admin's write returns before any fan-out starts.
+  announcementsPublishDue: 'announcements.publishDue',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -125,6 +131,10 @@ export const QUEUE_FEATURE_FLAGS: Readonly<Record<QueueName, FeatureFlagKey | nu
   'webhooks.deliveryCleanup': null,
   'apiKeys.requestLogCleanup': null,
   'data.retentionCleanup': null,
+  // No kill switch owns announcements: the catalog has no `announcements` flag,
+  // and gating this on another switch would silently stop operator notices —
+  // including the notice an operator would post ABOUT an outage.
+  'announcements.publishDue': null,
   'system.heartbeat': null,
 };
 
@@ -170,6 +180,21 @@ export interface JobPayloads {
   'webhooks.deliveryCleanup': Record<string, never>;
   'apiKeys.requestLogCleanup': Record<string, never>;
   'data.retentionCleanup': Record<string, never>;
+  /**
+   * Empty payload = the sweep (every due announcement). `announcementId` = one
+   * targeted pass. `attempt` bounds the automatic retry ladder: 0 is the first
+   * publication and 1 the single retry a partial delivery schedules — the
+   * automatic path never enqueues anything above that (see
+   * `ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT`). An operator's manual redelivery
+   * (#1943) uses `ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT`, one rung above the
+   * ladder, and is the only pass carrying an `actorId` — the admin who clicked,
+   * so the pass's own audit row names them instead of reading as a sweep.
+   */
+  'announcements.publishDue': {
+    announcementId?: string;
+    attempt?: number;
+    actorId?: string;
+  };
   'system.heartbeat': Record<string, never>;
 }
 

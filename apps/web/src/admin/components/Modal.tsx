@@ -123,12 +123,20 @@ export function Modal({
   onClose,
   children,
   dismissable = true,
+  size = 'md',
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   /** Disable Escape and backdrop dismissal until the caller acknowledges a one-time value. */
   dismissable?: boolean;
+  /**
+   * Panel width. `md` is the console default — a confirmation, a short form.
+   * `lg` is for a panel that holds a TABLE (the audit row drawer's field-by-field
+   * diff, #1908): both are `w-full` first, so the phone width is identical and
+   * the cap only changes what a desktop gets.
+   */
+  size?: 'md' | 'lg';
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // Capture this during the initial render, before React commits descendants
@@ -208,7 +216,9 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="mt-12 w-full max-w-md rounded-none border border-neutral-700 bg-neutral-900 p-5 shadow-[8px_8px_0_0_rgba(0,0,0,0.55)] sm:mt-0"
+        className={`mt-12 w-full ${
+          size === 'lg' ? 'max-w-2xl' : 'max-w-md'
+        } rounded-none border border-neutral-700 bg-neutral-900 p-5 shadow-[8px_8px_0_0_rgba(0,0,0,0.55)] sm:mt-0`}
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={onDialogKeyDown}
       >
