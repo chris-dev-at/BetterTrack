@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { pino } from 'pino';
@@ -16,6 +18,7 @@ import { alertFireLockKey, alertFireWindowStart } from '../services/alerts/alert
 import {
   createFeatureFlagService,
   FEATURE_FLAG_CACHE_KEY,
+  FEATURE_FLAG_CONFIG_UNREADABLE,
   FEATURE_FLAG_GENERATION_KEY,
   FEATURE_FLAG_PROPAGATION_UNCONFIRMED,
 } from '../services/featureFlags/featureFlagService';
@@ -333,19 +336,20 @@ describe('a flip whose propagation cannot be confirmed is not reported as clean'
       logger: harness.ctx.logger,
     });
 
-    // Cold cache, then a read that stalls mid-store-load.
+    // Cold cache, then a read that stalls mid-store-load. `isEnabledGlobally`
+    // reads the base switch, which is exactly what this race is about.
     await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
-    const inflight = reader.isEnabled('chat');
+    const inflight = reader.isEnabledGlobally('chat');
     await storeRead;
 
-    await harness.ctx.featureFlags.setFlag('chat', false, { id: admin.id });
+    await harness.ctx.featureFlags.setFlag('chat', { enabled: false }, { id: admin.id });
     release!();
     // The in-flight read legitimately answers what it read: it started first.
     expect(await inflight).toBe(true);
 
     // The very next read must see the kill — whatever the stalled one cached.
-    expect(await reader.isEnabled('chat')).toBe(false);
-    expect(await harness.ctx.featureFlags.isEnabled('chat')).toBe(false);
+    expect(await reader.isEnabledGlobally('chat')).toBe(false);
+    expect(await harness.ctx.featureFlags.isEnabledGlobally('chat')).toBe(false);
   });
 
   it('marks a confirmed flip as propagated in the audit log', async () => {
@@ -387,8 +391,9 @@ describe('a killed feature stops its background producer, not only its router', 
       redis: harness.ctx.redis,
       logger: pino({ level: 'silent' }) as unknown as Logger,
       // The REAL service the admin flip writes through — the worker resolves
-      // flags exactly the way the API context does.
-      isFeatureEnabled: (key) => harness.ctx.featureFlags.isEnabled(key),
+      // flags exactly the way the API context does: the BASE switch, because a
+      // scheduled producer has no principal to bucket (#1910).
+      isFeatureEnabledGlobally: (key) => harness.ctx.featureFlags.isEnabledGlobally(key),
     };
   }
 
@@ -497,5 +502,461 @@ describe('a killed feature stops its background producer, not only its router', 
     expect(notify.emitted).toEqual([
       expect.objectContaining({ type: 'alert.triggered', userId: user.id, alertId: alert.id }),
     ]);
+  });
+});
+
+/**
+ * Rollout targeting (#1910): percentage + allow/deny lists, resolved against the
+ * calling principal at every seam. The pure precedence rules are unit-tested in
+ * `src/services/featureFlags/__tests__/featureFlagResolution.test.ts`; what this
+ * block proves is that the HTTP stack, the store and the cache carry them.
+ */
+describe('rollout targeting reaches the request (§6.12, #1910)', () => {
+  /** Log in a freshly-seeded user and hand back both the agent and the id. */
+  async function seededAgent(
+    email: string,
+    username: string,
+  ): Promise<{ agent: Agent; id: string }> {
+    const seeded = await harness.seedUser({ email, username });
+    const agent = request.agent(harness.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: seeded.email, password: seeded.password })
+      .expect(200);
+    return { agent, id: seeded.id };
+  }
+
+  async function patchFlag(agent: Agent, key: string, body: unknown): Promise<request.Response> {
+    return await agent
+      .patch(`/api/v1/admin/feature-flags/${key}`)
+      .set(...XRW)
+      .send(body as object);
+  }
+
+  it('a bare-boolean row still resolves — true AND false (every pre-#1910 row is one)', async () => {
+    // No migration rewrote these rows and none should: a jsonb column widens for
+    // free, and a data migration over the product's kill switches is risk with no
+    // payoff. So the legacy shape has to stay legal on read, forever.
+    const store = createAppSettingsRepository(harness.db);
+    await store.upsert('feature_flag_chat', false, null);
+    await store.upsert('feature_flag_alerts', true, null);
+    await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
+
+    const user = await seededAgent('legacy-row@bt.test', 'legacyrow');
+    expect((await user.agent.get('/api/v1/chat/conversations')).status).toBe(404);
+    expect((await user.agent.get('/api/v1/alerts')).status).toBe(200);
+
+    // …and the admin list reports the legacy row with the defaulted rollout.
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    const list = await adminAgent.get('/api/v1/admin/feature-flags');
+    const chat = list.body.flags.find((f: { key: string }) => f.key === 'chat');
+    expect(chat).toMatchObject({
+      enabled: false,
+      rolloutPercent: 100,
+      allowUserIds: [],
+      denyUserIds: [],
+    });
+  });
+
+  it('resolves `requireFeature` per principal: one denied user 404s while another gets 200', async () => {
+    const denied = await seededAgent('denied@bt.test', 'denieduser');
+    const allowed = await seededAgent('allowed@bt.test', 'alloweduser');
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    expect((await patchFlag(adminAgent, 'chat', { denyUserIds: [denied.id] })).status).toBe(200);
+
+    // Same route, same moment, same deployment — two answers, by design.
+    const refused = await denied.agent.get('/api/v1/chat/conversations');
+    expect(refused.status).toBe(404);
+    expect(refused.body.error?.code).toBe('FEATURE_DISABLED');
+    expect((await allowed.agent.get('/api/v1/chat/conversations')).status).toBe(200);
+  });
+
+  it('`enabled: false` refuses an ALLOWLISTED user through the real HTTP guard', async () => {
+    const user = await seededAgent('killswitch@bt.test', 'killswitch');
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const patched = await patchFlag(adminAgent, 'imports', {
+      enabled: false,
+      allowUserIds: [user.id],
+    });
+    expect(patched.status).toBe(200);
+    const flag = patched.body.flags.find((f: { key: string }) => f.key === 'imports');
+    expect(flag.enabled).toBe(false);
+    expect(flag.allowUserIds).toEqual([user.id]);
+
+    // The allowlist is stored and returned, and it still does not save them.
+    expect((await user.agent.get('/api/v1/imports/brokers')).status).toBe(404);
+  });
+
+  it('`rolloutPercent: 0` closes the route for an authenticated user; the allowlist reopens it', async () => {
+    const user = await seededAgent('rollout@bt.test', 'rolloutuser');
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    expect((await patchFlag(adminAgent, 'alerts', { rolloutPercent: 0 })).status).toBe(200);
+    expect((await user.agent.get('/api/v1/alerts')).status).toBe(404);
+
+    // A patch is a MERGE: adding the allowlist must not reset the percentage.
+    const merged = await patchFlag(adminAgent, 'alerts', { allowUserIds: [user.id] });
+    expect(merged.status).toBe(200);
+    const flag = merged.body.flags.find((f: { key: string }) => f.key === 'alerts');
+    expect(flag.rolloutPercent).toBe(0);
+    expect((await user.agent.get('/api/v1/alerts')).status).toBe(200);
+  });
+
+  it('rejects a malformed rollout — out-of-range percent, non-uuid ids, an over-long list, an unknown key', async () => {
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    const tooMany = Array.from({ length: 201 }, () => randomUUID());
+    for (const body of [
+      { rolloutPercent: 101 },
+      { rolloutPercent: -1 },
+      { rolloutPercent: 12.5 },
+      { allowUserIds: ['not-a-uuid'] },
+      { denyUserIds: tooMany },
+      { enabled: true, allowUserIDs: [] },
+      { privacyMode: 'paranoid' },
+    ]) {
+      const res = await patchFlag(adminAgent, 'chat', body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+});
+
+describe('the anonymous bootstrap never publishes the rollout (#1910 §3)', () => {
+  it('carries no rolloutPercent / allowUserIds / denyUserIds — asserted over the raw body', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const seeded = await harness.seedUser({ email: 'listed@bt.test', username: 'listeduser' });
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/ai')
+      .set(...XRW)
+      .send({ rolloutPercent: 40, allowUserIds: [seeded.id], denyUserIds: [admin.id] })
+      .expect(200);
+
+    const res = await request(harness.app).get('/api/v1/feature-flags');
+    expect(res.status).toBe(200);
+
+    // The schema is `.strict()`, but a schema only proves what it was asked to
+    // parse. This reads the SERIALIZED body: a user id leaking through any
+    // field, at any depth, fails here.
+    const raw = res.text;
+    expect(raw).not.toContain(seeded.id);
+    expect(raw).not.toContain(admin.id);
+    expect(raw).not.toContain('rolloutPercent');
+    expect(raw).not.toContain('allowUserIds');
+    expect(raw).not.toContain('denyUserIds');
+    expect(Object.keys(res.body).sort()).toEqual(['capabilities', 'flags']);
+    for (const value of Object.values(res.body.flags)) expect(typeof value).toBe('boolean');
+  });
+
+  it('reports a partially-rolled flag as OFF pre-login, and the same flag as ON to a user inside the rollout', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const seeded = await harness.seedUser({ email: 'inside@bt.test', username: 'insideuser' });
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/liveMode')
+      .set(...XRW)
+      .send({ rolloutPercent: 50, allowUserIds: [seeded.id] })
+      .expect(200);
+
+    // Anonymous: not fully rolled ⇒ OFF. Advertising it would promise a surface
+    // that `requireFeature` then refuses for most accounts.
+    const anon = await request(harness.app).get('/api/v1/feature-flags');
+    expect(anon.body.flags.liveMode).toBe(false);
+    // Unaffected flags still read ON — this is targeting, not a blackout.
+    expect(anon.body.flags.chat).toBe(true);
+
+    const agent = request.agent(harness.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: seeded.email, password: seeded.password })
+      .expect(200);
+    const authed = await agent.get('/api/v1/feature-flags');
+    expect(authed.body.flags.liveMode).toBe(true);
+  });
+
+  it('is `Cache-Control: no-store` — the answer is principal-dependent now', async () => {
+    const res = await request(harness.app).get('/api/v1/feature-flags');
+    // A shared cache (CDN, proxy, a browser store on a shared machine) keyed on
+    // the URL alone would hand one user's resolution to another.
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('serves two principals different answers from ONE warm snapshot', async () => {
+    // The cache must hold CONFIGURATION, not a resolved map. Caching the
+    // resolved answer is the same bug as a shared HTTP cache: whoever misses
+    // first decides for everyone until the TTL expires.
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const inside = await harness.seedUser({ email: 'warm-in@bt.test', username: 'warmin' });
+    const outside = await harness.seedUser({ email: 'warm-out@bt.test', username: 'warmout' });
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ rolloutPercent: 0, allowUserIds: [inside.id] })
+      .expect(200);
+
+    const login = async (user: { email: string; password: string }): Promise<Agent> => {
+      const agent = request.agent(harness.app);
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: user.email, password: user.password })
+        .expect(200);
+      return agent;
+    };
+    const insideAgent = await login(inside);
+    const outsideAgent = await login(outside);
+
+    // Warm the snapshot with the OUTSIDE user's request first, so a resolved-map
+    // cache would have stored `chat: false` for everyone.
+    expect((await outsideAgent.get('/api/v1/feature-flags')).body.flags.chat).toBe(false);
+    const cached = await harness.ctx.redis.get(FEATURE_FLAG_CACHE_KEY);
+    expect(cached, 'the read must have populated the shared snapshot').not.toBeNull();
+    expect(JSON.parse(cached!).config.chat).toMatchObject({ enabled: true, rolloutPercent: 0 });
+
+    // Same warm snapshot, different principal, different answer.
+    expect((await insideAgent.get('/api/v1/feature-flags')).body.flags.chat).toBe(true);
+    expect((await insideAgent.get('/api/v1/chat/conversations')).status).toBe(200);
+    expect((await outsideAgent.get('/api/v1/chat/conversations')).status).toBe(404);
+  });
+});
+
+describe('the audit row records the rollout by SHAPE, never by identity (#1910 §4)', () => {
+  it('logs before/after with list LENGTHS, and no seeded user id anywhere in meta', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const alice = await harness.seedUser({ email: 'audit-a@bt.test', username: 'auditalice' });
+    const bob = await harness.seedUser({ email: 'audit-b@bt.test', username: 'auditbob' });
+
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/imports')
+      .set(...XRW)
+      .send({ rolloutPercent: 25, allowUserIds: [alice.id], denyUserIds: [bob.id] })
+      .expect(200);
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const entry = audit.body.entries.find(
+      (e: { action: string; meta?: { key?: string } }) =>
+        e.action === 'feature_flag.changed' && e.meta?.key === 'imports',
+    );
+    expect(entry).toBeDefined();
+    expect(entry.meta.before).toEqual({
+      enabled: true,
+      rolloutPercent: 100,
+      allowCount: 0,
+      denyCount: 0,
+    });
+    expect(entry.meta.after).toEqual({
+      enabled: true,
+      rolloutPercent: 25,
+      allowCount: 1,
+      denyCount: 1,
+    });
+
+    // An audit row is retained for BT_AUDIT_RETENTION_DAYS (400 by default).
+    // Copying account ids into it every time an operator nudges a rollout would
+    // make the security log a second, unmanaged store of exactly the identifiers
+    // the public bootstrap is forbidden to publish.
+    const serialized = JSON.stringify(entry.meta);
+    expect(serialized).not.toContain(alice.id);
+    expect(serialized).not.toContain(bob.id);
+  });
+});
+
+/**
+ * A stored row the current schema cannot parse must never READ as "on".
+ *
+ * The bug this pins: `parseStoredConfig` returned `null` for any schema failure
+ * and all three readers fell back to the default — which is `enabled: true`. A
+ * row carrying `enabled: false` plus one field `.strict()` refuses therefore
+ * advertised the feature as ON, served its routes, showed the operator a healthy
+ * `{ enabled: true, rolloutPercent: 100 }`, and let the next PATCH write that
+ * invention back as fact. Precedence step 1 says `enabled === false` is absolute;
+ * this is that rule being undone one layer below where it is expressed.
+ *
+ * It is not hypothetical: `.strict()` on the READ path means the FIRST field any
+ * future wave adds to `featureFlagConfigSchema` makes every row written by the
+ * previous version unreadable — i.e. every kill switch in the estate turns ON
+ * during the deploy.
+ */
+describe('an unparseable stored row can never resurrect a killed feature', () => {
+  /** The row an older/newer writer leaves behind: killed, plus a field we refuse. */
+  const KILLED_WITH_UNKNOWN_FIELD = {
+    enabled: false,
+    rolloutPercent: 100,
+    allowUserIds: [],
+    denyUserIds: [],
+    futureField: 'written by a later version',
+  };
+
+  async function storeRaw(key: string, value: unknown): Promise<void> {
+    await createAppSettingsRepository(harness.db).upsert(`feature_flag_${key}`, value, null);
+    await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
+  }
+
+  it('keeps the feature OFF on the bootstrap and at the route guard', async () => {
+    await storeRaw('chat', KILLED_WITH_UNKNOWN_FIELD);
+
+    const anon = await request(harness.app).get('/api/v1/feature-flags');
+    expect(anon.body.flags.chat).toBe(false);
+    // A flag we CAN parse is unaffected — this is a per-row salvage, not a
+    // global fail-closed flip that would take the whole product down over one
+    // bad row.
+    expect(anon.body.flags.alerts).toBe(true);
+
+    const seeded = await harness.seedUser({ email: 'salvage@bt.test', username: 'salvageuser' });
+    const agent = request.agent(harness.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: seeded.email, password: seeded.password })
+      .expect(200);
+    const refused = await agent.get('/api/v1/chat/conversations');
+    expect(refused.status).toBe(404);
+    expect(refused.body.error?.code).toBe('FEATURE_DISABLED');
+    // The unaffected flag still serves, so the 404 above is the switch, not a
+    // broken harness.
+    expect((await agent.get('/api/v1/alerts')).status).toBe(200);
+  });
+
+  it('shows the operator the switch is OFF, not an invented healthy row', async () => {
+    await storeRaw('chat', KILLED_WITH_UNKNOWN_FIELD);
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const list = await adminAgent.get('/api/v1/admin/feature-flags');
+    const chat = list.body.flags.find((f: { key: string }) => f.key === 'chat');
+    expect(chat.enabled).toBe(false);
+  });
+
+  it('refuses a partial PATCH onto a row it cannot read, and keeps the kill', async () => {
+    await storeRaw('chat', { enabled: false, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    // Merging onto an unreadable row means inventing the fields the patch omits.
+    // For `enabled` that invention is the kill switch itself, so the write is
+    // refused rather than guessed.
+    const refused = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ rolloutPercent: 50 });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error?.code).toBe(FEATURE_FLAG_CONFIG_UNREADABLE);
+
+    // The kill survives the refusal.
+    const anon = await request(harness.app).get('/api/v1/feature-flags');
+    expect(anon.body.flags.chat).toBe(false);
+  });
+
+  it('accepts a COMPLETE replacement, which invents nothing — the operator escape hatch', async () => {
+    await storeRaw('chat', { enabled: false, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const repaired = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: true, rolloutPercent: 50, allowUserIds: [], denyUserIds: [] });
+    expect(repaired.status).toBe(200);
+    const chat = repaired.body.flags.find((f: { key: string }) => f.key === 'chat');
+    expect(chat).toMatchObject({ enabled: true, rolloutPercent: 50 });
+  });
+
+  it('records a TRUTHFUL audit `before` — never the invented default', async () => {
+    await storeRaw('imports', KILLED_WITH_UNKNOWN_FIELD);
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/imports')
+      .set(...XRW)
+      .send({ rolloutPercent: 50 })
+      .expect(200);
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const entry = audit.body.entries.find(
+      (e: { action: string; meta?: { key?: string } }) =>
+        e.action === 'feature_flag.changed' && e.meta?.key === 'imports',
+    );
+    // `enabled: false` was readable in the row, so it is what the log says the
+    // flip moved away from. Recording `true` here would describe an incident
+    // that never happened.
+    expect(entry.meta.before.enabled).toBe(false);
+    expect(entry.meta.after.enabled).toBe(false);
+  });
+
+  it('still degrades to ON when an ENABLED flag has a garbled rollout', async () => {
+    // The salvage honours `enabled` and defaults only the targeting fields, so a
+    // flag whose rollout is unreadable serves everyone rather than nobody: an
+    // unreadable ROLLOUT is not a kill, and failing that one closed would take a
+    // working feature down over a cosmetic field.
+    await storeRaw('alerts', { enabled: true, rolloutPercent: 'fifty', allowUserIds: 'nope' });
+
+    const anon = await request(harness.app).get('/api/v1/feature-flags');
+    expect(anon.body.flags.alerts).toBe(true);
+
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    const list = await adminAgent.get('/api/v1/admin/feature-flags');
+    const alerts = list.body.flags.find((f: { key: string }) => f.key === 'alerts');
+    expect(alerts).toMatchObject({ enabled: true, rolloutPercent: 100, allowUserIds: [] });
+  });
+});
+
+/**
+ * Rollback safety (#1910 H1). Pre-#1910 code reads a row with
+ * `typeof value === 'boolean'` and falls back to "every flag ON" for anything
+ * else — so a deploy that rolled BACK past this change would read every object
+ * row as unset and turn every killed feature on.
+ *
+ * The write path therefore keeps the legacy SHAPE whenever there is no targeting
+ * to express: an untargeted flag is still a bare boolean on disk, and only a
+ * genuinely targeted one costs the object form.
+ */
+describe('an untargeted flag is still stored in the pre-#1910 shape', () => {
+  async function storedValue(key: string): Promise<unknown> {
+    const row = await createAppSettingsRepository(harness.db).get(`feature_flag_${key}`);
+    return row?.value;
+  }
+
+  it('writes a bare boolean for a plain kill, so a rollback still reads the kill', async () => {
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: false })
+      .expect(200);
+
+    expect(await storedValue('chat')).toBe(false);
+    // …and this instance still reads it correctly, so the legacy shape is not a
+    // downgrade in behaviour.
+    expect((await request(harness.app).get('/api/v1/feature-flags')).body.flags.chat).toBe(false);
+  });
+
+  it('writes the object form only once targeting exists, and drops back when it goes', async () => {
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    const seeded = await harness.seedUser({ email: 'shape@bt.test', username: 'shapeuser' });
+
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send({ rolloutPercent: 25 })
+      .expect(200);
+    expect(await storedValue('alerts')).toMatchObject({ enabled: true, rolloutPercent: 25 });
+
+    // An allow list alone is targeting too.
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/imports')
+      .set(...XRW)
+      .send({ allowUserIds: [seeded.id] })
+      .expect(200);
+    expect(await storedValue('imports')).toMatchObject({ allowUserIds: [seeded.id] });
+
+    // Removing the targeting returns the row to the shape a rollback understands.
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send({ rolloutPercent: 100 })
+      .expect(200);
+    expect(await storedValue('alerts')).toBe(true);
   });
 });

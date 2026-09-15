@@ -5227,7 +5227,30 @@
           "name": "AI",
           "description": "AI portfolio insights and the natural-language Blueprint builder (local provider)."
         }
-      }
+      },
+      "onForPercent": "On for {{percent}} %",
+      "onForAccounts": {
+        "one": "On for 1 account",
+        "other": "On for {{count}} accounts"
+      },
+      "onForPercentAndAccounts": {
+        "one": "On for {{percent}} % + 1 account",
+        "other": "On for {{percent}} % + {{count}} accounts"
+      },
+      "killedNote": "The switch is off, so this feature is off for everyone — the rollout below, allow list included, does not apply.",
+      "rolloutHeading": "Rollout",
+      "percentLabel": "Rollout %",
+      "percentHint": "0–100. Each account lands in a stable bucket, so widening never takes the feature away from someone who had it.",
+      "allowLabel": "Always on for",
+      "allowHint": "One account id per line. Always on, whatever the percentage — unless the switch above is off.",
+      "denyLabel": "Always off for",
+      "denyHint": "One account id per line. Always off; wins over the allow list and over 100 %.",
+      "saveRollout": "Save rollout",
+      "resetRollout": "Discard changes",
+      "unsaved": "Unsaved changes",
+      "percentError": "The rollout must be a whole number between 0 and 100.",
+      "idError": "Every entry must be an account id (UUID), one per line.",
+      "listTooLong": "At most {{max}} account ids per list."
     },
     "usageAnalytics": {
       "title": "Usage analytics",
@@ -5286,18 +5309,22 @@
       "trigger": "Search or jump to…",
       "shortcut": "⌘K",
       "title": "Admin command palette",
-      "inputAria": "Search pages, users and problems",
-      "placeholder": "Search pages, users, problems…",
+      "inputAria": "Search pages, users, problems, announcements, feature flags and invites",
+      "placeholder": "Search pages, users, announcements, flags…",
       "resultsAria": "Search results",
       "groups": {
         "pages": "Pages",
         "people": "People",
-        "problems": "Open problems"
+        "problems": "Open problems",
+        "announcements": "Announcements",
+        "flags": "Feature flags",
+        "access": "Invites & tokens"
       },
       "verb": {
         "page": "Page",
         "user": "User",
-        "disabled": "Disabled"
+        "disabled": "Disabled",
+        "flag": "Flag"
       },
       "searching": "Searching…",
       "noUsers": "No matching users.",
@@ -5307,7 +5334,11 @@
       "noResults": "Nothing matches “{{query}}”.",
       "navigateHint": "↑ ↓ to move",
       "openHint": "↵ to open",
-      "scopeNote": "Navigation only — nothing here changes data."
+      "scopeNote": "Navigation only — nothing here changes data.",
+      "announcementsError": "Could not load announcements.",
+      "noAnnouncements": "No matching announcements.",
+      "accessError": "Could not load invites or registration tokens.",
+      "noAccess": "No matching invites or registration tokens."
     },
     "overview": {
       "title": "Overview",

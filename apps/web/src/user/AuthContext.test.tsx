@@ -8,6 +8,7 @@ import type { MeResponse } from '@bettertrack/contracts';
 vi.mock('../lib/userApi');
 
 import { ApiError } from '../lib/apiClient';
+import { FEATURE_FLAGS_QUERY_KEY } from '../lib/featureFlags';
 import * as api from '../lib/userApi';
 import { AuthProvider, useAuth } from './AuthContext';
 import {
@@ -327,4 +328,45 @@ test('a login as a different user leaves the remembered record alone', async () 
     username: 'bob',
     profileIcon: 'fox',
   });
+});
+
+/**
+ * The feature-flag bootstrap is principal-dependent since #1910 — a flag can be
+ * rolled out to a percentage of accounts or to a named list — so the anonymous
+ * map the shell fetched before login is not this account's map. `applyUser` is
+ * the single door into a session user, and dropping the cached bootstrap there
+ * is what makes the refetch cover login, 2FA verify, registration, quick-auth
+ * and OAuth adoption instead of whichever path someone remembered to patch.
+ */
+test('adopting a session user invalidates the feature-flag bootstrap', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'unauthorized', 'nope'));
+  vi.mocked(api.login).mockResolvedValue(member);
+
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+  render(
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <AuthProbe />
+      </AuthProvider>
+    </QueryClientProvider>,
+  );
+
+  await expectStatus('anonymous');
+  // The anonymous shell has not adopted anyone, so nothing has been dropped.
+  expect(
+    invalidate.mock.calls.filter(([args]) =>
+      Array.isArray((args as { queryKey?: unknown })?.queryKey)
+        ? (args as { queryKey: unknown[] }).queryKey[0] === 'feature-flags'
+        : false,
+    ),
+  ).toHaveLength(0);
+
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+  await expectStatus('authenticated');
+
+  await waitFor(() =>
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: FEATURE_FLAGS_QUERY_KEY }),
+  );
 });

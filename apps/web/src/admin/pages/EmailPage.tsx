@@ -7,6 +7,7 @@ import * as api from '../../lib/adminApi';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
 import { useT } from '../../i18n';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { EmailLogTable } from '../components/EmailLogTable';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
@@ -19,6 +20,7 @@ import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../compone
  */
 export function EmailPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const onFailure = useAdminCallFailure();
   const status = useResource((signal) => api.getEmailStatus(signal), []);
   const loadLog = useCallback(
@@ -50,7 +52,7 @@ export function EmailPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        eyebrow={t('admin.nav.sections.operations')}
+        eyebrow={eyebrow}
         title="Email"
         description="Check the SMTP channel and send a test message to confirm delivery."
       />

@@ -14,6 +14,7 @@ import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
 import { adminSignOutReason } from '../sessionExpiry';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { ActorValue, AuditEntryDrawer, stringify } from '../components/AuditEntryDrawer';
@@ -126,6 +127,7 @@ const dayInputFromIso = (iso: string | null, exclusive: boolean): string => {
  */
 export function AuditPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const { clearSession, requireTwoFactorSetup } = useAuth();
   const [params, setParams] = useSearchParams();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
@@ -284,7 +286,7 @@ export function AuditPage() {
       <PageHeader
         title={t('admin.audit.title')}
         description={t('admin.audit.subtitle')}
-        eyebrow={t('admin.nav.sections.securityApi')}
+        eyebrow={eyebrow}
       />
 
       {/* Standing, never behind a fold: a break-glass 2FA reset is the single

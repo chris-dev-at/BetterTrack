@@ -5227,7 +5227,30 @@
           "name": "KI",
           "description": "KI-Portfolio-Einblicke und der Sprach-Blueprint-Builder (lokaler Anbieter)."
         }
-      }
+      },
+      "onForPercent": "An für {{percent}} %",
+      "onForAccounts": {
+        "one": "An für 1 Konto",
+        "other": "An für {{count}} Konten"
+      },
+      "onForPercentAndAccounts": {
+        "one": "An für {{percent}} % + 1 Konto",
+        "other": "An für {{percent}} % + {{count}} Konten"
+      },
+      "killedNote": "Der Schalter ist aus, damit ist die Funktion für alle aus — der Rollout unten gilt nicht, auch die Immer-an-Liste nicht.",
+      "rolloutHeading": "Rollout",
+      "percentLabel": "Rollout %",
+      "percentHint": "0–100. Jedes Konto liegt in einem festen Bucket, deshalb nimmt eine Ausweitung niemandem die Funktion wieder weg.",
+      "allowLabel": "Immer an für",
+      "allowHint": "Eine Konto-ID pro Zeile. Immer an, unabhängig vom Prozentsatz — außer der Schalter oben ist aus.",
+      "denyLabel": "Immer aus für",
+      "denyHint": "Eine Konto-ID pro Zeile. Immer aus; schlägt die Immer-an-Liste und auch 100 %.",
+      "saveRollout": "Rollout speichern",
+      "resetRollout": "Änderungen verwerfen",
+      "unsaved": "Nicht gespeicherte Änderungen",
+      "percentError": "Der Rollout muss eine ganze Zahl zwischen 0 und 100 sein.",
+      "idError": "Jeder Eintrag muss eine Konto-ID (UUID) sein, eine pro Zeile.",
+      "listTooLong": "Höchstens {{max}} Konto-IDs pro Liste."
     },
     "usageAnalytics": {
       "title": "Nutzungsanalyse",
@@ -5286,18 +5309,22 @@
       "trigger": "Suchen oder springen…",
       "shortcut": "⌘K",
       "title": "Admin-Befehlspalette",
-      "inputAria": "Seiten, Nutzer und Probleme durchsuchen",
-      "placeholder": "Seiten, Nutzer, Probleme suchen…",
+      "inputAria": "Seiten, Nutzer, Probleme, Ankündigungen, Feature-Flags und Einladungen durchsuchen",
+      "placeholder": "Seiten, Nutzer, Ankündigungen, Flags suchen…",
       "resultsAria": "Suchergebnisse",
       "groups": {
         "pages": "Seiten",
         "people": "Personen",
-        "problems": "Offene Probleme"
+        "problems": "Offene Probleme",
+        "announcements": "Ankündigungen",
+        "flags": "Feature-Flags",
+        "access": "Einladungen & Token"
       },
       "verb": {
         "page": "Seite",
         "user": "Nutzer",
-        "disabled": "Deaktiviert"
+        "disabled": "Deaktiviert",
+        "flag": "Flag"
       },
       "searching": "Wird gesucht…",
       "noUsers": "Keine passenden Nutzer.",
@@ -5307,7 +5334,11 @@
       "noResults": "Nichts passt zu „{{query}}“.",
       "navigateHint": "↑ ↓ zum Wechseln",
       "openHint": "↵ zum Öffnen",
-      "scopeNote": "Nur Navigation — hier wird nichts verändert."
+      "scopeNote": "Nur Navigation — hier wird nichts verändert.",
+      "announcementsError": "Ankündigungen konnten nicht geladen werden.",
+      "noAnnouncements": "Keine passenden Ankündigungen.",
+      "accessError": "Einladungen oder Registrierungs-Token konnten nicht geladen werden.",
+      "noAccess": "Keine passenden Einladungen oder Registrierungs-Token."
     },
     "overview": {
       "title": "Übersicht",

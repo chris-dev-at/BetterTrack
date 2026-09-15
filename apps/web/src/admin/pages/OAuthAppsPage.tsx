@@ -15,6 +15,7 @@ import { ScopePicker } from '../../ui';
 import { formatDateTime } from '../../lib/format';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { Modal } from '../components/Modal';
 import {
   Alert,
@@ -45,6 +46,7 @@ function errorMessage(t: TranslateFn): string {
  */
 export function OAuthAppsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const onFailure = useAdminCallFailure();
   const [name, setName] = useState('');
   const [redirectUri, setRedirectUri] = useState('');
@@ -105,7 +107,11 @@ export function OAuthAppsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={t('admin.oauthApps.title')} description={t('admin.oauthApps.subtitle')} />
+      <PageHeader
+        eyebrow={eyebrow}
+        title={t('admin.oauthApps.title')}
+        description={t('admin.oauthApps.subtitle')}
+      />
 
       <form
         onSubmit={onCreate}
