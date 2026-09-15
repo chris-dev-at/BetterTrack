@@ -29,6 +29,7 @@ import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
 import {
   AuditAction,
+  bearerScopeDeniedMetaSchema,
   type AuditService,
   type BearerScopeDenialReason,
 } from '../audit/auditService';
@@ -418,13 +419,20 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
     },
 
     async recordScopeDenied({ userId, keyId, requiredScope, reason, method, path, ip }) {
+      // Parsed, not cast (#1951 §1): `reason` is a closed vocabulary and this is
+      // the point where it becomes a durable row, so an out-of-vocabulary value
+      // — or an extra key carrying credential material — throws here instead of
+      // being persisted for the full audit retention. The refusal the caller is
+      // answering is unaffected: a throw can only come from a caller that
+      // bypassed the compile-time union.
+      const meta = bearerScopeDeniedMetaSchema.parse({ requiredScope, reason, method, path });
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyScopeDenied,
         targetType: 'api_key',
         targetId: keyId,
         ip: ip ?? null,
-        meta: { requiredScope, reason, method, path },
+        meta,
       });
     },
 

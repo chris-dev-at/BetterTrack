@@ -42,6 +42,7 @@ import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import {
   AuditAction,
+  bearerScopeDeniedMetaSchema,
   type AuditService,
   type BearerScopeDenialReason,
 } from '../audit/auditService';
@@ -854,13 +855,23 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     },
 
     async recordScopeDenied({ userId, grantId, requiredScope, reason, method, path, ip }) {
+      // The OAuth twin of the personal-key writer, through the SAME strict meta
+      // contract (#1951 §1) — one schema, so the two shapes cannot drift and a
+      // bogus `reason` cannot reach the row on either rail.
+      const meta = bearerScopeDeniedMetaSchema.parse({
+        requiredScope,
+        reason,
+        method,
+        path,
+        kind: 'oauth',
+      });
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyScopeDenied,
         targetType: 'oauth_grant',
         targetId: grantId,
         ip: ip ?? null,
-        meta: { requiredScope, reason, method, path, kind: 'oauth' },
+        meta,
       });
     },
   };
