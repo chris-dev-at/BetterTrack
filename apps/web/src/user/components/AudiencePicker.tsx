@@ -295,6 +295,9 @@ export function AudiencePicker({
       setGroupId(null);
       setWidenConfirmed(false);
       void queryClient.invalidateQueries({ queryKey: ['social', 'groups'] });
+      // The audience read too, so the re-seeded form describes the server's
+      // CURRENT audience, not the cached one the refused write was based on.
+      void queryClient.invalidateQueries({ queryKey: ['social', 'audience', kind, subjectId] });
     },
   });
   /** The refusal above, as the dialog renders it. */
