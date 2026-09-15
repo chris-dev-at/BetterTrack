@@ -14,6 +14,7 @@ import {
   workboardItems,
 } from '../schema';
 import type { FriendRequestRow } from '../schema';
+import { activeFriendOf } from './activeFriend';
 
 /**
  * Social-graph SQL (PROJECTPLAN.md §5.5, §6.9). All queries for
@@ -531,35 +532,38 @@ export function createFriendshipRepository(db: Database) {
       return updated.length > 0;
     },
 
-    /** The caller's friends — the other party of each friendship + when it formed. */
+    /**
+     * The caller's friends — the other party of each friendship + when it formed.
+     *
+     * Scoped by {@link activeFriendOf}, the one definition every seam that feeds
+     * a circle shares (#1897). This list is what the SPA offers as group
+     * candidates and what the `all_friends` fan-out resolves, so an entry here
+     * that a roster would drop is an Add button that silently does nothing and a
+     * `*.shared` notice pointing at an item its recipient can never open.
+     */
     async listFriends(userId: string): Promise<FriendRow[]> {
-      const ua = alias(users, 'ua');
-      const ub = alias(users, 'ub');
+      // The other side of each of the caller's friendships. Aliased because the
+      // shared predicate re-declares `users` in its own scope, so the row it is
+      // asked about has to be reachable under a different name.
+      const friend = alias(users, 'friend');
       const rows = await db
         .select({
-          userA: friendships.userA,
-          userB: friendships.userB,
+          id: friend.id,
+          username: friend.username,
+          profileIcon: friend.profileIcon,
           createdAt: friendships.createdAt,
-          usernameA: ua.username,
-          usernameB: ub.username,
-          profileIconA: ua.profileIcon,
-          profileIconB: ub.profileIcon,
         })
         .from(friendships)
-        .innerJoin(ua, eq(ua.id, friendships.userA))
-        .innerJoin(ub, eq(ub.id, friendships.userB))
-        .where(or(eq(friendships.userA, userId), eq(friendships.userB, userId)))
+        .innerJoin(
+          friend,
+          or(
+            and(eq(friendships.userA, userId), eq(friend.id, friendships.userB)),
+            and(eq(friendships.userB, userId), eq(friend.id, friendships.userA)),
+          ),
+        )
+        .where(activeFriendOf(userId, friend.id))
         .orderBy(friendships.createdAt);
-
-      return rows.map((r) => {
-        const other = r.userA === userId;
-        return {
-          id: other ? r.userB : r.userA,
-          username: other ? r.usernameB : r.usernameA,
-          profileIcon: other ? r.profileIconB : r.profileIconA,
-          createdAt: r.createdAt,
-        };
-      });
+      return rows;
     },
 
     /**

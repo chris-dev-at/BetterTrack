@@ -776,6 +776,12 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // Ownership first (404 for a foreign/unknown group), THEN the friendship
       // gate — only an accepted friend can join, so a `group` audience never
       // reaches a non-friend (§6.9). Idempotent: re-adding is a no-op.
+      //
+      // `isFriend` answers with the same definition the roster read applies
+      // (#1897), so an add that could not take effect is REFUSED by name here
+      // rather than returning 200 over a stored row the roster then drops —
+      // which left the candidate in the picker, the response unchanged, and the
+      // owner clicking Add forever with nothing to see for it.
       if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
       if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
       const add = async () => {
@@ -787,15 +793,15 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           (await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX &&
           !(await groups.isMember(groupId, memberId))
         ) {
-          // The ceiling counts STORED rows, but the owner only ever sees the
-          // LIVE roster — a row for a disabled or no-longer-friend member is
+          // The stored rows reached the ceiling, but the owner only ever sees
+          // the LIVE roster — a row for a disabled or no-longer-friend member is
           // absent from `members`, so it has no Remove button and the refusal it
           // causes can neither be explained nor cleared (#1830). Drop those rows
-          // first: what is left blocking the add is then exactly the population
-          // `memberCount` reports and the owner can act on, so the refusal below
-          // names a real, fixable cause.
+          // first, then gate on the population the roster actually returns
+          // (#1897): only members the owner can see and remove may consume the
+          // budget, so the refusal below always names a real, fixable cause.
           await groups.pruneUnreachableMembers(groupId);
-          if ((await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX) {
+          if ((await groups.countActiveMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX) {
             throw GROUP_MEMBER_LIMIT_REACHED();
           }
         }
