@@ -19,6 +19,7 @@ import {
   auditQuerySchema,
   bulkUserActionRequestSchema,
   announcementListResponseSchema,
+  announcementRedeliverResponseSchema,
   createAnnouncementRequestSchema,
   createInviteRequestSchema,
   createOAuthClientRequestSchema,
@@ -751,6 +752,24 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     const { id } = req.valid?.params as { id: string };
     await ctx.announcements.remove(id, actorOf(req));
     res.status(204).send();
+  });
+
+  // Re-run one announcement's fan-out for the recipients it missed (ADMIN-W7c,
+  // #1943). The console showed a published announcement standing at "N failed"
+  // with no action attached to it: the automatic ladder is bounded at a single
+  // retry, so those inbox rows were never written.
+  //
+  // **202, not 200.** A fan-out is a keyset walk of the whole user table — the
+  // request path must never run it (#1909) — so this validates, audits with the
+  // acting admin, hands ONE targeted pass to the existing
+  // `announcements.publishDue` queue and returns the job identity. The console
+  // polls `GET /admin/announcements` for the outcome. Guarded by the same
+  // `requireAdmin` + `requireAdminTwoFactor` pair as every route in this file,
+  // and metered by `limiters.admin` mounted at the router root.
+  router.post('/announcements/:id/redeliver', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    const accepted = await ctx.announcements.redeliver(id, actorOf(req));
+    res.status(202).json(announcementRedeliverResponseSchema.parse(accepted));
   });
 
   return router;

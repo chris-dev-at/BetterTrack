@@ -4515,6 +4515,12 @@
         "confirm": "Delete announcement",
         "pending": "Deleting…"
       },
+      "redeliverAnnouncement": {
+        "title": "Retry failed deliveries?",
+        "description": "Send “{{name}}” again to the {{failed}} recipients it did not reach? Everyone who already has it keeps exactly one copy.",
+        "confirm": "Retry delivery",
+        "pending": "Queueing…"
+      },
       "deleteOAuthApp": {
         "title": "Delete OAuth app?",
         "description": "Delete “{{name}}”? Existing integrations will stop working.",
@@ -6067,9 +6073,14 @@
         "reachPending": "Not yet delivered",
         "reachDelivered": "{{delivered}} delivered",
         "reachFailed": "{{failed}} failed",
+        "redeliver": "Retry failed deliveries",
         "edit": "Edit",
         "activate": "Activate",
         "deactivate": "Deactivate"
+      },
+      "redeliver": {
+        "queued": "Retrying delivery to {{failed}} recipients. The list updates once the retry has run.",
+        "unavailable": "The delivery queue is unavailable right now. Try again shortly."
       },
       "state": {
         "draft": "Draft",

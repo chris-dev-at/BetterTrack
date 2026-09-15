@@ -334,3 +334,131 @@ test('sends the typed window as UTC, read as Europe/Vienna wall clock', async ()
   expect(toInputDateTime('2026-12-01T08:00:00.000Z')).toBe('2026-12-01T09:00');
   expect(fromInputDateTime('')).toBeNull();
 });
+
+/**
+ * ADMIN-W7c (#1943). The reach cell showed a red "N failed" with nothing
+ * attached to it: the automatic ladder stops after one retry, so those
+ * recipients were never getting their inbox row. The retry is the operator's
+ * hand on that — and it only exists where there is a failure to act on.
+ */
+const failedDelivery: Announcement = {
+  ...announcement,
+  id: '00000000-0000-0000-0000-0000000000cc',
+  titleEn: 'Migration notice',
+  titleDe: 'Migrationshinweis',
+  deliveredCount: 125,
+  failedCount: 3,
+};
+
+test('offers the delivery retry only on a row that has failures', async () => {
+  vi.mocked(api.listAnnouncements).mockResolvedValue({
+    announcements: [announcement, failedDelivery, scheduled],
+  });
+  renderPage();
+
+  const label = localizedMessage('en', 'admin.announcements.list.redeliver');
+  const failedRow = (await screen.findByText(failedDelivery.titleEn)).closest('tr')!;
+  expect(within(failedRow).getByRole('button', { name: label })).toBeInTheDocument();
+  // Beside the count it is retrying, not buried in the actions column.
+  expect(failedRow).toHaveTextContent(
+    localizedMessage('en', 'admin.announcements.list.reachFailed').replace('{{failed}}', '3'),
+  );
+
+  // A clean publication (0 failed) and a row nothing has walked yet (null)
+  // both offer nothing to retry.
+  const cleanRow = screen.getByText(announcement.titleEn).closest('tr')!;
+  expect(within(cleanRow).queryByRole('button', { name: label })).not.toBeInTheDocument();
+  const scheduledRow = screen.getByText(scheduled.titleEn).closest('tr')!;
+  expect(within(scheduledRow).queryByRole('button', { name: label })).not.toBeInTheDocument();
+});
+
+test('confirms the retry, queues it, and reports what was queued', async () => {
+  vi.mocked(api.listAnnouncements).mockResolvedValue({ announcements: [failedDelivery] });
+  vi.mocked(api.redeliverAnnouncement).mockResolvedValue({
+    announcementId: failedDelivery.id,
+    jobId: 'announcements.publishDue:cc:2:1',
+    attempt: 2,
+    failedCount: 3,
+    deliveredCount: 125,
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText(failedDelivery.titleEn);
+  await user.click(
+    screen.getByRole('button', {
+      name: localizedMessage('en', 'admin.announcements.list.redeliver'),
+    }),
+  );
+
+  // Nothing is sent on the click itself — the walk hits every account.
+  const dialog = await screen.findByRole('dialog', {
+    name: localizedMessage('en', 'admin.confirmations.redeliverAnnouncement.title'),
+  });
+  expect(dialog).toHaveTextContent('Migration notice');
+  expect(dialog).toHaveTextContent('3 recipients');
+  expect(api.redeliverAnnouncement).not.toHaveBeenCalled();
+
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  expect(api.redeliverAnnouncement).not.toHaveBeenCalled();
+
+  await user.click(
+    screen.getByRole('button', {
+      name: localizedMessage('en', 'admin.announcements.list.redeliver'),
+    }),
+  );
+  await user.click(
+    await screen.findByRole('button', {
+      name: localizedMessage('en', 'admin.confirmations.redeliverAnnouncement.confirm'),
+    }),
+  );
+
+  await waitFor(() => expect(api.redeliverAnnouncement).toHaveBeenCalledWith(failedDelivery.id));
+  expect(api.redeliverAnnouncement).toHaveBeenCalledOnce();
+  // The banner says what actually happened: a retry was QUEUED for the three
+  // recipients — not that they have been delivered to.
+  const banner = await screen.findByText(/Retrying delivery to 3 recipients/);
+  expect(banner).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  // And the list is re-read, because the counts change on the worker.
+  expect(api.listAnnouncements).toHaveBeenCalledTimes(2);
+});
+
+test('names a queue outage instead of a generic failure, and keeps the dialog open', async () => {
+  vi.mocked(api.listAnnouncements).mockResolvedValue({ announcements: [failedDelivery] });
+  vi.mocked(api.redeliverAnnouncement).mockRejectedValue(
+    new ApiError(
+      503,
+      'ANNOUNCEMENT_REDELIVER_UNAVAILABLE',
+      'The delivery queue is unavailable. Try again shortly.',
+    ),
+  );
+  const user = userEvent.setup();
+  renderPage('de');
+
+  await screen.findByText(failedDelivery.titleEn);
+  await user.click(
+    screen.getByRole('button', {
+      name: localizedMessage('de', 'admin.announcements.list.redeliver'),
+    }),
+  );
+  const dialog = await screen.findByRole('dialog', {
+    name: localizedMessage('de', 'admin.confirmations.redeliverAnnouncement.title'),
+  });
+  // The German confirmation reads the German title, like the delete one.
+  expect(dialog).toHaveTextContent('Migrationshinweis');
+  await user.click(
+    within(dialog).getByRole('button', {
+      name: localizedMessage('de', 'admin.confirmations.redeliverAnnouncement.confirm'),
+    }),
+  );
+
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert).toHaveTextContent(
+    localizedMessage('de', 'admin.announcements.redeliver.unavailable'),
+  );
+  // Catalog copy, not the server's English envelope (#1814).
+  expect(alert).not.toHaveTextContent('The delivery queue is unavailable.');
+  // Still open, so the operator can simply try again.
+  expect(dialog).toBeInTheDocument();
+});

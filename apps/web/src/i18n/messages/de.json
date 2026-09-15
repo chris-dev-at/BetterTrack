@@ -4515,6 +4515,12 @@
         "confirm": "Ankündigung löschen",
         "pending": "Wird gelöscht…"
       },
+      "redeliverAnnouncement": {
+        "title": "Fehlgeschlagene Zustellungen erneut senden?",
+        "description": "„{{name}}“ erneut an die {{failed}} nicht erreichten Empfänger senden? Wer sie bereits hat, behält genau eine Kopie.",
+        "confirm": "Erneut zustellen",
+        "pending": "Wird eingereiht…"
+      },
       "deleteOAuthApp": {
         "title": "OAuth-App löschen?",
         "description": "„{{name}}“ löschen? Bestehende Integrationen funktionieren dann nicht mehr.",
@@ -6067,9 +6073,14 @@
         "reachPending": "Noch nicht zugestellt",
         "reachDelivered": "{{delivered}} zugestellt",
         "reachFailed": "{{failed}} fehlgeschlagen",
+        "redeliver": "Fehlgeschlagene Zustellungen erneut senden",
         "edit": "Bearbeiten",
         "activate": "Aktivieren",
         "deactivate": "Deaktivieren"
+      },
+      "redeliver": {
+        "queued": "Erneute Zustellung an {{failed}} Empfänger eingereiht. Die Liste aktualisiert sich, sobald sie gelaufen ist.",
+        "unavailable": "Die Zustellungs-Warteschlange ist derzeit nicht erreichbar. Bitte in Kürze erneut versuchen."
       },
       "state": {
         "draft": "Entwurf",
