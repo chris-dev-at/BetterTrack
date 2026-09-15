@@ -5244,7 +5244,9 @@
         "unreadableBadge": "Konfig. unlesbar",
         "salvagedNote": "Das gespeicherte Targeting dieses Schalters konnte nicht gelesen werden. Der Rollout unten ist deshalb der Standard, den diese App gerade ausliefert — nicht das, was gespeichert ist. Der Schalter selbst war lesbar und gilt. Speichern Sie den Rollout, um die gespeicherte Konfiguration vollständig zu ersetzen.",
         "unreadableNote": "Die gespeicherte Konfiguration dieses Schalters konnte gar nicht gelesen werden. Schalter und Rollout unten sind deshalb der Standard, den diese App gerade ausliefert — nicht das, was gespeichert ist. Speichern Sie den Rollout, um die gespeicherte Konfiguration vollständig zu ersetzen.",
-        "conflictError": "Die gespeicherte Konfiguration dieses Schalters ist unlesbar — ersetzen Sie sie vollständig über „Rollout speichern“."
+        "conflictError": "Die gespeicherte Konfiguration dieses Schalters ist unlesbar — ersetzen Sie sie vollständig über „Rollout speichern“.",
+        "conflictErrorSalvaged": "Der gespeicherte Rollout dieses Schalters ist unlesbar — ersetzen Sie die gesamte Konfiguration über „Rollout speichern“.",
+        "changedError": "Dieser Schalter hat sich geändert, seit die Liste geladen wurde — möglicherweise hat ihn jemand anderes bereits repariert. Aktualisieren Sie die Liste und nehmen Sie die Änderung auf dem aktuellen Stand vor."
       },
       "rolloutHeading": "Rollout",
       "percentLabel": "Rollout %",

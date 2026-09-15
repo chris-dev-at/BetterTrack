@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import { z } from 'zod';
 
 import {
+  FEATURE_FLAG_CONFIG_CHANGED,
   FEATURE_FLAG_CONFIG_UNREADABLE,
   FEATURE_FLAG_KEYS,
   featureFlagConfigSchema,
@@ -91,6 +92,13 @@ export const FEATURE_FLAG_PROPAGATION_UNCONFIRMED = 'FEATURE_FLAG_PROPAGATION_UN
  * obvious place to find it.
  */
 export { FEATURE_FLAG_CONFIG_UNREADABLE };
+
+/**
+ * Error code a PATCH returns when the `repair` precondition it asserted no
+ * longer describes the row (#1950 M1). Also defined in the contract package,
+ * for the same reason: the console has to match on it.
+ */
+export { FEATURE_FLAG_CONFIG_CHANGED };
 
 /** Stable English metadata per flag — API/audit only; the SPA renders i18n. */
 export const FEATURE_FLAG_REGISTRY: Record<FeatureFlagKey, { description: string }> = {
@@ -519,22 +527,50 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
     const read = readStoredConfig(row?.value);
     reportDegraded(key, read, 'setFlag');
 
+    // PRECONDITION FIRST (#1950 M1). `repair` asserts the degraded state the
+    // caller was looking at when it built this body. A complete replacement is
+    // the one write that inherits nothing — which is what repairs an unreadable
+    // row, and equally what makes it a blind overwrite if the row is no longer
+    // the one that was seen. A console fetches its list on mount, so the stale
+    // tab is not hypothetical: it offers a repair for a row a colleague has
+    // since fixed and killed, and applying it would revert that kill with a 200.
+    //
+    // Checked before completeness so the caller hears the true reason: "the row
+    // moved" is a different instruction from "send more fields", and telling an
+    // operator to resend a body that will be refused again is worse than useless.
+    if (patch.repair !== undefined && patch.repair !== read.status) {
+      throw new ApiError(
+        409,
+        FEATURE_FLAG_CONFIG_CHANGED,
+        `The stored configuration for '${key}' is no longer '${patch.repair}', so the replacement was written against a view of the row that is out of date. Reload the flag list and repeat the change against what it says now.`,
+        { stored: reportedRead(read) },
+      );
+    }
+
     // A PATCH inherits every field it omits, so merging onto a row we could not
     // fully read means INVENTING those fields and then writing the invention
     // back as durable fact — with `enabled` that invention is the kill switch
     // itself (#1910 review B1). A write is never guessed: the patch is refused
     // unless it supplies the complete configuration, which inherits nothing.
     // That refusal is also the operator's repair path, and the message says so.
+    //
+    // Completeness alone is not consent (#1950 M1): a body that states all four
+    // fields but asserts nothing about what it is replacing cannot be told apart
+    // from a client that never looked at the row, so the degraded path demands
+    // `repair` as well. `details.stored` carries which half is unreadable, so the
+    // console can name it instead of guessing.
+    const degraded = read.status === 'salvaged' || read.status === 'unreadable';
     const complete =
       patch.enabled !== undefined &&
       patch.rolloutPercent !== undefined &&
       patch.allowUserIds !== undefined &&
       patch.denyUserIds !== undefined;
-    if ((read.status === 'salvaged' || read.status === 'unreadable') && !complete) {
+    if (degraded && (!complete || patch.repair === undefined)) {
       throw new ApiError(
         409,
         FEATURE_FLAG_CONFIG_UNREADABLE,
-        `The stored configuration for '${key}' cannot be read, so a partial change would have to invent the fields it does not set. Send the complete configuration (enabled, rolloutPercent, allowUserIds, denyUserIds) to replace it.`,
+        `The stored configuration for '${key}' cannot be read, so a partial change would have to invent the fields it does not set. Send the complete configuration (enabled, rolloutPercent, allowUserIds, denyUserIds) together with repair: '${read.status}' to replace it.`,
+        { stored: read.status },
       );
     }
 
@@ -571,6 +607,19 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
         // console's own history view) look for `enabled` here.
         enabled: after.enabled,
         propagated,
+        // How much of `before` was actually READ, rather than fallen back to
+        // (#1950 M2). On an unreadable row `before` is unavoidably the default,
+        // and a log that stops there claims the feature was ON beforehand —
+        // a statement about the estate nobody verified. This is the field that
+        // separates "it was on" from "we could not tell, and showed on".
+        //
+        // The RAW outcome, including `unset`, not the value the console is
+        // served: the list collapses `unset` into `parsed` because neither needs
+        // repairing, but "nobody had ever configured this" and "it was
+        // configured and readable" are different histories, and the audit is
+        // where that difference gets asked for. An enum, no ids — the rule
+        // `auditableConfig` follows.
+        storedBefore: read.status,
         // #1908's before/after, widened to the whole config by #1910 — with the
         // two id lists reduced to LENGTHS. See `auditableConfig`.
         before: auditableConfig(before),

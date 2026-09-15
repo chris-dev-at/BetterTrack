@@ -3,7 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import { FEATURE_FLAG_CONFIG_UNREADABLE } from '@bettertrack/contracts';
+import {
+  FEATURE_FLAG_CONFIG_CHANGED,
+  FEATURE_FLAG_CONFIG_UNREADABLE,
+} from '@bettertrack/contracts';
 import type {
   AdminFeatureFlag,
   AdminFeatureFlagsResponse,
@@ -385,11 +388,44 @@ test('Save on a degraded row sends the COMPLETE four-field configuration, untouc
       // value the console is showing, so the replacement states the switch
       // rather than letting the server inherit it from a row it cannot read.
       enabled: false,
+      // …and `repair` states WHICH degraded row it is replacing, so this body
+      // cannot land on a row somebody else has already fixed. Exact match, so a
+      // Save that forgot the precondition fails here.
+      repair: 'salvaged',
       rolloutPercent: 100,
       allowUserIds: [],
       denyUserIds: [],
     }),
   );
+});
+
+/**
+ * The stale tab (#1950 M1). The list is fetched on mount, so this view can be
+ * arbitrarily old; the server refuses the replacement it offers once the row has
+ * moved, and the operator has to be told to refresh rather than left looking at
+ * a page that still claims the row is broken.
+ */
+test('a repair the server says is out of date tells the operator to refresh', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'salvaged' as const } : f)),
+  });
+  vi.mocked(api.setFeatureFlag).mockRejectedValue(
+    new ApiError(409, FEATURE_FLAG_CONFIG_CHANGED, 'envelope', { stored: 'parsed' }),
+  );
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  await user.click(within(panelFor('Chat')).getByRole('button', { name: 'Save rollout' }));
+
+  expect(
+    await screen.findByText(localizedMessage('en', 'admin.featureFlags.stored.changedError')),
+  ).toBeInTheDocument();
+  // Not the repair instruction: sending the same body again is exactly what must
+  // not be suggested here.
+  expect(
+    screen.queryByText(localizedMessage('en', 'admin.featureFlags.stored.conflictError')),
+  ).toBeNull();
 });
 
 /**
@@ -438,6 +474,7 @@ test('the kill switch still patches only `enabled`, and its 409 names the repair
       409,
       FEATURE_FLAG_CONFIG_UNREADABLE,
       "The stored configuration for 'chat' cannot be read, so a partial change would have to invent the fields it does not set.",
+      { stored: 'unreadable' },
     ),
   );
   renderPage();
@@ -461,7 +498,7 @@ test('a conflict leaves the console signed in and the row still operable', async
     flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'unreadable' as const } : f)),
   });
   vi.mocked(api.setFeatureFlag).mockRejectedValue(
-    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope'),
+    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope', { stored: 'unreadable' }),
   );
   renderPage();
 
@@ -474,6 +511,63 @@ test('a conflict leaves the console signed in and the row still operable', async
   expect(within(panelFor('Chat')).getByRole('button', { name: 'Disable' })).toBeEnabled();
 });
 
+/**
+ * A SALVAGED row keeps a kill switch that was genuinely read, so telling the
+ * operator the whole configuration is unreadable overstates the damage and
+ * contradicts the badge on the same row. The server says which half it refused
+ * on; the banner follows it.
+ */
+test('names the ROLLOUT, not the whole configuration, when only that was unreadable', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getFeatureFlags).mockResolvedValue({
+    flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'salvaged' as const } : f)),
+  });
+  vi.mocked(api.setFeatureFlag).mockRejectedValue(
+    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope', { stored: 'salvaged' }),
+  );
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  await user.click(within(panelFor('Chat')).getByRole('button', { name: 'Disable' }));
+
+  expect(
+    await screen.findByText(
+      localizedMessage('en', 'admin.featureFlags.stored.conflictErrorSalvaged'),
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText(localizedMessage('en', 'admin.featureFlags.stored.conflictError')),
+  ).toBeNull();
+});
+
+/**
+ * Negative space for the mapping (#1950 L1). A 409 nobody has written copy for
+ * must NOT inherit the repair instruction of the conflict that happens to share
+ * its status — on an operator surface, confidently wrong beats nothing only in
+ * the wrong direction.
+ */
+test('falls back to the generic banner for a 409 code nobody mapped', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.setFeatureFlag).mockRejectedValue(
+    new ApiError(409, 'SOME_OTHER_CONFLICT', 'envelope'),
+  );
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Chat')).toBeInTheDocument());
+  await user.click(within(panelFor('Chat')).getByRole('button', { name: 'Disable' }));
+
+  expect(
+    await screen.findByText(localizedMessage('en', 'admin.featureFlags.actionError')),
+  ).toBeInTheDocument();
+  for (const key of [
+    'admin.featureFlags.stored.conflictError',
+    'admin.featureFlags.stored.conflictErrorSalvaged',
+    'admin.featureFlags.stored.changedError',
+  ] as const) {
+    expect(screen.queryByText(localizedMessage('en', key))).toBeNull();
+  }
+});
+
 /** EN/DE parity for every string this wave adds. */
 test('renders the degraded-row chrome in German too', async () => {
   const user = userEvent.setup();
@@ -481,7 +575,7 @@ test('renders the degraded-row chrome in German too', async () => {
     flags: list.flags.map((f) => (f.key === 'chat' ? { ...f, stored: 'salvaged' as const } : f)),
   });
   vi.mocked(api.setFeatureFlag).mockRejectedValue(
-    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope'),
+    new ApiError(409, FEATURE_FLAG_CONFIG_UNREADABLE, 'envelope', { stored: 'salvaged' }),
   );
   renderPage('de');
 
@@ -500,6 +594,8 @@ test('renders the degraded-row chrome in German too', async () => {
     }),
   );
   expect(
-    await screen.findByText(localizedMessage('de', 'admin.featureFlags.stored.conflictError')),
+    await screen.findByText(
+      localizedMessage('de', 'admin.featureFlags.stored.conflictErrorSalvaged'),
+    ),
   ).toBeInTheDocument();
 });

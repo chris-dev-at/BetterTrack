@@ -159,6 +159,12 @@ export type FeatureFlagConfig = z.output<typeof featureFlagConfigSchema>;
 export const FEATURE_FLAG_CONFIG_UNREADABLE = 'FEATURE_FLAG_CONFIG_UNREADABLE';
 
 /**
+ * Error code a PATCH is refused with when the caller asserted a `repair` that no
+ * longer describes the row (#1950 M1). See {@link featureFlagRepairSchema}.
+ */
+export const FEATURE_FLAG_CONFIG_CHANGED = 'FEATURE_FLAG_CONFIG_CHANGED';
+
+/**
  * How well one flag's stored row could be read, as reported to the admin console
  * (#1950).
  *
@@ -226,11 +232,38 @@ export const featureFlagKeyParamSchema = z.object({ key: featureFlagKeySchema })
 export type FeatureFlagKeyParam = z.infer<typeof featureFlagKeyParamSchema>;
 
 /**
+ * The degraded state a complete replacement asserts it is repairing — the two
+ * outcomes of {@link featureFlagStoredReadSchema} that CAN be repaired.
+ * `parsed` is deliberately absent: a healthy row is not repaired, it is patched,
+ * so naming it here is an operator typo and earns a 400 like any other.
+ */
+export const featureFlagRepairSchema = z.enum(['salvaged', 'unreadable']);
+
+export type FeatureFlagRepair = z.infer<typeof featureFlagRepairSchema>;
+
+/**
  * `PATCH /admin/feature-flags/:key` — body. Every field is optional: the patch
  * merges onto the stored config, so flipping the kill switch does not reset a
  * rollout and editing a rollout does not touch the switch. `.strict()`, so an
  * unknown key (or a misspelt `allowUserIDs`) is a 400 rather than a silent no-op
  * on a security-relevant gate.
+ *
+ * `repair` is not one of the patched fields — it is a PRECONDITION on the write,
+ * and the only one this route has (#1950 M1).
+ *
+ * A complete body is the one write that inherits nothing from the stored row,
+ * which is what makes it the repair for a row that cannot be read — and, for the
+ * same reason, a full overwrite if the row is no longer the one the caller
+ * looked at. A console fetches its list on mount, so a tab that has been open a
+ * while can offer a "repair" for a row a colleague has since fixed and killed;
+ * sending it would revert their kill with a 200 and nothing but an audit row to
+ * show for it. `repair` names the degraded state the caller OBSERVED, and the
+ * server applies the write only while the row still reads that way.
+ *
+ * It rides the request body rather than an `If-Match` header on purpose: it is a
+ * precondition on a value the API already computes and already serves (the list's
+ * `stored`), not on an opaque entity tag, and keeping it in the body means the
+ * contract — not a header convention — is what says which values are legal.
  */
 export const updateFeatureFlagRequestSchema = z
   .object({
@@ -238,6 +271,7 @@ export const updateFeatureFlagRequestSchema = z
     rolloutPercent: z.number().int().min(0).max(100),
     allowUserIds: z.array(z.string().uuid()).max(FEATURE_FLAG_TARGET_LIST_MAX),
     denyUserIds: z.array(z.string().uuid()).max(FEATURE_FLAG_TARGET_LIST_MAX),
+    repair: featureFlagRepairSchema,
   })
   .partial()
   .strict();

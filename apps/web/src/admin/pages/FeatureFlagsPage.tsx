@@ -1,15 +1,18 @@
 import { useMemo, useState } from 'react';
 
 import {
+  FEATURE_FLAG_CONFIG_CHANGED,
   FEATURE_FLAG_CONFIG_UNREADABLE,
   FEATURE_FLAG_TARGET_LIST_MAX,
   type AdminFeatureFlag,
   type FeatureFlagKey,
+  type FeatureFlagRepair,
   type UpdateFeatureFlagRequest,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import type { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
@@ -68,6 +71,14 @@ import {
  * still 409s, and the console renders the mapped repair instruction instead of
  * the generic banner.
  *
+ * The replacement itself carries `repair`, naming the degraded state this list
+ * was rendered from. The list is fetched on mount, so a tab left open can keep
+ * offering a repair for a row a colleague has since fixed and killed — and that
+ * repair, being complete, would overwrite their kill with a 200. The server
+ * applies it only while the row still reads the way this page says it does, and
+ * refuses with `FEATURE_FLAG_CONFIG_CHANGED` otherwise; the operator is told to
+ * refresh rather than left to wonder why nothing changed.
+ *
  * Every flag's name + description is localized through `admin.featureFlags.flag.*`;
  * the server's English metadata is not rendered.
  */
@@ -91,9 +102,26 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * the API had to invent because the row could not be read. Both degraded
  * outcomes mean the same thing for the write path — only a complete replacement
  * is accepted — so they share one predicate and differ only in what they say.
+ *
+ * A type guard rather than a plain boolean, so the narrowed `stored` IS the
+ * `repair` value the replacement has to assert: there is no second place where
+ * the two could be spelled differently.
  */
-function isDegraded(flag: AdminFeatureFlag): boolean {
+function isDegraded(
+  flag: AdminFeatureFlag,
+): flag is AdminFeatureFlag & { stored: FeatureFlagRepair } {
   return flag.stored !== 'parsed';
+}
+
+/**
+ * The read outcome a refusal says it was refused ON, when the server says one.
+ * Defensive about the shape: `details` is `unknown` on the client, and a banner
+ * is not worth a throw.
+ */
+function refusedOn(error: ApiError): string | null {
+  if (typeof error.details !== 'object' || error.details === null) return null;
+  const stored = (error.details as { stored?: unknown }).stored;
+  return typeof stored === 'string' ? stored : null;
 }
 
 interface RolloutDraft {
@@ -132,10 +160,12 @@ export function FeatureFlagsPage() {
    * neither can clobber the other, which is exactly why they can share this.
    *
    * Onto a row whose stored configuration cannot be read, a merge would have to
-   * invent the omitted fields, so the server refuses every partial write with
-   * 409 `FEATURE_FLAG_CONFIG_UNREADABLE`. That refusal carries the repair
-   * instruction, but its envelope is English-only by policy — so the code is
-   * mapped to catalog copy here rather than rendered from the server.
+   * invent the omitted fields, so the server refuses every write that is not an
+   * asserted, complete replacement with 409 `FEATURE_FLAG_CONFIG_UNREADABLE`;
+   * an assertion that no longer matches the row earns `FEATURE_FLAG_CONFIG_CHANGED`.
+   * Both refusals carry an instruction, and both envelopes are English-only by
+   * policy — so the CODES are mapped to catalog copy here rather than rendered
+   * from the server.
    */
   const save = useAdminMutation(
     async (key: FeatureFlagKey, patch: UpdateFeatureFlagRequest) => {
@@ -153,10 +183,26 @@ export function FeatureFlagsPage() {
       // §6.12 "not an admin" answer — an expired admin window (V5-P13c). Signing
       // out beats a banner on a console whose next request will fail the same way.
       notFound: 'session',
-      conflictErrorKey: {
-        code: FEATURE_FLAG_CONFIG_UNREADABLE,
-        messageKey: 'admin.featureFlags.stored.conflictError',
-      },
+      conflictErrorKey: [
+        // A salvaged row still has a readable kill switch, so telling the
+        // operator the whole configuration is unreadable would overstate the
+        // damage — the badge on the row says "rollout", and the banner must
+        // agree with it. The server names which one it refused on; first match
+        // wins, so this narrowed entry sits above the plain one.
+        {
+          code: FEATURE_FLAG_CONFIG_UNREADABLE,
+          when: (error) => refusedOn(error) === 'salvaged',
+          messageKey: 'admin.featureFlags.stored.conflictErrorSalvaged',
+        },
+        {
+          code: FEATURE_FLAG_CONFIG_UNREADABLE,
+          messageKey: 'admin.featureFlags.stored.conflictError',
+        },
+        {
+          code: FEATURE_FLAG_CONFIG_CHANGED,
+          messageKey: 'admin.featureFlags.stored.changedError',
+        },
+      ],
     },
   );
 
@@ -206,7 +252,12 @@ export function FeatureFlagsPage() {
       // four every time would mean this form overwrites a kill switch some other
       // operator flipped while it sat open — the exact clobber the merge design
       // avoids.
-      isDegraded(flag) ? { enabled: flag.enabled, ...targeting } : targeting,
+      //
+      // `repair` is what keeps the replacement from becoming that clobber by
+      // another door: it asserts the degraded state THIS list was rendered from,
+      // so a tab that has gone stale is refused instead of overwriting a row
+      // someone else has already repaired and killed.
+      isDegraded(flag) ? { enabled: flag.enabled, repair: flag.stored, ...targeting } : targeting,
     );
   };
 
@@ -316,6 +367,10 @@ function storedBadge(flag: AdminFeatureFlag, t: ReturnType<typeof useT>) {
   if (flag.stored === 'salvaged') {
     return {
       tone: 'amber' as const,
+      // The note repeats the badge's severity in prose, so it repeats its
+      // colour too: an amber badge over a red note reads as two different
+      // findings about one row.
+      noteClass: 'text-amber-300',
       label: t('admin.featureFlags.stored.salvagedBadge'),
       note: t('admin.featureFlags.stored.salvagedNote'),
     };
@@ -323,6 +378,7 @@ function storedBadge(flag: AdminFeatureFlag, t: ReturnType<typeof useT>) {
   if (flag.stored === 'unreadable') {
     return {
       tone: 'red' as const,
+      noteClass: 'text-red-300',
       label: t('admin.featureFlags.stored.unreadableBadge'),
       note: t('admin.featureFlags.stored.unreadableNote'),
     };
@@ -386,7 +442,7 @@ function FlagPanel({
             says which write repairs it, because a badge alone leaves the
             operator to guess between the switch and the rollout Save (only the
             latter can send a complete configuration). */}
-        {degraded ? <p className={cx(TEXT_BODY, 'text-amber-300')}>{degraded.note}</p> : null}
+        {degraded ? <p className={cx(TEXT_BODY, degraded.noteClass)}>{degraded.note}</p> : null}
 
         {/* The kill switch above owns the whole feature, so while it is OFF the
             rollout below is inert — stated, rather than left for the operator to

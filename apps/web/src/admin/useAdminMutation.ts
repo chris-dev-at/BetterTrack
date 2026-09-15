@@ -47,9 +47,8 @@ interface AdminMutationOptions {
    */
   notFoundErrorKey?: string;
   /**
-   * Catalog key for the banner when the server refuses with a 409 carrying this
-   * error CODE. Anything else — a different 409, any other status — keeps
-   * {@link errorKey}.
+   * Catalog copy for a 409, keyed by the refusal's error CODE. A 409 whose code
+   * matches nothing here — and every other status — keeps {@link errorKey}.
    *
    * Two things make this narrower than its `notFoundErrorKey` precedent, and
    * both are deliberate (#1950):
@@ -65,7 +64,28 @@ interface AdminMutationOptions {
    *    surfaced by rendering the server's message. The code is the only part the
    *    SPA may key off, and the instruction lives in the catalog in both locales.
    */
-  conflictErrorKey?: { code: string; messageKey: string };
+  conflictErrorKey?: readonly AdminMutationConflictCopy[];
+}
+
+/**
+ * One mapped 409. Entries are tried in order and the FIRST match wins, so a
+ * narrowed entry is written above the plain one for the same code.
+ */
+export interface AdminMutationConflictCopy {
+  /** The refusal's error code, matched exactly. */
+  code: string;
+  /**
+   * Optional extra condition on the refusal, for a code whose right instruction
+   * depends on what the server says it refused ON — read off `details`, which
+   * the server populates deliberately for exactly that purpose.
+   *
+   * Kept as a predicate beside a plain `messageKey` rather than folded into a
+   * key-returning function: catalog keys stay greppable string literals, which
+   * is what the i18n completeness gate walks.
+   */
+  when?: (error: ApiError) => boolean;
+  /** Catalog key for the banner. */
+  messageKey: string;
 }
 
 interface AdminMutation<TArgs extends readonly unknown[]> {
@@ -167,15 +187,13 @@ export function useAdminMutation<TArgs extends readonly unknown[]>(
         // save" rather than as whichever instruction was written for a different
         // conflict on the same route.
         const conflict =
-          status === 409 &&
-          conflictErrorKey !== undefined &&
-          err instanceof ApiError &&
-          err.code === conflictErrorKey.code;
-        const messageKey = conflict
-          ? conflictErrorKey.messageKey
-          : status === 404
-            ? (notFoundErrorKey ?? errorKey)
-            : errorKey;
+          status === 409 && err instanceof ApiError
+            ? conflictErrorKey?.find(
+                (entry) => entry.code === err.code && (entry.when?.(err) ?? true),
+              )
+            : undefined;
+        const messageKey =
+          conflict?.messageKey ?? (status === 404 ? (notFoundErrorKey ?? errorKey) : errorKey);
         setError(localizedMessage(localeRef.current, messageKey));
         return false;
       } finally {
