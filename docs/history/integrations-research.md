@@ -1,5 +1,7 @@
 # Broker & platform integration research
 
+_Archived 2026-09-02 — a research record; the binding conclusions live in `PROJECTPLAN.md` §16 and the V6-10/V6-11 scope rows._
+
 _Researched 2026-07-17 (Chief of Development), triggered by the owner's check-v4 order: read-only OAuth sync with George (Erste), Trade Republic, Raiffeisen, and a two-way Parqet integration. Binding conclusions live in PROJECTPLAN §16 (2026-07-17 row) and the V6-10/V6-11 scope rows; this file carries the facts._
 
 ## The one-paragraph result
