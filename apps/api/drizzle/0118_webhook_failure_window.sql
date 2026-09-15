@@ -12,16 +12,25 @@ ADD COLUMN "failure_window_started_at" timestamp with time zone;
 --> statement-breakpoint
 -- Backfill: adopt the last delivery attempt as the anchor of an already-running
 -- streak. That attempt WAS the streak's most recent failure (a success would
--- have zeroed the counter), so it is the newest instant the streak can honestly
--- claim — the true first failure is older and unrecorded, which makes this the
--- lenient direction rather than a fabricated-recency one.
+-- have zeroed the counter), so it is the newest instant the streak can claim.
 --
--- The two failure modes this deliberately avoids: nobody is disabled by the
--- deploy itself (a disable only ever happens on a delivery, and the anchor is
--- in the past, never in the future), and nobody is silently forgiven either —
--- a receiver still dead keeps its count and trips on its next failures, while
--- one whose streak is already older than the window restarts from 1, which is
--- precisely the transient-outage case this migration exists to fix.
+-- Be honest about the direction: this is the STRICT choice, not the lenient
+-- one. The streak's true first failure is older and unrecorded, so a
+-- last-failure anchor does fabricate recency — it keeps a legacy streak alive
+-- until `last_delivery_at + window` instead of `first_failure + window`. The
+-- concrete cost: a row sitting at 4 failures spread over five months whose most
+-- recent failure landed under 24 h before the deploy is anchored as if the
+-- streak were fresh, and its very next failure disables it — one bounded,
+-- one-time instance of exactly the defect this migration removes. It is
+-- self-healing: any row whose last failure is already older than the window
+-- restarts at 1 on its next failure.
+--
+-- It is chosen because the alternatives are worse. The two failure modes it
+-- avoids outright: nobody is disabled by the deploy itself (a disable only ever
+-- happens on a delivery, and the anchor is in the past, never in the future),
+-- and nobody is silently forgiven either — a fabricated OLD anchor (say
+-- `now() - window`) would zero every legacy streak, including the receivers
+-- that are dead right now.
 --
 -- `last_delivery_at` is null only if the counter was raised without any
 -- recorded delivery, which no code path does; `updated_at` is the conservative
