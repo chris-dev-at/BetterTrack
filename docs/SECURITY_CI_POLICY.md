@@ -35,7 +35,7 @@ build, while HIGH findings remain in the nightly report for triage. The operator
 workflow and the narrow waiver path are documented in
 [`docs/supply-chain.md`](supply-chain.md).
 
-Two dependencies sit partly outside the automated lanes and are therefore
+Three dependencies sit partly outside the automated lanes and are therefore
 **tracked by hand**:
 
 - `drizzle-orm` / `drizzle-kit` — Dependabot is fenced off their 0.x minors
@@ -50,6 +50,22 @@ Two dependencies sit partly outside the automated lanes and are therefore
   path, so the pin is what keeps `pnpm audit --prod` clean without a waiver.
   Drop the override only after confirming the package has left the production
   tree (`pnpm why shell-quote`).
+- `js-yaml` is pinned forward in the root `pnpm.overrides` block (`^4.3.2`) for
+  the same reason and looks even more pointless than `shell-quote`, because the
+  only thing that pulls it in is ESLint: `eslint -> @eslint/eslintrc -> js-yaml`.
+  What makes it a **production** dependency is that `packages/config` — a private
+  workspace package — declares its lint toolchain (`eslint-config-prettier`,
+  `typescript-eslint`, `@eslint/js`) under `dependencies`, not `devDependencies`.
+  `pnpm audit --prod` walks each workspace project's own manifest, so those are
+  production edges from the root's point of view even though nothing ships them.
+  Verified by pinning `js-yaml` to a vulnerable `4.1.0` and re-auditing: three
+  high advisories come back on paths reading
+  `packages/config > typescript-eslint@… > @eslint/eslintrc@… > js-yaml@4.1.0`.
+  So the override is what keeps `pnpm audit --prod` green without a waiver.
+  **Do not delete it because `pnpm why -r --prod js-yaml` "only shows ESLint"** —
+  that is exactly the path the audit gate fails on. Drop it only after
+  `packages/config` moves its lint toolchain to `devDependencies` (which would
+  also end the `--prod` exposure), and re-run `pnpm audit --prod` to confirm.
 
 Dependabot owns GitHub Actions and npm updates. Renovate owns the deployable
 Dockerfiles via [`renovate.json`](../renovate.json): its Dockerfile manager
