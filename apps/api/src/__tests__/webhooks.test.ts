@@ -1978,7 +1978,30 @@ describe('destination guard: user-supplied webhook URLs cannot reach the deploym
       expect(row.error).toBe(WEBHOOK_DELIVERY_NETWORK_ERROR);
       expect(row.responseStatus).toBeNull();
     }
-    expect(JSON.stringify(stored)).not.toMatch(/ECONNREFUSED|hang up|5432|6379|9090|192\.168\.44/);
+    // Dropping these three narrows nothing: all are server-generated and none is
+    // ever derived from the receiver — `id`/`subscriptionId` are UUIDs this
+    // server mints before any request leaves it, and `createdAt` is our own
+    // clock, so no URL, response body or transport error can reach any of them.
+    // The columns that CAN carry receiver text (`error`, `responseStatus`, and
+    // anything a later migration adds) all stay in the scan below.
+    //
+    // Drop the server-generated columns before scanning. `id`/`subscriptionId`
+    // are random UUIDs, and the port halves of this pattern (`5432`, `6379`,
+    // `9090`) are all hex digits — so ~102 four-char windows across the six
+    // UUIDs here each have a 1/65536 shot at spelling one, failing this on
+    // roughly 1 run in 200 with nothing leaked. That is what happened on the
+    // run that sent us here: id `…-1d5432b52dd8` carried `5432`. `createdAt` is
+    // dropped for the same reason — it is ours, not the receiver's — though its
+    // fixed ISO shape cannot actually spell one of these.
+    // Spreading the rest, rather than listing the columns to check, keeps a
+    // column added later covered by default: the leak this guards against is
+    // "receiver text reached the log", not "reached one known column".
+    const meaningful = stored.map(
+      ({ id: _id, subscriptionId: _sub, createdAt: _at, ...rest }) => rest,
+    );
+    expect(JSON.stringify(meaningful)).not.toMatch(
+      /ECONNREFUSED|hang up|5432|6379|9090|192\.168\.44/,
+    );
 
     // …and the three rows are byte-identical in shape, so the log cannot tell a
     // closed port from a filtered one from something that is listening — the

@@ -290,21 +290,56 @@ describe('#1325 first-party OAuth grant management', () => {
         ),
       );
     expect(denials).toHaveLength(2);
+    // The refused grant HOLDS `account:security`: without the discriminator the
+    // rows would be indistinguishable from a genuine missing-scope denial, and
+    // "third-party app probed another app's grants" would not be greppable.
     expect(denials.map(({ meta }) => meta)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           requiredScope: 'account:security',
+          reason: 'first-party-only',
           method: 'GET',
           path: '/settings/oauth-grants',
         }),
         expect.objectContaining({
           requiredScope: 'account:security',
+          reason: 'first-party-only',
           method: 'DELETE',
           path: `/settings/oauth-grants/${grantId}`,
         }),
       ]),
     );
     await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+  });
+
+  it('separates a first-party-only refusal from a genuine missing scope in the audit meta', async () => {
+    const unscoped = await mintThirdPartyToken(['market:read']);
+
+    const denied = await request(harness.app)
+      .get('/api/v1/settings/oauth-grants')
+      .set(bearer(unscoped.token));
+    // Scope is evaluated BEFORE the trust boundary: an unscoped third party is
+    // told what it lacks, and the audit row says so. Pinning this locks the
+    // deliberate ordering against a future reshuffle.
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(denied.body.error.message).toContain('account:security');
+
+    const [row] = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, unscoped.user.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(row?.meta).toMatchObject({
+      requiredScope: 'account:security',
+      reason: 'insufficient-scope',
+      method: 'GET',
+      path: '/settings/oauth-grants',
+    });
   });
 
   it('redacts the sibling OAuth denial path for a paranoid account', async () => {
@@ -341,7 +376,7 @@ describe('#1325 first-party OAuth grant management', () => {
   });
 
   it('refuses a personal key holding account:security on list and revoke', async () => {
-    const { token } = await mintPersonalKey(['account:security']);
+    const { token, id } = await mintPersonalKey(['account:security']);
     for (const response of [
       await request(harness.app).get('/api/v1/settings/oauth-grants').set(bearer(token)),
       await request(harness.app)
@@ -352,6 +387,50 @@ describe('#1325 first-party OAuth grant management', () => {
       expect(response.body.error.code).toBe('API_KEY_FORBIDDEN');
       expect(response.body.error.message).toContain('first-party OAuth clients only');
     }
+
+    // Same discriminator for the personal-key principal, on its own audit rail.
+    const denials = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.targetId, id), eq(schema.auditLog.action, 'api_key.scope_denied')),
+      );
+    expect(denials).toHaveLength(2);
+    for (const { meta } of denials) {
+      expect(meta).toMatchObject({
+        requiredScope: 'account:security',
+        reason: 'first-party-only',
+      });
+    }
+  });
+
+  it('lets a first-party bearer revoke the same user’s third-party grant', async () => {
+    const trusted = await mintFirstPartyToken(['account:security']);
+    const thirdParty = await mintThirdPartyToken(['market:read'], {
+      user: trusted.user,
+      agent: trusted.agent,
+    });
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(thirdParty.token)).expect(200);
+
+    await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${thirdParty.grantId}`)
+      .set(bearer(trusted.token))
+      .expect(204);
+
+    // The revoked app's live token dies with its grant; the revoking first-party
+    // token is untouched — this is the use case the carve-out exists for.
+    const orphaned = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set(bearer(thirdParty.token));
+    expect(orphaned.status, JSON.stringify(orphaned.body)).toBe(401);
+    expect(orphaned.body.error.code).toBe('API_KEY_INVALID');
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(trusted.token)).expect(200);
+
+    const [stored] = await harness.db
+      .select({ revokedAt: schema.oauthGrants.revokedAt })
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.id, thirdParty.grantId));
+    expect(stored?.revokedAt).toBeInstanceOf(Date);
   });
 
   it('reports INSUFFICIENT_SCOPE before first-party policy when the mobile token lacks it', async () => {
@@ -394,19 +473,39 @@ describe('#1325 first-party OAuth grant management', () => {
     expect(oauthGrantListResponseSchema.parse(otherList.body).grants[0]?.id).toBe(other.grantId);
   });
 
-  it('keeps the router-local guard route-, scope-, kind- and first-party-aware', () => {
-    const call = (input: {
+  it('keeps the router-local guard route-, scope-, kind- and first-party-aware', async () => {
+    // A real account: the twin now writes an `api_key.scope_denied` row, and
+    // `audit_log.actor_id` is a foreign key onto `users`.
+    const user = await seedFreshUser();
+    const guard = requireCookieSessionOrFirstPartyOAuthGrant(harness.ctx);
+    // ORDER BY is not optional here (the #514 lesson in this same file):
+    // Postgres never guarantees SELECT order, and these assertions read the rows
+    // as a sequence. `id` is a UUIDv7, so ascending id IS write order.
+    const auditRows = () =>
+      harness.db
+        .select()
+        .from(schema.auditLog)
+        .where(
+          and(
+            eq(schema.auditLog.actorId, user.id),
+            eq(schema.auditLog.action, 'api_key.scope_denied'),
+          ),
+        )
+        .orderBy(schema.auditLog.id);
+    const call = async (input: {
       apiKey?: Request['apiKey'];
       sessionId?: string;
       method: string;
       path: string;
     }) => {
       const next = vi.fn();
-      requireCookieSessionOrFirstPartyOAuthGrant(input as unknown as Request, {} as Response, next);
+      guard({ ...input, authUser: { id: user.id } } as unknown as Request, {} as Response, next);
+      // The audited branches reach `next` only after the audit write resolves.
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
       return next;
     };
     const trusted: NonNullable<Request['apiKey']> = {
-      id: 'grant',
+      id: '11111111-1111-4111-8111-111111111111',
       scopes: ['account:security'],
       kind: 'oauth',
       firstParty: true,
@@ -414,25 +513,148 @@ describe('#1325 first-party OAuth grant management', () => {
     };
 
     expect(
-      call({ sessionId: 'session', method: 'GET', path: '/oauth-grants' }),
+      await call({ sessionId: 'session', method: 'GET', path: '/oauth-grants' }),
     ).toHaveBeenCalledWith();
     expect(
-      call({ apiKey: trusted, method: 'DELETE', path: `/oauth-grants/${MISSING_ID}` }),
+      await call({ apiKey: trusted, method: 'DELETE', path: `/oauth-grants/${MISSING_ID}` }),
     ).toHaveBeenCalledWith();
+    // Nothing admitted is ever audited.
+    expect(await auditRows()).toHaveLength(0);
 
+    // Trust-boundary refusals: the credential is NOT a trusted first-party
+    // client, so the first-party-only message is the accurate one.
     for (const apiKey of [
       { ...trusted, firstParty: false },
       { ...trusted, kind: 'personal' as const, firstParty: false },
-      { ...trusted, scopes: ['market:read'] },
     ]) {
       expect(
-        call({ apiKey, method: 'GET', path: '/oauth-grants' }).mock.calls[0]?.[0],
+        (await call({ apiKey, method: 'GET', path: '/oauth-grants' })).mock.calls[0]?.[0],
+      ).toMatchObject({
+        statusCode: 403,
+        code: 'API_KEY_FORBIDDEN',
+        message: expect.stringContaining('first-party OAuth clients only'),
+      });
+    }
+    // #1951 §2: both HELD `account:security` and were refused for being
+    // untrusted — the one refusal shape the discriminator exists to name.
+    expect((await auditRows()).map((row) => (row.meta as { reason?: string }).reason)).toEqual([
+      'first-party-only',
+      'first-party-only',
+    ]);
+
+    // A trusted client on an allowlisted route that merely lacks the scope is a
+    // scope problem, not a trust problem — the twin must not misdescribe it if
+    // the global table ever regresses and this fallback answers first.
+    expect(
+      (
+        await call({
+          apiKey: { ...trusted, scopes: ['market:read'] },
+          method: 'GET',
+          path: '/oauth-grants',
+        })
+      ).mock.calls[0]?.[0],
+    ).toMatchObject({
+      statusCode: 403,
+      code: 'INSUFFICIENT_SCOPE',
+      message: expect.stringContaining('account:security'),
+    });
+    expect((await auditRows()).at(-1)?.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: 'account:security',
+      method: 'GET',
+      path: '/settings/oauth-grants',
+      kind: 'oauth',
+    });
+
+    // Off-allowlist route: still the first-party-only refusal, scope or not.
+    for (const apiKey of [trusted, { ...trusted, scopes: ['market:read'] }]) {
+      expect(
+        (await call({ apiKey, method: 'GET', path: '/oauth-grants/future-admin' })).mock
+          .calls[0]?.[0],
       ).toMatchObject({ statusCode: 403, code: 'API_KEY_FORBIDDEN' });
     }
-    expect(
-      call({ apiKey: trusted, method: 'GET', path: '/oauth-grants/future-admin' }).mock
-        .calls[0]?.[0],
-    ).toMatchObject({ statusCode: 403, code: 'API_KEY_FORBIDDEN' });
+    // …and NOT audited as a scope denial: an off-allowlist path is not a bearer
+    // surface at all, which is exactly how the global rail classifies it.
+    expect(await auditRows()).toHaveLength(3);
+  });
+
+  it('audits an untrusted-but-unscoped refusal by the cause, not by the answer', async () => {
+    // The compound case: a personal key that is neither trusted NOR scoped. The
+    // ANSWER stays `API_KEY_FORBIDDEN` — telling an untrusted caller "you are
+    // only missing a scope" would hand it an actionable hint about a route
+    // reserved for first-party clients. The ROW says `insufficient-scope`,
+    // because that is what the credential's defect actually is and what the
+    // global rail records for the identical request; the owner reading their own
+    // audit log is entitled to the finer fact.
+    const user = await seedFreshUser();
+    const guard = requireCookieSessionOrFirstPartyOAuthGrant(harness.ctx);
+    const next = vi.fn();
+    guard(
+      {
+        authUser: { id: user.id },
+        apiKey: {
+          id: '22222222-2222-4222-8222-222222222222',
+          scopes: ['market:read'],
+          kind: 'personal',
+          securityGeneration: 0,
+        },
+        method: 'GET',
+        path: '/oauth-grants',
+      } as unknown as Request,
+      {} as Response,
+      next,
+    );
+    await vi.waitFor(() => expect(next).toHaveBeenCalled());
+
+    expect(next.mock.calls[0]?.[0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, user.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({ reason: 'insufficient-scope' });
+    expect(rows[0]!.targetType).toBe('api_key');
+    expect(rows[0]!.targetId).toBe('22222222-2222-4222-8222-222222222222');
+  });
+
+  it('writes exactly one scope-denied row per live refusal — the rail, not the rail plus the twin', async () => {
+    // End-to-end through the real app: the global guard answers before routing,
+    // so the twin never runs. One refusal, one row — the property that would
+    // break if a twin double-wrote.
+    const { token, user } = await mintThirdPartyToken(['account:security']);
+
+    const refused = await request(harness.app)
+      .get('/api/v1/settings/oauth-grants')
+      .set(bearer(token));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, user.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'first-party-only',
+      requiredScope: 'account:security',
+      method: 'GET',
+      kind: 'oauth',
+    });
+    // §10: the row names the grant, never the credential that was presented.
+    expect(JSON.stringify(rows[0])).not.toContain(token);
   });
 
   it('pins the exact bearer carve-out and leaves sibling credential paths session-only', () => {
