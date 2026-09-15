@@ -1190,6 +1190,33 @@ export const ANNOUNCEMENT_BODY_MAX = 2000;
  */
 export const ANNOUNCEMENT_NOTIFICATION_TYPE = 'account.notice';
 
+/**
+ * Where one announcement stands in the delivery lifecycle (#1909).
+ *
+ * Derived **server-side** from `active` / `startsAt` / `endsAt` / `publishedAt`
+ * and the server clock, never in the browser: two clients on two machines with
+ * two clock skews would otherwise disagree about whether a row is `scheduled`
+ * or `publishing`, and the operator screen would contradict the job.
+ *
+ * - `draft` — not flagged active. Nothing is shown and nothing is delivered.
+ * - `scheduled` — active, `startsAt` still in the future. The publish job
+ *   defers BOTH the banner and the inbox fan-out until the window opens.
+ * - `publishing` — active and due now; the job owns it and has not stamped
+ *   `publishedAt` yet (a sweep tick away, or mid-walk).
+ * - `published` — the fan-out completed and `publishedAt` is stamped.
+ * - `expired` — `endsAt` has passed. Terminal: the banner hides it and the job
+ *   refuses it, so it can never be delivered however it is re-saved.
+ */
+export const ANNOUNCEMENT_DELIVERY_STATES = [
+  'draft',
+  'scheduled',
+  'publishing',
+  'published',
+  'expired',
+] as const;
+export const announcementDeliveryStateSchema = z.enum(ANNOUNCEMENT_DELIVERY_STATES);
+export type AnnouncementDeliveryState = z.infer<typeof announcementDeliveryStateSchema>;
+
 /** One admin-composed announcement — reads and writes share this shape. */
 export const announcementSchema = z
   .object({
@@ -1211,12 +1238,30 @@ export const announcementSchema = z
     endsAt: z.string().datetime().nullable(),
     /**
      * The active flag the admin toggles: `false` hides it entirely, even inside
-     * the window (a dry-run save). Publishing (flip from off → on) fans an
-     * inbox row out to every user (idempotent by the shared eventKey below).
+     * the window (a dry-run save). `true` ARMS the announcement — it does not
+     * send it (#1909). The `announcements.publishDue` job fans one inbox row
+     * out to every user once the window has opened, idempotently per recipient
+     * via the shared eventKey below. Saving never delivers anything.
      */
     active: z.boolean(),
-    /** When the row was last published (flipped on). NULL until first publish. */
+    /** When the fan-out completed. NULL until the publish job stamps it. */
     publishedAt: z.string().datetime().nullable(),
+    /**
+     * Server-derived lifecycle state (#1909). The browser renders this; it does
+     * not compute it — see {@link announcementDeliveryStateSchema}.
+     */
+    deliveryState: announcementDeliveryStateSchema,
+    /**
+     * The outcome of the last completed publication pass: recipients confirmed
+     * to hold their inbox row, and recipients whose insert failed.
+     * `deliveredCount + failedCount` is the number of accounts walked.
+     *
+     * NULL on a row that has never been through the job (pre-#1909 rows keep
+     * NULL forever — the counts were not recorded then, and inventing a zero
+     * would be indistinguishable from "measured, and nothing failed").
+     */
+    deliveredCount: z.number().int().nullable(),
+    failedCount: z.number().int().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -1233,6 +1278,9 @@ export type AnnouncementListResponse = z.infer<typeof announcementListResponseSc
  * `POST /admin/announcements` — create a new (possibly inactive) announcement.
  * EN and DE title/body are ALL required (§13.4 binding — every user-facing
  * string ships with both keys).
+ *
+ * The request persists and returns; it never walks the user table (#1909). The
+ * `announcements.publishDue` job owns delivery.
  */
 export const createAnnouncementRequestSchema = z
   .object({
@@ -1256,8 +1304,9 @@ export type CreateAnnouncementRequest = z.infer<typeof createAnnouncementRequest
 
 /**
  * `PATCH /admin/announcements/:id` — partial update. At least one field
- * required; unknown fields rejected. Flipping `active` from off to on triggers
- * the fan-out; a re-publish is a no-op via the shared eventKey.
+ * required; unknown fields rejected. Saving never fans out on the request
+ * path (#1909): the publish job picks the row up once its window has opened,
+ * and a re-publish is a no-op per recipient via the shared eventKey.
  */
 export const updateAnnouncementRequestSchema = z
   .object({

@@ -9,12 +9,22 @@ import { createAuditRepository } from '../../../data/repositories/auditRepositor
 import type { Database } from '../../../data/db';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createAuditService } from '../../audit/auditService';
-import { createAnnouncementService, announcementEventKey } from '../announcementService';
+import {
+  createAnnouncementService,
+  announcementEventKey,
+  deriveAnnouncementDeliveryState,
+  type AnnouncementPublishRequest,
+} from '../announcementService';
 
 /**
- * Service-level tests using a controlled clock — proves the acceptance
- * criterion "banner honors the active window (test with fixed clock)"
- * without racing the wall clock.
+ * Service-level tests using a controlled clock.
+ *
+ * Two eras live here. The original V4-P5b criterion — "the banner honors the
+ * active window (test with a fixed clock)" — and the ADMIN-W7a (#1909)
+ * criterion that the SAME window now governs the inbox fan-out: saving an
+ * announcement, however it is flagged, delivers nothing on the request path.
+ * The publication side (double-run, concurrency, partial failure, resumption)
+ * is exercised end-to-end in `jobs/__tests__/announcementPublishJob.test.ts`.
  */
 
 let harness: TestHarness;
@@ -31,19 +41,30 @@ afterEach(async () => {
 
 function buildService(
   clock: () => Date,
-  notificationsOverride?: Pick<ReturnType<typeof createNotificationRepository>, 'insert'>,
+  options: {
+    notifications?: Pick<ReturnType<typeof createNotificationRepository>, 'insert'>;
+    enqueued?: AnnouncementPublishRequest[];
+  } = {},
 ) {
   const repo = createAnnouncementRepository(db);
   const notifications = createNotificationRepository(db);
   const users = createUserRepository(db);
   const audit = createAuditService(createAuditRepository(db));
+  const enqueued = options.enqueued;
   return {
     service: createAnnouncementService({
       repo,
       users,
-      notifications: notificationsOverride ?? notifications,
+      notifications: options.notifications ?? notifications,
       audit,
       now: clock,
+      ...(enqueued
+        ? {
+            enqueuePublish: async (request: AnnouncementPublishRequest) => {
+              enqueued.push(request);
+            },
+          }
+        : {}),
     }),
     repo,
     notifications,
@@ -65,8 +86,6 @@ describe('AnnouncementService — active window', () => {
     // Real admin so audit.record has a valid actor id.
     const admin = await harness.seedAdmin();
     const alice = await harness.seedUser();
-    // Seed a couple of accounts so the fan-out has recipients (not asserted here).
-    void alice;
 
     let now = new Date('2026-01-01T00:00:00.000Z');
     const { service } = buildService(() => now);
@@ -97,26 +116,6 @@ describe('AnnouncementService — active window', () => {
     expect(afterEnd).toHaveLength(0);
   });
 
-  it('publish is idempotent — a repeat toggle-on collapses to zero new inbox rows', async () => {
-    const admin = await harness.seedAdmin();
-    const bob = await harness.seedUser();
-
-    const now = () => new Date('2026-01-01T00:00:00.000Z');
-    const { service, notifications, repo } = buildService(now);
-
-    const created = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
-    const key = announcementEventKey(created.id);
-    expect(await notifications.existsForEventKey(bob.id, key)).toBe(true);
-
-    // Toggle off then on again — the (user_id, eventKey) partial unique index
-    // collapses the second fan-out to a no-op.
-    await service.update(created.id, { active: false }, { id: admin.id });
-    await service.update(created.id, { active: true }, { id: admin.id });
-
-    // Bob still has exactly one row (verified by the count check below via repo).
-    expect(await repo.hasBeenPublished(created.id)).toBe(true);
-  });
-
   it('rejects a start > end window as INVALID_ANNOUNCEMENT_WINDOW (400)', async () => {
     const admin = await harness.seedAdmin();
     const now = () => new Date('2026-01-01T00:00:00.000Z');
@@ -137,79 +136,128 @@ describe('AnnouncementService — active window', () => {
 });
 
 /**
- * #1723: a publish interrupted midway used to be permanently unrecoverable —
- * `active` was already committed true, so the false→true edge that gates the
- * fan-out could never happen again, and `publishedAt` stayed NULL forever with
- * only a prefix of the users holding an inbox row.
+ * #1909's headline defect: a future `startsAt` used to defer only the banner.
+ * `create()` ran the fan-out inline on the `active` flag alone, so "schedule it
+ * for Monday" mailed the entire user base on Friday and then showed the banner
+ * on Monday — while the composer's own helper text said the opposite.
  */
-describe('AnnouncementService — resumable publish (#1723)', () => {
-  it('a mid-fan-out failure leaves the announcement unpublished, then a retry completes it', async () => {
+describe('AnnouncementService — a write never delivers (#1909)', () => {
+  it('a FUTURE startsAt with active:true sends no notification at save time', async () => {
     const admin = await harness.seedAdmin();
-    await harness.seedUser({ email: 'r1@bt.test', username: 'resume1' });
-    await harness.seedUser({ email: 'r2@bt.test', username: 'resume2' });
-    await harness.seedUser({ email: 'r3@bt.test', username: 'resume3' });
+    const alice = await harness.seedUser({ email: 'sched@bt.test', username: 'scheduleduser' });
 
-    const users = createUserRepository(db);
-    const recipients = await users.listRecipientsAfter(null, 100);
-    // Fail one recipient in the middle of the id-ordered walk, once.
-    const victim = recipients[Math.floor(recipients.length / 2)]!.id;
-    let shouldFail = true;
-
-    const real = createNotificationRepository(db);
     const now = () => new Date('2026-01-01T00:00:00.000Z');
-    const { service, repo } = buildService(now, {
-      insert: async (input) => {
-        if (shouldFail && input.userId === victim) throw new Error('insert boom');
-        return real.insert(input);
-      },
-    });
+    const enqueued: AnnouncementPublishRequest[] = [];
+    const { service, notifications } = buildService(now, { enqueued });
 
-    const created = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
-    const key = announcementEventKey(created.id);
+    const created = await service.create(
+      { ...BASE_BODY, active: true, startsAt: '2026-01-05T09:00:00.000Z' },
+      { id: admin.id },
+    );
 
-    // The banner is live, but the announcement is NOT recorded as published:
-    // one recipient is still missing their inbox row.
-    expect(created.active).toBe(true);
+    // Nothing delivered, nothing stamped, and — the part that makes it a
+    // schedule rather than a race — nothing even asked for.
+    expect(await notifications.existsForEventKey(alice.id, announcementEventKey(created.id))).toBe(
+      false,
+    );
     expect(created.publishedAt).toBeNull();
-    expect(await repo.hasBeenPublished(created.id)).toBe(false);
-    expect(await real.existsForEventKey(victim, key)).toBe(false);
-    for (const recipient of recipients) {
-      if (recipient.id === victim) continue;
-      // Everyone after the failure was reached too — the walk did not abort.
-      expect(await real.existsForEventKey(recipient.id, key)).toBe(true);
-    }
-
-    // Retrying the SAME patch resumes the publish: the dedupe index means only
-    // the missing row is inserted, and only now is `publishedAt` stamped.
-    shouldFail = false;
-    const retried = await service.update(created.id, { active: true }, { id: admin.id });
-    expect(await real.existsForEventKey(victim, key)).toBe(true);
-    expect(retried.publishedAt).toBe(now().toISOString());
-    expect(await repo.hasBeenPublished(created.id)).toBe(true);
+    expect(created.deliveryState).toBe('scheduled');
+    expect(created.deliveredCount).toBeNull();
+    expect(enqueued).toHaveLength(0);
   });
 
-  it('a completed publish is not re-run by an unrelated patch', async () => {
+  it('an OPEN window asks the worker to publish, and still delivers nothing inline', async () => {
     const admin = await harness.seedAdmin();
-    await harness.seedUser({ email: 'clean@bt.test', username: 'cleanpublish' });
+    const alice = await harness.seedUser({ email: 'open@bt.test', username: 'openwindowuser' });
 
-    const now = () => new Date('2026-01-01T00:00:00.000Z');
-    const inserts: string[] = [];
-    const real = createNotificationRepository(db);
-    const { service, repo } = buildService(now, {
-      insert: async (input) => {
-        inserts.push(input.userId);
-        return real.insert(input);
+    const now = () => new Date('2026-01-10T00:00:00.000Z');
+    const enqueued: AnnouncementPublishRequest[] = [];
+    const { service, notifications } = buildService(now, { enqueued });
+
+    const created = await service.create(
+      { ...BASE_BODY, active: true, startsAt: '2026-01-01T00:00:00.000Z' },
+      { id: admin.id },
+    );
+
+    expect(created.deliveryState).toBe('publishing');
+    expect(created.publishedAt).toBeNull();
+    // The request path did not walk the user table.
+    expect(await notifications.existsForEventKey(alice.id, announcementEventKey(created.id))).toBe(
+      false,
+    );
+    // It handed the work to the queue instead — first pass, no backoff.
+    expect(enqueued).toEqual([{ announcementId: created.id, attempt: 0 }]);
+  });
+
+  it('flipping active on later hands the same open-window announcement over once', async () => {
+    const admin = await harness.seedAdmin();
+    const now = () => new Date('2026-01-10T00:00:00.000Z');
+    const enqueued: AnnouncementPublishRequest[] = [];
+    const { service } = buildService(now, { enqueued });
+
+    const created = await service.create({ ...BASE_BODY, active: false }, { id: admin.id });
+    expect(created.deliveryState).toBe('draft');
+    expect(enqueued).toHaveLength(0);
+
+    const activated = await service.update(created.id, { active: true }, { id: admin.id });
+    expect(activated.deliveryState).toBe('publishing');
+    expect(enqueued).toEqual([{ announcementId: created.id, attempt: 0 }]);
+  });
+
+  it('an already-closed window is never handed over, however it is re-saved', async () => {
+    const admin = await harness.seedAdmin();
+    const now = () => new Date('2026-06-01T00:00:00.000Z');
+    const enqueued: AnnouncementPublishRequest[] = [];
+    const { service, repo } = buildService(now, { enqueued });
+
+    // Composed inactive with a window that closed months ago, then activated —
+    // the exact sequence an operator performs when they "re-use" an old notice.
+    const created = await service.create(
+      {
+        ...BASE_BODY,
+        active: false,
+        startsAt: '2026-01-01T00:00:00.000Z',
+        endsAt: '2026-01-31T00:00:00.000Z',
       },
-    });
+      { id: admin.id },
+    );
+    expect(created.deliveryState).toBe('expired');
 
-    const created = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
-    expect(await repo.hasBeenPublished(created.id)).toBe(true);
-    const afterPublish = inserts.length;
+    const reactivated = await service.update(created.id, { active: true }, { id: admin.id });
+    expect(reactivated.deliveryState).toBe('expired');
+    expect(enqueued).toHaveLength(0);
 
-    // Editing the copy of an already-published, still-active announcement must
-    // not re-enter the fan-out: `publishedAt` is set, so `publishing` is false.
-    await service.update(created.id, { titleEn: 'Edited title' }, { id: admin.id });
-    await service.update(created.id, { active: true }, { id: admin.id });
-    expect(inserts).toHaveLength(afterPublish);
+    // And the sweep refuses it too — the due predicate, not just the enqueue.
+    const swept = await service.publishDue();
+    expect(swept).toMatchObject({ due: 0, published: 0 });
+    expect(await repo.hasBeenPublished(created.id)).toBe(false);
+
+    // Even addressed by id, which is what a stale queued job would do.
+    const targeted = await service.publishAnnouncement(created.id);
+    expect(targeted).toEqual({ status: 'skipped', reason: 'expired' });
+  });
+});
+
+describe('deriveAnnouncementDeliveryState', () => {
+  const at = new Date('2026-03-15T12:00:00.000Z');
+  const past = new Date('2026-01-01T00:00:00.000Z');
+  const future = new Date('2026-06-01T00:00:00.000Z');
+
+  it.each([
+    ['draft', { active: false, startsAt: null, endsAt: null, publishedAt: null }],
+    ['scheduled', { active: true, startsAt: future, endsAt: null, publishedAt: null }],
+    ['publishing', { active: true, startsAt: past, endsAt: null, publishedAt: null }],
+    ['publishing', { active: true, startsAt: null, endsAt: null, publishedAt: null }],
+    ['published', { active: true, startsAt: past, endsAt: future, publishedAt: past }],
+    ['expired', { active: true, startsAt: past, endsAt: past, publishedAt: past }],
+    // A closed window outranks everything: the job refuses it and the banner
+    // hides it, so no other reading would be honest.
+    ['expired', { active: true, startsAt: null, endsAt: past, publishedAt: null }],
+    ['expired', { active: false, startsAt: null, endsAt: past, publishedAt: null }],
+    // Switched back off after a publication: users see nothing now, and the
+    // row's own publishedAt still carries the history beside it.
+    ['draft', { active: false, startsAt: past, endsAt: future, publishedAt: past }],
+  ])('is %s', (expected, row) => {
+    expect(deriveAnnouncementDeliveryState(row, at)).toBe(expected);
   });
 });

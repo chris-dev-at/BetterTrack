@@ -954,6 +954,11 @@ export const NON_V5_SURFACES = [
     note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
   },
   {
+    path: 'admin/components/AnnouncementPreview.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W7a (#1909): the composer’s EN + DE banner preview; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/LiveRefreshControl.tsx',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W4 (#1406): the Operations cockpit’s cadence picker and refresh button; localized and tested in its own feature change.',
@@ -986,7 +991,7 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/pages/AnnouncementsPage.tsx',
     reason: 'no-v5-deliverable',
-    note: 'V4-P5 announcement composer (#519); still English-only.',
+    note: 'V4-P5 announcement composer (#519); rebuilt on the W2 token layer and catalogued in EN + DE by post-V5 admin wave 7a (#1909).',
   },
   {
     path: 'admin/pages/AuditPage.tsx',
@@ -2397,7 +2402,13 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
  * in the universe fails.
  */
 export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
-  'admin/pages/AnnouncementsPage.tsx': 36,
+  // 36 → 0 with ADMIN-W7a (#1909). The composer — the console's most drifted
+  // page, 489 lines of hardcoded English with no `admin.announcements.*`
+  // namespace in either catalogue — is fully catalogued in EN + DE. Dropped to
+  // zero rather than deleted, like the W2 pages below, so the ratchet still
+  // names the file: one hardcoded string reappearing here fails the suite
+  // instead of quietly re-spending a budget nobody is watching.
+  'admin/pages/AnnouncementsPage.tsx': 0,
   // 13 → 0 with #1848: the page rendered the server's raw error envelope — the
   // offender #1814 was meant to be the last of — and every label around it was
   // English-only. Both are now catalogue copy in EN + DE, so the same zero-floor

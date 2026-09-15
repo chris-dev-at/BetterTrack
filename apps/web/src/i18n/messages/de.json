@@ -5931,6 +5931,80 @@
       "range": "{{first}}–{{last}} von {{total}}",
       "previous": "Zurück",
       "next": "Weiter"
+    },
+    "announcements": {
+      "title": "Ankündigungen",
+      "description": "In-App-Hinweise für alle Konten: ein ausblendbares Banner innerhalb des Anzeigefensters und ein Posteingangs-Eintrag pro Nutzer. EN und DE sind beide erforderlich — jede Person sieht die Fassung in ihrer Sprache.",
+      "composer": {
+        "headingNew": "Neue Ankündigung",
+        "headingEdit": "Ankündigung bearbeiten",
+        "severity": "Dringlichkeit",
+        "active": "Aktiv — veröffentlichen, sobald das Fenster beginnt",
+        "activeHint": "Das Speichern versendet nichts. Ein Hintergrund-Job veröffentlicht die Ankündigung, sobald ihr Startzeitpunkt erreicht ist; dasselbe Fenster steuert Banner und Posteingang.",
+        "titleEn": "Englischer Titel",
+        "bodyEn": "Englischer Text",
+        "titleDe": "Deutscher Titel",
+        "bodyDe": "Deutscher Text",
+        "startsAt": "Beginnt am",
+        "startsAtHint": "Leer = veröffentlichen, sobald sie aktiv ist.",
+        "endsAt": "Endet am",
+        "endsAtHint": "Leer = kein automatisches Ende. Ein bereits abgelaufenes Fenster wird nie veröffentlicht.",
+        "timezone": "Zeiten gelten in der Zeitzone {{zone}} und werden als UTC gespeichert.",
+        "create": "Ankündigung anlegen",
+        "creating": "Wird angelegt…",
+        "save": "Änderungen speichern",
+        "saving": "Wird gespeichert…",
+        "cancel": "Bearbeitung abbrechen",
+        "created": "Ankündigung angelegt.",
+        "createdScheduled": "Ankündigung angelegt. Sie wird veröffentlicht, sobald ihr Fenster beginnt.",
+        "createdQueued": "Ankündigung angelegt. Die Veröffentlichung ist eingeplant.",
+        "updated": "Ankündigung aktualisiert."
+      },
+      "preview": {
+        "heading": "Was Nutzer sehen werden",
+        "description": "Das Banner, wie es in beiden Sprachen erscheint. Alle Konten erhalten es.",
+        "empty": "Titel und Text ausfüllen, um das Banner zu sehen.",
+        "locale": {
+          "en": "Englisch",
+          "de": "Deutsch"
+        }
+      },
+      "list": {
+        "heading": "Alle Ankündigungen",
+        "loading": "Ankündigungen werden geladen…",
+        "empty": "Noch keine Ankündigungen. Oben eine verfassen.",
+        "retry": "Erneut versuchen",
+        "columns": {
+          "severity": "Dringlichkeit",
+          "title": "Titel (EN)",
+          "window": "Fenster",
+          "delivery": "Zustellung",
+          "reach": "Reichweite",
+          "actions": "Aktionen"
+        },
+        "startsImmediately": "Beginn: sofort",
+        "starts": "Beginn: {{date}}",
+        "endsNever": "Ende: nie",
+        "ends": "Ende: {{date}}",
+        "reachPending": "Noch nicht zugestellt",
+        "reachDelivered": "{{delivered}} zugestellt",
+        "reachFailed": "{{failed}} fehlgeschlagen",
+        "edit": "Bearbeiten",
+        "activate": "Aktivieren",
+        "deactivate": "Deaktivieren"
+      },
+      "state": {
+        "draft": "Entwurf",
+        "scheduled": "Geplant",
+        "publishing": "Wird veröffentlicht",
+        "published": "Veröffentlicht",
+        "expired": "Abgelaufen",
+        "draftDetail": "Nicht aktiv — niemand sieht sie.",
+        "scheduledDetail": "Wird am {{date}} veröffentlicht.",
+        "publishingDetail": "Jetzt fällig — der Veröffentlichungs-Job stellt sie zu.",
+        "publishedDetail": "Veröffentlicht am {{date}}.",
+        "expiredDetail": "Fenster endete am {{date}} — sie wird nicht mehr veröffentlicht."
+      }
     }
   },
   "create": {

@@ -18,6 +18,7 @@ import {
   updateAiSettingsRequestSchema,
   auditQuerySchema,
   bulkUserActionRequestSchema,
+  announcementListResponseSchema,
   createAnnouncementRequestSchema,
   createInviteRequestSchema,
   createOAuthClientRequestSchema,
@@ -674,14 +675,20 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     res.json({ ok: true });
   });
 
-  // ── Announcements (§13.4 V4-P5b) ────────────────────────────────────────
+  // ── Announcements (§13.4 V4-P5b; ADMIN-W7a #1909) ───────────────────────
   // Admin CRUD over composed announcements. Every mutation is audit-logged in
-  // the service; flipping `active` from off → on fans exactly one inbox row
-  // out to every user (deduped per-user via the shared eventKey). Delivery is
-  // banner + inbox only — no email/push/matrix routing runs.
+  // the service. **No write here delivers anything**: the request persists the
+  // row and returns, and the `announcements.publishDue` job fans exactly one
+  // inbox row out to every user once the display window has opened (deduped
+  // per-user via the shared eventKey). Delivery is banner + inbox only — no
+  // email/push/matrix routing runs.
   router.get('/announcements', async (_req, res) => {
     const announcements = await ctx.announcements.list();
-    res.json({ announcements });
+    // Parsed on the way out, like the invites and registration-token lists:
+    // this list gained server-derived fields (`deliveryState`, the delivery
+    // counts) and an unparsed `res.json` is how a projection and its contract
+    // drift apart without a test noticing.
+    res.json(announcementListResponseSchema.parse({ announcements }));
   });
 
   router.post('/announcements', validateBody(createAnnouncementRequestSchema), async (req, res) => {
