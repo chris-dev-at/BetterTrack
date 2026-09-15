@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import request from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DomainEvent } from '../events/types';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -43,6 +43,19 @@ function sampleEvent(): DomainEvent {
  * reaper releases it at the end without any test's help.
  */
 let fileHarness: TestHarness;
+
+// Ordering guard (#1936 review M1): the reaper lives in a file-level `afterAll`
+// registered by the shared setup file, and the whole design rests on vitest's
+// `sequence.hooks: 'stack'` default running that hook LAST. This file-level
+// `afterAll` therefore runs BEFORE the reaper, while the harnesses this file
+// deliberately never disposes are still registered. If a vitest default ever
+// flips to 'list' (or a config sets it), the reaper drains the registry first
+// and this assertion goes red — instead of the reaper silently closing harnesses
+// that other files' own teardown still uses.
+afterAll(() => {
+  expect(liveHarnesses.isReaperInstalled()).toBe(true);
+  expect(liveHarnesses.liveCount()).toBeGreaterThan(0);
+});
 
 beforeAll(async () => {
   fileHarness = await createTestApp();
