@@ -14,7 +14,8 @@ import type {
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { CurrencyService } from '../currency/currencyService';
-import { marketIntelDisplayDay } from './displayDay';
+import { marketIntelDisplayDay, marketIntelEventDay } from './displayDay';
+import { DIVIDEND_UPCOMING_MAX_EVENTS } from './marketIntelService';
 import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
 
 /**
@@ -46,8 +47,10 @@ import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudge
 export interface PortfolioMarketIntelService {
   /**
    * Upcoming ex/pay events across held + watchlist assets, ascending (arc a).
-   * The provider fan-out is capped per request (`MARKET_INTEL_ROLLUP_MAX_ASSETS`);
-   * a larger book yields `truncated: true` beside the entries it did cover.
+   * The provider fan-out is capped per request (`MARKET_INTEL_ROLLUP_MAX_ASSETS`)
+   * and each asset's own event count at
+   * {@link DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET}; either cut yields
+   * `truncated: true` beside the entries it did cover.
    */
   dividendCalendar(userId: string): Promise<DividendCalendarResponse>;
   /**
@@ -78,6 +81,19 @@ export interface ProjectedIncomeOptions {
    */
   baseCurrency?: string;
 }
+
+/**
+ * Announced events one ASSET may contribute to the calendar — the same bound,
+ * for the same reason, that the per-asset read applies to the very same provider
+ * array ({@link DIVIDEND_UPCOMING_MAX_EVENTS}). The roll-up was the one intel
+ * path that shipped a provider array unbounded: a second provider, or a Yahoo
+ * shape change returning a full forward calendar, put 50 × N entries into a body
+ * `PortfolioPage` renders every row of. Exceeding it sets `truncated`, so the
+ * cut is reported and never silent — with {@link MARKET_INTEL_ROLLUP_MAX_ASSETS}
+ * this states the response ceiling, `DIVIDEND_CALENDAR_MAX_ENTRIES` in
+ * `@bettertrack/contracts`.
+ */
+export const DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET = DIVIDEND_UPCOMING_MAX_EVENTS;
 
 export interface PortfolioMarketIntelDeps {
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getDividendEvents'>;
@@ -135,11 +151,19 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** The event's known dates, day-only (UTC), in no particular order. */
+/**
+ * The event's known dates as DISPLAY-zone days, in no particular order — the
+ * same day each of them is rendered on (`marketIntelEventDay`), so the boundary
+ * below compares like with like. On the UTC substring a payout stamped
+ * `…T23:30:00.000Z` is listed under the Vienna day AFTER the one it filters as,
+ * and disappears on the day the reader's own calendar shows for it.
+ */
 function eventDays(entry: Pick<DividendCalendarEntry, 'exDate' | 'payDate'>): string[] {
   const days: string[] = [];
-  if (entry.exDate) days.push(entry.exDate.slice(0, 10));
-  if (entry.payDate) days.push(entry.payDate.slice(0, 10));
+  for (const iso of [entry.exDate, entry.payDate]) {
+    const day = marketIntelEventDay(iso);
+    if (day !== null) days.push(day);
+  }
   return days;
 }
 
@@ -214,6 +238,12 @@ export function createPortfolioMarketIntelService(
       );
 
       const entries: DividendCalendarEntry[] = [];
+      // Set when a single asset's forward calendar exceeded
+      // {@link DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET}. It rides the SAME
+      // `truncated` marker the fan-out cap uses: both mean "this response covers
+      // part of what was asked for", and the surfaces already render that marker
+      // (DividendsWidget, PortfolioPage) rather than claiming completeness.
+      let eventsCapped = false;
       await Promise.all(
         selected.map(async (row) => {
           const source = row.source;
@@ -228,9 +258,10 @@ export function createPortfolioMarketIntelService(
             logger?.debug?.({ err, assetId: row.assetId }, 'dividend calendar fetch failed');
             return;
           }
+          const forAsset: DividendCalendarEntry[] = [];
           for (const event of events.upcoming) {
             if (!eventDays(event).some((day) => day >= todayStart)) continue;
-            entries.push({
+            forAsset.push({
               assetId: row.assetId,
               symbol: row.symbol,
               name: row.name,
@@ -241,6 +272,19 @@ export function createPortfolioMarketIntelService(
               currency: event.currency ?? events.currency ?? row.currency,
             });
           }
+          // A provider is not a trust boundary (#1873) — the rule every other
+          // intel payload already follows, and the one path that skipped it. The
+          // per-asset read bounds the same array at the same number; here the
+          // SOONEST survive, on the calendar's own ordering key, so a provider
+          // answering newest-first cannot cost the caller the next payout.
+          if (forAsset.length > DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET) {
+            forAsset.sort((a, b) =>
+              eventSortKey(a, todayStart).localeCompare(eventSortKey(b, todayStart)),
+            );
+            forAsset.length = DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET;
+            eventsCapped = true;
+          }
+          entries.push(...forAsset);
         }),
       );
 
@@ -249,7 +293,11 @@ export function createPortfolioMarketIntelService(
         return cmp !== 0 ? cmp : a.symbol.localeCompare(b.symbol);
       });
 
-      return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
+      return {
+        available: true,
+        entries,
+        ...(truncated || eventsCapped ? { truncated: true as const } : {}),
+      };
     },
 
     async projectedIncome(userId, opts) {
