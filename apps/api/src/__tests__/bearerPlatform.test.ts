@@ -39,6 +39,7 @@ import * as schema from '../data/schema';
 import {
   ACCOUNT_SECURITY_SCOPE,
   SETTINGS_SUBPATH_POLICY_CENSUS,
+  VAULT_SYNC_SCOPE,
   passkeyManagementRouteAcceptsBearer,
   pathAcceptsBearer,
   recordBearerScopeDenied,
@@ -47,7 +48,12 @@ import {
   type ResolvedBearerPolicyClassification,
 } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrPasskeyManagementBearer } from '../http/routes/authRoutes';
-import { requireCookieSessionOrTaxYearDocumentationBearer } from '../http/routes/settingsRoutes';
+import { requirePortfolioVaultTransitionBearerAccess } from '../http/routes/portfolioRoutes';
+import {
+  requireCookieSessionOrFirstPartyOAuthGrant,
+  requireCookieSessionOrTaxYearDocumentationBearer,
+} from '../http/routes/settingsRoutes';
+import { requireCookieSessionOrPerVaultAccess } from '../http/routes/vaultRoutes';
 import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import {
   BEARER_SCOPE_DENIAL_REASONS,
@@ -836,45 +842,208 @@ describe('#1324 account:security parity for native account state', () => {
     expect(JSON.stringify(rows[0])).not.toContain(principal.token);
   });
 
-  it('keeps the tax-year documentation guard read-only and scope-aware', () => {
-    const invoke = (scopes: string[], method: string, path: string) => {
+  it('#1958 404s a bearer-backed admin principal on ALL FIVE router-local twins', async () => {
+    // The portfolio-vault and per-vault twins always carried this backstop; the
+    // passkey, grant and tax-year twins gained it in #1958 so the five are
+    // alike. It is only reachable by driving a guard directly: in production the
+    // global rail 404s the same principal before routing, which is exactly why
+    // the admission set does not move (pinned in `bearerAdmissionParity`).
+    const user = await seedFreshUser();
+    const vaultId = '22222222-2222-4222-8222-222222222222';
+    const twins = [
+      {
+        name: 'tax-year documentation',
+        guard: requireCookieSessionOrTaxYearDocumentationBearer(harness.ctx),
+        method: 'GET',
+        path: '/taxes/years',
+      },
+      {
+        name: 'oauth grant',
+        guard: requireCookieSessionOrFirstPartyOAuthGrant(harness.ctx),
+        method: 'GET',
+        path: '/oauth-grants',
+      },
+      {
+        name: 'passkey management',
+        guard: requireCookieSessionOrPasskeyManagementBearer(harness.ctx),
+        method: 'GET',
+        path: '/passkeys',
+      },
+      {
+        name: 'portfolio-vault transition',
+        guard: requirePortfolioVaultTransitionBearerAccess(harness.ctx),
+        method: 'GET',
+        path: `/${vaultId}/vault/revision`,
+      },
+      {
+        name: 'per-vault',
+        guard: requireCookieSessionOrPerVaultAccess(harness.ctx),
+        method: 'GET',
+        path: `/${vaultId}`,
+      },
+    ] as const;
+
+    const drive = async (
+      twin: (typeof twins)[number],
+      role: 'user' | 'admin',
+      firstParty: boolean,
+    ) => {
       const next = vi.fn();
-      requireCookieSessionOrTaxYearDocumentationBearer(
+      twin.guard(
         {
+          authUser: { id: user.id, role },
           apiKey: {
-            id: 'bypassed-policy-key',
-            scopes,
-            kind: 'personal',
+            id: MISSING_ID,
+            // Every scope any of the five could ask for, so a refusal here is
+            // never about scope — precision, not just recall.
+            scopes: [ACCOUNT_SECURITY_SCOPE, VAULT_SYNC_SCOPE],
+            kind: firstParty ? 'oauth' : 'personal',
+            firstParty,
             securityGeneration: 0,
           },
-          method,
-          path,
+          method: twin.method,
+          path: twin.path,
         } as unknown as Request,
         {} as Response,
         next,
       );
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
       return next;
     };
 
-    const wrongScope = invoke(['market:read'], 'GET', '/taxes/years');
-    expect(wrongScope.mock.calls[0]![0]).toMatchObject({
-      statusCode: 403,
-      code: 'API_KEY_FORBIDDEN',
-    });
+    for (const twin of twins) {
+      // The grant twin is the one that also demands a trusted first-party
+      // client, so its control principal carries that marker too.
+      const firstParty = twin.name === 'oauth grant';
+      // Admin role → 404, with no hint that the surface exists.
+      expect(
+        (await drive(twin, 'admin', firstParty)).mock.calls[0]![0],
+        `${twin.name} (admin)`,
+      ).toMatchObject({ statusCode: 404 });
+      // The same request on a user-role account is ADMITTED — so the 404 above
+      // is the account-kind boundary answering, not some unrelated refusal.
+      expect(await drive(twin, 'user', firstParty), `${twin.name} (user)`).toHaveBeenCalledWith();
+    }
 
-    const unknownRoute = invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/export');
-    expect(unknownRoute.mock.calls[0]![0]).toMatchObject({
-      statusCode: 403,
-      code: 'API_KEY_FORBIDDEN',
-    });
+    // A 404 across the account-kind boundary is not a scope event on any twin.
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, user.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(rows).toHaveLength(0);
+  });
 
-    expect(invoke([ACCOUNT_SECURITY_SCOPE], 'GET', '/taxes/years')).toHaveBeenCalledWith();
+  it('keeps the tax-year documentation guard read-only and scope-aware', async () => {
+    // A real account: the twin writes an `api_key.scope_denied` row and
+    // `audit_log.actor_id` is a foreign key onto `users` (#1958).
+    const user = await seedFreshUser();
+    const guard = requireCookieSessionOrTaxYearDocumentationBearer(harness.ctx);
+    // ORDER BY, always: Postgres guarantees no SELECT order and these rows are
+    // read as a sequence. `id` is a UUIDv7, so ascending id is write order.
+    const auditRows = () =>
+      harness.db
+        .select()
+        .from(schema.auditLog)
+        .where(
+          and(
+            eq(schema.auditLog.actorId, user.id),
+            eq(schema.auditLog.action, 'api_key.scope_denied'),
+          ),
+        )
+        .orderBy(schema.auditLog.id);
+    const invoke = async (input: {
+      scopes?: string[];
+      role?: 'user' | 'admin';
+      sessionId?: string;
+      method: string;
+      path: string;
+    }) => {
+      const next = vi.fn();
+      guard(
+        {
+          authUser: { id: user.id, role: input.role ?? 'user' },
+          apiKey: input.scopes
+            ? {
+                id: MISSING_ID,
+                scopes: input.scopes,
+                kind: 'personal',
+                securityGeneration: 0,
+              }
+            : undefined,
+          sessionId: input.sessionId,
+          method: input.method,
+          path: input.path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      // The audited branch reaches `next` only after its write resolves.
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
+      return next;
+    };
+
+    // The owning browser session and a scoped bearer on the one allowlisted
+    // read pass — the twin admits exactly what the global table admits.
     expect(
-      invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/change'),
-    ).not.toHaveBeenCalledWith();
+      await invoke({ sessionId: 'session', method: 'GET', path: '/taxes/years' }),
+    ).toHaveBeenCalledWith();
+    expect(
+      await invoke({ scopes: [ACCOUNT_SECURITY_SCOPE], method: 'GET', path: '/taxes/years' }),
+    ).toHaveBeenCalledWith();
+    expect(await auditRows()).toHaveLength(0);
+
+    // Wrong scope, a method the allowlist does not carry, and two future
+    // `/settings/taxes/years/*` siblings all stay closed here even if the
+    // global policy table were to regress.
+    for (const input of [
+      { scopes: ['market:read'], method: 'GET', path: '/taxes/years' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/taxes/years' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/taxes/years/2025/export' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/taxes/years/2025/change' },
+    ]) {
+      expect(
+        (await invoke(input)).mock.calls[0]![0],
+        `${input.method} ${input.path}`,
+      ).toMatchObject({
+        statusCode: 403,
+        code: 'API_KEY_FORBIDDEN',
+      });
+    }
     expect(
       taxYearDocumentationRouteAcceptsBearer('POST', '/settings/taxes/years/2025/change'),
     ).toBe(false);
+
+    // #1958: exactly ONE of those four is a scope denial — the first, a bearer
+    // refused on the route the allowlist accepts. The other three are
+    // off-allowlist method/path pairs the global table calls session-only and
+    // audits nowhere; auditing them here would invent scope events the rail
+    // never records.
+    const rows = await auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      method: 'GET',
+      path: '/settings/taxes/years',
+    });
+    expect(rows[0]!.targetType).toBe('api_key');
+
+    // #1958 backstop: a bearer-backed admin principal 404s before any of it,
+    // and a 404 across the account-kind boundary is not a scope event — the
+    // row count is unchanged.
+    const adminBearer = await invoke({
+      scopes: [ACCOUNT_SECURITY_SCOPE],
+      role: 'admin',
+      method: 'GET',
+      path: '/taxes/years',
+    });
+    expect(adminBearer.mock.calls[0]![0]).toMatchObject({ statusCode: 404 });
+    expect(await auditRows()).toHaveLength(1);
   });
 
   it('keeps bearer passkey deletion on the shared contract, audit and account throttle', async () => {
