@@ -23,6 +23,7 @@ import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { ActorValue, AuditEntryDrawer, stringify } from '../components/AuditEntryDrawer';
 import { EmailLogTable } from '../components/EmailLogTable';
 import { Modal } from '../components/Modal';
@@ -113,6 +114,7 @@ export function UserDetailPage() {
   const { user: currentAdmin } = useAuth();
   const navigate = useNavigate();
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [params, setParams] = useSearchParams();
 
   const tabParam = params.get('tab');
@@ -281,7 +283,7 @@ export function UserDetailPage() {
       <BackLink />
 
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={user.username}
         description={user.email}
         actions={

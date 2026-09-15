@@ -12,6 +12,7 @@ import { useAuth } from '../AuthContext';
 import { useAdminWindowClosedSignOut } from '../sessionExpiry';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { Alert, Button, PageHeader, Spinner, TextField } from '../components/ui';
 import {
   EmailEnrollForm,
@@ -442,12 +443,17 @@ function SessionPolicyCard() {
  */
 export function SecuritySettingsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const status = useResource((signal) => api.getTwoFactorStatus(signal), []);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={t('admin.security.title')} description={t('admin.security.subtitle')} />
+      <PageHeader
+        eyebrow={eyebrow}
+        title={t('admin.security.title')}
+        description={t('admin.security.subtitle')}
+      />
 
       {recoveryCodes ? (
         <RecoveryCodesPanel

@@ -96,7 +96,7 @@ function makeCtx(events: EventBus, flags: { alerts: boolean } = { alerts: true }
     deadLetter: createDeadLetter(redis),
     redis,
     logger,
-    isFeatureEnabled: async (key) => (key === 'alerts' ? flags.alerts : true),
+    isFeatureEnabledGlobally: async (key) => (key === 'alerts' ? flags.alerts : true),
   };
 }
 

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { Announcement, MeResponse } from '@bettertrack/contracts';
@@ -84,10 +85,12 @@ function AuthStatus() {
 function renderPage(locale = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <AuthProvider>
-        <AuthStatus />
-        <AnnouncementsPage />
-      </AuthProvider>
+      <MemoryRouter initialEntries={['/admin/announcements']}>
+        <AuthProvider>
+          <AuthStatus />
+          <AnnouncementsPage />
+        </AuthProvider>
+      </MemoryRouter>
     </I18nProvider>,
   );
 }

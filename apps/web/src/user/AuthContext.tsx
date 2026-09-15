@@ -34,6 +34,7 @@ import {
   isConfirmedUnauthorized,
   setAuthResponsePolicy,
 } from '../lib/apiClient';
+import { FEATURE_FLAGS_QUERY_KEY } from '../lib/featureFlags';
 import { setDiscreetMode, setMoneyCurrency } from '../lib/format';
 import { updateAccountSettings } from '../lib/settingsApi';
 import * as api from '../lib/userApi';
@@ -348,39 +349,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // its window (or never recorded activity) into the PIN gate. Note this only
   // *reads* the activity timestamp — a reload/refetch must never count as
   // activity; only real DOM interaction or an actual unlock records it.
-  const applyUser = useCallback((me: MeResponse) => {
-    const previousUserId = activeUserIdRef.current;
-    if (previousUserId != null && previousUserId !== me.id) requestVaultLock(previousUserId);
-    activeUserIdRef.current = me.id;
-    setUser(me);
-    // Drive the display layer's default money currency from the session user's
-    // base currency (§5.4, V3-P10d) — every converted figure the API returns
-    // is denominated in it, so the omitted-currency formatMoney default must
-    // match before the first money paint.
-    setMoneyCurrency(me.baseCurrency);
-    // Drive the discreet-mode format seam from the session user's flag
-    // (§13.5 V5-P13 arc (a)), so every subsequent formatMoney/MoneyText
-    // renders masked whenever the account has discreet mode on. `undefined`
-    // (pre-V5-P13 fixture) is treated as OFF.
-    setDiscreetMode(me.discreetMode === true);
-    // Keep this device's remembered-account record current (§16, #399 §B): the
-    // chooser is written once at the opt-in, so a later rename or curated-icon
-    // choice (§13.5 V5-P0 (c)) would otherwise leave it showing a stale face —
-    // or the lettered tile — on every cold visit. Refresh-only: it never creates
-    // a record and never touches the one-shot remember-me prompt gate.
-    refreshRememberedAccount({
-      userId: me.id,
-      username: me.username,
-      profileIcon: me.profileIcon ?? null,
-    });
-    if (me.mustChangePassword) {
-      setStatus('password-change-required');
-    } else if (isPinLocked(me)) {
-      setStatus('pin-required');
-    } else {
-      setStatus('authenticated');
-    }
-  }, []);
+  const applyUser = useCallback(
+    (me: MeResponse) => {
+      const previousUserId = activeUserIdRef.current;
+      if (previousUserId != null && previousUserId !== me.id) requestVaultLock(previousUserId);
+      activeUserIdRef.current = me.id;
+      setUser(me);
+      // Drive the display layer's default money currency from the session user's
+      // base currency (§5.4, V3-P10d) — every converted figure the API returns
+      // is denominated in it, so the omitted-currency formatMoney default must
+      // match before the first money paint.
+      setMoneyCurrency(me.baseCurrency);
+      // Drive the discreet-mode format seam from the session user's flag
+      // (§13.5 V5-P13 arc (a)), so every subsequent formatMoney/MoneyText
+      // renders masked whenever the account has discreet mode on. `undefined`
+      // (pre-V5-P13 fixture) is treated as OFF.
+      setDiscreetMode(me.discreetMode === true);
+      // Keep this device's remembered-account record current (§16, #399 §B): the
+      // chooser is written once at the opt-in, so a later rename or curated-icon
+      // choice (§13.5 V5-P0 (c)) would otherwise leave it showing a stale face —
+      // or the lettered tile — on every cold visit. Refresh-only: it never creates
+      // a record and never touches the one-shot remember-me prompt gate.
+      refreshRememberedAccount({
+        userId: me.id,
+        username: me.username,
+        profileIcon: me.profileIcon ?? null,
+      });
+      if (me.mustChangePassword) {
+        setStatus('password-change-required');
+      } else if (isPinLocked(me)) {
+        setStatus('pin-required');
+      } else {
+        setStatus('authenticated');
+      }
+      // The feature-flag bootstrap is principal-dependent (#1910): a flag can be
+      // rolled out to a percentage or to a named list, so the anonymous answer the
+      // shell fetched before login is not this account's answer. Dropping it here
+      // — in the single door into a session user, which every login, 2FA verify,
+      // registration, quick-auth and OAuth adoption goes through — is what makes
+      // the refetch cover all of them instead of whichever path someone remembers.
+      // Logout is already covered: `clearSession` clears the whole cache.
+      void queryClient.invalidateQueries({ queryKey: FEATURE_FLAGS_QUERY_KEY });
+    },
+    [queryClient],
+  );
 
   // Drops every trace of the signed-out user: the recorded activity, the auth
   // state itself, and the entire TanStack Query cache. Without the cache clear a

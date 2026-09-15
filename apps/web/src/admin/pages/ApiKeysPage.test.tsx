@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { AdminApiKey, ApiKeyTier, MeResponse } from '@bettertrack/contracts';
@@ -29,9 +30,11 @@ const admin: MeResponse = {
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <AuthProvider>
-        <ApiKeysPage />
-      </AuthProvider>
+      <MemoryRouter initialEntries={['/admin/api-keys']}>
+        <AuthProvider>
+          <ApiKeysPage />
+        </AuthProvider>
+      </MemoryRouter>
     </I18nProvider>,
   );
 }

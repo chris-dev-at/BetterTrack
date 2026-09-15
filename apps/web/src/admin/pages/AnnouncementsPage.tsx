@@ -18,6 +18,7 @@ import { ApiError } from '../../lib/apiClient';
 import { DISPLAY_TIME_ZONE, formatDateTime } from '../../lib/format';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { AnnouncementPreview } from '../components/AnnouncementPreview';
 import { Modal } from '../components/Modal';
 import {
@@ -245,6 +246,7 @@ function stateDetail(row: Announcement, t: TranslateFn): string {
 
 export function AnnouncementsPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const { locale } = useI18n();
   const onFailure = useAdminCallFailure();
   const announcements = useResource((signal) => api.listAnnouncements(signal), []);
@@ -401,6 +403,7 @@ export function AnnouncementsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
+        eyebrow={eyebrow}
         title={t('admin.announcements.title')}
         description={t('admin.announcements.description')}
       />

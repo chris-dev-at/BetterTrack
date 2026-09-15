@@ -3,6 +3,7 @@ import type { RequestHandler } from 'express';
 import type { FeatureFlagKey } from '@bettertrack/contracts';
 
 import { notFound } from '../../errors';
+import { principalFromUserId } from '../../services/featureFlags/featureFlagResolution';
 import type { AppContext } from '../context';
 
 /**
@@ -14,11 +15,19 @@ import type { AppContext } from '../context';
  *
  * Reads `ctx.featureFlags` per request, so the factory stays side-effect free at
  * mount time.
+ *
+ * Since #1910 it resolves against the CALLING PRINCIPAL: `req.authUser` is set
+ * by `loadSession` for a cookie request and by `loadBearerAuth` for an API-key
+ * or OAuth one, so both kinds of authenticated caller get their own rollout
+ * answer. A request with no identity at all resolves as anonymous, i.e. it sees
+ * a partially-rolled feature as OFF — every gated router below is authenticated
+ * anyway, so that path ends in a 401 either way; what it must never do is hand
+ * an unidentified caller the fully-rolled answer.
  */
 export function requireFeature(ctx: AppContext, key: FeatureFlagKey): RequestHandler {
-  return (_req, _res, next) => {
+  return (req, _res, next) => {
     ctx.featureFlags
-      .isEnabled(key)
+      .isEnabled(key, principalFromUserId(req.authUser?.id))
       .then((enabled) => {
         if (enabled) {
           next();

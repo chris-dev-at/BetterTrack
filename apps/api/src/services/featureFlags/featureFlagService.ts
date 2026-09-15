@@ -1,17 +1,27 @@
 import type { Redis } from 'ioredis';
 
+import { z } from 'zod';
+
 import {
   FEATURE_FLAG_KEYS,
-  featureFlagsPublicSchema,
+  featureFlagConfigSchema,
+  featureFlagStoredConfigSchema,
   type AdminFeatureFlag,
+  type FeatureFlagConfig,
   type FeatureFlagKey,
   type FeatureFlagsPublic,
+  type UpdateFeatureFlagRequest,
 } from '@bettertrack/contracts';
 
 import type { AppSettingsRepository } from '../../data/repositories/appSettingsRepository';
 import { ApiError } from '../../errors';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import {
+  resolveFeatureFlag,
+  SYSTEM_PRINCIPAL,
+  type FeatureFlagPrincipal,
+} from './featureFlagResolution';
 
 /**
  * Runtime feature kill-switches (PROJECTPLAN.md §13.5 V5-P2 arc (c)). The admin
@@ -23,6 +33,18 @@ import { AuditAction, type AuditService } from '../audit/auditService';
  *
  * Default state is every feature ON: with no stored rows the app is byte-
  * identical to a pre-flag build.
+ *
+ * Since #1910 the stored value is a CONFIG object (`enabled` + rollout
+ * targeting), not a bare boolean, and resolution takes a principal. Two rules
+ * hold the seam together:
+ *
+ *  - **Read stays backward compatible.** Every row written before #1910 is a
+ *    bare `boolean`; {@link createFeatureFlagService} keeps accepting one as
+ *    `{ enabled: <bool> }`. `jsonb` widens with no migration, so there is none.
+ *  - **The cache holds CONFIGURATION, never a resolved answer.** Caching the
+ *    resolved map would serve one user's rollout decision to another — the same
+ *    class of bug as a shared HTTP cache on the principal-dependent bootstrap.
+ *    Resolution happens per request, in memory, off the snapshot.
  */
 
 /** `app_settings` key prefix for a flag row (e.g. `feature_flag_chat`). */
@@ -58,6 +80,12 @@ export const FEATURE_FLAG_CACHE_TTL_SECONDS = 60;
  */
 export const FEATURE_FLAG_PROPAGATION_UNCONFIRMED = 'FEATURE_FLAG_PROPAGATION_UNCONFIRMED';
 
+/**
+ * Error code a PATCH returns when the stored row cannot be read and the patch
+ * would have to INVENT the fields it omits (#1910 review B1). See `setFlag`.
+ */
+export const FEATURE_FLAG_CONFIG_UNREADABLE = 'FEATURE_FLAG_CONFIG_UNREADABLE';
+
 /** Stable English metadata per flag — API/audit only; the SPA renders i18n. */
 export const FEATURE_FLAG_REGISTRY: Record<FeatureFlagKey, { description: string }> = {
   realtime: { description: 'Realtime updates (Socket.IO live push).' },
@@ -72,9 +100,109 @@ export const FEATURE_FLAG_REGISTRY: Record<FeatureFlagKey, { description: string
 
 const settingKey = (key: FeatureFlagKey): string => `${FEATURE_FLAG_PREFIX}${key}`;
 
-/** Fill every key with its default (ON) so the map is always total. */
-function allEnabled(): FeatureFlagsPublic {
-  return Object.fromEntries(FEATURE_FLAG_KEYS.map((key) => [key, true])) as FeatureFlagsPublic;
+/** The stored configuration of every flag, always total. */
+export type FeatureFlagConfigMap = Record<FeatureFlagKey, FeatureFlagConfig>;
+
+/** A flag nobody has ever configured: on, fully rolled, no lists. */
+const defaultConfig = (): FeatureFlagConfig => ({
+  enabled: true,
+  rolloutPercent: 100,
+  allowUserIds: [],
+  denyUserIds: [],
+});
+
+/** Fill every key with its default so the map is always total. */
+function allDefaults(): FeatureFlagConfigMap {
+  return Object.fromEntries(
+    FEATURE_FLAG_KEYS.map((key) => [key, defaultConfig()]),
+  ) as FeatureFlagConfigMap;
+}
+
+/**
+ * How well one persisted `app_settings` value could be read.
+ *
+ * Four outcomes, not two, because the difference between them decides whether a
+ * kill switch survives (#1910 review B1). The old code collapsed everything that
+ * was not a clean parse into `null`, and every caller turned `null` into the
+ * default — which is `enabled: true`. A row that plainly said `enabled: false`
+ * therefore served the feature, showed the operator a healthy row, and let the
+ * next patch write that invention back as fact.
+ */
+type StoredConfigRead =
+  | { status: 'unset' }
+  /** Every field understood — the legacy boolean, or the object form. */
+  | { status: 'parsed'; config: FeatureFlagConfig }
+  /** `enabled` was readable and honoured; the targeting fields were not. */
+  | { status: 'salvaged'; config: FeatureFlagConfig }
+  /** Nothing usable in the row at all. */
+  | { status: 'unreadable' };
+
+/**
+ * Read one persisted `app_settings` value, honouring as much of it as can be
+ * understood and never more.
+ *
+ * The layers, in order:
+ *
+ *  1. **A bare `boolean`** — the pre-#1910 shape, legal forever. Every row
+ *     written before that change is one, and there is no migration to rewrite
+ *     them (nor should there be: a jsonb column needs none, and a data migration
+ *     over kill switches is risk with no payoff).
+ *  2. **The stored object shape**, which is deliberately not `.strict()` — an
+ *     unknown key is stripped, so a row written by a LATER version still yields
+ *     all four fields truthfully instead of reading as garbage.
+ *  3. **Salvage `enabled`** when only the targeting fields are unreadable. The
+ *     kill switch is the field whose loss is dangerous; a garbled
+ *     `rolloutPercent` is not a kill, and failing it closed would take a working
+ *     feature down over a cosmetic field. So the switch is honoured and the
+ *     rollout falls back to "fully rolled".
+ *  4. **Unreadable.** There is no `enabled` to honour, so there is no kill to
+ *     preserve — the caller uses the default, exactly as for a missing row, and
+ *     says so in the log rather than leaving it to be inferred.
+ */
+function readStoredConfig(value: unknown): StoredConfigRead {
+  if (value === undefined || value === null) return { status: 'unset' };
+  if (typeof value === 'boolean') {
+    return { status: 'parsed', config: { ...defaultConfig(), enabled: value } };
+  }
+  const parsed = featureFlagStoredConfigSchema.safeParse(value);
+  if (parsed.success) return { status: 'parsed', config: parsed.data };
+  const enabled = (value as { enabled?: unknown }).enabled;
+  if (typeof enabled === 'boolean') {
+    return { status: 'salvaged', config: { ...defaultConfig(), enabled } };
+  }
+  return { status: 'unreadable' };
+}
+
+/** The snapshot envelope: the generation it was computed under + the configs. */
+const snapshotSchema = z
+  .object({
+    generation: z.string(),
+    config: z.object(
+      Object.fromEntries(FEATURE_FLAG_KEYS.map((key) => [key, featureFlagConfigSchema])) as Record<
+        FeatureFlagKey,
+        typeof featureFlagConfigSchema
+      >,
+    ),
+  })
+  .strict();
+
+/** What the audit row records about a config — counts, never the ids (#1910 §4). */
+function auditableConfig(config: FeatureFlagConfig): {
+  enabled: boolean;
+  rolloutPercent: number;
+  allowCount: number;
+  denyCount: number;
+} {
+  return {
+    enabled: config.enabled,
+    rolloutPercent: config.rolloutPercent,
+    // LENGTHS, never contents. An audit row is retained for `BT_AUDIT_RETENTION_DAYS`
+    // (400 by default); durably copying a list of account ids into it every time an
+    // operator nudges a rollout would turn the security log into a second, unmanaged
+    // store of exactly the identifiers the public bootstrap is forbidden to leak.
+    allowCount: config.allowUserIds.length,
+    denyCount: config.denyUserIds.length,
+  };
 }
 
 export interface FeatureFlagServiceDeps {
@@ -84,6 +212,13 @@ export interface FeatureFlagServiceDeps {
   logger: Logger;
 }
 
+/**
+ * A resolution function bound to ONE configuration read. Pure and synchronous,
+ * so a caller holding many principals (the socket sweep) resolves them all
+ * without further I/O.
+ */
+export type FeatureFlagResolver = (key: FeatureFlagKey, principal: FeatureFlagPrincipal) => boolean;
+
 export interface FeatureFlagActor {
   id: string;
   ip?: string | null;
@@ -92,31 +227,55 @@ export interface FeatureFlagActor {
 export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
   const { repo, redis, audit, logger } = deps;
 
-  /** Read the persisted rows and resolve to a total map (unset ⇒ ON). */
-  async function loadFromStore(): Promise<FeatureFlagsPublic> {
+  /**
+   * Complain about a row that could not be fully read — once per read, at the
+   * site that read it. A degraded kill switch has to be VISIBLE rather than
+   * inferred from a feature quietly behaving oddly; the console deliberately
+   * grows no per-flag "broken" marker for it (that would put an operational
+   * defect into the product contract), so this log is the signal.
+   */
+  function reportDegraded(key: FeatureFlagKey, read: StoredConfigRead, where: string): void {
+    if (read.status === 'salvaged') {
+      logger.error(
+        { key, where },
+        'feature-flag row: targeting unreadable — honouring `enabled`, defaulting the rollout',
+      );
+      return;
+    }
+    if (read.status === 'unreadable') {
+      logger.error(
+        { key, where },
+        'feature-flag row: unreadable — falling back to the default (feature ON)',
+      );
+    }
+  }
+
+  /** Read the persisted rows and resolve to a total config map (unset ⇒ default). */
+  async function loadFromStore(): Promise<FeatureFlagConfigMap> {
     const rows = await repo.getAll();
     const byKey = new Map(rows.map((row) => [row.key, row]));
-    const flags = allEnabled();
+    const config = allDefaults();
     for (const key of FEATURE_FLAG_KEYS) {
-      const row = byKey.get(settingKey(key));
-      if (typeof row?.value === 'boolean') flags[key] = row.value;
+      const read = readStoredConfig(byKey.get(settingKey(key))?.value);
+      reportDegraded(key, read, 'loadFromStore');
+      if (read.status === 'parsed' || read.status === 'salvaged') config[key] = read.config;
     }
-    return flags;
+    return config;
   }
 
   /**
    * Read a cached snapshot, ACCEPTING it only when it was computed under the
-   * generation that is still current. A malformed, legacy (bare-map) or
-   * superseded snapshot reads as a miss and is recomputed rather than trusted.
+   * generation that is still current. A malformed, legacy (pre-#1910 resolved-
+   * boolean) or superseded snapshot reads as a miss and is recomputed rather
+   * than trusted — which is also how a rolling deploy past #1910 is safe: the
+   * old shape simply never parses, so no instance can resolve a principal
+   * against an answer some other instance already resolved.
    */
-  function readSnapshot(cached: string | null, generation: string): FeatureFlagsPublic | null {
+  function readSnapshot(cached: string | null, generation: string): FeatureFlagConfigMap | null {
     if (!cached) return null;
-    const envelope: unknown = JSON.parse(cached);
-    if (typeof envelope !== 'object' || envelope === null) return null;
-    const { generation: stamped, flags } = envelope as { generation?: unknown; flags?: unknown };
-    if (typeof stamped !== 'string' || stamped !== generation) return null;
-    const parsed = featureFlagsPublicSchema.safeParse(flags);
-    return parsed.success ? parsed.data : null;
+    const parsed = snapshotSchema.safeParse(JSON.parse(cached));
+    if (!parsed.success || parsed.data.generation !== generation) return null;
+    return parsed.data.config as FeatureFlagConfigMap;
   }
 
   /**
@@ -129,7 +288,7 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
    * stamping the generation as it is at write time — is exactly how a read that
    * began before the flip could republish the killed value for a full TTL.
    */
-  async function getEffectiveFlags(): Promise<FeatureFlagsPublic> {
+  async function getEffectiveConfig(): Promise<FeatureFlagConfigMap> {
     let generation = NO_GENERATION;
     let generationKnown = false;
     try {
@@ -146,37 +305,99 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
       logger.warn({ err }, 'feature-flag cache read failed');
     }
 
-    const flags = await loadFromStore();
+    const config = await loadFromStore();
     // With no generation in hand there is nothing to stamp, so caching would
     // mean caching unconditionally — the very thing a flip cannot outrun.
-    if (!generationKnown) return flags;
+    if (!generationKnown) return config;
     try {
       await redis.set(
         FEATURE_FLAG_CACHE_KEY,
-        JSON.stringify({ generation, flags }),
+        JSON.stringify({ generation, config }),
         'EX',
         FEATURE_FLAG_CACHE_TTL_SECONDS,
       );
     } catch (err) {
       logger.warn({ err }, 'feature-flag cache write failed');
     }
-    return flags;
+    return config;
   }
 
-  async function isEnabled(key: FeatureFlagKey): Promise<boolean> {
-    const flags = await getEffectiveFlags();
-    return flags[key];
+  /**
+   * One configuration read, then as many principals as the caller likes —
+   * resolved in memory, with no further I/O.
+   *
+   * This is what keeps the realtime sweep honest. The sweep visits every
+   * connected socket and each socket has its own principal now; calling
+   * {@link isEnabled} per socket would turn "one flag read per sweep" into one
+   * Redis round trip per socket per sweep, which is a real regression on the
+   * exact path an incident makes hot. The handshake takes a resolver too, so its
+   * pre-auth kill-switch check and its post-auth rollout check share one read.
+   */
+  async function resolver(): Promise<FeatureFlagResolver> {
+    const config = await getEffectiveConfig();
+    return (key, principal) => resolveFeatureFlag(config[key], key, principal);
   }
 
-  /** The admin registry view: every flag, in canonical order, with metadata. */
+  /**
+   * Resolve one flag for one principal. The principal is REQUIRED: an optional
+   * one would let a call site keep the pre-#1910 signature and silently pick a
+   * semantic, and the four call sites this replaced each need a different one.
+   * Pass `ANONYMOUS_PRINCIPAL` for an unidentified caller and use
+   * {@link isEnabledGlobally} for a server-side gate that has no principal.
+   */
+  async function isEnabled(key: FeatureFlagKey, principal: FeatureFlagPrincipal): Promise<boolean> {
+    const config = await getEffectiveConfig();
+    return resolveFeatureFlag(config[key], key, principal);
+  }
+
+  /**
+   * The BASE kill switch, ignoring every rollout axis — for the gates that have
+   * no principal to resolve against and must not invent one: a scheduled job's
+   * producer shed, and the pre-authentication socket handshake.
+   *
+   * Named rather than an omitted argument on purpose (#1910 §2). A job that read
+   * `isEnabled(key)` with a defaulted principal would silently shed at whatever
+   * the default resolved to — a 10 % rollout would quietly run the nightly sweep
+   * for a tenth of the accounts, or none, with nothing at the call site saying so.
+   */
+  function isEnabledGlobally(key: FeatureFlagKey): Promise<boolean> {
+    return isEnabled(key, SYSTEM_PRINCIPAL);
+  }
+
+  /** The whole advertised map for one principal — the SPA bootstrap's read. */
+  async function resolveAll(principal: FeatureFlagPrincipal): Promise<FeatureFlagsPublic> {
+    const config = await getEffectiveConfig();
+    return Object.fromEntries(
+      FEATURE_FLAG_KEYS.map((key) => [key, resolveFeatureFlag(config[key], key, principal)]),
+    ) as FeatureFlagsPublic;
+  }
+
+  /**
+   * The admin registry view: every flag, in canonical order, with its full
+   * configuration and metadata. Read from the STORE, not the snapshot: the
+   * console is the surface an operator checks after a flip, so it answers from
+   * the durable row rather than from a cache that a failed propagation may have
+   * left behind.
+   *
+   * The two id lists ride this response — the console has to render them to be
+   * editable — and it is fenced by `requireAdmin` + admin 2FA. That is exactly
+   * the line the public bootstrap must not cross.
+   */
   async function listForAdmin(): Promise<AdminFeatureFlag[]> {
     const rows = await repo.getAll();
     const byKey = new Map(rows.map((row) => [row.key, row]));
     return FEATURE_FLAG_KEYS.map((key) => {
       const row = byKey.get(settingKey(key));
+      const read = readStoredConfig(row?.value);
+      reportDegraded(key, read, 'listForAdmin');
+      const config =
+        read.status === 'parsed' || read.status === 'salvaged' ? read.config : defaultConfig();
       return {
         key,
-        enabled: typeof row?.value === 'boolean' ? row.value : true,
+        enabled: config.enabled,
+        rolloutPercent: config.rolloutPercent,
+        allowUserIds: config.allowUserIds,
+        denyUserIds: config.denyUserIds,
         description: FEATURE_FLAG_REGISTRY[key].description,
         updatedAt: row?.updatedAt ? row.updatedAt.toISOString() : null,
         updatedBy: row?.updatedBy ?? null,
@@ -242,15 +463,64 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
    */
   async function setFlag(
     key: FeatureFlagKey,
-    enabled: boolean,
+    patch: UpdateFeatureFlagRequest,
     actor: FeatureFlagActor,
   ): Promise<AdminFeatureFlag[]> {
-    // The value the flip moved AWAY from, read before the write (#1908 §4). A
-    // kill switch's history is the whole point of auditing it: "alerts was
-    // already off" and "alerts was just turned off" are different incidents and
-    // used to record identically.
-    const previous = (await getEffectiveFlags())[key];
-    await repo.upsert(settingKey(key), enabled, actor.id);
+    // Read-modify-write against the STORE, so a patch merges onto the durable
+    // row rather than onto whatever a snapshot happened to hold. Two things ride
+    // on reading `before` here:
+    //
+    //  - The PATCH semantics (#1910): every field is optional, so flipping the
+    //    kill switch must not silently reset a rollout an operator spent the
+    //    afternoon widening, and widening a rollout must not resurrect a killed
+    //    feature.
+    //  - The audit's before/after (#1908 §4): a kill switch's history is the
+    //    whole point of auditing it — "alerts was already off" and "alerts was
+    //    just turned off" are different incidents and used to record
+    //    identically.
+    const row = await repo.get(settingKey(key));
+    const read = readStoredConfig(row?.value);
+    reportDegraded(key, read, 'setFlag');
+
+    // A PATCH inherits every field it omits, so merging onto a row we could not
+    // fully read means INVENTING those fields and then writing the invention
+    // back as durable fact — with `enabled` that invention is the kill switch
+    // itself (#1910 review B1). A write is never guessed: the patch is refused
+    // unless it supplies the complete configuration, which inherits nothing.
+    // That refusal is also the operator's repair path, and the message says so.
+    const complete =
+      patch.enabled !== undefined &&
+      patch.rolloutPercent !== undefined &&
+      patch.allowUserIds !== undefined &&
+      patch.denyUserIds !== undefined;
+    if ((read.status === 'salvaged' || read.status === 'unreadable') && !complete) {
+      throw new ApiError(
+        409,
+        FEATURE_FLAG_CONFIG_UNREADABLE,
+        `The stored configuration for '${key}' cannot be read, so a partial change would have to invent the fields it does not set. Send the complete configuration (enabled, rolloutPercent, allowUserIds, denyUserIds) to replace it.`,
+      );
+    }
+
+    // An UNSET row (no write has ever happened) and an unreadable one both fall
+    // back to the default, which is what a fresh install serves.
+    const before =
+      read.status === 'parsed' || read.status === 'salvaged' ? read.config : defaultConfig();
+    const after: FeatureFlagConfig = {
+      enabled: patch.enabled ?? before.enabled,
+      rolloutPercent: patch.rolloutPercent ?? before.rolloutPercent,
+      allowUserIds: patch.allowUserIds ?? before.allowUserIds,
+      denyUserIds: patch.denyUserIds ?? before.denyUserIds,
+    };
+    // ROLLBACK SAFETY (#1910 review H1). Code from before this wave reads a row
+    // with `typeof value === 'boolean'` and falls back to "every flag ON" for
+    // anything else, so a deploy rolled BACK past #1910 would read every object
+    // row as unset and resurrect every killed feature. An untargeted flag has
+    // nothing the boolean cannot express, so it keeps the legacy SHAPE: only a
+    // genuinely targeted flag costs the object form, and only that one is at
+    // risk — a much smaller blast radius than "every switch in the estate".
+    const targeted =
+      after.rolloutPercent !== 100 || after.allowUserIds.length > 0 || after.denyUserIds.length > 0;
+    await repo.upsert(settingKey(key), targeted ? after : after.enabled, actor.id);
     const propagated = await invalidateSnapshot();
     // `targetId` is a uuid column — the flag key rides in `meta`, not there.
     await audit.record({
@@ -260,10 +530,14 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
       ip: actor.ip ?? null,
       meta: {
         key,
-        enabled,
+        // Kept at the top level: the pre-#1910 readers of this row (and the
+        // console's own history view) look for `enabled` here.
+        enabled: after.enabled,
         propagated,
-        before: { enabled: previous },
-        after: { enabled },
+        // #1908's before/after, widened to the whole config by #1910 — with the
+        // two id lists reduced to LENGTHS. See `auditableConfig`.
+        before: auditableConfig(before),
+        after: auditableConfig(after),
       },
     });
     if (!propagated) {
@@ -276,7 +550,15 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
     return listForAdmin();
   }
 
-  return { getEffectiveFlags, isEnabled, listForAdmin, setFlag };
+  return {
+    getEffectiveConfig,
+    resolver,
+    isEnabled,
+    isEnabledGlobally,
+    resolveAll,
+    listForAdmin,
+    setFlag,
+  };
 }
 
 export type FeatureFlagService = ReturnType<typeof createFeatureFlagService>;
