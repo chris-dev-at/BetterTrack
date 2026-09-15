@@ -4692,7 +4692,8 @@
         "status": "Status",
         "privacy": "Privatsphäre",
         "lastLogin": "Letzte Anmeldung",
-        "created": "Erstellt"
+        "created": "Erstellt",
+        "review": "Prüfung"
       },
       "roles": {
         "admin": "Admin",
@@ -4723,19 +4724,28 @@
       },
       "flags": {
         "mustChangePassword": "Passwort muss geändert werden",
-        "chatBanned": "Chat gesperrt"
+        "chatBanned": "Chat gesperrt",
+        "underReview": "In Prüfung"
       },
       "filters": {
         "anyRole": "Alle Kontoarten",
         "anyStatus": "Alle Zustände",
         "anyPrivacy": "Alle Privatsphäre-Modi",
         "pageSize": "Pro Seite",
-        "reset": "Filter zurücksetzen"
+        "reset": "Filter zurücksetzen",
+        "anyReview": "Beliebiger Prüfstatus",
+        "flagged": "Nur markierte",
+        "notFlagged": "Nicht markierte"
       },
       "pagination": {
         "range": "{{first}}–{{last}} von {{total}}",
         "previous": "Zurück",
         "next": "Weiter"
+      },
+      "bulkReason": {
+        "label": "Begründung",
+        "hint": "Wird bei jedem Konto dieses Stapels protokolliert und von der nächsten Person gelesen.",
+        "placeholder": "z. B. Koordinierte Registrierungswelle aus einem Adressbereich."
       }
     },
     "accountDefaults": {
@@ -5529,10 +5539,6 @@
       "profile": "Profil",
       "saveProfile": "Änderungen speichern",
       "profileSaved": "Profil aktualisiert.",
-      "disabled": "Konto deaktiviert. Sitzungen und Bearer-Zugangsdaten wurden widerrufen.",
-      "enabled": "Konto wieder aktiviert.",
-      "chatBanned": "Für den Chat gesperrt.",
-      "chatUnbanned": "Chat-Sperre aufgehoben.",
       "testEmailSent": "Test-E-Mail an {{to}} gesendet.",
       "testEmailFailed": "Die Test-E-Mail konnte nicht gesendet werden.",
       "moreActions": "Weitere Aktionen",
@@ -5544,7 +5550,8 @@
         "support": "Support",
         "sharing": "Geteiltes",
         "activity": "Aktivität",
-        "notes": "Notizen"
+        "notes": "Notizen",
+        "moderation": "Moderation"
       },
       "actions": {
         "snapshot": "Support-Auszug kopieren",
@@ -5681,7 +5688,77 @@
         }
       },
       "deleteTitle": "Konto löschen",
-      "deleteAction": "Konto löschen"
+      "deleteAction": "Konto löschen",
+      "moderation": {
+        "flaggedMarker": "markiert",
+        "flagTitle": "Prüfmarkierung",
+        "flagOnDescription": "Dieses Konto ist zur erneuten Prüfung markiert. Die Markierung sperrt nichts — für das Konto ändert sich nichts.",
+        "flagOffDescription": "Dieses Konto zur erneuten Prüfung markieren, ohne es zu sperren. Für das Konto ändert sich dadurch nichts.",
+        "flag": "Zur Prüfung markieren",
+        "unflag": "Markierung aufheben",
+        "loading": "Moderationsprotokoll wird geladen…",
+        "empty": "Für dieses Konto wurde noch keine Moderationsmaßnahme ergriffen.",
+        "unknownActor": "Operator nicht mehr im Team",
+        "transition": "{{previous}} → {{next}}",
+        "reasonLabel": "Begründung",
+        "reasonHint": "Die nächste Person liest das hier. Beschreibe, was passiert ist — nicht, was du entschieden hast.",
+        "reasonPlaceholder": "z. B. Zwei Konten haben am 14. Sep. Belästigung im Chat gemeldet.",
+        "values": {
+          "active": "Aktiv",
+          "disabled": "Deaktiviert",
+          "allowed": "Chat erlaubt",
+          "banned": "Chat gesperrt",
+          "user": "Benutzer",
+          "admin": "Administrator",
+          "flagged": "Markiert",
+          "unflagged": "Nicht markiert"
+        },
+        "actions": {
+          "disable": "Konto deaktiviert",
+          "enable": "Konto reaktiviert",
+          "chat_ban": "Chat gesperrt",
+          "chat_unban": "Chat-Sperre aufgehoben",
+          "role_change": "Rolle geändert",
+          "flag": "Zur Prüfung markiert",
+          "unflag": "Prüfmarkierung aufgehoben",
+          "password_reset": "Passwort zurückgesetzt"
+        },
+        "confirm": {
+          "disable": {
+            "title": "Dieses Konto deaktivieren",
+            "description": "Die Deaktivierung von {{username}} beendet sofort jede Sitzung und entzieht jeden API-Schlüssel und jede App-Freigabe. Begründe es — die nächste Person liest es.",
+            "action": "Konto deaktivieren"
+          },
+          "enable": {
+            "title": "Dieses Konto reaktivieren",
+            "description": "Nach der Reaktivierung kann sich {{username}} wieder anmelden. Begründe, warum die Sperre endet.",
+            "action": "Konto reaktivieren"
+          },
+          "chatBan": {
+            "title": "Dieses Konto für den Chat sperren",
+            "description": "{{username}} kann dann keine Nachrichten mehr senden. Begründe es — die nächste Person liest es.",
+            "action": "Für Chat sperren"
+          },
+          "chatUnban": {
+            "title": "Chat-Sperre aufheben",
+            "description": "{{username}} kann dann wieder Nachrichten senden. Begründe, warum die Sperre endet.",
+            "action": "Chat-Sperre aufheben"
+          },
+          "flag": {
+            "title": "Dieses Konto zur Prüfung markieren",
+            "description": "Für {{username}} ändert sich nichts — die Markierung ist ein Hinweis für die nächste Person. Beschreibe, was dir aufgefallen ist.",
+            "action": "Zur Prüfung markieren"
+          }
+        },
+        "done": {
+          "disable": "Konto deaktiviert und protokolliert.",
+          "enable": "Konto reaktiviert und protokolliert.",
+          "chatBan": "Chat-Sperre gesetzt und protokolliert.",
+          "chatUnban": "Chat-Sperre aufgehoben und protokolliert.",
+          "flag": "Zur Prüfung markiert und protokolliert.",
+          "unflag": "Prüfmarkierung aufgehoben und protokolliert."
+        }
+      }
     },
     "invites": {
       "title": "Einladungen",

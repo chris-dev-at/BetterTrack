@@ -1,8 +1,10 @@
 import {
   ADMIN_SESSION_LIFETIME_MAX_HOURS,
   ADMIN_SESSION_LIFETIME_MIN_HOURS,
+  adminModerationActionSchema,
   profileIconIdSchema,
   type AdminInvite,
+  type AdminModerationEntry,
   type AdminSessionPolicyResponse,
   type AdminUser,
   type AdminUserAccessResponse,
@@ -23,6 +25,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AlertRecord } from '../data/repositories/alertRepository';
+import type { AdminModerationActionRow } from '../data/repositories/adminModerationRepository';
 import type {
   AdminUserApiKeyRow,
   AdminUserIdentityRow,
@@ -120,6 +123,12 @@ export function toAdminUser(
     vault: { version: number; sizeBytes: number; updatedAt: Date } | null;
     historyCount: number;
   },
+  /**
+   * Review flag (#1907 ADMIN-W5). Additive exactly as the paranoid metadata is:
+   * an unflagged account's payload is byte-for-byte what it was before this
+   * wave, so every existing consumer stays valid.
+   */
+  flagged = false,
 ): AdminUser {
   if (paranoidMetadata.privacyMode === 'paranoid' && paranoidMetadata.mediaSet === null) {
     throw new Error('Paranoid account is missing its media set.');
@@ -132,6 +141,7 @@ export function toAdminUser(
     status: row.status,
     mustChangePassword: row.mustChangePassword,
     chatBanned: row.chatBanned,
+    ...(flagged ? { flagged: true as const } : {}),
     lastLoginAt: toIso(row.lastLoginAt),
     createdAt: toIsoRequired(row.createdAt),
   };
@@ -280,6 +290,27 @@ export function toAdminUserNote(row: AdminUserNoteRow): AdminUserNote {
     body: row.body,
     authorId: row.authorId,
     authorUsername: row.authorUsername,
+    createdAt: toIsoRequired(row.createdAt),
+  };
+}
+
+/**
+ * One moderation row (#1907 ADMIN-W5). The actor is a USERNAME or a tombstone —
+ * never an e-mail, a session id or any other handle — and `action` is narrowed
+ * back to the contract's enum here rather than trusted from the column: the
+ * table's CHECK holds the same vocabulary, so a row that cannot be classified
+ * is a corrupted row and must not be rendered as one of the known actions.
+ */
+export function toAdminModerationEntry(row: AdminModerationActionRow): AdminModerationEntry {
+  const action = adminModerationActionSchema.parse(row.action);
+  return {
+    id: row.id,
+    action,
+    reason: row.reason,
+    previousValue: row.previousValue,
+    nextValue: row.nextValue,
+    actorId: row.actorId,
+    actorUsername: row.actorUsername,
     createdAt: toIsoRequired(row.createdAt),
   };
 }

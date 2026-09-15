@@ -143,6 +143,49 @@ describe('GET /admin/users — filter, sort, page (#1406 W2)', () => {
     expect(activeUsers.users.map((u) => u.username)).toEqual(['active-one']);
   });
 
+  /**
+   * The review-flag filter is TRI-STATE (#1907 ADMIN-W5) and the omitted case is
+   * the one that matters: a `flagged` key that collapsed to `false` when absent
+   * would hide every flagged account from the default list — the exact accounts
+   * an operator opens this page to find.
+   */
+  it('filters by the review flag in three states, and omitting it filters on nothing', async () => {
+    const { agent } = await adminSession();
+    const flagged = await seedPerson({ email: 'watch@test.dev', username: 'watched-one' });
+    const plain = await seedPerson({ email: 'plain@test.dev', username: 'unwatched-one' });
+
+    await agent
+      .post(`/api/v1/admin/users/${flagged.id}/flag`)
+      .set(...XRW)
+      .send({ reason: 'Two chargebacks in a week.' });
+
+    const onlyFlagged = adminUserListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/users?flagged=true')).body,
+    );
+    expect(onlyFlagged.users.map((u) => u.username)).toEqual(['watched-one']);
+    expect(onlyFlagged.page.total).toBe(1);
+    expect(onlyFlagged.users[0]?.flagged).toBe(true);
+
+    const onlyUnflagged = adminUserListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/users?flagged=false')).body,
+    );
+    const unflaggedNames = onlyUnflagged.users.map((u) => u.username);
+    expect(unflaggedNames).toContain('unwatched-one');
+    expect(unflaggedNames).toContain('admin');
+    expect(unflaggedNames).not.toContain('watched-one');
+    expect(onlyUnflagged.users.every((u) => u.flagged === undefined)).toBe(true);
+
+    // Omitted ⇒ no filter at all: both accounts, and the marker still travels.
+    const unfiltered = adminUserListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/users')).body,
+    );
+    const byId = new Map(unfiltered.users.map((u) => [u.id, u]));
+    expect(byId.get(flagged.id)?.flagged).toBe(true);
+    expect(byId.get(plain.id)?.flagged).toBeUndefined();
+    // The list carries a marker, never the operator's prose about the account.
+    expect(JSON.stringify(unfiltered)).not.toContain('chargebacks');
+  });
+
   it('filters by privacy mode without exposing anything inside the vault', async () => {
     const { agent } = await adminSession();
     const normal = await seedPerson({ email: 'normal@test.dev', username: 'normal-one' });
@@ -392,7 +435,7 @@ describe('Audit tab (§6.12) — a half-applied suspension is visible on the acc
         await agent
           .patch(`/api/v1/admin/users/${person.id}`)
           .set(...XRW)
-          .send({ status: 'disabled' })
+          .send({ status: 'disabled', reason: 'Suspended pending review.' })
       ).status,
     ).toBe(500);
     revoke.mockRestore();
@@ -404,7 +447,11 @@ describe('Audit tab (§6.12) — a half-applied suspension is visible on the acc
     const entry = (tab.body.entries as Array<{ action: string; meta: unknown }>).find(
       (row) => row.action === 'user.disabled',
     );
-    expect(entry?.meta).toEqual({ cleanup: 'incomplete', step: 'api_keys' });
+    expect(entry?.meta).toEqual({
+      moderationId: expect.any(String),
+      cleanup: 'incomplete',
+      step: 'api_keys',
+    });
   });
 });
 

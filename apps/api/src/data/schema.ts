@@ -667,6 +667,99 @@ export const adminUserNotes = pgTable(
 );
 
 /**
+ * The moderation record (#1907 ADMIN-W5, People 360 "Moderation" tab).
+ *
+ * One append-only row per moderation action taken against an account —
+ * suspension, re-enable, chat ban/unban, role change, review flag/unflag — each
+ * carrying the operator's REASON and the operator's identity. The audit log
+ * says what happened; this says why, in the one place the next operator looks,
+ * and every row is written in the SAME transaction as the state change it
+ * describes, so a suspension can never exist without its reason.
+ *
+ * `user_id` cascades (deletion stays total, exactly as {@link adminUserNotes});
+ * `actor_id` set-nulls the way {@link auditLog.actorId} does, so the record
+ * outlives the operator who wrote it and renders a tombstone instead of
+ * vanishing.
+ *
+ * `previous_value` / `next_value` hold SHORT STATE LABELS only (`active`,
+ * `disabled`, `admin`) — never a portfolio name, a holding or anything else
+ * that came out of an account's content (§6.12 "no portfolio browsing").
+ */
+export const adminModerationActions = pgTable(
+  'admin_moderation_actions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    reason: text('reason').notNull(),
+    previousValue: text('previous_value'),
+    nextValue: text('next_value'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The only read is "this account's record, newest first" (#1907), so the
+    // index carries the order as well as the filter — and the stable `id`
+    // tiebreak the paged read adds cannot be indexed away from a `created_at`
+    // collision, which two actions of one PATCH share by construction.
+    index('admin_moderation_actions_user_created_idx').on(
+      t.userId,
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    // Declared here as well as in the migration for the reason
+    // `admin_user_notes` documents above: drizzle-kit generates from THIS file,
+    // so a constraint that lives only in SQL is one the next `generate`
+    // silently proposes dropping.
+    check('admin_moderation_actions_reason_not_empty', sql`${t.reason} ~ '[^[:space:]]'`),
+    check('admin_moderation_actions_reason_length', sql`char_length(${t.reason}) <= 2000`),
+    // The action vocabulary is closed. A typo'd action would be a row no
+    // operator surface knows how to render, in the one table whose job is to be
+    // readable years later.
+    check(
+      'admin_moderation_actions_action_known',
+      sql`${t.action} in ('disable', 'enable', 'chat_ban', 'chat_unban', 'role_change', 'flag', 'unflag', 'password_reset')`,
+    ),
+
+    index('admin_moderation_actions_actor_id_idx').on(t.actorId),
+  ],
+);
+
+/**
+ * The CURRENT review flag on an account (#1907 ADMIN-W5).
+ *
+ * Deliberately tiny and deliberately separate from the record above: "is this
+ * account flagged?" is a list filter, and answering it from the append-only
+ * history would be a correlated "latest flag/unflag wins" subquery per row.
+ * One row per account (the user id IS the primary key) makes the filter an
+ * index lookup and makes re-flagging an upsert rather than a race.
+ *
+ * Flagging and unflagging ALSO append to {@link adminModerationActions}, so the
+ * history stays complete while this table stays a one-row answer. A flag is not
+ * a suspension: it changes nothing the account can observe (§6.12 — `disabled`
+ * remains THE suspension, and no tier joins it).
+ */
+export const adminUserFlags = pgTable(
+  'admin_user_flags',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    reason: text('reason').notNull(),
+    flaggedBy: uuid('flagged_by').references(() => users.id, { onDelete: 'set null' }),
+    flaggedAt: timestamp('flagged_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('admin_user_flags_reason_not_empty', sql`${t.reason} ~ '[^[:space:]]'`),
+    check('admin_user_flags_reason_length', sql`char_length(${t.reason}) <= 2000`),
+
+    index('admin_user_flags_flagged_by_idx').on(t.flaggedBy),
+  ],
+);
+
+/**
  * Admin "Problems" (§13.5 V5-P2 arc (d)): the DB-backed error/insight capture
  * that replaces Sentry. Unhandled request errors, permanently-failed jobs and
  * provider failures are folded by `fingerprint` (a stable hash of kind + name +

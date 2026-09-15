@@ -2002,6 +2002,18 @@ const ADMIN_OVERLAY_SCENARIOS: readonly AdminOverlayScenario[] = [
     justification:
       "The console's most destructive dialog: a typed-username confirmation form in the Modal shell, opened on a real non-self account.",
   },
+  {
+    label: 'user moderation reason confirmation',
+    sources: ['apps/web/src/admin/pages/UserDetailPage.tsx'],
+    route: '/admin/users/:userId',
+    // Opening it suspends nothing: this IS the confirmation step (#1907), and
+    // its Confirm button stays disabled until a reason is typed.
+    action: { kind: 'click', selector: '#main-content button:text-is("Disable")' },
+    expectedSelector: '[role="dialog"][aria-modal="true"]',
+    minimumMeasured: 2,
+    justification:
+      'The gate every suspension, chat ban and review flag now passes through (#1907): a required-reason textarea plus its two controls, which have to stay reachable and tappable at 360px.',
+  },
 ];
 
 const ADMIN_OVERLAY_EXCLUSIONS: readonly AdminOverlayExclusion[] = [

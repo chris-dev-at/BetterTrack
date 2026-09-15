@@ -4,6 +4,8 @@ import {
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
   adminListQuerySchema,
+  adminModerationListResponseSchema,
+  adminUserFlagRequestSchema,
   adminUserListQuerySchema,
   adminUserNoteParamSchema,
   adminUserSupportQuerySchema,
@@ -36,6 +38,7 @@ import {
   updateUserRequestSchema,
   usageAnalyticsResponseSchema,
   type AdminListQuery,
+  type AdminUserFlagRequest,
   type AdminUserListQuery,
   type AdminUserNoteParam,
   type AdminUserSupportQuery,
@@ -79,6 +82,7 @@ import {
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import {
   toAdminInvite,
+  toAdminModerationEntry,
   toAdminUser,
   toAdminUserAccess,
   toAdminUserNote,
@@ -112,7 +116,10 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   ): Promise<ReturnType<typeof toAdminUser>> => {
     const metadata = await ctx.paranoidTransitions.adminMetadata(row.id);
     if (!metadata) throw notFound('This account no longer exists.', 'USER_NOT_FOUND');
-    return toAdminUser(row, metadata);
+    // One primary-key probe on the flag table (#1907). Every single-account
+    // response carries the marker, so the console never has to ask twice.
+    const flagged = await ctx.admin.flaggedAmong([row.id]);
+    return toAdminUser(row, metadata, flagged.has(row.id));
   };
 
   router.use(limiters.admin);
@@ -169,12 +176,16 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     // unbounded list would hold one lock transaction per account while queueing
     // its own reads behind them, exhausting the pool on a real instance.
     const metadata = await ctx.paranoidTransitions.adminMetadataMany(rows.map((row) => row.id));
+    // ONE query for the whole page's review flags (#1907), the same shape the
+    // paranoid metadata read above uses — a per-row probe would be one query
+    // per rendered account.
+    const flagged = await ctx.admin.flaggedAmong(rows.map((row) => row.id));
     res.json({
       users: rows.flatMap((row) => {
         // Deleted between the list read and this one: drop the single stale row
         // rather than failing the whole page.
         const paranoidMetadata = metadata.get(row.id);
-        return paranoidMetadata ? [toAdminUser(row, paranoidMetadata)] : [];
+        return paranoidMetadata ? [toAdminUser(row, paranoidMetadata, flagged.has(row.id))] : [];
       }),
       // The count is for the FILTER, not the table — it is what the footer means
       // by "47 accounts" when a filter is on. Deliberately NOT `users.length`:
@@ -225,6 +236,51 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       res.json({ items: rows.map(toAdminUserSupportItem), total, openCount });
     },
   );
+
+  // ── Moderation depth (#1907 ADMIN-W5) ──────────────────────────────────────
+  // The record of every moderation action taken against this account, and the
+  // non-destructive review flag. None of the three is a new capability over the
+  // account: the record is a READ of decisions the console could already make,
+  // and the flag changes nothing the account can observe (§6.12 — `disabled`
+  // remains THE suspension, and no tier joins it).
+
+  router.get(
+    '/users/:id/moderation',
+    validateParams(idParamSchema),
+    validateQuery(adminListQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const query = req.valid?.query as AdminListQuery;
+      const { rows, total } = await ctx.admin.listModeration(id, query);
+      res.json(
+        adminModerationListResponseSchema.parse({
+          actions: rows.map(toAdminModerationEntry),
+          page: { total, limit: query.limit, offset: query.offset },
+        }),
+      );
+    },
+  );
+
+  router.post(
+    '/users/:id/flag',
+    validateParams(idParamSchema),
+    validateBody(adminUserFlagRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { reason } = req.valid?.body as AdminUserFlagRequest;
+      await ctx.admin.flagUser(id, reason, actorOf(req));
+      res.json({ ok: true });
+    },
+  );
+
+  // Idempotent: clearing an unflagged account succeeds and writes no action.
+  // A 404 here would make "unflag" fail whenever another operator cleared the
+  // same flag a moment earlier, which is a race, not an error.
+  router.delete('/users/:id/flag', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.admin.unflagUser(id, undefined, actorOf(req));
+    res.json({ ok: true });
+  });
 
   // Operator notes: admin-private annotations on an account. The only write W2
   // adds, and an additive one — a note changes nothing about the account.
