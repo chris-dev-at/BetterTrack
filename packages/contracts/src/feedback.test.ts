@@ -8,6 +8,7 @@ import {
   FEEDBACK_MESSAGE_MAX_LENGTH,
   FEEDBACK_OPEN_STATUSES,
   FEEDBACK_SHIPPED_VERSION_REQUIRED,
+  FEEDBACK_SORTS,
   FEEDBACK_STATUSES,
   FEEDBACK_STATUS_DETAILS_INVALID,
   FEEDBACK_SUBJECT_MAX_LENGTH,
@@ -145,6 +146,15 @@ describe('feedback contracts', () => {
     expect(adminFeedbackListQuerySchema.safeParse({ q: '' }).success).toBe(false);
     expect(adminFeedbackListQuerySchema.safeParse({ tag: 'dividends' }).success).toBe(false);
     expect(adminFeedbackListQuerySchema.safeParse({ sort: 'aging' }).success).toBe(true);
+  });
+
+  it('offers the lifecycle ordering the inbox groups by, appended to the sort enum', () => {
+    expect(adminFeedbackListQuerySchema.parse({ sort: 'status' }).sort).toBe('status');
+    expect(adminFeedbackListQuerySchema.safeParse({ sort: 'lifecycle' }).success).toBe(false);
+
+    // The sorts are wire values: the shipped three keep their positions and the
+    // lifecycle ordering is appended, so a stored link never changes meaning.
+    expect(FEEDBACK_SORTS).toEqual(['category', 'newest', 'aging', 'status']);
   });
 
   it('validates admin rows and locks status transitions to the shipped lifecycle', () => {
