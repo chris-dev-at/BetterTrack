@@ -409,6 +409,11 @@ export function UserDetailPage() {
           intent={dialog.intent}
           username={user.username}
           busy={busy}
+          // A failed write leaves the dialog open, so its error has to render
+          // INSIDE the dialog: the page banner sits behind the modal backdrop,
+          // where the operator cannot read it. Same treatment the bulk-disable
+          // confirmation gives its own failures.
+          error={banner?.tone === 'error' ? banner.text : null}
           onClose={() => setDialog(null)}
           onConfirm={(reason) => runModeration(dialog.intent, reason)}
         />
@@ -1418,12 +1423,14 @@ function ReasonDialog({
   intent,
   username,
   busy,
+  error,
   onClose,
   onConfirm,
 }: {
   intent: ReasonIntent;
   username: string;
   busy: boolean;
+  error: string | null;
   onClose: () => void;
   onConfirm: (reason: string) => Promise<boolean>;
 }) {
@@ -1461,6 +1468,7 @@ function ReasonDialog({
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
+        {error ? <Alert tone="error">{error}</Alert> : null}
         <div className="flex items-center justify-end gap-2">
           <Button variant="secondary" type="button" disabled={busy} onClick={onClose}>
             {t('common.cancel')}

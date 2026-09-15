@@ -756,3 +756,23 @@ test('renders the moderation surface in German', async () => {
   expect(within(dialog).getByLabelText('Begründung')).toBeInTheDocument();
   expect(within(dialog).getByRole('button', { name: 'Konto deaktivieren' })).toBeDisabled();
 });
+
+test('a failed moderation write keeps the dialog open and shows why inside it', async () => {
+  vi.mocked(api.updateUser).mockRejectedValue(
+    new ApiError(500, 'internal_error', 'Could not disable the account.'),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Disable' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Disable this account' });
+  await user.type(within(dialog).getByLabelText('Reason'), 'Harassment report.');
+  await user.click(within(dialog).getByRole('button', { name: 'Disable account' }));
+
+  // The page banner sits BEHIND the modal backdrop, so the failure has to
+  // render inside the dialog or the operator reads nothing at all.
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Something went wrong. Please try again.',
+  );
+  expect(within(dialog).getByRole('button', { name: 'Disable account' })).toBeEnabled();
+});
