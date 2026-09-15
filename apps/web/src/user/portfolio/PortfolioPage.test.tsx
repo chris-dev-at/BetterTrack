@@ -106,7 +106,7 @@ vi.mock('recharts', async (importOriginal) => {
 });
 
 import { ApiError } from '../../lib/apiClient';
-import { formatDate, formatMoney, formatUnitPrice } from '../../lib/format';
+import { EM_DASH, formatDate, formatMoney, formatUnitPrice } from '../../lib/format';
 import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
@@ -1264,6 +1264,66 @@ describe('PortfolioPage — recent transactions', () => {
     const rows = within(recent).getAllByRole('row').slice(1); // drop the header row
     expect(within(rows[0]!).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument();
     expect(within(rows[1]!).getByRole('link', { name: 'AAPL' })).toBeInTheDocument();
+  });
+});
+
+// ─── Return summary line (#1669) ──────────────────────────────────────────────
+
+describe('PortfolioPage — return summary line (#1669)', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('shows the window’s time-weighted and money-weighted returns side by side', async () => {
+    vi.mocked(getPortfolioHistory).mockResolvedValue({ ...HISTORY, moneyWeightedPct: 9.5 });
+    renderPage();
+
+    const chart = await screen.findByRole('region', { name: 'Value over time' });
+    // Both figures come from the ONE history response: the TWR is the served
+    // curve's last point, the money-weighted figure the server's Dietz of the
+    // same window. 2 dp, signed, per §7.1.
+    expect(
+      await within(chart).findByText('Time-weighted +7,12 % · Money-weighted +9,50 %'),
+    ).toBeInTheDocument();
+    // 1M carries no explainer — that line belongs to MAX.
+    expect(within(chart).queryByText(/Time-weighted is the return/)).not.toBeInTheDocument();
+    expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledTimes(1);
+  });
+
+  test('MAX adds the one-line explainer; a null money-weighted figure reads as a dash, never 0', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getPortfolioHistory).mockImplementation(async (_id: string, range: string) =>
+      range === 'MAX'
+        ? {
+            ...HISTORY,
+            range: 'MAX' as const,
+            // The reported shape: a since-inception TWR deep in the red on a
+            // window the server could not price money-weighted (no capital).
+            performance: [
+              { date: '2024-05-01', pct: 0 },
+              { date: '2024-06-01', pct: -32.73 },
+            ],
+            moneyWeightedPct: null,
+          }
+        : HISTORY,
+    );
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Max' }));
+
+    const chart = screen.getByRole('region', { name: 'Value over time' });
+    expect(
+      await within(chart).findByText(`Time-weighted -32,73 % · Money-weighted ${EM_DASH}`),
+    ).toBeInTheDocument();
+    expect(
+      within(chart).getByText(/Time-weighted is the return of your holdings/),
+    ).toBeInTheDocument();
+  });
+
+  test('an older server (no money-weighted field) still renders the time-weighted figure', async () => {
+    vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
+    renderPage();
+    const chart = await screen.findByRole('region', { name: 'Value over time' });
+    expect(
+      await within(chart).findByText(`Time-weighted +7,12 % · Money-weighted ${EM_DASH}`),
+    ).toBeInTheDocument();
   });
 });
 

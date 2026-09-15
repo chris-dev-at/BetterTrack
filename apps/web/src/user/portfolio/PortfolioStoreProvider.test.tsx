@@ -217,6 +217,7 @@ function session(holdings: Holding[]): VaultMoneySession {
     cashSources: [],
     series: [],
     stats: null,
+    moneyWeightedPct: null,
     freshness: 'fresh',
     missingAssetIds: [],
   };

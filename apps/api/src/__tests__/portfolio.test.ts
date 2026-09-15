@@ -1510,6 +1510,19 @@ describe('GET /api/v1/portfolios/:id/history (performance-% mode, #125)', () => 
     // and ends at the move that happened inside the window (120 → 150 = +25 %).
     expect(month.body.performance[0].pct).toBeCloseTo(0, 9);
     expect(month.body.performance.at(-1).pct).toBeCloseTo(25, 9);
+
+    // #1669: with no flow inside either window the money-weighted figure
+    // equals the time-weighted one — MAX since inception (150 on the 100 put
+    // in → 50 %), 1M from its first plotted point (120 → 150 → 25 %).
+    expect(max.body.moneyWeightedPct).toBeCloseTo(50, 9);
+    expect(month.body.moneyWeightedPct).toBeCloseTo(25, 9);
+    // 1Y contains the buy at its first plotted point (day −60, inside the
+    // 100 close): both figures read the window's 100 → 150.
+    const year = await agent.get(`/api/v1/portfolios/${pid}/history?range=1Y`);
+    expect(year.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(year.body).success).toBe(true);
+    expect(year.body.performance.at(-1).pct).toBeCloseTo(50, 9);
+    expect(year.body.moneyWeightedPct).toBeCloseTo(50, 9);
   });
 
   it('MAX keeps since-inception semantics: day one’s execution→close move is not re-based away', async () => {
@@ -1544,6 +1557,68 @@ describe('GET /api/v1/portfolios/:id/history (performance-% mode, #125)', () => 
     expect(month.status).toBe(200);
     expect(month.body.performance[0].pct).toBeCloseTo(0, 9);
     expect(month.body.performance.at(-1).pct).toBeCloseTo((150 / 104 - 1) * 100, 9);
+
+    // #1669: the money-weighted MAX figure anchors where the TWR does — before
+    // day one, on the 1 000 put in: (1 500 − 1 000) / 1 000 = 50 %. The 1M
+    // slice opens at the 1 040 close and reads 1 500 / 1 040 − 1 on both.
+    expect(max.body.moneyWeightedPct).toBeCloseTo(50, 9);
+    expect(month.body.moneyWeightedPct).toBeCloseTo((150 / 104 - 1) * 100, 9);
+  });
+
+  it('#1669: the reported MAX shape — TWR deep red, money-weighted clearly positive, both served on every range', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // One unit bought at 100 on day −40 loses two thirds the next day and sits
+    // at 34 until 1 000 more units are bought at 34 on day −10 (the big late
+    // deposit); the price then rises 50 % to 51 by day −1 and carries forward
+    // to today: a rising value curve under a negative since-inception TWR.
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-40), close: '100' },
+      { assetId: asset.id, date: dayOffset(-39), close: '34' },
+      { assetId: asset.id, date: dayOffset(-10), close: '34' },
+      { assetId: asset.id, date: dayOffset(-1), close: '51' },
+    ]);
+    const bought = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        transactions: [
+          { assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-40) },
+          { assetId: asset.id, side: 'buy', quantity: 1000, price: 34, executedAt: tsOffset(-10) },
+        ],
+      });
+    expect(bought.status, JSON.stringify(bought.body)).toBe(201);
+
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(max.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(max.body).success).toBe(true);
+    expect(max.body.points.at(-1).valueEur).toBeCloseTo(51_051, 6);
+    // TWR since inception: 1 · 0.34 · 1 · 1.5 = 0.51 → −49 %. Correct, and
+    // exactly the artefact the owner read as wrong — it stays.
+    expect(max.body.performance.at(-1).pct).toBeCloseTo(-49, 6);
+    // Money-weighted since inception — the window opens the day before day
+    // −40 with zero capital and closes today (day 0): T = 41 days.
+    //   +100 on day −40 → at the previous close → w = 1
+    //   +34 000 on day −10 → at the day −11 close → w = 11/41
+    //   numerator   = 51 051 − 34 100       = 16 951
+    //   denominator = 100 + 34 000 · 11/41  = 9 221.95…
+    //   MD          = 183.8…%
+    const expectedMax = (16_951 / (100 + (34_000 * 11) / 41)) * 100;
+    expect(max.body.moneyWeightedPct).toBeCloseTo(expectedMax, 6);
+    expect(max.body.moneyWeightedPct).toBeGreaterThan(0);
+
+    // Served on every range, never only MAX: the 1M window holds the second
+    // buy, and the market's +50 % on it reads positive on both figures.
+    const month = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    expect(month.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(month.body).success).toBe(true);
+    expect(month.body.performance.at(-1).pct).toBeCloseTo(50, 6);
+    expect(month.body.moneyWeightedPct).toBeGreaterThan(0);
+    expect(Number.isFinite(month.body.moneyWeightedPct)).toBe(true);
   });
 });
 

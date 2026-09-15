@@ -5769,12 +5769,33 @@
   display: none;
 }
 
+/* The marker is a SQUARE box with the glyph centred in it, and that is
+   load-bearing rather than cosmetic. `[open]` turns it a quarter-turn, and a
+   rotated box contributes its TRANSFORMED bounds to the scrollable overflow of
+   every ancestor. Left at the glyph's own metrics — ~5.3px of advance inside a
+   16.5px line box — the turn laid that tall box on its side and pushed ~6px past
+   the summary's right edge: an OPEN fold measured 6px of horizontal overflow
+   (summary, `<details>`, row group, whole panel) where the closed one measured
+   none, at every viewport. A square rotates into itself, so the open state now
+   measures exactly like the closed one.
+
+   1.2em rather than 1em: at 1em the rotated glyph still reached ~1px past the
+   box, and 1.2em is the first size at which the measurement is a clean zero from
+   320px to 600px. `flex: none` holds that size under pressure. The glyph's ink
+   sits ~4px further from the right edge than it did — the marker's BOX is now
+   what the edge aligns, not the glyph's advance. */
 .bt-cc-fold > summary::after,
 .bt-disclosure > summary::after {
   content: '▸';
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.2em;
+  height: 1.2em;
   margin-left: auto;
   color: var(--bt-faint);
   font-size: 11px;
+  line-height: 1;
   transition: transform var(--bt-t-fast);
 }
 
