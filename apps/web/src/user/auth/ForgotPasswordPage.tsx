@@ -6,6 +6,7 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
+import { useFieldErrors } from '../components/fieldErrors';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 
 /**
@@ -20,7 +21,10 @@ export function ForgotPasswordPage() {
 
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Every failure here belongs to the submission, never to the address: the
+  // response deliberately never reveals whether an account exists. So nothing is
+  // ever attributed to a field and focus lands on the form-level alert.
+  const { formRef, alertRef, formError, fail, clear } = useFieldErrors();
   const [submitting, setSubmitting] = useState(false);
 
   if (status === 'loading') {
@@ -34,7 +38,7 @@ export function ForgotPasswordPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setSubmitting(true);
     try {
       await api.requestPasswordReset({ email });
@@ -51,9 +55,9 @@ export function ForgotPasswordPage() {
               },
             )
           : t('auth.common.waitMoment');
-        setError(`${t('auth.forgotPassword.rateLimited')}${wait}`);
+        fail(null, `${t('auth.forgotPassword.rateLimited')}${wait}`);
       } else {
-        setError(t('common.genericError'));
+        fail(null, t('common.genericError'));
       }
     } finally {
       setSubmitting(false);
@@ -75,8 +79,12 @@ export function ForgotPasswordPage() {
 
   return (
     <AuthCard subtitle={t('auth.forgotPassword.subtitle')}>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <p className="bt-muted text-sm">{t('auth.forgotPassword.description')}</p>
         <TextField
           label={t('auth.forgotPassword.emailLabel')}

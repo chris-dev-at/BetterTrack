@@ -61,3 +61,39 @@ test('a confirmed invalid response keeps the terminal invalid-invite state', asy
   expect(await screen.findByText(/invalid, expired/i)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
 });
+
+async function submitInvite() {
+  vi.mocked(api.validateInvite).mockResolvedValue({
+    valid: true,
+    email: 'invitee@bettertrack.test',
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.type(await screen.findByLabelText('Username'), 'invitee');
+  await user.type(screen.getByLabelText('Password'), 'invitee-strong-pass-1');
+  await user.click(screen.getByRole('button', { name: 'Create account' }));
+}
+
+test('a taken username is attributed to the username field, which takes focus', async () => {
+  authMocks.acceptInvite.mockRejectedValue(new ApiError(409, 'USERNAME_TAKEN', 'taken'));
+
+  await submitInvite();
+
+  const field = await screen.findByLabelText('Username');
+  expect(field).toHaveAttribute('aria-invalid', 'true');
+  expect(field).toHaveAccessibleDescription(/That username is already taken/);
+  expect(field).toHaveFocus();
+  expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
+});
+
+test('a spent invite stays a form-level alert and blames no field', async () => {
+  authMocks.acceptInvite.mockRejectedValue(new ApiError(400, 'INVALID_INVITE', 'gone'));
+
+  await submitInvite();
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/This invite link is no longer valid/);
+  expect(screen.getByLabelText('Username')).not.toHaveAttribute('aria-invalid');
+  expect(document.activeElement).toContainElement(alert);
+});
