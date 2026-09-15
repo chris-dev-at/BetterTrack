@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { Database } from '../../data/db';
 import {
   createAuditRepository,
@@ -300,6 +302,42 @@ export const AUDIT_SIGNAL_ACTIONS = [
  */
 export const BEARER_SCOPE_DENIAL_REASONS = ['insufficient-scope', 'first-party-only'] as const;
 export type BearerScopeDenialReason = (typeof BEARER_SCOPE_DENIAL_REASONS)[number];
+
+/**
+ * The closed `reason` vocabulary as a runtime check (#1951 §1).
+ *
+ * {@link BEARER_SCOPE_DENIAL_REASONS} alone is a COMPILE-time fence: a caller
+ * reaching the writer through `as never`, an untyped boundary or a future JS
+ * consumer could persist `reason: 'totally-made-up'` unchallenged, and the row
+ * is durable for the full audit retention. The enum below is the same list,
+ * enforced where the row is actually built.
+ */
+export const bearerScopeDenialReasonSchema = z.enum(BEARER_SCOPE_DENIAL_REASONS);
+
+/**
+ * The `meta` contract for an `api_key.scope_denied` row — the personal-key
+ * shape and its OAuth twin, which differ only by the `kind` discriminator the
+ * OAuth writer stamps.
+ *
+ * STRICT on purpose. The vocabulary check is the point of the schema, but the
+ * closed key set is what keeps §10's "the audit row never carries token or key
+ * material" mechanical rather than reviewed: a future writer that tries to
+ * attach the refused token, its hash or an authorization header to the row
+ * fails here instead of copying a credential into a 400-day store. `requiredScope`
+ * is a scope NAME, never a secret; the credential itself is identified only by
+ * the row's own `targetId` (the key/grant id).
+ */
+export const bearerScopeDeniedMetaSchema = z
+  .object({
+    requiredScope: z.string().min(1),
+    reason: bearerScopeDenialReasonSchema,
+    method: z.string().min(1),
+    path: z.string(),
+    kind: z.literal('oauth').optional(),
+  })
+  .strict();
+
+export type BearerScopeDeniedMeta = z.infer<typeof bearerScopeDeniedMetaSchema>;
 
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;
