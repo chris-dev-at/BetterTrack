@@ -608,3 +608,20 @@ test('a failed signals read never takes the audit log down with it', async () =>
   expect(await screen.findByText('audit.first')).toBeInTheDocument();
   expect(screen.queryByText(/signals envelope/)).not.toBeInTheDocument();
 });
+
+/**
+ * The page IS a tab of the Security & API workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Security & API tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Security & API' });
+  expect(within(nav).getByRole('link', { name: 'Audit log' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+});

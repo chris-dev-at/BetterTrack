@@ -6,6 +6,7 @@ import * as api from '../../lib/adminApi';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   AsyncReadState,
@@ -74,6 +75,12 @@ export function SettingsPage() {
         title={t('admin.settings.title')}
         description={t('admin.settings.subtitle')}
       />
+
+      {/* W7c folds Product & Comms into one tab strip (§16 2026-09-14); this
+          page is the workspace landing and the strip's first tab. Every
+          pre-fold URL is still a real route — the strip navigates, it does
+          not switch in-page content. */}
+      <WorkspaceTabs />
 
       {settings.loading || settings.error ? (
         <AsyncReadState
