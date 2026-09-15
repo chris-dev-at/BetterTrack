@@ -59,6 +59,14 @@ const BUCKET_GRACE_SECONDS = 5;
  * across processes, so the shared total is a bounded recent history instead —
  * long enough that an operator opening the page after a night of job failures
  * still sees them, short enough that it cannot become an immortal key.
+ *
+ * The deadline is fixed when the key is CREATED and never re-stated (#1896):
+ * re-issuing the full TTL on every drop was the same sliding-expiry bug that
+ * was removed from the window key, and it kept `…:total` alive forever under
+ * exactly the sustained pressure the bound exists for — a queue failing once
+ * every ten minutes for three weeks published a three-week figure. Each
+ * retention period therefore starts at its first drop and ends TTL seconds
+ * later, whatever lands in between.
  */
 const TOTAL_TTL_SECONDS = 24 * 60 * 60;
 
@@ -108,8 +116,12 @@ export function createProblemDropTally(
         .multi()
         .incr(windowKeyAt(t))
         .expire(windowKeyAt(t), bucketTtlSeconds(t))
+        // `SET … EX … NX` seeds the counter and its deadline together, and does
+        // nothing at all once the key exists; the INCR that follows leaves the
+        // TTL untouched. That is what makes the total's expiry FIXED rather
+        // than sliding — the window key's rule, applied to the total.
+        .set(totalKey, 0, 'EX', TOTAL_TTL_SECONDS, 'NX')
         .incr(totalKey)
-        .expire(totalKey, TOTAL_TTL_SECONDS)
         .exec()
         .catch((err: unknown) => {
           logger?.warn({ err }, 'failed to publish a problem-capture drop to the shared tally');

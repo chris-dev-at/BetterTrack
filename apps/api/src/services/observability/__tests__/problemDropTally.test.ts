@@ -90,6 +90,40 @@ describe('problem drop tally', () => {
     expect(late).toBeLessThanOrEqual(15);
   });
 
+  /**
+   * The same rule, on the other key (#1896). The total kept the sliding TTL the
+   * window key had removed, re-issuing its full 24 h on every drop — so a queue
+   * failing once every ten minutes for three weeks kept `…:total` alive
+   * indefinitely and published a three-week figure under a contract that
+   * documents a bounded recent history.
+   */
+  it('keeps the running total on a deadline fixed when the key was created', async () => {
+    let clock = 0;
+    const tally = tallyAt(() => clock);
+    const TOTAL_KEY = 'problems:drops:worker:total';
+
+    tally.record('job', 'kind-budget');
+    await tally.settled();
+    const fresh = await redis.ttl(TOTAL_KEY);
+    expect(fresh).toBeGreaterThan(0);
+    expect(fresh).toBeLessThanOrEqual(24 * 60 * 60);
+
+    // Stand in for a retention that is nearly over — the state a storm running
+    // into its second day reaches, and the one the sliding TTL never could.
+    await redis.expire(TOTAL_KEY, 30);
+
+    // Hours of further refusals: the counter keeps every one of them, and the
+    // deadline does NOT move out with them.
+    for (let minute = 1; minute <= 120; minute += 1) {
+      clock = minute * 60_000;
+      tally.record('job', 'kind-budget');
+    }
+    await tally.settled();
+
+    expect(await redis.ttl(TOTAL_KEY)).toBeLessThanOrEqual(30);
+    expect((await tally.read()).total).toBe(121);
+  });
+
   it('degrades to zeroes when the tally is unreadable', async () => {
     const broken = {
       mget: async () => {

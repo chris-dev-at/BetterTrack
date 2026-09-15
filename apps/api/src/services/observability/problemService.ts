@@ -77,7 +77,10 @@ export interface ListProblemsResult {
    * process PLUS the peer process (the worker), when a peer tally is wired.
    */
   droppedCaptures: number;
-  /** Captures the rate cap refused since boot, this process plus the peer. */
+  /**
+   * Captures the rate cap refused since boot in THIS process, plus the peer's
+   * own bounded recent history (the shared tally's retention, not since boot).
+   */
   droppedCapturesTotal: number;
 }
 
