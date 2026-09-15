@@ -1,5 +1,5 @@
 /**
- * Origin chart color system (docs/redesign/REAL_APP_REDESIGN_PROMPT.md +
+ * Origin chart color system (docs/history/redesign/REAL_APP_REDESIGN_PROMPT.md +
  * the dataviz method).
  *
  * - `MAIN_SERIES` is the calm analytical blue the spec reserves for neutral,

@@ -1,5 +1,7 @@
 # STARTAUTOMATE.md — Autonomous Build Factory Runbook
 
+_Archived 2026-09-02 — launches the ORIGINAL single factory; superseded by `docs/multi-factory.md`._
+
 > **Historical note (2026-08-29):** this runbook launches the ORIGINAL single factory in `factory/`.
 > Day-to-day automation now runs the multi-factory — see `docs/multi-factory.md`. The single
 > factory still works and must never run at the same time as the multi-factory.

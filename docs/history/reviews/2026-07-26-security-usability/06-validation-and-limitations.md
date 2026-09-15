@@ -1,5 +1,7 @@
 # Pass 06 — Validation, methodology, and limitations
 
+_Archived 2026-09-02 — part of the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 ## Repository scope
 
 - Review date: 2026-07-26
