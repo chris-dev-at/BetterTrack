@@ -87,6 +87,7 @@ import type { AppContext } from '../context';
 import {
   ACCOUNT_SECURITY_SCOPE,
   VAULT_SYNC_SCOPE,
+  isAdminRoleBearerPrincipal,
   recordBearerScopeDenied,
   vaultAccountSecurityRouteAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
@@ -678,8 +679,9 @@ function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
     }
     // Match the global bearer guard's user/admin boundary even if this router
     // is remounted without that guard: a bearer-backed admin principal learns
-    // nothing about the user vault surface.
-    if (req.authUser?.role === 'admin') {
+    // nothing about the user vault surface. Shared predicate since #1958, so
+    // all five twins and the rail state the boundary exactly once.
+    if (isAdminRoleBearerPrincipal(req)) {
       next(notFound());
       return;
     }
@@ -709,7 +711,7 @@ function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
       return;
     }
     if (!scopeSatisfies(req.apiKey.scopes, requiredScope)) {
-      recordBearerScopeDenied(ctx, req, requiredScope, path).then(
+      recordBearerScopeDenied(ctx, req, requiredScope, 'insufficient-scope', path).then(
         () =>
           next(
             forbidden(

@@ -7,6 +7,10 @@ import {
   isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
+import {
+  parseBearerScopeDenialReason,
+  type BearerScopeDenialReason,
+} from '../../services/audit/auditService';
 import { normalizeRoutePath } from '../../services/security/routePath';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
@@ -368,11 +372,9 @@ export function taxYearDocumentationRouteAcceptsBearer(method: string, path: str
 
 /** Whether one live grant-management request is in the first-party bearer allowlist. */
 export function oauthGrantRouteAcceptsBearer(method: string, path: string): boolean {
-  return routeAllowlistAccepts(
-    OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
-    method,
-    path.toLowerCase(),
-  );
+  // Same shape as every sibling above: `matchesRoute` → `normalizeRoutePath`
+  // already folds case, so no caller-side lowercasing is needed here either.
+  return routeAllowlistAccepts(OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /**
@@ -1060,6 +1062,37 @@ export function openApiPathTemplateAcceptsBearer(path: string, method = 'GET'): 
 }
 
 /**
+ * The user/admin account-kind boundary for BEARER principals (#1365, #1958).
+ *
+ * Bearer credentials are a user-app rail. An account promoted to admin may
+ * still have a not-yet-revoked personal key or OAuth grant; disclose no user
+ * surface to that principal, just as `/admin/*` discloses nothing to a bearer
+ * regardless of its scopes.
+ *
+ * Defense-in-depth, not a live path: a real promotion goes through
+ * `userRepo.setRole`, which bumps `securityGeneration` and therefore already
+ * invalidates every outstanding token of that account before it can reach this
+ * predicate. Read it (and its tests) as the fence that survives a future role
+ * write which forgets the generation bump — never as proof that admin-role
+ * bearers are reaching the user API today.
+ *
+ * It is exported because all five router-local twins apply the SAME boundary:
+ * the portfolio-vault and per-vault twins always did, and #1958 gives the
+ * passkey, grant and tax-year twins the identical backstop so a remount or a
+ * regression of the global table cannot leave one twin answering a question the
+ * rail refuses. One predicate, one definition — the twins cannot drift from the
+ * rail they mirror.
+ *
+ * Deliberately `false` for a request carrying no bearer: cookie sessions are
+ * not this boundary's business. An admin-KIND session is refused earlier and
+ * more loudly by `requireUser` (403 `ADMIN_ACCOUNT_KIND`, §6.12), which is the
+ * boundary the user app actually runs on.
+ */
+export function isAdminRoleBearerPrincipal(req: Request): boolean {
+  return req.apiKey !== undefined && req.authUser?.role === 'admin';
+}
+
+/**
  * Scope enforcement for API-key requests (§6.13, V2-P12). A no-op for cookie
  * sessions (full access). For a bearer request it maps the path+method to the
  * required scope and rejects — with an audited `403 INSUFFICIENT_SCOPE` — when
@@ -1072,11 +1105,10 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       next();
       return;
     }
-    // Bearer credentials are a user-app rail. An account promoted to admin may
-    // still have a not-yet-revoked personal key or OAuth grant; disclose no
-    // user surface to that principal, just as `/admin/*` discloses nothing to a
-    // bearer regardless of its scopes.
-    if (req.authUser?.role === 'admin') {
+    // The account-kind boundary, shared verbatim with the five router-local
+    // twins. See {@link isAdminRoleBearerPrincipal} for why it exists and why
+    // it is not a live path.
+    if (isAdminRoleBearerPrincipal(req)) {
       next(notFound());
       return;
     }
@@ -1117,7 +1149,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // token. Enforced here at check time — the single authoritative point that
     // also covers tokens minted before the rule.
     if (!scopeSatisfies(req.apiKey.scopes, required)) {
-      recordBearerScopeDenied(ctx, req, required).then(
+      recordBearerScopeDenied(ctx, req, required, 'insufficient-scope').then(
         () =>
           next(
             forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
@@ -1133,7 +1165,10 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       // is first-party-only — it does not imply scope alone would ever suffice.
       // Reuse the established audited denial rail: probing another app's grants
       // is a credential-boundary event the account owner must be able to trace.
-      recordBearerScopeDenied(ctx, req, required).then(
+      // The `first-party-only` discriminator keeps that event greppable — the
+      // refused token DOES hold `required`, so without it the row would read
+      // exactly like a missing-scope denial (#1365).
+      recordBearerScopeDenied(ctx, req, required, 'first-party-only').then(
         () =>
           next(
             forbidden(
@@ -1153,16 +1188,32 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
  * Persist one bearer scope refusal through the credential-kind-specific audit
  * service. Router-local defense-in-depth guards reuse this rail so a future
  * middleware remount cannot silently lose the global guard's denial audit.
+ *
+ * `reason` is mandatory, and the same discriminator lands in the meta for both
+ * principal kinds: an owner reading `api_key.scope_denied` must be able to tell
+ * "the credential lacked the scope" from "the credential HELD the scope and was
+ * refused because the route is first-party-only" (#1365).
+ *
+ * The vocabulary is checked HERE as well as in the two writers (#1951 §1): this
+ * is the single rail every guard — global and router-local twin — funnels
+ * through, so an out-of-vocabulary reason is refused before either credential
+ * kind is dispatched to. `async` so that refusal surfaces as a rejection on the
+ * promise callers already branch on, not as a synchronous throw some of them
+ * would handle differently — every caller routes that rejection to `next`,
+ * where it becomes a REPORTED 500 (#1951 L1) and never an admission.
  */
-export function recordBearerScopeDenied(
+export async function recordBearerScopeDenied(
   ctx: AppContext,
   req: Request,
   requiredScope: string,
+  reason: BearerScopeDenialReason,
   path = req.path,
 ): Promise<void> {
+  parseBearerScopeDenialReason('recordBearerScopeDenied', reason);
   const common = {
     userId: req.authUser!.id,
     requiredScope,
+    reason,
     method: req.method,
     path,
     ip: req.ip ?? null,
