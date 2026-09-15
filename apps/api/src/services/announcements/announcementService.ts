@@ -15,7 +15,7 @@ import type {
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { AnnouncementRow } from '../../data/schema';
-import { badRequest, notFound } from '../../errors';
+import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { AuditService } from '../audit/auditService';
 import { resolveEmailLocale, type EmailLocale } from '../email/emailI18n';
@@ -87,6 +87,12 @@ const AUDIT = {
   publish: 'announcement.publish',
   unpublish: 'announcement.unpublish',
   delete: 'announcement.delete',
+  /**
+   * An operator asked for the recipients a publication missed to be delivered
+   * again (#1943). Unlike {@link AUDIT.publish} this is NOT the job speaking:
+   * it names the admin who clicked, their IP, and the counts they acted on.
+   */
+  redeliver: 'announcement.redeliver',
 } as const;
 
 export interface AnnouncementServiceActor {
@@ -118,13 +124,75 @@ export const ANNOUNCEMENT_PUBLISH_RETRY_DELAY_MS = 60_000;
  */
 export const ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT = 1;
 
+/**
+ * The attempt number a MANUAL redelivery carries (#1943) — deliberately one
+ * above the automatic ladder's last rung.
+ *
+ * Two properties follow from that single fact, and both are load-bearing:
+ *  • it is `> ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT`, so a manual pass can never
+ *    schedule a retry of ITS own — one re-run per click, never a loop;
+ *  • it is a distinct segment in the queue's dedupe job id, so a manual pass is
+ *    never collapsed into the automatic first publication or its retry.
+ */
+export const ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT = ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT + 1;
+
+/**
+ * How tightly two manual redeliveries of the same announcement coalesce.
+ *
+ * The automatic window is the cron interval (five minutes), which is right for
+ * a burst of saves: anything it swallows the sweep picks up anyway. A manual
+ * click has no such backstop — nothing re-runs it — so swallowing the operator's
+ * SECOND click for five minutes would reproduce the very "button does nothing"
+ * this issue exists to remove. Thirty seconds is the honest middle: an
+ * impatient double-click collapses into one walk, a deliberate retry a minute
+ * later is its own pass.
+ */
+export const ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS = 30_000;
+
 /** Ask the worker to publish one announcement out of band. */
 export interface AnnouncementPublishRequest {
   announcementId: string;
-  /** 0 = first publication, 1 = the single bounded retry. */
+  /**
+   * 0 = first publication, 1 = the single bounded retry,
+   * {@link ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT} = an operator-initiated
+   * redelivery.
+   */
   attempt: number;
   /** Delay before the job is eligible to run (the retry's backoff). */
   delayMs?: number;
+  /**
+   * Who asked, when a human did (#1943). `undefined` on the automatic passes:
+   * the actor there is the job, and attributing an automatic delivery to the
+   * last person who touched the form would put words in their mouth. Set, it is
+   * carried into the pass's own `announcement.publish` audit row, so the
+   * outcome of an operator's click is attributable to that operator.
+   */
+  actorId?: string;
+  /**
+   * Override the job-id dedupe window for this request (#1943). Defaults to the
+   * queue's own window; a manual redelivery narrows it — see
+   * {@link ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS}.
+   */
+  dedupeWindowMs?: number;
+}
+
+/**
+ * What a successful enqueue reports back: the identity BullMQ will key the pass
+ * on. The route hands it to the operator so two clicks that were deliberately
+ * collapsed are visibly the same job rather than a silent no-op.
+ */
+export interface AnnouncementPublishEnqueued {
+  jobId: string;
+}
+
+/** What `redeliver()` accepted — a queued pass, never a completed delivery. */
+export interface AnnouncementRedeliverResult {
+  announcementId: string;
+  jobId: string;
+  attempt: number;
+  /** The counts the operator acted on, not the outcome (which is the job's). */
+  failedCount: number;
+  deliveredCount: number | null;
 }
 
 /** What one publication pass did — the job logs it and returns its counts. */
@@ -176,16 +244,19 @@ export interface AnnouncementServiceDeps {
   /** Admin audit trail; every mutation lands one row. */
   audit: AuditService;
   /**
-   * Hand one announcement to the `announcements.publishDue` queue. Two callers:
-   * a save whose window is already open (so "publish now" does not wait up to a
-   * cron interval), and the single bounded retry after a partial delivery.
+   * Hand one announcement to the `announcements.publishDue` queue. Three
+   * callers: a save whose window is already open (so "publish now" does not
+   * wait up to a cron interval), the single bounded retry after a partial
+   * delivery, and an operator's manual redelivery (#1943).
    *
    * Optional because `config.isTest` builds the context with `queues === null`
    * (BullMQ cannot drive ioredis-mock). Absent, nothing is enqueued and the
    * sweep is the only path — which is also what makes the "a save never fans
-   * out" assertions in the service tests mean what they say.
+   * out" assertions in the service tests mean what they say. The manual
+   * redelivery is the one caller that REFUSES to pretend in that case: it has
+   * no sweep behind it, so it answers 503 rather than an accepted-looking 202.
    */
-  enqueuePublish?: (request: AnnouncementPublishRequest) => Promise<void>;
+  enqueuePublish?: (request: AnnouncementPublishRequest) => Promise<AnnouncementPublishEnqueued>;
   /**
    * Recipients per keyset page in the fan-out walk. Defaults to the shared
    * {@link ANNOUNCEMENT_FAN_OUT_PAGE_SIZE}. A seam rather than a constant so a
@@ -208,11 +279,21 @@ export interface AnnouncementService {
     actor: AnnouncementServiceActor,
   ): Promise<Announcement>;
   remove(id: string, actor: AnnouncementServiceActor): Promise<void>;
+  /**
+   * Operator-initiated re-run of ONE announcement's fan-out (#1943), for a
+   * published row still carrying failed recipients. Queues a targeted pass and
+   * returns its identity; it never walks the user table on the request path.
+   */
+  redeliver(id: string, actor: AnnouncementServiceActor): Promise<AnnouncementRedeliverResult>;
   // ── Publication (driven by `announcements.publishDue`, #1909) ─────────────
   /** Publish every announcement whose window has opened and which is unstamped. */
   publishDue(): Promise<AnnouncementSweepResult>;
   /** Publish exactly one announcement, re-checking its window first. */
-  publishAnnouncement(id: string, attempt?: number): Promise<AnnouncementPublishOutcome>;
+  publishAnnouncement(
+    id: string,
+    attempt?: number,
+    actorId?: string,
+  ): Promise<AnnouncementPublishOutcome>;
   // ── User surface ──────────────────────────────────────────────────────────
   listActiveForUser(
     userId: string,
@@ -296,17 +377,18 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
    * nothing — the five-minute sweep is the durable path, the enqueue is only
    * what makes "publish now" feel immediate.
    */
-  async function requestPublish(request: AnnouncementPublishRequest): Promise<boolean> {
-    if (!deps.enqueuePublish) return false;
+  async function requestPublish(
+    request: AnnouncementPublishRequest,
+  ): Promise<AnnouncementPublishEnqueued | null> {
+    if (!deps.enqueuePublish) return null;
     try {
-      await deps.enqueuePublish(request);
-      return true;
+      return await deps.enqueuePublish(request);
     } catch (err) {
       logger?.warn(
         { err, announcementId: request.announcementId, attempt: request.attempt },
         'announcement publish enqueue failed — the scheduled sweep still owns it',
       );
-      return false;
+      return null;
     }
   }
 
@@ -331,6 +413,7 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
   async function runPublication(
     row: AnnouncementRow,
     attempt: number,
+    actorId?: string,
   ): Promise<AnnouncementPublishOutcome> {
     const eventKey = announcementEventKey(row.id);
     const result = await fanOutAnnouncement({
@@ -358,7 +441,7 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
         delivered: result.users - result.failed,
         failed: result.failed,
       });
-      await auditPublication(row.id, attempt, result);
+      await auditPublication(row.id, attempt, result, actorId);
       logger?.info(
         {
           announcementId: row.id,
@@ -396,15 +479,16 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       return { status: 'lost-claim', ...result, retryScheduled: false };
     }
 
-    await auditPublication(row.id, attempt, result);
+    await auditPublication(row.id, attempt, result, actorId);
 
     let retryScheduled = false;
     if (result.failed > 0 && attempt < ANNOUNCEMENT_PUBLISH_MAX_ATTEMPT) {
-      retryScheduled = await requestPublish({
-        announcementId: row.id,
-        attempt: attempt + 1,
-        delayMs: ANNOUNCEMENT_PUBLISH_RETRY_DELAY_MS,
-      });
+      retryScheduled =
+        (await requestPublish({
+          announcementId: row.id,
+          attempt: attempt + 1,
+          delayMs: ANNOUNCEMENT_PUBLISH_RETRY_DELAY_MS,
+        })) !== null;
       logger?.warn(
         {
           announcementId: row.id,
@@ -426,18 +510,24 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
 
   /**
    * The publication audit row (#1406 W6 builds the reader). `actorId` is null
-   * because the actor is the job, not an operator — the admin's own
-   * `announcement.create` / `announcement.update` row already names who composed
-   * it, and attributing an automatic delivery to the last person who touched the
-   * form would put words in their mouth.
+   * for the automatic passes because the actor is the job, not an operator —
+   * the admin's own `announcement.create` / `announcement.update` row already
+   * names who composed it, and attributing an automatic delivery to the last
+   * person who touched the form would put words in their mouth.
+   *
+   * A pass an operator ASKED for is the exception (#1943): the click is carried
+   * in the job payload and lands here, so the outcome of a manual redelivery —
+   * its recipients, its inserts, its remaining failures — is attributable to
+   * the person who ordered it rather than reading as one more automatic sweep.
    */
   async function auditPublication(
     announcementId: string,
     attempt: number,
     result: { users: number; inserted: number; failed: number },
+    actorId?: string,
   ): Promise<void> {
     await audit.record({
-      actorId: null,
+      actorId: actorId ?? null,
       action: AUDIT.publish,
       targetType: 'announcement',
       targetId: announcementId,
@@ -485,21 +575,47 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
    * is not a small mistake. One extra indexed SELECT per due announcement (the
    * batch is 20, the sweep runs every five minutes) buys that.
    */
-  async function publishOne(id: string, attempt: number): Promise<AnnouncementPublishOutcome> {
+  async function publishOne(
+    id: string,
+    attempt: number,
+    actorId?: string,
+  ): Promise<AnnouncementPublishOutcome> {
     const row = await repo.findById(id);
     if (!row) return { status: 'skipped', reason: 'not-found' };
     const state = dueness(row, now());
-    // The bounded retry runs over a row that is already stamped — that is
-    // exactly what it is for — so `already-published` is only a stop for a
-    // first pass. Everything else (deactivated, rescheduled or expired between
-    // enqueue and run) stops both.
+    // The bounded retry and the manual redelivery both run over a row that is
+    // already stamped — that is exactly what they are for — so
+    // `already-published` is only a stop for a first pass. Everything else
+    // (deactivated, rescheduled or expired between enqueue and run) stops all
+    // three.
     if (state === 'already-published' && attempt === 0) {
       return { status: 'skipped', reason: 'already-published' };
     }
     if (state !== 'due' && state !== 'already-published') {
       return { status: 'skipped', reason: state };
     }
-    return runPublication(row, attempt);
+    return runPublication(row, attempt, actorId);
+  }
+
+  /**
+   * Can this row's failed recipients be re-delivered right now (#1943), and if
+   * not, WHY not — in the operator's terms rather than the job's?
+   *
+   * The checks mirror what the queued pass would do when it re-reads the row
+   * ({@link dueness} + the already-published branch of {@link runPublication}).
+   * They are applied here as well, at the request, so the console refuses
+   * plainly instead of returning an accepted-looking 202 for a pass the worker
+   * would silently skip a second later.
+   */
+  function redeliverability(
+    row: AnnouncementRow,
+    at: Date,
+  ): 'ready' | 'nothing-failed' | 'not-published' | 'inactive' | 'expired' {
+    if (!row.active) return 'inactive';
+    if (row.endsAt && row.endsAt.getTime() <= at.getTime()) return 'expired';
+    if (row.publishedAt === null) return 'not-published';
+    if (!row.failedCount) return 'nothing-failed';
+    return 'ready';
   }
 
   /**
@@ -619,6 +735,112 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       return toAnnouncement(refreshed, now());
     },
 
+    /**
+     * Re-run ONE announcement's fan-out for the recipients a publication missed
+     * (#1943). Queues; never walks.
+     *
+     * Before this, a delivery that failed twice left the row stamped with
+     * `failedCount > 0` and the console showed "N failed" with nothing attached
+     * to it: the automatic ladder is deliberately bounded at one retry, so the
+     * missing inbox rows were simply never written.
+     *
+     * **Why a job and not the request.** The fan-out is a keyset walk of the
+     * entire user table. Running it inside the admin's HTTP request is the exact
+     * defect #1909 removed, and no bounded targeted path exists — the service's
+     * only fan-out primitive is that walk. So this hands ONE targeted pass to
+     * the existing `announcements.publishDue` queue and answers 202 with the job
+     * identity; the console polls the list for the result.
+     *
+     * **Why it cannot re-stamp or double count.** The queued pass re-reads the
+     * row, finds `published_at` already set, and takes the retry branch: it
+     * walks, then REPLACES the counts from its own outcome
+     * (`users - failed` / `failed`) via `recordDeliveryOutcome`. `publishedAt`
+     * is only ever written by the conditional claim, which that branch never
+     * reaches. And each recipient's row is keyed by
+     * {@link announcementEventKey}, so the re-walk inserts exactly the rows that
+     * are missing and nobody is notified twice.
+     *
+     * The audit row is written AFTER the enqueue, carrying the job id: a row
+     * claiming a redelivery that was never queued would be worse than none. If
+     * the audit write itself fails the request 500s, but the trail is not lost —
+     * the pass records its own `announcement.publish` row naming the same actor.
+     */
+    async redeliver(id, actor): Promise<AnnouncementRedeliverResult> {
+      const row = await repo.findById(id);
+      if (!row) throw announcementNotFound();
+
+      switch (redeliverability(row, now())) {
+        case 'nothing-failed':
+          throw conflict(
+            'This announcement has no failed deliveries to retry.',
+            'ANNOUNCEMENT_NOTHING_TO_REDELIVER',
+          );
+        case 'not-published':
+          throw conflict(
+            'This announcement has not been published yet.',
+            'ANNOUNCEMENT_NOTHING_TO_REDELIVER',
+          );
+        case 'inactive':
+          throw conflict(
+            'Re-activate this announcement before retrying its delivery.',
+            'ANNOUNCEMENT_NOT_REDELIVERABLE',
+          );
+        case 'expired':
+          throw conflict(
+            'This announcement’s display window has closed; it can no longer be delivered.',
+            'ANNOUNCEMENT_NOT_REDELIVERABLE',
+          );
+        default:
+          break;
+      }
+
+      const attempt = ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT;
+      const enqueued = await requestPublish({
+        announcementId: row.id,
+        attempt,
+        actorId: actor.id,
+        dedupeWindowMs: ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS,
+      });
+      if (!enqueued) {
+        // No sweep stands behind a manual redelivery — `publishDue` only takes
+        // UNSTAMPED rows — so an accepted-looking 202 here would be the same
+        // "the button did nothing" the issue is about.
+        throw new ApiError(
+          503,
+          'ANNOUNCEMENT_REDELIVER_UNAVAILABLE',
+          'The delivery queue is unavailable. Try again shortly.',
+        );
+      }
+
+      await audit.record({
+        actorId: actor.id,
+        action: AUDIT.redeliver,
+        targetType: 'announcement',
+        targetId: row.id,
+        ip: actor.ip ?? null,
+        // The counts the operator ACTED ON, plus the job that will change them.
+        meta: {
+          attempt,
+          jobId: enqueued.jobId,
+          delivered: row.deliveredCount,
+          failed: row.failedCount,
+        },
+      });
+
+      logger?.info(
+        { announcementId: row.id, attempt, jobId: enqueued.jobId, failed: row.failedCount },
+        'announcement redelivery queued by an operator',
+      );
+
+      return {
+        announcementId: row.id,
+        jobId: enqueued.jobId,
+        attempt,
+        failedCount: row.failedCount ?? 0,
+        deliveredCount: row.deliveredCount,
+      };
+    },
+
     async remove(id, actor): Promise<void> {
       const before = await repo.findById(id);
       if (!before) throw announcementNotFound();
@@ -659,8 +881,8 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       return summary;
     },
 
-    publishAnnouncement(id, attempt = 0): Promise<AnnouncementPublishOutcome> {
-      return publishOne(id, attempt);
+    publishAnnouncement(id, attempt = 0, actorId?: string): Promise<AnnouncementPublishOutcome> {
+      return publishOne(id, attempt, actorId);
     },
 
     async listActiveForUser(userId, userLocale): Promise<ActiveAnnouncement[]> {

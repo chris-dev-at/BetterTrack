@@ -104,6 +104,7 @@ import { createAlertService, type AlertService } from '../services/alerts/alertS
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import {
   createAnnouncementService,
+  type AnnouncementPublishEnqueued,
   type AnnouncementPublishRequest,
   type AnnouncementService,
 } from '../services/announcements/announcementService';
@@ -669,9 +670,13 @@ export interface BuildContextDeps {
    * Production binds the durable `announcements.publishDue` enqueue; under test
    * `queues` is null and this stays UNDEFINED on purpose, so an admin write can
    * be asserted to deliver nothing at all and the tests drive the publication
-   * through the service/job directly.
+   * through the service/job directly. A test that exercises the manual
+   * redelivery route (#1943) passes a recorder here — that route refuses to
+   * answer 202 without a transport.
    */
-  announcementPublishEnqueue?: (request: AnnouncementPublishRequest) => Promise<void>;
+  announcementPublishEnqueue?: (
+    request: AnnouncementPublishRequest,
+  ) => Promise<AnnouncementPublishEnqueued>;
   /** Test seam: pause an export build after collection under the transition lock. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Test seam: shrink the export build ceilings so the refusal path is provable. */
