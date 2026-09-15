@@ -22,8 +22,13 @@ describe('usageAnalyticsResponseSchema — todayRollupStale (#1906)', () => {
     ).toBe(false);
   });
 
-  it('defaults to false when an older API response omits the field', () => {
-    const parsed = usageAnalyticsResponseSchema.parse({ ...BASE });
-    expect(parsed.todayRollupStale).toBe(false);
+  it('rejects a payload missing the field instead of silently coercing it to false', () => {
+    // `adminRoutes.ts` re-parses `overview()`'s own output through this same
+    // schema before serving it. A required (non-defaulted) boolean is what
+    // makes that a real guard: if the service ever regressed and stopped
+    // producing the field, this parse must fail (→ 500) rather than quietly
+    // supplying `false` and serving a payload that claims to be fresh.
+    const { todayRollupStale: _omitted, ...withoutField } = { ...BASE, todayRollupStale: true };
+    expect(usageAnalyticsResponseSchema.safeParse(withoutField).success).toBe(false);
   });
 });

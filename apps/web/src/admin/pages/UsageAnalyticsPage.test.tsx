@@ -95,16 +95,31 @@ test('shows an error state when the fetch fails', async () => {
   );
 });
 
-test('marks the activity panel stale when todayRollupStale is true (#1906)', async () => {
+const TODAY_STALE_TOOLTIP =
+  "Today's numbers may be behind — the last refresh failed; the next scheduled rollup will catch up.";
+
+test('marks the Features and Activity panels stale when todayRollupStale is true (#1906)', async () => {
   vi.mocked(api.getUsageAnalytics).mockResolvedValue({ ...usage, todayRollupStale: true });
   renderPage();
 
-  await waitFor(() => expect(screen.getByText('Stale')).toBeInTheDocument());
-  expect(
-    screen.getByTitle(
-      "Today's numbers may be behind — the last refresh failed; the next scheduled rollup will catch up.",
-    ),
-  ).toBeInTheDocument();
+  // Features and Activity are both served from the rollup that can go stale;
+  // DAU/WAU/MAU and top assets read raw events directly and stay unmarked.
+  await waitFor(() => expect(screen.getAllByText('Stale')).toHaveLength(2));
+
+  const wrappers = screen.getAllByTitle(TODAY_STALE_TOOLTIP);
+  expect(wrappers).toHaveLength(2);
+
+  // The tooltip must reach screen-reader/keyboard users too, not just a mouse
+  // hover on a non-focusable span — assert the aria-describedby actually
+  // resolves to an element carrying the same text, not just that one exists.
+  for (const wrapper of wrappers) {
+    const describedById = wrapper.getAttribute('aria-describedby');
+    expect(describedById).toBeTruthy();
+    // Resolving an aria-describedby reference has no testing-library query of
+    // its own — a plain DOM lookup is the correct tool here.
+    const description = document.getElementById(describedById as string);
+    expect(description).toHaveTextContent(TODAY_STALE_TOOLTIP);
+  }
 });
 
 test('shows no stale marker when todayRollupStale is false (#1906)', async () => {
@@ -112,4 +127,5 @@ test('shows no stale marker when todayRollupStale is false (#1906)', async () =>
 
   await waitFor(() => expect(screen.getByText('Activity')).toBeInTheDocument());
   expect(screen.queryByText('Stale')).not.toBeInTheDocument();
+  expect(screen.queryByTitle(TODAY_STALE_TOOLTIP)).not.toBeInTheDocument();
 });

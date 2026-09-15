@@ -1,3 +1,5 @@
+import { useId } from 'react';
+
 import type { UsageFunnelStage } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
@@ -56,6 +58,7 @@ export function UsageAnalyticsPage() {
             <Panel
               title={t('admin.usageAnalytics.features')}
               hint={t('admin.usageAnalytics.windowHint', { days: data.windowDays })}
+              badge={data.todayRollupStale ? <StaleRollupBadge /> : null}
             >
               {data.features.length === 0 ? (
                 <Empty>{t('admin.usageAnalytics.noData')}</Empty>
@@ -158,20 +161,31 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Non-alarming marker for `todayRollupStale` (#1906). Placed on the Activity
- * panel rather than the DAU/WAU/MAU tiles or top-assets: those two read raw
- * `usage_events` directly (`usageAnalyticsRepository.ts`) and are unaffected
- * by a failed rollup refresh, while the activity series and feature counters
- * are served from that rollup — the series' last point is literally today.
- * `amber` (needs-attention, not `red`/broken) matches the console's tone
- * vocabulary; the native `title` gives the explanatory tooltip without a new
- * panel or copy the anti-bloat rule (§13.5) would flag.
+ * Non-alarming marker for `todayRollupStale` (#1906). Placed on the Features
+ * and Activity panels — both are served from the rollup a failed refresh
+ * leaves stale (the activity series' last point is literally today; the
+ * feature counters sum the window including today). DAU/WAU/MAU and top
+ * assets read raw `usage_events` directly (`usageAnalyticsRepository.ts`)
+ * and are unaffected, so they carry no marker. `amber` (needs-attention, not
+ * `red`/broken) matches the console's tone vocabulary; no new panel or copy
+ * beyond one badge + one description, per the anti-bloat rule (§13.5).
+ *
+ * The `title` gives sighted mouse users a hover tooltip; `aria-describedby`
+ * pairs the badge with a visually-hidden (`sr-only`) span carrying the same
+ * text (the hint-id pattern in `components/ui.tsx`), so the explanation
+ * reaches screen-reader users too — a bare `title` on a non-focusable `span`
+ * never would.
  */
 function StaleRollupBadge() {
   const t = useT();
+  const descriptionId = useId();
+  const tooltip = t('admin.usageAnalytics.todayStale.tooltip');
   return (
-    <span title={t('admin.usageAnalytics.todayStale.tooltip')}>
+    <span title={tooltip} aria-describedby={descriptionId}>
       <Badge tone="amber">{t('admin.usageAnalytics.todayStale.badge')}</Badge>
+      <span id={descriptionId} className="sr-only">
+        {tooltip}
+      </span>
     </span>
   );
 }
