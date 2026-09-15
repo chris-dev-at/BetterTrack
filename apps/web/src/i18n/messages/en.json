@@ -5931,6 +5931,80 @@
       "range": "{{first}}–{{last}} of {{total}}",
       "previous": "Previous",
       "next": "Next"
+    },
+    "announcements": {
+      "title": "Announcements",
+      "description": "In-app notices for every account: a dismissible banner inside the display window, plus one inbox entry per user. EN and DE are both required — each user sees the version matching their language.",
+      "composer": {
+        "headingNew": "New announcement",
+        "headingEdit": "Editing announcement",
+        "severity": "Severity",
+        "active": "Active — publish when the window opens",
+        "activeHint": "Saving never sends anything. A background job publishes the announcement once its start time has passed, and the same window governs the banner and the inbox entry.",
+        "titleEn": "English title",
+        "bodyEn": "English body",
+        "titleDe": "German title",
+        "bodyDe": "German body",
+        "startsAt": "Starts at",
+        "startsAtHint": "Empty = publish as soon as it is active.",
+        "endsAt": "Ends at",
+        "endsAtHint": "Empty = no auto-off. A window that has already closed is never published.",
+        "timezone": "Times are {{zone}} wall-clock and are stored as UTC.",
+        "create": "Create announcement",
+        "creating": "Creating…",
+        "save": "Save changes",
+        "saving": "Saving…",
+        "cancel": "Cancel edit",
+        "created": "Announcement created.",
+        "createdScheduled": "Announcement created. It publishes when its window opens.",
+        "createdQueued": "Announcement created. Publication is queued.",
+        "updated": "Announcement updated."
+      },
+      "preview": {
+        "heading": "What users will see",
+        "description": "The banner as it renders in each language. Every account receives it.",
+        "empty": "Fill in a title and body to preview the banner.",
+        "locale": {
+          "en": "English",
+          "de": "German"
+        }
+      },
+      "list": {
+        "heading": "All announcements",
+        "loading": "Loading announcements…",
+        "empty": "No announcements yet. Compose one above.",
+        "retry": "Retry",
+        "columns": {
+          "severity": "Severity",
+          "title": "Title (EN)",
+          "window": "Window",
+          "delivery": "Delivery",
+          "reach": "Reach",
+          "actions": "Actions"
+        },
+        "startsImmediately": "Starts: immediately",
+        "starts": "Starts: {{date}}",
+        "endsNever": "Ends: never",
+        "ends": "Ends: {{date}}",
+        "reachPending": "Not yet delivered",
+        "reachDelivered": "{{delivered}} delivered",
+        "reachFailed": "{{failed}} failed",
+        "edit": "Edit",
+        "activate": "Activate",
+        "deactivate": "Deactivate"
+      },
+      "state": {
+        "draft": "Draft",
+        "scheduled": "Scheduled",
+        "publishing": "Publishing",
+        "published": "Published",
+        "expired": "Expired",
+        "draftDetail": "Not active — nobody sees it.",
+        "scheduledDetail": "Will publish on {{date}}.",
+        "publishingDetail": "Due now — the publish job is delivering it.",
+        "publishedDetail": "Published {{date}}.",
+        "expiredDetail": "Window closed {{date}} — it will not be published."
+      }
     }
   },
   "create": {

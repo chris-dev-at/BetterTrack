@@ -813,6 +813,13 @@
       "when": 1789476954841,
       "tag": "0115_admin_moderation_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1789489273670,
+      "tag": "0116_announcement_delivery_counts",
+      "breakpoints": true
     }
   ]
 }

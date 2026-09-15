@@ -27,6 +27,13 @@ import { announcementEventKey } from '../services/announcements/announcementServ
  *  5. Inbox entry reuses the P0c `account.notice` type + deep-link route.
  *  6. Admin CRUD rejects non-admins (404 mask, mirroring the admin router pattern).
  *  7. Delivery is banner + inbox only (no email/push routing gates apply).
+ *
+ * ADMIN-W7a (#1909) moved publication off the request path onto the
+ * `announcements.publishDue` job, so a save no longer delivers anything: these
+ * tests create through HTTP and then run the publication explicitly through
+ * {@link publishDue}, exactly as the worker's sweep does. `config.isTest` leaves
+ * `ctx.queues` null, so nothing is enqueued and an admin write that DID fan out
+ * would be caught by the "no delivery at save time" assertions below.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -53,6 +60,14 @@ async function loginUserAgent(
     .send({ identifier, password });
   expect(res.status).toBe(200);
   return agent;
+}
+
+/**
+ * Run the publication sweep the way `announcements.publishDue` does. The HTTP
+ * layer never triggers it any more — that separation is the point of #1909.
+ */
+async function publishDue() {
+  return harness.ctx.announcements.publishDue();
 }
 
 async function createViaAdmin(
@@ -155,11 +170,17 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     const created = await createViaAdmin(adminAgent, BASE_BODY);
     expect(created.status).toBe(201);
     const announcement = announcementSchema.parse(created.body);
-    expect(announcement.publishedAt).not.toBeNull();
+    // The write returned BEFORE any delivery: unstamped, and the job's to do.
+    expect(announcement.publishedAt).toBeNull();
+    expect(announcement.deliveryState).toBe('publishing');
 
-    // Each user gets exactly one row keyed by the announcement's event key.
     const notifRepo = createNotificationRepository(harness.db);
     const key = announcementEventKey(announcement.id);
+    expect(await notifRepo.existsForEventKey(en.id, key)).toBe(false);
+
+    // The job publishes it. Each user then holds exactly one row keyed by the
+    // announcement's event key.
+    expect(await publishDue()).toMatchObject({ due: 1, published: 1, failed: 0 });
     expect(await notifRepo.existsForEventKey(en.id, key)).toBe(true);
     expect(await notifRepo.existsForEventKey(de.id, key)).toBe(true);
 
@@ -180,7 +201,9 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     expect(deRow).toBeDefined();
     expect(deRow!.title).toBe(BASE_BODY.titleDe);
 
-    // Re-publish (toggle off → on) is a per-user no-op via the shared eventKey.
+    // Re-publish (toggle off → on, then another sweep) is a per-user no-op: the
+    // row is stamped, so it is not due, and the shared eventKey would collapse
+    // it even if it were.
     await adminAgent
       .patch(`/api/v1/admin/announcements/${announcement.id}`)
       .set(...XRW)
@@ -189,6 +212,7 @@ describe('announcements — publishing fans an inbox row out to every user', () 
       .patch(`/api/v1/admin/announcements/${announcement.id}`)
       .set(...XRW)
       .send({ active: true });
+    expect(await publishDue()).toMatchObject({ due: 0, published: 0, inserted: 0 });
 
     const enInbox2 = await enAgent.get('/api/v1/notifications');
     const enList2 = notificationListResponseSchema.parse(enInbox2.body);
@@ -204,6 +228,7 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     await createUserRepository(harness.db).setLocale(de.id, 'de');
 
     await createViaAdmin(adminAgent, BASE_BODY);
+    await publishDue();
 
     const enAgent = await loginUserAgent(harness.app, en.email, en.password);
     const enRes = await enAgent.get('/api/v1/notifications/announcements');
@@ -217,6 +242,94 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     const deRes = await deAgent.get('/api/v1/notifications/announcements');
     const deBody = activeAnnouncementListResponseSchema.parse(deRes.body);
     expect(deBody.announcements[0]!.title).toBe(BASE_BODY.titleDe);
+  });
+});
+
+/**
+ * ADMIN-W7a (#1909): the admin's HTTP request persists the announcement and
+ * returns. It does not walk the user table, and a future `startsAt` now defers
+ * the inbox fan-out exactly as it always deferred the banner.
+ */
+describe('announcements — the write path never fans out', () => {
+  it('POST and PATCH return without delivering, and only hand an OPEN window to the queue', async () => {
+    const enqueued: Array<{ announcementId: string; attempt: number }> = [];
+    harness = await createTestApp({
+      announcementPublishEnqueue: async (request) => {
+        enqueued.push({ announcementId: request.announcementId, attempt: request.attempt });
+      },
+    });
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser({ email: 'w@bt.test', username: 'writepathuser' });
+    const notifRepo = createNotificationRepository(harness.db);
+
+    // 1. Active + a FUTURE start: nothing delivered, nothing even queued.
+    const scheduled = announcementSchema.parse(
+      (
+        await createViaAdmin(adminAgent, {
+          ...BASE_BODY,
+          active: true,
+          startsAt: new Date('2099-01-01T00:00:00.000Z').toISOString(),
+        })
+      ).body,
+    );
+    expect(scheduled.deliveryState).toBe('scheduled');
+    expect(scheduled.publishedAt).toBeNull();
+    expect(await notifRepo.existsForEventKey(user.id, announcementEventKey(scheduled.id))).toBe(
+      false,
+    );
+    expect(enqueued).toHaveLength(0);
+
+    // 2. A draft activated with an OPEN window: still nothing delivered on the
+    //    request, but the worker is asked to publish it now.
+    const draft = announcementSchema.parse(
+      (await createViaAdmin(adminAgent, { ...BASE_BODY, active: false })).body,
+    );
+    expect(draft.deliveryState).toBe('draft');
+    expect(enqueued).toHaveLength(0);
+
+    const patched = await adminAgent
+      .patch(`/api/v1/admin/announcements/${draft.id}`)
+      .set(...XRW)
+      .send({ active: true });
+    expect(patched.status).toBe(200);
+    const activated = announcementSchema.parse(patched.body);
+    expect(activated.deliveryState).toBe('publishing');
+    expect(activated.publishedAt).toBeNull();
+    expect(await notifRepo.existsForEventKey(user.id, announcementEventKey(draft.id))).toBe(false);
+    expect(enqueued).toEqual([{ announcementId: draft.id, attempt: 0 }]);
+  });
+
+  it('the list projection is parsed through its contract and carries the derived state', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const expired = announcementSchema.parse(
+      (
+        await createViaAdmin(adminAgent, {
+          ...BASE_BODY,
+          active: true,
+          titleEn: 'Old news',
+          titleDe: 'Alte Nachricht',
+          startsAt: new Date('2020-01-01T00:00:00.000Z').toISOString(),
+          endsAt: new Date('2020-02-01T00:00:00.000Z').toISOString(),
+        })
+      ).body,
+    );
+    const live = announcementSchema.parse((await createViaAdmin(adminAgent, BASE_BODY)).body);
+    await publishDue();
+
+    const res = await adminAgent.get('/api/v1/admin/announcements');
+    expect(res.status).toBe(200);
+    // `.strict()` on the way out too: an unparsed `res.json` is how a
+    // projection and its contract drift apart unnoticed.
+    const list = announcementListResponseSchema.parse(res.body);
+    const byId = new Map(list.announcements.map((a) => [a.id, a]));
+    expect(byId.get(expired.id)!.deliveryState).toBe('expired');
+    expect(byId.get(expired.id)!.deliveredCount).toBeNull();
+    expect(byId.get(live.id)!.deliveryState).toBe('published');
+    expect(byId.get(live.id)!.deliveredCount).toBeGreaterThan(0);
+    expect(byId.get(live.id)!.failedCount).toBe(0);
   });
 });
 
@@ -365,6 +478,7 @@ describe('announcements — inbox entry contract', () => {
 
     const created = await createViaAdmin(adminAgent, BASE_BODY);
     const announcement = announcementSchema.parse(created.body);
+    await publishDue();
 
     const agent = await loginUserAgent(harness.app, user.email, user.password);
     const inbox = await agent.get('/api/v1/notifications');

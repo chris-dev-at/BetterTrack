@@ -59,6 +59,7 @@ import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutR
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import { createEventBus, type EventBus } from '../events';
 import {
+  createAnnouncementPublishEnqueuer,
   createBackfillScheduler,
   createExportBuildEnqueuer,
   createQueueRegistry,
@@ -103,6 +104,7 @@ import { createAlertService, type AlertService } from '../services/alerts/alertS
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import {
   createAnnouncementService,
+  type AnnouncementPublishRequest,
   type AnnouncementService,
 } from '../services/announcements/announcementService';
 import {
@@ -662,6 +664,14 @@ export interface BuildContextDeps {
    * synchronous build under test (BullMQ can't run on ioredis-mock).
    */
   exportEnqueue?: (jobId: string, opts?: { delayMs?: number }) => Promise<void>;
+  /**
+   * Test seam (ADMIN-W7a, #1909): the announcement publication transport.
+   * Production binds the durable `announcements.publishDue` enqueue; under test
+   * `queues` is null and this stays UNDEFINED on purpose, so an admin write can
+   * be asserted to deliver nothing at all and the tests drive the publication
+   * through the service/job directly.
+   */
+  announcementPublishEnqueue?: (request: AnnouncementPublishRequest) => Promise<void>;
   /** Test seam: pause an export build after collection under the transition lock. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Test seam: shrink the export build ceilings so the refusal path is provable. */
@@ -1923,15 +1933,25 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
   exportHolder.service = dataExport;
 
-  // Admin-composed announcements (§13.4 V4-P5b): CRUD + publish fan-out into every
-  // user's inbox via the shared `fanOutAnnouncement` primitive, plus the user
-  // surface (currently-active banners + per-user dismissal). Delivery is banner +
-  // inbox only — the notification matrix is not consulted.
+  // Admin-composed announcements (§13.4 V4-P5b; ADMIN-W7a #1909): admin CRUD and
+  // the user surface (currently-active banners + per-user dismissal). The
+  // publication fan-out itself does NOT run here — `announcements.publishDue`
+  // on the worker owns it, so no admin request ever walks the user table.
+  // Delivery is banner + inbox only — the notification matrix is not consulted.
   const announcements = createAnnouncementService({
     repo: createAnnouncementRepository(db),
     users: userRepo,
     notifications: notificationRepo,
     audit,
+    // #1909: the API never fans out. It persists, then hands the announcement
+    // to the worker so an already-open window publishes without waiting for the
+    // five-minute sweep. The queue mapping lives once in
+    // `createAnnouncementPublishEnqueuer`, shared with the worker's own.
+    ...(deps.announcementPublishEnqueue
+      ? { enqueuePublish: deps.announcementPublishEnqueue }
+      : queues
+        ? { enqueuePublish: createAnnouncementPublishEnqueuer(queues) }
+        : {}),
     logger,
   });
 

@@ -3126,10 +3126,28 @@ export const announcements = pgTable(
     startsAt: timestamp('starts_at', { withTimezone: true }),
     endsAt: timestamp('ends_at', { withTimezone: true }),
     active: boolean('active').notNull().default(false),
-    // Stamped the first time `active` flips on — the moment the fan-out job runs.
-    // Later re-publishes update this to the latest publish timestamp; the shared
-    // eventKey (announcement:<id>:v1) keeps a re-publish idempotent per user.
+    /**
+     * Stamped by the `announcements.publishDue` job when a fan-out walk
+     * COMPLETES (#1909) — never by the admin's save. It is the per-announcement
+     * idempotency marker: the job's claim is the conditional
+     * `SET published_at = … WHERE id = $1 AND published_at IS NULL`, so of two
+     * concurrent runs exactly one records the publication, and a run that dies
+     * mid-walk leaves NULL behind and is simply re-published on the next tick.
+     * The shared eventKey (`account.notice:announcement:<id>:v1`) is what keeps
+     * that re-walk from double-notifying anybody.
+     */
     publishedAt: timestamp('published_at', { withTimezone: true }),
+    /**
+     * Outcome of the LAST COMPLETED fan-out pass (#1909). `delivered_count` is
+     * the number of recipients confirmed to hold their inbox row at the end of
+     * that pass (accounts walked minus failures) — a confirmation count, not a
+     * count of rows written, so a re-run that inserts nothing still reports
+     * everyone delivered. `failed_count` is that pass's failures, so a clean
+     * retry resets it to 0. Both stay NULL on rows that predate the job — an
+     * absent measurement, not a zero.
+     */
+    deliveredCount: integer('delivered_count'),
+    failedCount: integer('failed_count'),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

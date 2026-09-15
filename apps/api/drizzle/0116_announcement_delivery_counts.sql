@@ -1,0 +1,29 @@
+-- ADMIN-W7a (#1909) — record what a publication actually delivered.
+--
+-- Publication moved off the admin's HTTP request and onto the repeatable
+-- `announcements.publishDue` job. The job stamps `published_at` when the
+-- fan-out walk COMPLETES, whatever the per-recipient failure tally — the old
+-- `failed === 0` condition is what turned one bad insert into an unbounded
+-- re-walk of the entire user table on every later edit. Stamping
+-- unconditionally would, on its own, silently swallow that failure, so the
+-- outcome has to land somewhere the operator can see it. These two columns are
+-- that somewhere.
+--
+--   delivered_count — recipients confirmed to hold their inbox row at the end
+--                     of the LAST COMPLETED pass (accounts walked minus
+--                     failures). A confirmation count, never a count of rows
+--                     written: a re-run inserts nothing yet everyone is still
+--                     delivered, so a retry can neither double-count nor
+--                     under-report.
+--   failed_count    — recipients whose insert threw on that same pass. A
+--                     successful retry therefore resets it to 0.
+--
+-- Both are NULLABLE with no default and no backfill, deliberately: a row that
+-- predates this job was published without anybody counting, and writing 0 there
+-- would be indistinguishable from "measured, and nothing failed". NULL means
+-- "not measured" and the console renders it as such.
+--
+-- Additive and reversible: dropping both columns leaves every announcement, its
+-- window, its published_at and every delivered notification byte-identical.
+ALTER TABLE "announcements" ADD COLUMN IF NOT EXISTS "delivered_count" integer;--> statement-breakpoint
+ALTER TABLE "announcements" ADD COLUMN IF NOT EXISTS "failed_count" integer;

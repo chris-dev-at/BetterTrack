@@ -1755,7 +1755,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/announcements',
     tag: 'Admin',
     summary:
-      'Create an announcement. Requires EN + DE title/body; creating with active=true publishes immediately (fans one inbox row out per user).',
+      'Create an announcement. Requires EN + DE title/body. The request persists and returns — it never fans out; the `announcements.publishDue` job delivers one inbox row per user once the display window has opened, so a future startsAt defers the inbox entry as well as the banner.',
     body: R.CreateAnnouncementRequest,
     status: 201,
     response: R.Announcement,
@@ -1765,7 +1765,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/announcements/{id}',
     tag: 'Admin',
     summary:
-      'Update an announcement. Flipping active off→on publishes (fan-out is idempotent per user via the shared eventKey).',
+      'Update an announcement. Saving never fans out on the request path; the publish job picks the row up once its window is open, and delivery is idempotent per user via the shared eventKey.',
     params: contracts.idParamSchema,
     body: R.UpdateAnnouncementRequest,
     status: 200,

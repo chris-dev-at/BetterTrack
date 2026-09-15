@@ -186,6 +186,12 @@ export const JOB_REGISTRATION_DESCRIPTORS = [
     'retentionJobs.ts',
     'createDataRetentionCleanupJob',
   ),
+  descriptor(
+    'createAnnouncementPublishJob',
+    QUEUE_NAMES.announcementsPublishDue,
+    'announcementJobs.ts',
+    'createAnnouncementPublishJob',
+  ),
 ] as const;
 
 type ProductionJobRegistration = (typeof JOB_REGISTRATION_DESCRIPTORS)[number];

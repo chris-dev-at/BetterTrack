@@ -293,6 +293,16 @@ export interface CreateTestAppOptions {
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
   /** Recording data-export build transport for atomic request-gate tests. */
   exportEnqueue?: (jobId: string, opts?: { delayMs?: number }) => Promise<void>;
+  /**
+   * Recording announcement publication transport (#1909). Left undefined by
+   * default so an admin write provably delivers nothing; pass a recorder to
+   * assert WHAT the write asked the worker to publish.
+   */
+  announcementPublishEnqueue?: (request: {
+    announcementId: string;
+    attempt: number;
+    delayMs?: number;
+  }) => Promise<void>;
   /** Pause an export after collection while its account transition lock is held. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Shrink the export build ceilings (#1714) so the clean-refusal path is provable. */
@@ -385,6 +395,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     realtimeCommandNow: options.realtimeCommandNow,
     notificationEnqueue: options.notificationEnqueue,
     exportEnqueue: options.exportEnqueue,
+    announcementPublishEnqueue: options.announcementPublishEnqueue,
     exportAfterCollect: options.exportAfterCollect,
     exportLimits: options.exportLimits,
     exportDownloadMaxMs: options.exportDownloadMaxMs,
