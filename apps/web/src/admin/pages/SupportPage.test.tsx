@@ -218,6 +218,29 @@ describe('the inbox pane', () => {
     );
   });
 
+  test('offers the lifecycle ordering and asks the API for it (#1341)', async () => {
+    const user = userEvent.setup();
+    renderPage('/admin/support');
+    await screen.findByRole('listbox');
+
+    const sort = screen.getByRole('combobox', { name: 'Sort' });
+    // Named in the operator's language, not by its wire value.
+    expect(
+      within(sort).getByRole('option', { name: 'Status: open work first' }),
+    ).toBeInTheDocument();
+    await user.selectOptions(sort, 'status');
+
+    // The ordering belongs in the URL like every other pane control, so a
+    // grouped queue is a link an operator can keep.
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('sort=status'));
+    await waitFor(() =>
+      expect(api.listAdminFeedback).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sort: 'status' }),
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
   test('sends the filters from the URL to the API, unread included as a boolean', async () => {
     renderPage('/admin/support?status=shipped&category=bug&version=5.2.0&unread=read&sort=aging');
 
@@ -386,6 +409,43 @@ describe('the split pane and its keyboard', () => {
 
     await screen.findByRole('heading', { name: 'Dividend total is off by one payout' });
     await waitFor(() => expect(api.markAdminFeedbackRead).toHaveBeenCalledWith('sub-1'));
+    expect(api.markAdminFeedbackRead).toHaveBeenCalledTimes(1);
+  });
+
+  test('the unread marker clears on open and does not come back on the refetch', async () => {
+    const user = userEvent.setup();
+    // The marker is a server write, so the fixture models it as one: every queue
+    // read answers with the state the read marker left behind, rather than with
+    // a scripted sequence that would pass whatever the pane actually asked for.
+    let unread = true;
+    vi.mocked(api.listAdminFeedback).mockImplementation(() =>
+      Promise.resolve(listOf([submission({ unreadCount: unread ? 1 : 0 })])),
+    );
+    vi.mocked(api.markAdminFeedbackRead).mockImplementation(() => {
+      unread = false;
+      return Promise.resolve(undefined);
+    });
+
+    renderPage();
+    const list = await screen.findByRole('listbox');
+    expect(await within(list).findByLabelText('Unread reply')).toBeInTheDocument();
+
+    await user.click(within(list).getAllByRole('option')[0]!);
+
+    await waitFor(() => expect(api.markAdminFeedbackRead).toHaveBeenCalledWith('sub-1'));
+    // The marker resolving is what invalidates the queue, so the dot goes on
+    // the read that follows it...
+    await waitFor(() =>
+      expect(within(screen.getByRole('listbox')).queryByLabelText('Unread reply')).toBeNull(),
+    );
+
+    // ...and a later refetch of the same queue does not bring it back.
+    const readsSoFar = vi.mocked(api.listAdminFeedback).mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() =>
+      expect(vi.mocked(api.listAdminFeedback).mock.calls.length).toBeGreaterThan(readsSoFar),
+    );
+    expect(within(screen.getByRole('listbox')).queryByLabelText('Unread reply')).toBeNull();
     expect(api.markAdminFeedbackRead).toHaveBeenCalledTimes(1);
   });
 
