@@ -15,6 +15,7 @@ import type {
   PortfolioHistoryRange,
   PortfolioTotals,
   Transaction,
+  PortfolioHistoryResponse,
 } from '@bettertrack/contracts';
 
 import { dismissRecategorization, getRecategorizationStatus } from '../../lib/portfolioApi';
@@ -1590,6 +1591,43 @@ function DividendIntelSection() {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 /**
+ * The chart's summary line (#1669): the window's time-weighted return — the
+ * last point of the served `performance` curve, since inception on MAX and
+ * the window's own on a range slice — beside the money-weighted (Modified
+ * Dietz) return the server computes over the same window. The two answer
+ * different questions ("how did the strategy do" vs "how did my money do"),
+ * and only the second follows the value curve when deposits dominate, which
+ * is why MAX carries a one-line explainer. The chart itself stays the TWR
+ * curve. A missing money-weighted figure (no capital in the window, or a twin
+ * that does not compute it) renders as the em dash, never as 0.
+ */
+function ReturnSummaryLine({
+  history,
+  range,
+}: {
+  history: PortfolioHistoryResponse;
+  range: PriceRange;
+}) {
+  const t = useT();
+  const last = history.performance[history.performance.length - 1];
+  if (last === undefined) return null;
+  return (
+    <div className="bt-meta" style={{ marginBottom: 8 }}>
+      <p>
+        {t('portfolio.overview.chart.summaryTimeWeighted', {
+          pct: formatSignedPercent(last.pct),
+        })}
+        {' · '}
+        {t('portfolio.overview.chart.summaryMoneyWeighted', {
+          pct: formatSignedPercent(history.moneyWeightedPct ?? null),
+        })}
+      </p>
+      {range === 'Max' ? <p>{t('portfolio.overview.chart.summaryMaxExplainer')}</p> : null}
+    </div>
+  );
+}
+
+/**
  * Portfolio overview (PROJECTPLAN.md §6.9; Origin recomposition per
  * docs/redesign/REAL_APP_REDESIGN_PROMPT.md): one continuous working canvas —
  * net-worth hero + ruled stat strip, the value-over-time chart integrated into
@@ -2052,6 +2090,9 @@ export function PortfolioPage() {
                 </Link>
               </div>
             </div>
+            {historyQuery.data ? (
+              <ReturnSummaryLine history={historyQuery.data} range={range} />
+            ) : null}
             {perfMode ? (
               <p className="bt-meta" style={{ marginBottom: 8 }}>
                 {t('portfolio.overview.chart.perfHint')}

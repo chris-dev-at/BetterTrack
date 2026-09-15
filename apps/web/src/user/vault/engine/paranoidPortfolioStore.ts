@@ -202,5 +202,7 @@ function portfolioHistoryResponse(derived: ClientPortfolioDerivation): Portfolio
     baseCurrency: derived.baseCurrency,
     points: readable.map((point) => ({ date: point.date, valueEur: point.valueEur })),
     performance: readable.map((point) => ({ date: point.date, pct: point.twrPct ?? 0 })),
+    // The twin's own money-weighted figure of the same window (#1669).
+    moneyWeightedPct: derived.moneyWeightedPct,
   });
 }
