@@ -421,9 +421,16 @@ export type CashRuleIdParam = z.infer<typeof cashRuleIdParamSchema>;
  * second press right after the first honestly reports 0 — the operation is
  * additive and idempotent, and saying "23" again would suggest work that did
  * not happen.
+ *
+ * `complete` says whether the run REACHED THE WHOLE LEDGER (#1743). The scan is
+ * batched and bounded — one press reads a bounded number of noted movements
+ * (the API's `CASH_RULE_APPLY_MOVEMENT_SCAN_MAX`), newest first — so a ledger
+ * past that bound gets its recent movements tagged and the rest left. Saying
+ * "tagged 500" without saying "and stopped there" would report a complete pass
+ * that did not happen, so the flag is part of the answer rather than a log line.
  */
 export const cashRuleApplyResponseSchema = z
-  .object({ movementsTagged: z.number().int().min(0) })
+  .object({ movementsTagged: z.number().int().min(0), complete: z.boolean() })
   .strict();
 export type CashRuleApplyResponse = z.infer<typeof cashRuleApplyResponseSchema>;
 

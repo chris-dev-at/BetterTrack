@@ -89,6 +89,56 @@ describe('yahooProvider.getDividendEvents (§13.5 V5-P5)', () => {
     expect(result.trailingAmount).toBeCloseTo(0.98, 6);
   });
 
+  it('asks for defaultKeyStatistics and lands its per-payout amount on the upcoming ex-date (#1948)', async () => {
+    // The payload shape `yahoo-finance2` 4.0.2 returns: `quoteSummary` modules
+    // with Date-typed dates, and the per-payout amount in `defaultKeyStatistics`
+    // (`lastDividendValue` + `lastDividendDate`) — the only per-payout figure
+    // Yahoo publishes. Here the declared dividend has propagated into it, so its
+    // date IS the calendar's upcoming ex-date.
+    const modules: string[][] = [];
+    const client = stubClient({
+      chartEvents: () =>
+        Promise.resolve<YahooChartEventsResult>({
+          meta: { currency: 'USD' },
+          dividends: [{ amount: 0.24, date: new Date('2026-05-09T00:00:00.000Z') }],
+          splits: [],
+        }),
+      quoteSummary: (_symbol, mods) => {
+        modules.push([...mods]);
+        return Promise.resolve<YahooQuoteSummaryResult>({
+          calendarEvents: {
+            exDividendDate: new Date('2026-08-08T00:00:00.000Z'),
+            dividendDate: new Date('2026-08-15T00:00:00.000Z'),
+          },
+          summaryDetail: { currency: 'USD', dividendRate: 1, trailingAnnualDividendRate: 0.97 },
+          defaultKeyStatistics: {
+            lastDividendValue: 0.25,
+            lastDividendDate: new Date('2026-08-08T00:00:00.000Z'),
+          },
+        });
+      },
+    });
+    const queue = countingQueue();
+    const provider = createYahooProvider({ client, queue, now: () => FIXED_NOW });
+
+    const result = await provider.getDividendEvents!(REF);
+
+    expect(modules).toEqual([['calendarEvents', 'summaryDetail', 'defaultKeyStatistics']]);
+    // Still ONE quoteSummary request beside the chart — a module, not a call.
+    expect(queue.count).toBe(2);
+    expect(result.upcoming).toEqual([
+      {
+        exDate: '2026-08-08T00:00:00.000Z',
+        payDate: '2026-08-15T00:00:00.000Z',
+        amount: 0.25,
+        currency: 'USD',
+      },
+    ]);
+    // …and NOT either annual figure standing beside it.
+    expect(result.upcoming[0]!.amount).not.toBe(1);
+    expect(result.upcoming[0]!.amount).not.toBe(0.97);
+  });
+
   it('still returns history when the calendar/detail call fails (partial degrade)', async () => {
     const client = stubClient({
       chartEvents: () =>

@@ -1314,6 +1314,13 @@ export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
 
 /** Default page size for `GET /portfolios/:id/cash`. */
 export const CASH_MOVEMENTS_DEFAULT_LIMIT = 50 as const;
+/**
+ * The longest note a cash movement may be written with — the ceiling every
+ * cash-write body below already carried inline, named so the auto-tagging lane
+ * can bound the string it matches against by the SAME number the write path
+ * accepts rather than by a second one it invented (#1743).
+ */
+export const CASH_MOVEMENT_NOTE_MAX = 1000;
 export const CASH_MOVEMENT_UNTAGGED_FILTER = 'untagged' as const;
 
 /**
@@ -1342,7 +1349,7 @@ export const cashEntryRequestSchema = z
     amountEur: cashAmountEurSchema,
     sourceId: z.string().uuid().optional(),
     executedAt: z.string().datetime().optional(),
-    note: z.string().max(1000).nullish(),
+    note: z.string().max(CASH_MOVEMENT_NOTE_MAX).nullish(),
   })
   .strict();
 export type CashEntryRequest = z.infer<typeof cashEntryRequestSchema>;
@@ -1389,7 +1396,7 @@ export const updateCashMovementRequestSchema = z
     amountEur: cashAmountEurSchema.optional(),
     sourceId: z.string().uuid().optional(),
     executedAt: z.string().datetime().optional(),
-    note: z.string().max(1000).nullish(),
+    note: z.string().max(CASH_MOVEMENT_NOTE_MAX).nullish(),
     /**
      * Stale-edit guard on a synced copy (V5-P7 M5, mirrorchain design §3) — the
      * movement's `mirror.version` when the client opened the editor. It is not a
@@ -1502,7 +1509,7 @@ export const cashTransferRequestSchema = z
     toSourceId: z.string().uuid(),
     amountEur: cashAmountEurSchema,
     executedAt: z.string().datetime().optional(),
-    note: z.string().max(1000).nullish(),
+    note: z.string().max(CASH_MOVEMENT_NOTE_MAX).nullish(),
   })
   .strict();
 export type CashTransferRequest = z.infer<typeof cashTransferRequestSchema>;
@@ -1530,7 +1537,7 @@ export type CashTransferResponse = z.infer<typeof cashTransferResponseSchema>;
 export const setCashBalanceRequestSchema = z
   .object({
     balanceEur: z.number().nonnegative().finite().max(MAX_CASH_AMOUNT_EUR),
-    note: z.string().max(1000).nullish(),
+    note: z.string().max(CASH_MOVEMENT_NOTE_MAX).nullish(),
   })
   .strict();
 export type SetCashBalanceRequest = z.infer<typeof setCashBalanceRequestSchema>;

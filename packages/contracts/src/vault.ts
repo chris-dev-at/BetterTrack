@@ -1,8 +1,12 @@
 import { z } from 'zod';
 
 import { MAX_PASSWORD_LENGTH } from './auth';
-import { CASH_TAGS_PER_ITEM_MAX, cashRuleMatchTypeSchema } from './cash';
-import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
+import { CASH_RULE_PATTERN_MAX, CASH_TAGS_PER_ITEM_MAX, cashRuleMatchTypeSchema } from './cash';
+import {
+  EXPENSE_RULE_PATTERN_MAX,
+  expenseDirectionSchema,
+  expenseRuleMatchTypeSchema,
+} from './expenses';
 import {
   IMPORT_ROW_CANDIDATE_LIMIT,
   importBatchStatusSchema,
@@ -1467,12 +1471,40 @@ const expenseTransactionRowSchema = z
   })
   .strict();
 
+/**
+ * A restored rule pattern is held to the SAME ceiling the HTTP write path
+ * applies (`createExpenseRuleRequestSchema` / `createCashRuleRequestSchema`),
+ * from the same constant — never a second limit (#1743).
+ *
+ * Without it the restore lane was the one way to install a pattern no request
+ * could ever create: a document is bounded only by `VAULT_MAX_BYTES_DEFAULT`
+ * (16 MB), so a multi-megabyte pattern could land in `cash_rules` /
+ * `expense_rules` and then be matched against every note, forever. RE2 makes
+ * matching linear rather than exponential, so the exposure is input size and
+ * cardinality — which is exactly what a ceiling closes.
+ *
+ * OVER-LENGTH IS REFUSED, NOT TRUNCATED: a silently shortened pattern is a
+ * DIFFERENT rule, and it would quietly tag movements the rule its owner wrote
+ * never would.
+ *
+ * `.trim()` is deliberately NOT mirrored from the request schema. The request
+ * schema trims what the user typed BEFORE it is stored, so a legitimately
+ * written row arrives here already trimmed; trimming again would rewrite a
+ * restored row rather than validate it, and a restore must give back what the
+ * document holds or refuse it. A whitespace-only pattern stays as harmless as
+ * it already is — the engine's needle is empty, so it matches nothing.
+ */
+const restoredExpenseRulePatternSchema = z.string().min(1).max(EXPENSE_RULE_PATTERN_MAX);
+
+/** As above, for cash rules — the cash lane's own constant. */
+const restoredCashRulePatternSchema = z.string().min(1).max(CASH_RULE_PATTERN_MAX);
+
 const expenseRuleRowSchema = z
   .object({
     userId: uuidSchema,
     categoryId: uuidSchema,
     matchType: expenseRuleMatchTypeSchema,
-    pattern: z.string(),
+    pattern: restoredExpenseRulePatternSchema,
     priority: z.number().int(),
     enabled: z.boolean(),
     createdAt: timestampSchema,
@@ -1549,7 +1581,7 @@ const cashRuleRowSchema = z
   .object({
     userId: uuidSchema,
     matchType: cashRuleMatchTypeSchema,
-    pattern: z.string(),
+    pattern: restoredCashRulePatternSchema,
     priority: z.number().int(),
     enabled: z.boolean(),
     createdAt: timestampSchema,
