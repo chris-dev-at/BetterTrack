@@ -10,7 +10,7 @@ export { Spinner };
 
 /*
  * Legacy shared primitives, reskinned onto the Origin design system
- * (docs/redesign/REAL_APP_REDESIGN_PROMPT.md, styles/origin.css). The exported
+ * (docs/history/redesign/REAL_APP_REDESIGN_PROMPT.md, styles/origin.css). The exported
  * API and prop semantics are unchanged on purpose: dozens of not-yet-rebuilt
  * dialogs render through these, so mapping the internals onto `bt-*` reskins
  * all of them at once. Visual rules live in origin.css — anything without a

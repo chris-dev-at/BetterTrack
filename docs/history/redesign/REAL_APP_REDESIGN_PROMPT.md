@@ -1,5 +1,7 @@
 # BetterTrack core design language
 
+_Archived 2026-09-02 — the Origin redesign record; the shipped design language now lives in `apps/web/src/styles/origin.css`, and the ground-up v6 redesign is tracked in #544._
+
 Design BetterTrack as a premium, calm, modern financial suite. It should feel spacious,
 precise, connected, and highly capable without looking like a trading terminal or a
 generic SaaS dashboard.

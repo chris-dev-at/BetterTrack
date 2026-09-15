@@ -1,5 +1,7 @@
 # BetterTrack Backend Security Review
 
+_Archived 2026-09-02 — part of the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 **Review date:** 2026-07-26
 **Scope:** `apps/api`, backend-facing contracts, database schema and migrations, authentication and sessions, OAuth and API keys, authorization, realtime, imports/exports, outbound integrations, administration, privacy, and production composition.
 **Method:** Read-only source review with line-level validation. No production probing, dependency penetration testing, or code changes were performed.
