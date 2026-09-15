@@ -11,7 +11,10 @@ import type {
 import { createStubMarketData, cachedIntel } from '../../../testing/marketDataStubs';
 import { createCurrencyService, FxRateUnavailableError } from '../../currency/currencyService';
 import type { CurrencyService } from '../../currency/currencyService';
-import { createPortfolioMarketIntelService } from '../portfolioMarketIntelService';
+import {
+  createPortfolioMarketIntelService,
+  DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET,
+} from '../portfolioMarketIntelService';
 import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../rollupBudget';
 
 /** Fixed clock inside the calendar fixtures' window. */
@@ -652,6 +655,43 @@ describe('portfolio dividend calendar (V5-P5)', () => {
 
     expect((await service.dividendCalendar('user-1')).entries).toHaveLength(1);
   });
+
+  // The EVENT side of the same comparison (#1894). Both fixtures above stamp
+  // `…T00:00:00.000Z`, where the UTC day and the Vienna day agree; a payout
+  // stamped at 23:30 UTC renders as the NEXT Vienna day and used to disappear
+  // from the calendar on exactly that day.
+  it('keeps a late-UTC ex-date on the display day it is shown as, and drops it after', async () => {
+    const calendarAt = async (nowIso: string) => {
+      const service = createPortfolioMarketIntelService({
+        marketData: createStubMarketData({
+          dividends: dividendsByRef({
+            AAA: makeDividends({
+              currency: 'USD',
+              upcoming: [
+                {
+                  // → 06.09.2026 in Vienna, which is what `formatDate` prints.
+                  exDate: '2026-09-05T23:30:00.000Z',
+                  payDate: null,
+                  amount: 0.25,
+                  currency: 'USD',
+                },
+              ],
+            }),
+          }),
+        }),
+        repo: stubRepo({ held: [held({ assetId: 'asset-a', providerRef: 'AAA' })] }),
+        currency,
+        enabled: true,
+        now: () => Date.parse(nowIso),
+      });
+      return (await service.dividendCalendar('user-1')).entries;
+    };
+
+    expect(await calendarAt('2026-09-05T12:00:00.000Z')).toHaveLength(1);
+    // ON the day the row is labelled with — where the UTC substring dropped it.
+    expect(await calendarAt('2026-09-06T12:00:00.000Z')).toHaveLength(1);
+    expect(await calendarAt('2026-09-07T12:00:00.000Z')).toEqual([]);
+  });
 });
 
 describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
@@ -702,6 +742,45 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
     // Deterministic selection: the alphabetically first held symbols.
     expect(result.entries.map((e) => e.symbol).sort()).toEqual(
       heldBook(MARKET_INTEL_ROLLUP_MAX_ASSETS).map((row) => row.symbol),
+    );
+  });
+
+  it('dividendCalendar bounds ONE asset′s forward calendar and says it truncated', async () => {
+    // The roll-up was the one intel path that shipped a provider array
+    // unbounded (#1894): 40 announced events per monthly distributor × the
+    // fan-out cap is a body PortfolioPage renders every row of. The bound is
+    // the one the per-asset read already applies to the same array, the
+    // SOONEST survive, and the cut rides the existing `truncated` marker.
+    const flood = Array.from({ length: DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET + 16 }, (_, i) => ({
+      // Deliberately newest-first, so trusting the provider's order would keep
+      // the furthest-out payouts and drop the next one.
+      exDate: new Date(
+        NOW + (DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET + 15 - i) * 86_400_000,
+      ).toISOString(),
+      payDate: null,
+      amount: 0.1,
+      currency: 'EUR',
+    }));
+    const service = createPortfolioMarketIntelService({
+      marketData: createStubMarketData({
+        dividends: dividendsByRef({ AAA: makeDividends({ currency: 'EUR', upcoming: flood }) }),
+      }),
+      repo: stubRepo({ held: [held({ assetId: 'asset-a', providerRef: 'AAA', currency: 'EUR' })] }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const result = await service.dividendCalendar('user-1');
+
+    expect(result.entries).toHaveLength(DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET);
+    expect(result.truncated).toBe(true);
+    // The soonest announced payouts are the ones that survived.
+    expect(result.entries.map((entry) => entry.exDate)).toEqual(
+      flood
+        .map((event) => event.exDate)
+        .sort()
+        .slice(0, DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET),
     );
   });
 
