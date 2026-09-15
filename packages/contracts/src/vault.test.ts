@@ -2,6 +2,8 @@ import { generateKeyPairSync } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import { CASH_RULE_PATTERN_MAX } from './cash';
+import { EXPENSE_RULE_PATTERN_MAX } from './expenses';
 import {
   decodeVaultEnvelope,
   encodeVaultEnvelope,
@@ -32,6 +34,7 @@ import {
   vaultRetirementProofPublicKeySchema,
   vaultRetirementProofPrivateKeySchema,
   vaultServerHeaderSchema,
+  VAULT_ENTITY_ROW_SCHEMAS,
   vaultVersionSchema,
 } from './vault';
 
@@ -382,5 +385,76 @@ describe('paranoid disable request', () => {
         }).success,
       ).toBe(true);
     }
+  });
+});
+
+describe('restored rule rows', () => {
+  /**
+   * A rule pattern in a vault document used to be a bare `z.string()`, so the
+   * restore lane could install a pattern no HTTP request could ever create —
+   * the document itself is bounded only by `VAULT_MAX_BYTES_DEFAULT` (16 MB),
+   * and the rule engine then matched it against every note (#1743).
+   */
+  const cashRule = (pattern: string) => ({
+    userId: UUID_A,
+    matchType: 'contains' as const,
+    pattern,
+    priority: 0,
+    enabled: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  });
+
+  const expenseRule = (pattern: string) => ({
+    userId: UUID_A,
+    categoryId: UUID_B,
+    matchType: 'contains' as const,
+    pattern,
+    priority: 0,
+    enabled: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  });
+
+  it('holds a restored cash-rule pattern to the ceiling the write path enforces', () => {
+    expect(
+      VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(cashRule('a'.repeat(CASH_RULE_PATTERN_MAX)))
+        .success,
+    ).toBe(true);
+    expect(
+      VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(cashRule('a'.repeat(CASH_RULE_PATTERN_MAX + 1)))
+        .success,
+    ).toBe(false);
+    // The 16 MB case the bound exists for.
+    expect(VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(cashRule('a'.repeat(100_000))).success).toBe(
+      false,
+    );
+    expect(VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(cashRule('')).success).toBe(false);
+  });
+
+  it('holds a restored expense-rule pattern to the same ceiling', () => {
+    expect(
+      VAULT_ENTITY_ROW_SCHEMAS.expenseRule.safeParse(
+        expenseRule('a'.repeat(EXPENSE_RULE_PATTERN_MAX)),
+      ).success,
+    ).toBe(true);
+    expect(
+      VAULT_ENTITY_ROW_SCHEMAS.expenseRule.safeParse(
+        expenseRule('a'.repeat(EXPENSE_RULE_PATTERN_MAX + 1)),
+      ).success,
+    ).toBe(false);
+    expect(VAULT_ENTITY_ROW_SCHEMAS.expenseRule.safeParse(expenseRule('')).success).toBe(false);
+  });
+
+  it('REFUSES rather than truncates, so a restored rule cannot quietly become another rule', () => {
+    const parsed = VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(
+      cashRule('a'.repeat(CASH_RULE_PATTERN_MAX + 1)),
+    );
+    expect(parsed.success).toBe(false);
+    // And a legal pattern survives the trip byte-for-byte — no trimming, no
+    // normalizing: a restore gives back what the document holds, or refuses it.
+    const kept = ' spaced pattern ';
+    const ok = VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(cashRule(kept));
+    expect(ok.success && ok.data.pattern).toBe(kept);
   });
 });
