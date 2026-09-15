@@ -7,6 +7,7 @@ import {
   type MirrorInvite,
   type MirrorMember,
   type MirrorMemberRole,
+  type MirrorRetrySyncResponse,
   type PortfolioMirrorBadge,
   type PortfolioForkProvenance,
 } from '@bettertrack/contracts';
@@ -27,6 +28,7 @@ import {
   listMirrorInvites,
   removeMirrorMember,
   renameMirrorChain,
+  retryMirrorSync,
   revokeMirrorInvite,
   setMirrorMemberRole,
   transferMirrorOwnership,
@@ -121,10 +123,19 @@ export function MirrorAvatarStack({
       </span>
       <span className="flex flex-col leading-tight">
         <span className="font-medium text-neutral-100">{badge.chainName}</span>
-        <span className="text-xs text-neutral-400">
-          {badge.sync.synced
-            ? t('mirrorchain.avatarStack.membersCount', { count: badge.memberCount })
-            : t('mirrorchain.avatarStack.syncing', { percent: badge.sync.percent })}
+        <span
+          className={cx(
+            'text-xs',
+            // A stalled copy is NOT quietly making progress — the whole point of
+            // the state is that it reads differently from "Syncing…".
+            badge.sync.stalled ? 'text-amber-300' : 'text-neutral-400',
+          )}
+        >
+          {badge.sync.stalled
+            ? t('mirrorchain.avatarStack.stalled')
+            : badge.sync.synced
+              ? t('mirrorchain.avatarStack.membersCount', { count: badge.memberCount })
+              : t('mirrorchain.avatarStack.syncing', { percent: badge.sync.percent })}
         </span>
       </span>
     </button>
@@ -190,6 +201,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
   const [inviteOpen, setInviteOpen] = useState(false);
   const [confirmKind, setConfirmKind] = useState<null | ConfirmAction>(null);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [retryOutcome, setRetryOutcome] = useState<MirrorRetrySyncResponse['status'] | null>(null);
 
   const membersQuery = useQuery({
     queryKey: chainMembersKey(chainId),
@@ -198,6 +210,18 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
   const activityQuery = useQuery({
     queryKey: chainActivityKey(chainId),
     queryFn: ({ signal }) => getMirrorActivity(chainId, { limit: ACTIVITY_LIMIT }, signal),
+  });
+
+  // "Retry sync" — the action the `mirror.sync_stalled` notice names (design §2).
+  // Only a stalled copy shows it, and only on the caller's own row: the replay
+  // resumes THEIR watermark, which is also what unblocks their own writes (a
+  // stalled copy refuses them with 503 MIRROR_SYNC_STALLED).
+  const retrySync = useMutation({
+    mutationFn: () => retryMirrorSync(chainId),
+    onSuccess: (result) => {
+      setRetryOutcome(result.status);
+      invalidate();
+    },
   });
 
   function invalidate() {
@@ -280,6 +304,14 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
           </div>
         </div>
 
+        {retrySync.isError ? (
+          <Alert tone="error">{retrySyncErrorMessage(retrySync.error, t)}</Alert>
+        ) : retryOutcome ? (
+          <Alert tone={retryOutcome === 'stalled' ? 'error' : 'success'}>
+            {t(`mirrorchain.retrySync.${retryOutcome}`)}
+          </Alert>
+        ) : null}
+
         {/* Named, like every other list in this sheet: three unlabelled lists in
             one dialog are indistinguishable to a screen reader, and the member
             rows and the activity feed both mention the same usernames. */}
@@ -293,6 +325,11 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
               member={member}
               viewerRole={data.role}
               onAction={(action) => setConfirmKind({ kind: action, target: member })}
+              onRetrySync={() => {
+                setRetryOutcome(null);
+                retrySync.mutate();
+              }}
+              retrying={retrySync.isPending}
             />
           ))}
         </ul>
@@ -354,10 +391,15 @@ function MemberRow({
   member,
   viewerRole,
   onAction,
+  onRetrySync,
+  retrying = false,
 }: {
   member: MirrorMember;
   viewerRole: MirrorMemberRole;
   onAction: (action: ConfirmAction['kind']) => void;
+  /** Only wired for the caller's own row — a member can retry their own copy. */
+  onRetrySync?: () => void;
+  retrying?: boolean;
 }) {
   const t = useT();
   const canManageRoles = viewerRole === 'owner' && !member.isSelf && member.role !== 'owner';
@@ -390,10 +432,19 @@ function MemberRow({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {!member.sync.synced ? (
+        {member.sync.stalled ? (
+          <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
+            {t('mirrorchain.memberRow.stalled', { percent: member.sync.percent })}
+          </span>
+        ) : !member.sync.synced ? (
           <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-300">
             {t('mirrorchain.avatarStack.syncing', { percent: member.sync.percent })}
           </span>
+        ) : null}
+        {member.isSelf && member.sync.stalled && onRetrySync ? (
+          <Button variant="secondary" onClick={onRetrySync} disabled={retrying}>
+            {retrying ? t('mirrorchain.retrySync.pending') : t('mirrorchain.actions.retrySync')}
+          </Button>
         ) : null}
         {canManageRoles ? (
           member.role === 'manager' ? (
@@ -571,6 +622,13 @@ function inviteErrorMessage(error: unknown, t: TranslateFn): string {
     if (error.code === 'MIRROR_ALREADY_MEMBER') return t('mirrorchain.invite.errorAlreadyMember');
   }
   return t('mirrorchain.invite.errorGeneric');
+}
+
+function retrySyncErrorMessage(error: unknown, t: TranslateFn): string {
+  if (error instanceof ApiError && error.code === 'MIRROR_NOT_STALLED') {
+    return t('mirrorchain.retrySync.notStalled');
+  }
+  return t('mirrorchain.retrySync.error');
 }
 
 /**

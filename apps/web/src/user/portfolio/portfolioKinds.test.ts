@@ -133,7 +133,7 @@ describe('portfolioIconName', () => {
       chainName: 'Household',
       role: 'owner' as const,
       memberCount: 3,
-      sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true },
+      sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true, stalled: false },
     };
     // Forcing the group glyph made the Icon setting a no-op for exactly the
     // portfolios people most want to tell apart (owner), so being shared is
@@ -159,7 +159,7 @@ describe('portfolioIconTint', () => {
       chainName: 'Household',
       role: 'owner' as const,
       memberCount: 3,
-      sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true },
+      sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true, stalled: false },
     };
     for (const kind of PORTFOLIO_KINDS) {
       expect(portfolioIconTint({ mirror }, kind)).toBe(kind);

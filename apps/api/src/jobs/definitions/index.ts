@@ -51,6 +51,7 @@ export {
 
 export {
   createMirrorReplicateJob,
+  MIRROR_REPLICATE_CHAIN_DELAY_MS,
   createMirrorInviteCleanupJob,
   createMirrorConsistencySweepJob,
   MIRROR_INVITE_CLEANUP_SCHEDULER_ID,

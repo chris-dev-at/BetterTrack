@@ -70,7 +70,13 @@ type Summary = {
     chainName: string;
     role: 'owner' | 'manager' | 'member';
     memberCount: number;
-    sync: { appliedSeq: number; lastSeq: number; percent: number; synced: boolean };
+    sync: {
+      appliedSeq: number;
+      lastSeq: number;
+      percent: number;
+      synced: boolean;
+      stalled: boolean;
+    };
   };
   vaultId?: string;
   vaultAlias?: string;
@@ -101,7 +107,7 @@ const HOUSEHOLD = summary({
     chainName: 'Household',
     role: 'owner',
     memberCount: 3,
-    sync: { appliedSeq: 9, lastSeq: 9, percent: 100, synced: true },
+    sync: { appliedSeq: 9, lastSeq: 9, percent: 100, synced: true, stalled: false },
   },
 });
 
@@ -704,7 +710,7 @@ describe('PortfolioSwitcher', () => {
       memberCount: 1,
       portfolioId: 'p9',
       createdAt: '2026-07-30T00:00:00.000Z',
-      sync: { appliedSeq: 0, lastSeq: 0, percent: 100, synced: true },
+      sync: { appliedSeq: 0, lastSeq: 0, percent: 100, synced: true, stalled: false },
     });
     vi.mocked(getMirrorMembers).mockResolvedValue({
       chainId: 'c1',

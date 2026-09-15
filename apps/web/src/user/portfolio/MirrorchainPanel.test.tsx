@@ -8,6 +8,7 @@ vi.mock('../../lib/mirrorApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/mirrorApi')>()),
   getMirrorActivity: vi.fn(),
   getMirrorMembers: vi.fn(),
+  retryMirrorSync: vi.fn(),
 }));
 vi.mock('../../lib/socialApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/socialApi')>()),
@@ -17,7 +18,7 @@ vi.mock('../../lib/socialApi', async (importOriginal) => ({
 import type { PortfolioForkProvenance, PortfolioMirrorBadge } from '@bettertrack/contracts';
 
 import { I18nProvider } from '../../i18n';
-import { getMirrorActivity, getMirrorMembers } from '../../lib/mirrorApi';
+import { getMirrorActivity, getMirrorMembers, retryMirrorSync } from '../../lib/mirrorApi';
 import { listFriends } from '../../lib/socialApi';
 import {
   InviteDialog,
@@ -56,7 +57,7 @@ describe('MirrorchainPanel — avatar stack', () => {
       chainName: 'Family',
       role: 'member',
       memberCount: 3,
-      sync: { appliedSeq: 42, lastSeq: 42, percent: 100, synced: true },
+      sync: { appliedSeq: 42, lastSeq: 42, percent: 100, synced: true, stalled: false },
     };
     wrap(<MirrorAvatarStack badge={badge} onClick={() => {}} />);
     expect(screen.getByText('Family')).toBeInTheDocument();
@@ -69,7 +70,7 @@ describe('MirrorchainPanel — avatar stack', () => {
       chainName: 'Family',
       role: 'member',
       memberCount: 2,
-      sync: { appliedSeq: 30, lastSeq: 100, percent: 30, synced: false },
+      sync: { appliedSeq: 30, lastSeq: 100, percent: 30, synced: false, stalled: false },
     };
     wrap(<MirrorAvatarStack badge={badge} onClick={() => {}} />);
     expect(screen.getByText('Syncing… 30 %')).toBeInTheDocument();
@@ -118,6 +119,118 @@ describe('MirrorchainPanel — attribution chip (design §10)', () => {
   });
 });
 
+/**
+ * #1611 — a stalled copy must read differently from a healthy one. The
+ * `mirror.sync_stalled` notice tells the member to "Open it and choose Retry
+ * sync"; before this the sheet showed the same "Syncing… n %" chip a healthy
+ * copy shows, and there was no such control anywhere in the app.
+ */
+describe('MirrorchainPanel — stalled sync', () => {
+  const CHAIN = '00000000-0000-4000-8000-000000000030';
+  const SELF = '00000000-0000-4000-8000-000000000031';
+
+  function stalledSheet() {
+    vi.mocked(getMirrorMembers).mockResolvedValue({
+      chainId: CHAIN,
+      name: 'Household',
+      status: 'active',
+      role: 'member',
+      memberCap: 16,
+      members: [
+        {
+          userId: SELF,
+          username: 'owner',
+          profileIcon: null,
+          role: 'member',
+          joinedAt: '2026-07-30T00:00:00.000Z',
+          isSelf: true,
+          sync: { appliedSeq: 3, lastSeq: 10, percent: 30, synced: false, stalled: true },
+        },
+      ],
+    });
+    vi.mocked(getMirrorActivity).mockResolvedValue({ entries: [], nextCursor: null });
+  }
+
+  test('the avatar stack says stalled instead of a syncing percentage', () => {
+    const badge: PortfolioMirrorBadge = {
+      chainId: CHAIN,
+      chainName: 'Family',
+      role: 'member',
+      memberCount: 2,
+      sync: { appliedSeq: 3, lastSeq: 10, percent: 30, synced: false, stalled: true },
+    };
+    wrap(<MirrorAvatarStack badge={badge} onClick={() => {}} />);
+    expect(screen.getByText('Sync stalled')).toBeInTheDocument();
+    expect(screen.queryByText('Syncing… 30 %')).not.toBeInTheDocument();
+  });
+
+  test('a stalled own copy offers Retry sync and calls the endpoint', async () => {
+    stalledSheet();
+    vi.mocked(retryMirrorSync).mockResolvedValue({
+      status: 'synced',
+      applied: 7,
+      sync: { appliedSeq: 10, lastSeq: 10, percent: 100, synced: true, stalled: false },
+    });
+    const user = userEvent.setup();
+
+    wrap(<MemberSheet chainId={CHAIN} onClose={() => {}} />);
+
+    expect(await screen.findByText('Sync stalled at 30 %')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry sync' }));
+
+    expect(retryMirrorSync).toHaveBeenCalledWith(CHAIN);
+    expect(await screen.findByText('Your copy is up to date again.')).toBeInTheDocument();
+  });
+
+  test('a retry that cannot resume says so instead of pretending to sync', async () => {
+    stalledSheet();
+    vi.mocked(retryMirrorSync).mockResolvedValue({
+      status: 'stalled',
+      applied: 0,
+      sync: { appliedSeq: 3, lastSeq: 10, percent: 30, synced: false, stalled: true },
+    });
+    const user = userEvent.setup();
+
+    wrap(<MemberSheet chainId={CHAIN} onClose={() => {}} />);
+    await user.click(await screen.findByRole('button', { name: 'Retry sync' }));
+
+    // No promise of an automatic recovery: nothing re-attempts a chain after it
+    // escalated — only another member's write, or another Retry sync, does.
+    expect(
+      await screen.findByText(
+        'Sync still cannot continue. Try again later, or ask another member to make an entry — that restarts syncing for everyone.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('a healthy lagging copy keeps the syncing chip and offers no retry', async () => {
+    vi.mocked(getMirrorMembers).mockResolvedValue({
+      chainId: CHAIN,
+      name: 'Household',
+      status: 'active',
+      role: 'member',
+      memberCap: 16,
+      members: [
+        {
+          userId: SELF,
+          username: 'owner',
+          profileIcon: null,
+          role: 'member',
+          joinedAt: '2026-07-30T00:00:00.000Z',
+          isSelf: true,
+          sync: { appliedSeq: 3, lastSeq: 10, percent: 30, synced: false, stalled: false },
+        },
+      ],
+    });
+    vi.mocked(getMirrorActivity).mockResolvedValue({ entries: [], nextCursor: null });
+
+    wrap(<MemberSheet chainId={CHAIN} onClose={() => {}} />);
+
+    expect(await screen.findByText('Syncing… 30 %')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry sync' })).not.toBeInTheDocument();
+  });
+});
+
 describe('MirrorchainPanel — member actions', () => {
   test('renders a friend-roster read failure inside the invite dialog', async () => {
     vi.mocked(listFriends).mockRejectedValue(new Error('friends unavailable'));
@@ -149,7 +262,7 @@ describe('MirrorchainPanel — member actions', () => {
           role: 'owner',
           joinedAt: '2026-07-30T00:00:00.000Z',
           isSelf: true,
-          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true, stalled: false },
         },
         {
           userId: '00000000-0000-4000-8000-000000000022',
@@ -158,7 +271,7 @@ describe('MirrorchainPanel — member actions', () => {
           role: 'member',
           joinedAt: '2026-07-30T00:00:00.000Z',
           isSelf: false,
-          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true, stalled: false },
         },
       ],
     });

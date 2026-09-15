@@ -185,6 +185,21 @@ export function createMirrorchainRouter(ctx: AppContext, limiters: RateLimiters)
     },
   );
 
+  // POST /mirrorchain/chains/:chainId/retry-sync — the "Retry sync" action the
+  // `mirror.sync_stalled` notice names (§2): resume the CALLER'S own copy from
+  // its watermark. Members only; a caught-up copy 409s. Rate-limited like the
+  // other member-initiated chain writes — a replay is not a cheap read.
+  router.post(
+    '/chains/:chainId/retry-sync',
+    limiters.social,
+    validateParams(mirrorChainIdParamSchema),
+    async (req, res) => {
+      const { chainId } = req.valid?.params as MirrorChainIdParam;
+      const result = await ctx.mirror.retrySync(req.authUser!.id, chainId);
+      res.json(result);
+    },
+  );
+
   // POST /mirrorchain/chains/:chainId/leave — leave → keep an un-synced fork (§6).
   // The owner may leave too: §7 succession runs first (ownership passes to the
   // oldest manager, or the chain dissolves with no manager), so no role is

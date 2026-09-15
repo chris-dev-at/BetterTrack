@@ -23,7 +23,11 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * Serialization lives in `replicateChain` itself: each copy's replay runs under
  * the same per-chain Redis lock the submit path holds, so concurrent or
  * redundant jobs are safe and no-op cheaply off the watermark — the same
- * pattern as `snapshots.recompute`. A copy that keeps failing makes the run
+ * pattern as `snapshots.recompute`. The tail-catch re-enqueue this handler does
+ * itself IS bounded, on two axes: it carries a delay, and it only happens after
+ * a pass that moved a watermark — or one whose only lag appeared while it ran
+ * (`stagnant === 0`), which the NEXT pass then resolves either way (see the
+ * handler). A copy that keeps failing makes the run
  * throw AFTER the sweep (the other copies still catch up — a stalled copy lags,
  * never diverges); the standard retry → dead-letter path then lands it on the
  * admin Problems page via the worker's `onPermanentFailure` hook, and any later
@@ -34,10 +38,20 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * member to "Retry sync" manually.
  */
 
+/**
+ * Spacing on the tail-catch re-enqueue. The chained run exists to pick up ops
+ * appended while this one swept — a job's worth of latency, not a microsecond's
+ * — and the delay is what keeps a chain that keeps producing work from spinning
+ * the queue at CPU speed.
+ */
+export const MIRROR_REPLICATE_CHAIN_DELAY_MS = 2_000;
+
 export interface MirrorReplicateJobDeps {
-  mirror: Pick<MirrorService, 'replicateChain' | 'notifyChainStalled'>;
+  mirror: Pick<MirrorService, 'replicateChain' | 'notifyChainStalled' | 'escalateStalledChain'>;
   /** Chain a fresh run for ops appended while this one was sweeping. */
-  enqueue: (chainId: string) => Promise<void>;
+  enqueue: (chainId: string, opts?: { delay?: number }) => Promise<void>;
+  /** Surfaces a chain that cannot replicate at all onto the admin Problems page. */
+  problems?: Pick<ProblemService, 'captureError'>;
 }
 
 export function createMirrorReplicateJob(
@@ -71,10 +85,62 @@ export function createMirrorReplicateJob(
         }
         throw err;
       }
-      ctx.logger.info({ chainId, ...result }, 'mirror.replicate complete');
+      // The stagnant USER IDS drive the escalation's aim, not the log line.
+      const { stagnantUserIds, ...counts } = result;
+      ctx.logger.info({ chainId, ...counts }, 'mirror.replicate complete');
+      if (result.lagging <= 0) return;
       // Ops appended after this run read `last_seq` would otherwise wait for
-      // the next write — chain a fresh job to catch the tail now.
-      if (result.lagging > 0) await deps.enqueue(chainId);
+      // the next write — chain a fresh job to catch the tail now. ONLY after a
+      // pass that actually moved a watermark: a copy nothing can replay (a
+      // departed op author who later enabled paranoid mode blocks the guard for
+      // every member behind them) is a SKIP, not a failure, so nothing throws,
+      // nothing retries, and an unconditional re-enqueue is a tight infinite
+      // loop that re-scans the whole oplog forever while the copy sits at
+      // "Syncing… 0 %".
+      if (result.advanced > 0) {
+        await deps.enqueue(chainId, { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
+        return;
+      }
+      // Nothing moved, but nothing was STUCK when the pass began either: the
+      // outstanding lag is an op appended (or a member who joined) while the
+      // pass ran, and their own scheduleReplicate is already on its way. Chain
+      // one more pass instead of escalating — the notice must signal a genuine
+      // stall, never a transient blip. Still bounded: on the next pass that copy
+      // is behind at pass start, so it either advances or counts as stagnant.
+      if (result.stagnant <= 0) {
+        await deps.enqueue(chainId, { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
+        return;
+      }
+      // No forward progress on a copy that was already behind when the pass
+      // started: an identical pass would do exactly this again.
+      // Escalate to the stalled path instead — the members are marked stalled
+      // (so their copies stop pretending to sync and offer Retry sync) and the
+      // notice fires once, on the transition into that state. Aimed at the
+      // copies this pass PROVED stagnant, so the marked set is the set the
+      // decision was made on: a member who joined (or was written to) while the
+      // pass ran is lagging in the DB but was never stuck, and must not be told
+      // to "Retry sync".
+      const escalation = await deps.mirror.escalateStalledChain(chainId, {
+        userIds: stagnantUserIds,
+      });
+      ctx.logger.warn(
+        { chainId, ...counts, ...escalation },
+        'mirror.replicate: no forward progress — escalated instead of re-enqueueing',
+      );
+      if (escalation.stalled > 0 && deps.problems) {
+        const err = new Error(
+          `chain ${chainId} made no replication progress with ${escalation.stalled} cop${
+            escalation.stalled === 1 ? 'y' : 'ies'
+          } behind (${result.skipped} skipped by a privacy guard)`,
+        );
+        err.name = 'mirror: chain cannot replicate';
+        deps.problems.captureError(err, {
+          chainId,
+          lagging: result.lagging,
+          skipped: result.skipped,
+          stalled: escalation.stalled,
+        });
+      }
     },
   };
 }
@@ -124,14 +190,21 @@ export function createMirrorInviteCleanupJob(
  *  - (a) detects the submit path's origin-commit-then-append crash residual (an
  *    origin mirror-row link with no op);
  *  - (b) detects the tax-immutable correction path's re-create-then-re-point
- *    residual (a synced-copy transaction with no mirror link).
+ *    residual (a synced-copy transaction with no mirror link);
+ *  - (c) detects a lost `*.delete` — an entity the oplog keeps alive that a
+ *    copy which has already applied past its latest op no longer carries;
+ *  - (d) detects a lost `tx.update` — a synced transaction whose stored money
+ *    contradicts the full state its own latest op carries.
+ * (c) and (d) are the crash window (a) structurally cannot see: the origin
+ * commits its local effect BEFORE it appends, and an update leaves the link
+ * intact while a delete takes the link with it.
  * Findings are logged onto the admin Problems page (V5-P2) — the (0) repairs as
- * a healed anomaly, (a)/(b) as anomalies for an admin to act on — as ONE row per
+ * a healed anomaly, (a)–(d) as anomalies for an admin to act on — as ONE row per
  * anomaly class carrying the count, not one row per finding. The
  * `webhookJobs`/`apiKeyJobs`/`mirrorInviteCleanup` daily-sweep pattern.
  * Idempotency keys: repair convergence is `(chain_id, status,
  * active_owner_count)`; surfaced findings fold on `(problem_kind,
- * normalized_title, message)` in the Problems repository. (a)/(b) are paged in
+ * normalized_title, message)` in the Problems repository. (a)–(d) are paged in
  * the service (a keyset cursor per detector), so a set larger than one run's
  * bound is walked across runs instead of being cut off at a fixed first page.
  */
@@ -225,12 +298,42 @@ export function createMirrorConsistencySweepJob(
         deferred: result.deferred.orphanedLocalRows,
         example: (r) => ({ portfolioId: r.portfolioId, localId: r.localId }),
       });
+      surface({
+        title: 'mirror: entry missing from a caught-up copy',
+        message:
+          'entries the oplog keeps alive are missing from copies that already applied past them (design §2 (c) residual)',
+        rows: result.divergentMissingRows,
+        deferred: result.deferred.divergentMissingRows,
+        example: (r) => ({
+          chainId: r.chainId,
+          portfolioId: r.portfolioId,
+          mirrorId: r.mirrorId,
+          opKind: r.opKind,
+          opSeq: r.opSeq,
+        }),
+      });
+      surface({
+        title: 'mirror: synced transaction diverges from its op',
+        message:
+          'synced transactions contradict the full state their own latest op carries (design §2 (d) residual)',
+        rows: result.divergentTransactionRows,
+        deferred: result.deferred.divergentTransactionRows,
+        example: (r) => ({
+          chainId: r.chainId,
+          portfolioId: r.portfolioId,
+          mirrorId: r.mirrorId,
+          localId: r.localId,
+          opSeq: r.opSeq,
+        }),
+      });
 
       ctx.logger.info(
         {
           ownerlessRepaired: result.ownerlessRepaired.length,
           danglingOriginRows: result.danglingOriginRows.length,
           orphanedLocalRows: result.orphanedLocalRows.length,
+          divergentMissingRows: result.divergentMissingRows.length,
+          divergentTransactionRows: result.divergentTransactionRows.length,
           deferred: result.deferred,
         },
         'mirror.consistencySweep complete',
