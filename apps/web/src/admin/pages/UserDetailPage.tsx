@@ -307,12 +307,17 @@ export function UserDetailPage() {
               size="sm"
               disabled={busy || isSelf}
               title={isSelf ? t('admin.userDetail.actions.notYourself') : undefined}
-              onClick={() =>
+              onClick={() => {
+                // A banner from an earlier attempt would render inside the new
+                // dialog as if THIS action had already failed (the dialog shows
+                // the page banner's error), so it goes first — the pattern the
+                // users list already follows when it opens its bulk dialog.
+                setBanner(null);
                 setDialog({
                   type: 'reason',
                   intent: user.status === 'active' ? 'disable' : 'enable',
-                })
-              }
+                });
+              }}
             >
               {user.status === 'active'
                 ? t('admin.userDetail.actions.disable')
@@ -356,12 +361,13 @@ export function UserDetailPage() {
               setBanner({ tone: 'success', text });
             }}
             onError={(text) => setBanner({ tone: 'error', text })}
-            onChatBan={() =>
+            onChatBan={() => {
+              setBanner(null);
               setDialog({
                 type: 'reason',
                 intent: user.chatBanned ? 'chatUnban' : 'chatBan',
-              })
-            }
+              });
+            }}
             onTestEmail={() => void sendTestEmail()}
             onDelete={() => setDialog({ type: 'delete' })}
           />
@@ -376,7 +382,10 @@ export function UserDetailPage() {
             flagged={user.flagged === true}
             busy={busy}
             nonce={moderationNonce}
-            onFlag={() => setDialog({ type: 'reason', intent: 'flag' })}
+            onFlag={() => {
+              setBanner(null);
+              setDialog({ type: 'reason', intent: 'flag' });
+            }}
             onUnflag={() => void clearFlag()}
           />
         ) : null}

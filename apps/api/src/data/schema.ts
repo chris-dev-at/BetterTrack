@@ -720,7 +720,19 @@ export const adminModerationActions = pgTable(
     // readable years later.
     check(
       'admin_moderation_actions_action_known',
-      sql`${t.action} in ('disable', 'enable', 'chat_ban', 'chat_unban', 'role_change', 'flag', 'unflag', 'password_reset')`,
+      sql`${t.action} in ('disable', 'enable', 'chat_ban', 'chat_unban', 'role_change', 'flag', 'unflag', 'delete_reservation', 'password_reset')`,
+    ),
+    // State labels, not a second prose field: `previous_value` / `next_value`
+    // hold `active`, `disabled`, `admin` and nothing longer. Without a bound
+    // they are exactly the unbounded column the `reason` CHECK above exists to
+    // prevent, one field over.
+    check(
+      'admin_moderation_actions_previous_value_length',
+      sql`${t.previousValue} is null or char_length(${t.previousValue}) <= 64`,
+    ),
+    check(
+      'admin_moderation_actions_next_value_length',
+      sql`${t.nextValue} is null or char_length(${t.nextValue}) <= 64`,
     ),
 
     index('admin_moderation_actions_actor_id_idx').on(t.actorId),

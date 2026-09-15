@@ -343,10 +343,23 @@ export const adminModerationReasonSchema = z
   .max(ADMIN_MODERATION_REASON_MAX_LENGTH);
 
 /**
- * What the record can hold. `password_reset` is reserved by the table's CHECK
- * and this enum but is not written by any route today: `POST
- * /admin/users/:id/reset-password` takes no body, and giving it a mandatory one
- * is a breaking change to a shipped route that #1907 §1 did not ask for.
+ * Short state labels (`active`, `disabled`, `admin`) — never free text, and
+ * never anything that came out of a portfolio (§6.12). Bounded so the column
+ * cannot become a second, unbounded prose field beside `reason`.
+ */
+export const ADMIN_MODERATION_VALUE_MAX_LENGTH = 64;
+
+/**
+ * What the record can hold.
+ *
+ * `delete_reservation` is the row an admin DELETE writes when it disables the
+ * account to reserve the removal: that suspension is durable and survives a
+ * failed delete, so it has to be explainable like any other (#1907).
+ *
+ * `password_reset` is reserved by the table's CHECK and this enum but is not
+ * written by any route today: `POST /admin/users/:id/reset-password` takes no
+ * body, and giving it a mandatory one is a breaking change to a shipped route
+ * that #1907 §1 did not ask for.
  */
 export const ADMIN_MODERATION_ACTIONS = [
   'disable',
@@ -356,6 +369,7 @@ export const ADMIN_MODERATION_ACTIONS = [
   'role_change',
   'flag',
   'unflag',
+  'delete_reservation',
   'password_reset',
 ] as const;
 export const adminModerationActionSchema = z.enum(ADMIN_MODERATION_ACTIONS);
@@ -373,8 +387,8 @@ export const adminModerationEntrySchema = z
     id: z.string().uuid(),
     action: adminModerationActionSchema,
     reason: z.string(),
-    previousValue: z.string().nullable(),
-    nextValue: z.string().nullable(),
+    previousValue: z.string().max(ADMIN_MODERATION_VALUE_MAX_LENGTH).nullable(),
+    nextValue: z.string().max(ADMIN_MODERATION_VALUE_MAX_LENGTH).nullable(),
     actorId: z.string().uuid().nullable(),
     actorUsername: z.string().nullable(),
     createdAt: z.string().datetime(),

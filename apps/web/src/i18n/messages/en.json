@@ -5721,6 +5721,7 @@
           "role_change": "Role changed",
           "flag": "Flagged for review",
           "unflag": "Review flag cleared",
+          "delete_reservation": "Reserved for deletion",
           "password_reset": "Password reset"
         },
         "confirm": {

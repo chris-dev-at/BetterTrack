@@ -787,7 +787,7 @@ function assertCompleteAdminOverlayInventory(): void {
   ).toEqual(discovered);
 
   // …and per OVERLAY, not merely per file (#1834's lesson, applied to the
-  // console): `UserDetailPage` alone opens four distinct dialogs.
+  // console): `UserDetailPage` alone opens five distinct dialogs.
   expect(
     overlayRegistrationProblems(
       detection,

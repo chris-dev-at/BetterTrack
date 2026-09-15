@@ -894,6 +894,9 @@ describe('interrupted admin delete (PROJECTPLAN.md §6.12)', () => {
       reason: 'delete_incomplete',
       cleanup: 'incomplete',
       statusChanged: true,
+      // The reservation's moderation row (#1907), which survived with the
+      // suspension it explains; the audit row points at it, never at its text.
+      moderationId: expect.any(String),
     });
     expect(entries.some((entry) => entry.action === 'user.deleted')).toBe(false);
   });

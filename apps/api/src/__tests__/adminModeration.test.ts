@@ -133,6 +133,17 @@ describe('PATCH /admin/users/:id — a reason on every moderating write (#1907)'
         reason: 'Anything.',
       }),
     ).rejects.toThrow();
+    // `previous_value` / `next_value` are STATE LABELS. Unbounded, they would be
+    // a second prose column beside the one the CHECK above bounds.
+    await expect(
+      harness.db.insert(schema.adminModerationActions).values({
+        userId: person.id,
+        actorId: admin.id,
+        action: 'disable',
+        reason: 'Suspended pending review.',
+        previousValue: 'x'.repeat(65),
+      }),
+    ).rejects.toThrow();
   });
 
   it('records the suspension, the chat ban and the role change with the operator who decided', async () => {
@@ -368,10 +379,14 @@ describe('GET /admin/users/:id/moderation — the record (#1907)', () => {
     const subject = await seedPerson({ email: 'scoped-a@test.dev', username: 'scoped_a' });
     const other = await seedPerson({ email: 'scoped-b@test.dev', username: 'scoped_b' });
 
-    await agent
+    // Asserted, or the probe passes when the SEEDING request silently failed and
+    // there was never another account's row to leak in the first place.
+    const seeded = await agent
       .patch(`/api/v1/admin/users/${other.id}`)
       .set(...XRW)
       .send({ chatBanned: true, reason: 'OTHER-ACCOUNT-ONLY-REASON' });
+    expect(seeded.status).toBe(200);
+    expect(await moderationRows(other.id)).toHaveLength(1);
 
     const page = adminModerationListResponseSchema.parse(
       (await agent.get(`/api/v1/admin/users/${subject.id}/moderation`)).body,
@@ -517,6 +532,26 @@ describe('review flags — "watch this" without suspending anything (#1907, §6.
     expect(rows[1]!.reason).toBe('Looks like a bot ring.');
   });
 
+  it('appends nothing when a concurrent unflag already removed the row', async () => {
+    const { agent, admin } = await adminSession();
+    const person = await seedPerson({ email: 'race@test.dev', username: 'race_user' });
+    await agent
+      .post(`/api/v1/admin/users/${person.id}/flag`)
+      .set(...XRW)
+      .send({ reason: 'Looks like a bot ring.' });
+
+    // Two operators clearing the same flag: both read it, one DELETE removes
+    // it. The loser must not append an `unflag` for something it did not do.
+    const [first, second] = await Promise.all([
+      harness.ctx.admin.unflagUser(person.id, undefined, { id: admin.id }),
+      harness.ctx.admin.unflagUser(person.id, undefined, { id: admin.id }),
+    ]);
+    expect([first, second]).toEqual([undefined, undefined]);
+
+    const rows = await moderationRows(person.id);
+    expect(rows.map((row) => row.action)).toEqual(['flag', 'unflag']);
+  });
+
   it('marks the flag on the account payload and nowhere else', async () => {
     const { agent } = await adminSession();
     const person = await seedPerson({ email: 'marker@test.dev', username: 'marker_user' });
@@ -537,6 +572,64 @@ describe('review flags — "watch this" without suspending anything (#1907, §6.
     // The marker is a boolean. The REASON is not smuggled onto the row, so a
     // list of accounts never renders operator prose next to a username.
     expect(JSON.stringify(after)).not.toContain('Duplicate signups');
+  });
+});
+
+describe('an interrupted delete leaves an explainable suspension (#1907)', () => {
+  it('keeps both the reserved suspension and its moderation row when cleanup fails', async () => {
+    const { agent, admin } = await adminSession();
+    const person = await seedPerson({ email: 'halfdelete@test.dev', username: 'half_delete' });
+
+    // The succession hand-off runs after the reservation commits and before the
+    // row is removed — the exact window that leaves a durable suspension behind.
+    const succession = vi
+      .spyOn(harness.ctx.mirror, 'handleAccountDeletion')
+      .mockRejectedValueOnce(new Error('simulated succession failure'));
+    const res = await agent
+      .delete(`/api/v1/admin/users/${person.id}`)
+      .set(...XRW)
+      .send({ confirmUsername: person.username });
+    succession.mockRestore();
+    expect(res.status).toBe(500);
+
+    const [row] = await harness.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, person.id));
+    expect(row!.status).toBe('disabled');
+
+    // Before #1907's fix round this account was locked out with a Moderation
+    // tab that said "no moderation action has been taken".
+    const rows = await moderationRows(person.id);
+    expect(rows.map((entry) => entry.action)).toEqual(['delete_reservation']);
+    expect(rows[0]!.reason).toMatch(/deletion reserved/i);
+    expect(rows[0]!.previousValue).toBe('active');
+    expect(rows[0]!.nextValue).toBe('disabled');
+    expect(rows[0]!.actorId).toBe(admin.id);
+
+    const page = adminModerationListResponseSchema.parse(
+      (await agent.get(`/api/v1/admin/users/${person.id}/moderation`)).body,
+    );
+    expect(page.actions[0]!.action).toBe('delete_reservation');
+
+    // The audit row points at it rather than repeating its text.
+    const audit = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.targetId, person.id), eq(schema.auditLog.action, 'user.disabled')),
+      );
+    expect(audit[0]!.meta).toMatchObject({ moderationId: rows[0]!.id, cleanup: 'incomplete' });
+  });
+
+  it('leaves no reservation row behind when the delete actually completes', async () => {
+    const { admin } = await adminSession();
+    const person = await seedPerson({ email: 'fulldelete@test.dev', username: 'full_delete' });
+
+    await harness.ctx.admin.deleteUser(person.id, person.username, { id: admin.id });
+    // The row cascades with the account: the reservation record self-cleans and
+    // only an INTERRUPTED delete leaves a trace.
+    expect(await moderationRows(person.id)).toHaveLength(0);
   });
 });
 

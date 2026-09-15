@@ -5721,6 +5721,7 @@
           "role_change": "Rolle geändert",
           "flag": "Zur Prüfung markiert",
           "unflag": "Prüfmarkierung aufgehoben",
+          "delete_reservation": "Zur Löschung vorgemerkt",
           "password_reset": "Passwort zurückgesetzt"
         },
         "confirm": {

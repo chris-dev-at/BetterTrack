@@ -30,6 +30,7 @@ export type AdminModerationActionKind =
   | 'role_change'
   | 'flag'
   | 'unflag'
+  | 'delete_reservation'
   | 'password_reset';
 
 export interface RecordModerationActionInput {

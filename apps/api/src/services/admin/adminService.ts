@@ -584,7 +584,11 @@ export function createAdminService(deps: AdminServiceDeps) {
       const removed = await moderation.inTransaction(async (queries) => {
         const previous = await queries.flagFor(id);
         if (!previous) return null;
-        await queries.deleteFlag(id);
+        // The DELETE is what decides, not the read above it: two operators
+        // clearing the same flag both see `previous` and only one of them
+        // actually removes a row. Without this, the loser would append an
+        // `unflag` for something it did not do.
+        if (!(await queries.deleteFlag(id))) return null;
         const { id: recordId } = await queries.record({
           userId: id,
           actorId: actor.id,
@@ -985,22 +989,43 @@ export function createAdminService(deps: AdminServiceDeps) {
       // inactive row and therefore cannot take the count from one to zero. If
       // later session or MIRRORCHAIN cleanup fails, any target (including an
       // ordinary user) deliberately remains disabled and fail-closed for retry.
-      const { target, statusChanged } = await userRepo.withSerializedAdminMutation(async (repo) => {
-        const lockedTarget = await repo.findByIdForUpdate(id);
-        if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
-        if (lockedTarget.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
-          throw badRequest('Username confirmation does not match.', 'CONFIRMATION_MISMATCH');
-        }
-        if (lockedTarget.id === actor.id) {
-          throw badRequest('You cannot delete your own account.', 'SELF_ACTION');
-        }
-        await ensureActiveAdminRemains(repo, lockedTarget, false);
-        if (lockedTarget.status !== 'disabled') {
-          await repo.setStatus(lockedTarget.id, 'disabled');
-          return { target: lockedTarget, statusChanged: true };
-        }
-        return { target: lockedTarget, statusChanged: false };
-      });
+      const { target, statusChanged, moderationId } = await userRepo.withSerializedAdminMutation(
+        async (repo, tx) => {
+          const lockedTarget = await repo.findByIdForUpdate(id);
+          if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
+          if (lockedTarget.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
+            throw badRequest('Username confirmation does not match.', 'CONFIRMATION_MISMATCH');
+          }
+          if (lockedTarget.id === actor.id) {
+            throw badRequest('You cannot delete your own account.', 'SELF_ACTION');
+          }
+          await ensureActiveAdminRemains(repo, lockedTarget, false);
+          const changed = lockedTarget.status !== 'disabled';
+          if (changed) await repo.setStatus(lockedTarget.id, 'disabled');
+          // The reservation is a real suspension that OUTLIVES a failed delete
+          // (#1907): the account stays locked out for retry, so it needs its
+          // row like any other suspension — otherwise the Moderation tab of a
+          // half-deleted account reads "no moderation action has been taken".
+          // Written in the reservation's own transaction; when the delete
+          // succeeds it cascades away with the account, so the record self-
+          // cleans and only an interrupted delete leaves a trace.
+          //
+          // The reason is SYSTEM-authored and says so. `DELETE
+          // /admin/users/:id` carries no operator reason (its confirmation is
+          // the typed username), and inventing prose in an operator's voice in
+          // the one record that has to stay readable would be worse than
+          // stating the mechanical fact.
+          const { id: recordId } = await moderation.forTransaction(tx).record({
+            userId: lockedTarget.id,
+            actorId: actor.id,
+            action: 'delete_reservation',
+            reason: 'Account deletion reserved by the console; cleanup pending.',
+            previousValue: lockedTarget.status,
+            nextValue: 'disabled',
+          });
+          return { target: lockedTarget, statusChanged: changed, moderationId: recordId };
+        },
+      );
       try {
         await sessions.destroyAllForUser(target.id);
         await removeRememberedDeviceBindings(redis, target.id);
@@ -1034,6 +1059,9 @@ export function createAdminService(deps: AdminServiceDeps) {
               reason: 'delete_incomplete',
               cleanup: 'incomplete',
               statusChanged,
+              // Points AT the reservation's moderation row (#1907), which
+              // survived with the suspension it explains.
+              moderationId,
             },
           });
         } catch (auditError) {

@@ -15,7 +15,9 @@
 --
 -- The CHECKs mirror `admin_user_notes` (#1406 W2): the zod contract already
 -- rejects a blank or over-long reason, and the columns repeat both so no future
--- caller can write unbounded prose past the route.
+-- caller can write unbounded prose past the route. `previous_value` /
+-- `next_value` are bounded too — they are short STATE LABELS, and an unbounded
+-- pair of them would be the same unbounded prose column one field over.
 CREATE TABLE "admin_moderation_actions" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -27,7 +29,9 @@ CREATE TABLE "admin_moderation_actions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "admin_moderation_actions_reason_not_empty" CHECK ("admin_moderation_actions"."reason" ~ '[^[:space:]]'),
 	CONSTRAINT "admin_moderation_actions_reason_length" CHECK (char_length("admin_moderation_actions"."reason") <= 2000),
-	CONSTRAINT "admin_moderation_actions_action_known" CHECK ("admin_moderation_actions"."action" in ('disable', 'enable', 'chat_ban', 'chat_unban', 'role_change', 'flag', 'unflag', 'password_reset'))
+	CONSTRAINT "admin_moderation_actions_action_known" CHECK ("admin_moderation_actions"."action" in ('disable', 'enable', 'chat_ban', 'chat_unban', 'role_change', 'flag', 'unflag', 'delete_reservation', 'password_reset')),
+	CONSTRAINT "admin_moderation_actions_previous_value_length" CHECK ("admin_moderation_actions"."previous_value" is null or char_length("admin_moderation_actions"."previous_value") <= 64),
+	CONSTRAINT "admin_moderation_actions_next_value_length" CHECK ("admin_moderation_actions"."next_value" is null or char_length("admin_moderation_actions"."next_value") <= 64)
 );
 --> statement-breakpoint
 CREATE TABLE "admin_user_flags" (
