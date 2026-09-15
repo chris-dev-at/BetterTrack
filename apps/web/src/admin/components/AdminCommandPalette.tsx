@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 
-import { useT } from '../../i18n';
+import { FEATURE_FLAG_KEYS } from '@bettertrack/contracts';
+
+import { useI18n, useT } from '../../i18n';
 import { useOverlayEscape } from '../../ui/overlayStack';
 import { useFocusTrap } from '../../ui/useFocusTrap';
 import * as api from '../../lib/adminApi';
@@ -15,8 +17,20 @@ import { TAP_TARGET } from './tokens';
 const DESTINATION_LIMIT = 6;
 const USER_LIMIT = 6;
 const PROBLEM_LIMIT = 5;
+const ANNOUNCEMENT_LIMIT = 5;
+const FLAG_LIMIT = 5;
+const INVITE_LIMIT = 5;
 /** How many open problems are pulled once per palette session to match against. */
 const PROBLEM_FETCH_LIMIT = 50;
+/**
+ * How many invites / registration tokens are pulled once per palette session.
+ * Both lists are admin-paged reads with no `search` parameter, so the palette
+ * matches client-side over a bounded recent window — the same shape the problems
+ * section has used since W1. A window, not the table: an operator who cannot
+ * find an invite in the most recent 50 is looking for an old one, and the
+ * Invites page (which this row navigates to) is where that search belongs.
+ */
+const INVITE_FETCH_LIMIT = 50;
 
 /** Same debounce as the Users page, so a fast typist issues one search. */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -43,14 +57,22 @@ interface PaletteSection {
  * The admin console's ⌘K palette (#1406 W1).
  *
  * Navigation only — the decision on #1406 explicitly keeps mutations out of v1,
- * so every row is a destination and Enter is always "go there". Three layers:
- * console destinations from the local workspace registry (instant), users from
- * the existing `GET /admin/users?search=`, and open problems filtered client-side
- * off the existing problems list. Nothing here reads a surface the operator
- * could not already open from the sidebar.
+ * so every row is a destination and Enter is always "go there". Six layers:
+ * console destinations from the local workspace registry (instant), feature
+ * flags from the contract registry (also instant), users from the existing
+ * `GET /admin/users?search=`, and open problems, announcements and invites +
+ * registration tokens filtered client-side off their existing admin lists.
+ *
+ * **Nothing here reads a surface the operator could not already open from the
+ * sidebar, and nothing here reads MORE than that surface shows** (#1910). Every
+ * remote section calls an endpoint the console already calls from its own page,
+ * behind the same `requireAdmin` + admin-2FA fence, and renders the same fields
+ * that page renders. The palette removes a navigation step; it is not a new
+ * read scope, and a section that needed one would belong on a page instead.
  */
 export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const t = useT();
+  const { locale } = useI18n();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -91,16 +113,39 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
           api.listUsers({ search: remoteQuery, limit: USER_LIMIT }, signal),
     [remoteQuery],
   );
-  // Problems are matched client-side, so the list is fetched once per palette
-  // session rather than once per query — the endpoint takes no search argument,
-  // and refetching it on every keystroke batch would be pure waste.
-  const problemsWanted = remoteQuery !== null;
+  // Problems, announcements, invites and registration tokens are all matched
+  // client-side, so each list is fetched ONCE per palette session rather than
+  // once per query — none of these endpoints takes a search argument, and
+  // refetching them on every keystroke batch would be pure waste. The users
+  // search stays per-query because `GET /admin/users` does search server-side
+  // and the account table is the one list too large to hold.
+  //
+  // Every one of these is a read the operator can already make from the rail:
+  // the palette adds no endpoint and widens no scope, it only removes the step
+  // of remembering which page a thing lives on.
+  const remoteWanted = remoteQuery !== null;
   const problems = useResource(
     (signal) =>
-      problemsWanted
+      remoteWanted
         ? api.listProblems({ status: 'open', limit: PROBLEM_FETCH_LIMIT }, signal)
         : Promise.resolve(null),
-    [problemsWanted],
+    [remoteWanted],
+  );
+  const announcements = useResource(
+    (signal) => (remoteWanted ? api.listAnnouncements(signal) : Promise.resolve(null)),
+    [remoteWanted],
+  );
+  const invites = useResource(
+    (signal) =>
+      remoteWanted ? api.listInvites({ limit: INVITE_FETCH_LIMIT }, signal) : Promise.resolve(null),
+    [remoteWanted],
+  );
+  const tokens = useResource(
+    (signal) =>
+      remoteWanted
+        ? api.listRegistrationTokens({ limit: INVITE_FETCH_LIMIT }, signal)
+        : Promise.resolve(null),
+    [remoteWanted],
   );
 
   const sections = useMemo<PaletteSection[]>(() => {
@@ -184,18 +229,135 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
             : undefined,
     });
 
+    // Announcements match on EITHER language's title (#1910). An operator who
+    // composed the German copy remembers the German words, and a console that
+    // only searched the English half would be unfindable to exactly the person
+    // who wrote it.
+    const announcementRows = (announcements.data?.announcements ?? [])
+      .filter((announcement) =>
+        [announcement.titleEn, announcement.titleDe].some((title) =>
+          title.toLowerCase().includes(needle),
+        ),
+      )
+      .slice(0, ANNOUNCEMENT_LIMIT)
+      .map((announcement) => ({
+        id: `admin-palette-a-${announcement.id}`,
+        to: '/admin/announcements',
+        // The operator's own locale decides which title is shown; the match ran
+        // over both.
+        label: locale === 'de' ? announcement.titleDe : announcement.titleEn,
+        meta: locale === 'de' ? announcement.titleEn : announcement.titleDe,
+        verb: t(`announcements.severity.${announcement.severity}`),
+      }));
+    built.push({
+      key: 'announcements',
+      labelKey: 'admin.palette.groups.announcements',
+      rows: announcementRows,
+      note: announcements.loading
+        ? t('admin.palette.searching')
+        : announcements.error
+          ? t('admin.palette.announcementsError')
+          : announcementRows.length === 0
+            ? t('admin.palette.noAnnouncements')
+            : undefined,
+    });
+
+    // Feature flags are the ONE new section with no fetch at all: the registry is
+    // a contract constant and the names are catalog copy, so an operator who
+    // types "live" reaches the switch without the palette reading anything. The
+    // flags' STATE is deliberately not shown here — the palette navigates, and a
+    // stale "On" badge on a kill switch would be worse than no badge.
+    const flagRows = FEATURE_FLAG_KEYS.map((key) => ({
+      key,
+      label: t(`admin.featureFlags.flag.${key}.name`),
+    }))
+      .filter(
+        ({ key, label }) =>
+          label.toLowerCase().includes(needle) || key.toLowerCase().includes(needle),
+      )
+      .slice(0, FLAG_LIMIT)
+      .map(({ key, label }) => ({
+        id: `admin-palette-f-${key}`,
+        to: '/admin/feature-flags',
+        label,
+        meta: key,
+        verb: t('admin.palette.verb.flag'),
+      }));
+    if (flagRows.length > 0) {
+      built.push({
+        key: 'flags',
+        labelKey: 'admin.palette.groups.flags',
+        rows: flagRows,
+      });
+    }
+
+    // Invites (by e-mail) and registration tokens (by label) share one section:
+    // they are the same operator question — "who did we let in, and how" — and
+    // they live on two different pages, which is exactly the navigation problem
+    // this palette exists to remove. Each row carries the page it belongs to.
+    const inviteRows = (invites.data?.invites ?? [])
+      .filter((invite) => invite.email.toLowerCase().includes(needle))
+      .slice(0, INVITE_LIMIT)
+      .map((invite) => ({
+        id: `admin-palette-i-${invite.id}`,
+        to: '/admin/invites',
+        label: invite.email,
+        meta: t('admin.nav.invites'),
+        verb: t(`admin.invites.status.${invite.status}`),
+      }));
+    const tokenRows = (tokens.data?.tokens ?? [])
+      .filter((token) => (token.label ?? '').toLowerCase().includes(needle))
+      .slice(0, INVITE_LIMIT)
+      .map((token) => ({
+        id: `admin-palette-t-${token.id}`,
+        to: '/admin/registration',
+        label: token.label ?? '',
+        meta: t('admin.nav.registration'),
+        verb: t(`admin.settings.tokens.status.${token.status}`),
+      }));
+    const accessRows = [...inviteRows, ...tokenRows];
+    built.push({
+      key: 'access',
+      labelKey: 'admin.palette.groups.access',
+      rows: accessRows,
+      note:
+        invites.loading || tokens.loading
+          ? t('admin.palette.searching')
+          : invites.error || tokens.error
+            ? t('admin.palette.accessError')
+            : accessRows.length === 0
+              ? t('admin.palette.noAccess')
+              : undefined,
+    });
+
     return built;
   }, [
+    announcements.data,
+    announcements.error,
+    announcements.loading,
     debounced,
+    invites.data,
+    invites.error,
+    invites.loading,
+    locale,
     problems.data,
     problems.error,
     problems.loading,
     t,
+    tokens.data,
+    tokens.error,
+    tokens.loading,
     trimmed,
     users.data,
     users.error,
     users.loading,
   ]);
+
+  // "Nothing matches" must never be said about a result that has not arrived, so
+  // it is suppressed while ANY section is still in flight — one flag, so adding a
+  // section cannot quietly leave it out.
+  const anyLoading =
+    users.loading || problems.loading || announcements.loading || invites.loading || tokens.loading;
 
   const rows = useMemo(() => sections.flatMap((section) => section.rows), [sections]);
   const active = rows.length === 0 ? -1 : Math.min(activeIndex, rows.length - 1);
@@ -275,7 +437,7 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
         </div>
 
         <ul
-          aria-busy={users.loading || problems.loading || undefined}
+          aria-busy={anyLoading || undefined}
           aria-label={t('admin.palette.resultsAria')}
           className="flex-1 overflow-y-auto p-2"
           id="admin-palette-list"
@@ -322,7 +484,7 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
             note, so a section-count test could never fire. Suppressed while a
             search is still running, so "nothing matches" is never shown about a
             result that has not arrived. */}
-        {trimmed.length > 0 && rows.length === 0 && !users.loading && !problems.loading ? (
+        {trimmed.length > 0 && rows.length === 0 && !anyLoading ? (
           <p className="px-4 py-6 text-center text-sm text-neutral-400" role="status">
             {t('admin.palette.noResults', { query: trimmed })}
           </p>

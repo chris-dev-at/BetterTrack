@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import {
+  ADMIN_MODERATION_REASON_MAX_LENGTH,
   ADMIN_USER_PAGE_SIZE_DEFAULT,
   ADMIN_USER_SORTS,
   ADMIN_USER_SORT_DIRECTIONS,
@@ -17,6 +18,7 @@ import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
 import { pageRange, useOffsetSnapBack } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
@@ -31,6 +33,7 @@ import {
   PageHeader,
   Panel,
   SelectField,
+  TextAreaField,
   SortableTh,
   StatTile,
   Td,
@@ -86,6 +89,7 @@ function isDirection(value: string | null): value is AdminUserSortDirection {
  */
 export function UsersPage() {
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [params, setParams] = useSearchParams();
 
   // ── Query state, read from the URL ─────────────────────────────────────────
@@ -93,6 +97,10 @@ export function UsersPage() {
   const role = params.get('role') ?? ANY;
   const status = params.get('status') ?? ANY;
   const privacyMode = params.get('privacy') ?? ANY;
+  // Tri-state (#1907 ADMIN-W5): absent means "don't filter on the flag", which
+  // is a different question from `flagged=false` ("only accounts nobody has
+  // asked a second look at"). The URL keeps all three states apart.
+  const flaggedParam = params.get('flagged') ?? ANY;
   const sortParam = params.get('sort');
   const sort: AdminUserSort = isSort(sortParam) ? sortParam : 'createdAt';
   const directionParam = params.get('dir');
@@ -105,6 +113,9 @@ export function UsersPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [banner, setBanner] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Cleared whenever the dialog opens: a reason typed for last week's batch
+  // must never be re-submitted as this one's.
+  const [bulkReason, setBulkReason] = useState('');
 
   /**
    * Write one or more query keys. Any change to a FILTER resets the offset:
@@ -149,6 +160,7 @@ export function UsersPage() {
           ...(role ? { role: role as 'user' | 'admin' } : {}),
           ...(status ? { status: status as 'active' | 'disabled' } : {}),
           ...(privacyMode ? { privacyMode: privacyMode as 'normal' | 'paranoid' } : {}),
+          ...(flaggedParam ? { flagged: flaggedParam === 'true' } : {}),
           sort,
           direction,
           limit,
@@ -156,7 +168,7 @@ export function UsersPage() {
         },
         signal,
       ),
-    [search, role, status, privacyMode, sort, direction, limit, offset],
+    [search, role, status, privacyMode, flaggedParam, sort, direction, limit, offset],
   );
 
   const rows = useMemo(() => users.data?.users ?? [], [users.data]);
@@ -178,7 +190,7 @@ export function UsersPage() {
   }, [rows]);
 
   const allSelected = rows.length > 0 && rows.every((u) => selected.has(u.id));
-  const filtersActive = Boolean(search || role || status || privacyMode);
+  const filtersActive = Boolean(search || role || status || privacyMode || flaggedParam);
 
   function toggleOne(id: string) {
     setSelected((prev) => {
@@ -199,12 +211,22 @@ export function UsersPage() {
     patchQuery({ sort: column, dir: sort === column && direction === 'desc' ? 'asc' : 'desc' });
   }
 
-  async function bulkDisable(userIds: string[]) {
-    if (userIds.length === 0 || bulkBusy) return;
+  /**
+   * The one bulk action there is (#1406), now reasoned (#1907 ADMIN-W5). The
+   * single reason is copied onto every affected account's moderation record, so
+   * a batch of 200 leaves 200 answers to "why is this account disabled?"
+   * instead of 200 silences.
+   */
+  async function bulkDisable(userIds: string[], reason: string) {
+    if (userIds.length === 0 || bulkBusy || reason.trim().length === 0) return;
     setBanner(null);
     setBulkBusy(true);
     try {
-      const result = await api.bulkUserAction({ action: 'disable', userIds });
+      const result = await api.bulkUserAction({
+        action: 'disable',
+        userIds,
+        reason: reason.trim(),
+      });
       users.reload();
       stats.reload();
       setSelected(new Set());
@@ -233,7 +255,7 @@ export function UsersPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={t('admin.users.title')}
         description={t('admin.users.subtitle')}
         actions={
@@ -261,6 +283,7 @@ export function UsersPage() {
         role={role}
         status={status}
         privacyMode={privacyMode}
+        flagged={flaggedParam}
         limit={limit}
         onChange={patchQuery}
         filtersActive={filtersActive}
@@ -291,6 +314,7 @@ export function UsersPage() {
               disabled={bulkBusy || dialog?.type === 'bulkDisable'}
               onClick={() => {
                 setBanner(null);
+                setBulkReason('');
                 setDialog({ type: 'bulkDisable', userIds: [...selected] });
               }}
             >
@@ -339,6 +363,7 @@ export function UsersPage() {
                   </SortableTh>
                   <Th>{t('admin.users.columns.role')}</Th>
                   <Th>{t('admin.users.columns.status')}</Th>
+                  <Th>{t('admin.users.columns.review')}</Th>
                   <Th>{t('admin.users.columns.privacy')}</Th>
                   <SortableTh
                     active={sort === 'lastLoginAt'}
@@ -395,7 +420,14 @@ export function UsersPage() {
           onClose={() => setDialog(null)}
           dismissable={!bulkBusy}
         >
-          <div className="flex flex-col gap-4">
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (bulkReason.trim().length === 0) return;
+              void bulkDisable(dialog.userIds, bulkReason);
+            }}
+          >
             <p className="text-[13px] text-neutral-400">
               {t(
                 dialog.userIds.length === 1
@@ -404,15 +436,37 @@ export function UsersPage() {
                 { count: dialog.userIds.length },
               )}
             </p>
+            {/* Required before the request is composable at all (#1907): the
+                server refuses an unreasoned batch, and so does this form. */}
+            <TextAreaField
+              label={t('admin.users.bulkReason.label')}
+              hint={t('admin.users.bulkReason.hint')}
+              name="bulk-reason"
+              rows={3}
+              autoFocus
+              maxLength={ADMIN_MODERATION_REASON_MAX_LENGTH}
+              placeholder={t('admin.users.bulkReason.placeholder')}
+              value={bulkReason}
+              onChange={(e) => setBulkReason(e.target.value)}
+            />
             {banner?.tone === 'error' ? <Alert tone="error">{banner.text}</Alert> : null}
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" disabled={bulkBusy} onClick={() => setDialog(null)}>
+              <Button
+                variant="secondary"
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => setDialog(null)}
+              >
                 {t('common.cancel')}
               </Button>
               <Button
                 variant="danger"
-                disabled={bulkBusy}
-                onClick={() => void bulkDisable(dialog.userIds)}
+                type="submit"
+                disabled={
+                  bulkBusy ||
+                  bulkReason.trim().length === 0 ||
+                  bulkReason.trim().length > ADMIN_MODERATION_REASON_MAX_LENGTH
+                }
               >
                 {bulkBusy
                   ? t('admin.confirmations.bulkDisable.pending')
@@ -424,7 +478,7 @@ export function UsersPage() {
                     )}
               </Button>
             </div>
-          </div>
+          </form>
         </Modal>
       )}
     </div>
@@ -497,6 +551,15 @@ function UserRow({
         </Badge>
       </Td>
       <Td>
+        {/* The marker, never the reason (#1907): operator prose about a person
+            does not belong on a scannable list of accounts. */}
+        {user.flagged ? (
+          <Badge tone="amber">{t('admin.users.flags.underReview')}</Badge>
+        ) : (
+          <span className={TEXT_MUTED}>—</span>
+        )}
+      </Td>
+      <Td>
         {user.privacyMode === 'paranoid' ? (
           <Badge tone="amber">{t('admin.users.privacy.paranoid')}</Badge>
         ) : (
@@ -527,6 +590,7 @@ function Filters({
   role,
   status,
   privacyMode,
+  flagged,
   limit,
   onChange,
   filtersActive,
@@ -536,6 +600,7 @@ function Filters({
   role: string;
   status: string;
   privacyMode: string;
+  flagged: string;
   limit: number;
   onChange: (patch: Record<string, string | number | null>) => void;
   filtersActive: boolean;
@@ -587,6 +652,19 @@ function Filters({
         ]}
       />
       <SelectField
+        label={t('admin.users.columns.review')}
+        name="filter-flagged"
+        value={flagged}
+        onChange={(e) => onChange({ flagged: e.target.value })}
+        options={[
+          // Three options for three questions. "Any" is the default and is NOT
+          // the same request as "Not flagged" (#1907).
+          { value: ANY, label: t('admin.users.filters.anyReview') },
+          { value: 'true', label: t('admin.users.filters.flagged') },
+          { value: 'false', label: t('admin.users.filters.notFlagged') },
+        ]}
+      />
+      <SelectField
         label={t('admin.users.filters.pageSize')}
         name="filter-limit"
         value={String(limit)}
@@ -597,7 +675,9 @@ function Filters({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => onChange({ q: null, role: null, status: null, privacy: null })}
+          onClick={() =>
+            onChange({ q: null, role: null, status: null, privacy: null, flagged: null })
+          }
         >
           {t('admin.users.filters.reset')}
         </Button>

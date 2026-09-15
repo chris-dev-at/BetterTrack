@@ -275,7 +275,7 @@ function makeJobCtx(logger?: Logger): JobContext {
     deadLetter: createDeadLetter(redis),
     redis,
     logger: logger ?? (pino({ level: 'silent' }) as unknown as Logger),
-    isFeatureEnabled: async () => true,
+    isFeatureEnabledGlobally: async () => true,
   };
 }
 

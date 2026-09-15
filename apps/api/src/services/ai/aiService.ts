@@ -10,6 +10,8 @@ import type {
 import type { Logger } from '../../logger';
 import type { AiSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import { auditFieldDiff } from '../audit/auditRedaction';
+import { userPrincipal } from '../featureFlags/featureFlagResolution';
 import type { FeatureFlagService } from '../featureFlags/featureFlagService';
 import type { AiDailyCap } from './dailyCap';
 import { AiProviderError, AiUnavailableError } from './errors';
@@ -75,6 +77,22 @@ function errorDetail(err: unknown): string {
   return 'error';
 }
 
+/**
+ * The three admin-settable AI fields, narrowed to the ones this request
+ * addressed — so a save that only raises the daily cap records the cap, not the
+ * endpoint it left alone (#1908 §4).
+ */
+function pickAiAudit(
+  settings: Pick<AiSettings, 'endpoint' | 'model' | 'dailyCap'>,
+  request: UpdateAiSettingsRequest,
+): Record<string, unknown> {
+  const picked: Record<string, unknown> = {};
+  if (request.endpoint !== undefined) picked.endpoint = settings.endpoint;
+  if (request.model !== undefined) picked.model = settings.model;
+  if (request.dailyCap !== undefined) picked.dailyCap = settings.dailyCap;
+  return picked;
+}
+
 export function createAiService(deps: AiServiceDeps): AiService {
   const { appSettings, registry, cap, featureFlags, audit, logger } = deps;
 
@@ -82,9 +100,15 @@ export function createAiService(deps: AiServiceDeps): AiService {
    * The `ai` feature flag (already in the registry as "AI insights & assistant").
    * Folding it into availability lets an admin hide AI without unconfiguring it,
    * and aligns this read with the `requireFeature('ai')` route gate 2/2 adds.
+   *
+   * Resolved for the ASKING USER (#1910). Both callers already hold one, and
+   * they must: `requireFeature('ai')` on the routes resolves per principal now,
+   * so a capability read that answered globally would tell a user outside the
+   * rollout that AI is available and then 404 them at the generation endpoint —
+   * the flag equivalent of a dead link.
    */
-  async function featureEnabled(): Promise<boolean> {
-    return featureFlags.isEnabled('ai');
+  async function featureEnabled(userId: string): Promise<boolean> {
+    return featureFlags.isEnabled('ai', userPrincipal(userId));
   }
 
   function serialize(settings: AiSettings): AiSettingsResponse {
@@ -100,7 +124,7 @@ export function createAiService(deps: AiServiceDeps): AiService {
 
   async function capability(userId: string): Promise<AiCapabilityResponse> {
     const settings = await appSettings.getAiSettings();
-    const available = settings.configured && (await featureEnabled());
+    const available = settings.configured && (await featureEnabled(userId));
     const used = available ? await cap.usage(userId) : 0;
     return {
       available,
@@ -116,7 +140,7 @@ export function createAiService(deps: AiServiceDeps): AiService {
     request: AiCompletionRequest,
   ): Promise<AiCompletionResult> {
     const settings = await appSettings.getAiSettings();
-    if (!settings.configured || !(await featureEnabled())) throw new AiUnavailableError();
+    if (!settings.configured || !(await featureEnabled(userId))) throw new AiUnavailableError();
     const provider = await registry.resolve();
     if (!provider) throw new AiUnavailableError();
 
@@ -143,19 +167,25 @@ export function createAiService(deps: AiServiceDeps): AiService {
     input: UpdateAiSettingsRequest,
     actor: AiServiceActor,
   ): Promise<AiSettingsResponse> {
+    const previous = await appSettings.getAiSettings();
     const next = await appSettings.updateAiSettings(input, actor.id);
     // Endpoint/model/cap are non-secret, so recording them makes the change
     // fully auditable (unlike a cloud token, which this product never stores).
+    // Now as a before/after pair over the keys the request addressed (#1908 §4):
+    // "the local endpoint moved from A to B" is the fact an auditor needs, and
+    // the previous value was the half that used to be missing. `auditService`
+    // redacts secret-shaped keys on the way in regardless, so a field this form
+    // grows later cannot carry a credential into the row (#1656).
+    const changed = auditFieldDiff(pickAiAudit(previous, input), pickAiAudit(next, input)) ?? {
+      before: {},
+      after: {},
+    };
     await audit.record({
       actorId: actor.id,
       action: AuditAction.AiSettingsUpdated,
       targetType: 'ai_settings',
       ip: actor.ip ?? null,
-      meta: {
-        endpoint: input.endpoint,
-        model: input.model,
-        dailyCap: input.dailyCap,
-      },
+      meta: changed,
     });
     return serialize(next);
   }

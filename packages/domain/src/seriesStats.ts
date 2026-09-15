@@ -6,11 +6,13 @@
  * (§13.5 V5-P6b), and the per-asset contribution table.
  *
  * Like the rest of `domain/**` this is money-critical T1 code and a **pure**
- * module: it imports nothing, reads no clock (`dateToMs` is a deterministic
- * parse of a *passed-in* ISO string, not a `Date.now()`), performs no I/O, and
- * never mutates its inputs — every function is deterministic given its
- * arguments. No rounding happens here (§5.4): every figure is returned at full
- * `number` precision; display rounding lives in the display layer.
+ * module: it imports nothing at runtime (only the value/flow point *types* of
+ * `holdings.ts`, so the money-weighted window reads the very series the TWR
+ * curve is built from), reads no clock (`dateToMs` is a deterministic parse of
+ * a *passed-in* ISO string, not a `Date.now()`), performs no I/O, and never
+ * mutates its inputs — every function is deterministic given its arguments.
+ * No rounding happens here (§5.4): every figure is returned at full `number`
+ * precision; display rounding lives in the display layer.
  *
  * `computeSeriesStats` mirrors the stat formulas of the backtest engine's
  * `computeStats` (backtest.ts, §6.6) — same total-return, ACT/365.25 CAGR,
@@ -20,6 +22,8 @@
  * arbitrary portfolio/benchmark series may be empty or touch zero, so every
  * division here is guarded against a non-positive base.
  */
+
+import type { FlowPoint, ValuePoint } from './holdings';
 
 // ---------------------------------------------------------------------------
 // Constants & date helpers
@@ -40,6 +44,19 @@ const EPSILON = 1e-9;
 /** UTC midnight epoch-ms of an ISO `YYYY-MM-DD` date (no clock read; deterministic). */
 function dateToMs(date: string): number {
   return Date.parse(`${date}T00:00:00Z`);
+}
+
+/**
+ * UTC midnight epoch-ms of an ISO `YYYY-MM-DD` date that MUST parse — the
+ * money-weighted window throws on a malformed date rather than weighting a
+ * flow by `NaN` (the TWR's `assertIsoDate` discipline, holdings.ts).
+ */
+function isoDayToMs(date: string, what: string): number {
+  const ms = /^\d{4}-\d{2}-\d{2}$/.test(date) ? dateToMs(date) : Number.NaN;
+  if (!Number.isFinite(ms)) {
+    throw new Error(`Invalid ${what}: expected ISO YYYY-MM-DD, got ${JSON.stringify(date)}`);
+  }
+  return ms;
 }
 
 /** Elapsed calendar years from ISO date `a` to ISO date `b` (signed, ACT/365.25). */
@@ -364,6 +381,196 @@ export function computeTwrStats(
   }));
   const stats = computeSeriesStats(deflator ? deflateSeries(index, deflator) : index);
   return { totalReturnPct: stats.totalReturnPct, cagrPct: stats.cagrPct };
+}
+
+// ---------------------------------------------------------------------------
+// Money-weighted return — Modified Dietz (#1669)
+// ---------------------------------------------------------------------------
+
+/** One external cash flow inside a Modified Dietz window, at an exact instant. */
+export interface DietzFlow {
+  /** Epoch-ms instant the money was put to work (positive) or taken out (negative). */
+  readonly atMs: number;
+  /** Signed amount in the window's currency: into the portfolio positive, out negative. */
+  readonly amount: number;
+}
+
+/** The ingredients of one Modified Dietz window — see {@link modifiedDietz}. */
+export interface DietzWindow {
+  /** Epoch-ms instant the window opens; `startValue` is the capital at work then. */
+  readonly startMs: number;
+  /** Epoch-ms instant the window closes (never before `startMs`); `endValue` is the value then. */
+  readonly endMs: number;
+  readonly startValue: number;
+  readonly endValue: number;
+  /** External flows; those outside `[startMs, endMs]` are ignored (see {@link modifiedDietz}). */
+  readonly flows: ReadonlyArray<DietzFlow>;
+}
+
+/**
+ * Modified Dietz return of one window, percent (#1669, §16 2026-09-14):
+ *
+ *     MD = (V_end − V_start − Σ F_i) / (V_start + Σ w_i · F_i)
+ *     w_i = (t_end − t_i) / (t_end − t_start)   — the fraction of the window
+ *                                                 remaining after flow i
+ *
+ * — the gain the window produced, over the capital that was at work in it,
+ * each flow counting for the share of the window it was invested for. This is
+ * the **money-weighted** counterpart of the time-weighted curve
+ * ({@link computeTwrStats}, `holdings.timeWeightedReturn`): a deposit made just
+ * before a rally raises it and the same deposit made just after a crash barely
+ * moves it, whereas the TWR — by design — ignores both. That is exactly why the
+ * two are served side by side: a tiny early stake that lost two thirds before
+ * the real money arrived drags the TWR deep into the red while the money-
+ * weighted figure reports what the money actually earned. Exact XIRR is
+ * deliberately not attempted (the headline is a summary; Dietz is what the
+ * reference tools print for "your money's return").
+ *
+ *  - Flows before `startMs` are already inside `startValue` and flows after
+ *    `endMs` have not happened yet: both are ignored. A flow AT `startMs`
+ *    weighs 1, a flow AT `endMs` weighs 0. A zero-length window
+ *    (`startMs === endMs`) has no time to weight by: a flow at that instant
+ *    weighs 1 — it IS the capital.
+ *  - `null` when the window has no capital to measure against: a denominator
+ *    within {@link EPSILON} of zero or below it (nothing invested, or
+ *    withdrawals that outweigh the start value — the known Dietz blind spot,
+ *    which the ruling maps to "no figure", never to a sign flip).
+ *  - Throws on a non-finite input or a window that runs backwards: this is
+ *    the money path, and a silent `NaN` would surface as a wrong headline.
+ *  - Full precision (§5.4); the display layer rounds.
+ */
+export function modifiedDietz(window: DietzWindow): number | null {
+  const { startMs, endMs, startValue, endValue, flows } = window;
+  for (const [label, n] of [
+    ['startMs', startMs],
+    ['endMs', endMs],
+    ['startValue', startValue],
+    ['endValue', endValue],
+  ] as const) {
+    if (!Number.isFinite(n)) throw new Error(`modifiedDietz: ${label} must be finite, got ${n}`);
+  }
+  if (endMs < startMs) {
+    throw new Error(`modifiedDietz: window runs backwards (${startMs} → ${endMs})`);
+  }
+  const span = endMs - startMs;
+
+  let netFlow = 0;
+  let weightedFlow = 0;
+  for (const flow of flows) {
+    if (!Number.isFinite(flow.atMs) || !Number.isFinite(flow.amount)) {
+      throw new Error(`modifiedDietz: flow must be finite, got ${flow.atMs} / ${flow.amount}`);
+    }
+    if (flow.atMs < startMs || flow.atMs > endMs) continue;
+    const weight = span > 0 ? (endMs - flow.atMs) / span : 1;
+    netFlow += flow.amount;
+    weightedFlow += weight * flow.amount;
+  }
+
+  const denominator = startValue + weightedFlow;
+  if (denominator <= EPSILON) return null;
+  return ((endValue - startValue - netFlow) / denominator) * 100;
+}
+
+/**
+ * Where a daily-series Dietz window opens relative to its first point — the
+ * two anchors the served TWR curve already uses (§6.8, #125), so the two
+ * headline figures of a range always measure the same window:
+ *
+ *  - `'inception'` — the MAX / since-inception anchor. The window opens just
+ *    BEFORE the first day's own flows with no capital at all, so the money
+ *    that opened the position is the first flow (weight 1) and day one's
+ *    execution→close move counts as return — exactly as `timeWeightedReturn`
+ *    anchors its index at 1 before day one (never re-based to the first
+ *    plotted point).
+ *  - `'first-point'` — the re-based range slice (1W … 5Y). The window opens
+ *    at the first point's close, that value is the starting capital and the
+ *    first day's flows are already inside it (they are not counted) — exactly
+ *    as `rebasePerformance` divides the curve by its first point.
+ */
+export type DietzAnchor = 'inception' | 'first-point';
+
+/**
+ * Money-weighted (Modified Dietz) return of a daily value series over the
+ * window its points span, percent, or `null` when the window has no capital
+ * (#1669). Consumes the SAME `values`/`flows` the time-weighted curve is
+ * built from (`holdings.timeWeightedReturn` — `flows` are the external
+ * deposits/withdrawals `externalCashFlowsForTwr` classifies, never cash-funded
+ * buys, sell proceeds or internal transfers), so the two figures can never
+ * disagree about what counts as money crossing the portfolio boundary.
+ *
+ * Daily flows are placed on the clock by the TWR's own hybrid convention: the
+ * day's NET flow counts as an **inflow at the start of its day** (the previous
+ * close — the new money is at work for that whole day's move) or as an
+ * **outflow at its close** (the money left with the day's move already
+ * earned). Over a single day this makes the Dietz figure equal the TWR's
+ * daily link `r_d − 1` exactly, for either sign — the two headlines start from
+ * one definition of "when did the money arrive" and diverge only in how they
+ * chain across days.
+ *
+ *  - `window.anchor` picks the start, see {@link DietzAnchor}. Under
+ *    `'inception'` a first day that brings no measurable money in (net flow
+ *    not positive — a series whose history starts before its FX pair's, say,
+ *    V3-P10d) has nothing to anchor at; the window then opens at the first
+ *    point like a slice does, which is what `timeWeightedReturn` effectively
+ *    does when its day-one link is flat.
+ *  - A flow dated inside the window counts whether or not that day carries a
+ *    value point; flows before the window are inside its start value, flows
+ *    after it have not happened yet (a future-dated transaction), and both are
+ *    ignored — the TWR ignores the latter the same way.
+ *  - Empty series ⇒ `null`. A single-point `'first-point'` window has no
+ *    elapsed time and no counted flows, so it reads 0 % on any positive value
+ *    (and `null` on none), exactly like the re-based one-point TWR.
+ *  - Unsorted input is tolerated (sorted on a copy); nothing is mutated.
+ *    Throws on a non-finite value/flow or a malformed date, as the TWR does.
+ */
+export function modifiedDietzReturn(
+  values: ReadonlyArray<ValuePoint>,
+  flows: ReadonlyArray<FlowPoint>,
+  window: { readonly anchor: DietzAnchor },
+): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  for (const point of sorted) {
+    isoDayToMs(point.date, 'value point date');
+    if (!Number.isFinite(point.valueEur)) {
+      throw new Error(`Value on ${point.date} must be a finite number, got ${point.valueEur}`);
+    }
+  }
+
+  // The day's NET external flow, as the TWR links it (one bucket per day).
+  const netByDate = new Map<string, number>();
+  for (const flow of flows) {
+    isoDayToMs(flow.date, 'flow point date');
+    if (!Number.isFinite(flow.flowEur)) {
+      throw new Error(`Flow on ${flow.date} must be a finite number, got ${flow.flowEur}`);
+    }
+    netByDate.set(flow.date, (netByDate.get(flow.date) ?? 0) + flow.flowEur);
+  }
+
+  // A point's instant stands in for its close; only differences matter, so
+  // UTC midnight is as good a close as any. An inflow on day d is at work from
+  // the previous close (d − 1 day), an outflow leaves at d's own close.
+  const firstMs = isoDayToMs(first.date, 'value point date');
+  const endMs = isoDayToMs(last.date, 'value point date');
+  const anchor: DietzAnchor =
+    window.anchor === 'inception' && (netByDate.get(first.date) ?? 0) > EPSILON
+      ? 'inception'
+      : 'first-point';
+  const startMs = anchor === 'inception' ? firstMs - MS_PER_DAY : firstMs;
+  const startValue = anchor === 'inception' ? 0 : first.valueEur;
+
+  const dietzFlows: DietzFlow[] = [];
+  for (const [date, net] of netByDate) {
+    if (net === 0) continue;
+    const inWindow = anchor === 'inception' ? date >= first.date : date > first.date;
+    if (!inWindow || date > last.date) continue;
+    const dayMs = isoDayToMs(date, 'flow point date');
+    dietzFlows.push({ atMs: net > 0 ? dayMs - MS_PER_DAY : dayMs, amount: net });
+  }
+
+  return modifiedDietz({ startMs, endMs, startValue, endValue: last.valueEur, flows: dietzFlows });
 }
 
 // ---------------------------------------------------------------------------

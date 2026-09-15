@@ -12,6 +12,7 @@
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
 import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
@@ -62,6 +63,8 @@ import {
   createUsageRollupJob,
   createEarningsReminderJob,
   createDividendEventsScanJob,
+  createAnnouncementPublishEnqueuer,
+  createAnnouncementPublishJob,
   createStandingOrdersJob,
   dividendNotifyGate,
   earningsNotifyGate,
@@ -115,6 +118,7 @@ import { createProblemService } from '../services/observability/problemService';
 import { createProblemDropTally } from '../services/observability/problemDropTally';
 import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
 import { createProblemRepository } from '../data/repositories/problemRepository';
+import { createAnnouncementService } from '../services/announcements/announcementService';
 import { createAuditService } from '../services/audit/auditService';
 import { createFeatureFlagService } from '../services/featureFlags/featureFlagService';
 import { createEmailService } from '../services/email/emailService';
@@ -607,6 +611,22 @@ const coreJobDeps = {
     providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
 };
 
+/**
+ * Admin-composed announcements (ADMIN-W7a, #1909). The worker owns publication
+ * outright — the API's write path only persists and enqueues — so this is where
+ * the service that walks the user table lives. Its own `enqueuePublish` is
+ * bound to the same registry the API enqueues onto, because the single bounded
+ * retry after a partial delivery is enqueued from inside a job run.
+ */
+const announcementService = createAnnouncementService({
+  repo: createAnnouncementRepository(db),
+  users: workerUserRepo,
+  notifications: notificationRepo,
+  audit,
+  enqueuePublish: createAnnouncementPublishEnqueuer(registry),
+  logger,
+});
+
 const definitions = assembleRegisteredJobDefinitions({
   heartbeatJob,
   createPricesRefreshDailyJob: createPricesRefreshDailyJob(coreJobDeps),
@@ -735,6 +755,12 @@ const definitions = assembleRegisteredJobDefinitions({
   // trails. A zero-day config keeps that table forever and skips its branch;
   // the remembered-device sweep runs regardless, since those bindings carry a
   // fixed lifetime rather than an owner-configured window.
+  // ADMIN-W7a (#1909): the five-minute sweep that publishes every announcement
+  // whose display window has opened, plus the targeted passes a save or a
+  // bounded retry enqueues. Nothing on an HTTP request path fans out any more.
+  createAnnouncementPublishJob: createAnnouncementPublishJob({
+    announcements: announcementService,
+  }),
   createDataRetentionCleanupJob: createDataRetentionCleanupJob({
     audit: createAuditRepository(db),
     emailLog: createEmailLogRepository(db),
@@ -773,7 +799,11 @@ const ctx: JobContext = {
   deadLetter,
   redis: deadLetterConnection,
   logger,
-  isFeatureEnabled: (key) => featureFlags.isEnabled(key),
+  // A job has NO principal, so it reads the BASE switch and nothing else
+  // (#1910): a percentage rollout must never silently halve a background sweep.
+  // The named call is the point — an omitted principal argument would have made
+  // this a defaulted semantic instead of a stated one.
+  isFeatureEnabledGlobally: (key) => featureFlags.isEnabledGlobally(key),
 };
 
 const running = createJobWorkers({

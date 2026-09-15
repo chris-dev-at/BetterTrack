@@ -3,7 +3,9 @@ import type { FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
+  ADMIN_MODERATION_REASON_MAX_LENGTH,
   ADMIN_USER_NOTE_MAX_LENGTH,
+  type AdminModerationEntry,
   type AdminUser,
   type AdminUserNoteListResponse,
   type AdminUserAccessResponse,
@@ -21,6 +23,8 @@ import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { useWorkspaceEyebrow } from '../useWorkspaceEyebrow';
+import { ActorValue, AuditEntryDrawer, stringify } from '../components/AuditEntryDrawer';
 import { EmailLogTable } from '../components/EmailLogTable';
 import { Modal } from '../components/Modal';
 import {
@@ -62,13 +66,30 @@ function errorMessage(err: unknown, t: TranslateFn): string {
   return t('common.genericError');
 }
 
+/**
+ * What a reason dialog is about to do (#1907 ADMIN-W5). One dialog serves all
+ * of them: the operator types one thing — why — and the intent decides the
+ * copy, the tone and the request. A second dialog component would have been a
+ * second place for the required-reason rule to be got wrong.
+ */
+type ReasonIntent = 'disable' | 'enable' | 'chatBan' | 'chatUnban' | 'flag';
+
 type Dialog =
   | { type: 'reset' }
   | { type: 'reset-done'; result: ResetPasswordResponse }
   | { type: 'delete' }
+  | { type: 'reason'; intent: ReasonIntent }
   | { type: 'snapshot'; text: string };
 
-const TAB_KEYS = ['summary', 'access', 'support', 'sharing', 'activity', 'notes'] as const;
+const TAB_KEYS = [
+  'summary',
+  'access',
+  'support',
+  'sharing',
+  'activity',
+  'moderation',
+  'notes',
+] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
 function isTabKey(value: string | null): value is TabKey {
@@ -93,6 +114,7 @@ export function UserDetailPage() {
   const { user: currentAdmin } = useAuth();
   const navigate = useNavigate();
   const t = useT();
+  const eyebrow = useWorkspaceEyebrow();
   const [params, setParams] = useSearchParams();
 
   const tabParam = params.get('tab');
@@ -125,41 +147,57 @@ export function UserDetailPage() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [banner, setBanner] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  // Bumped after every moderating write so the record re-reads when the tab is
+  // open, instead of showing the state from before the action just taken.
+  const [moderationNonce, setModerationNonce] = useState(0);
 
   const isSelf = user?.id === currentAdmin?.id;
 
-  async function toggleStatus() {
-    if (!user) return;
+  /**
+   * Every moderating write on this page (#1907 ADMIN-W5). There is deliberately
+   * no path from a header button to the API that skips the reason: the control
+   * opens the dialog, the dialog refuses to submit while the field is empty,
+   * and this function is what the dialog calls — so the request the server
+   * would refuse is never even composed.
+   */
+  async function runModeration(intent: ReasonIntent, reason: string): Promise<boolean> {
+    if (!user) return false;
     setBanner(null);
     setBusy(true);
     try {
-      await api.updateUser(user.id, { status: user.status === 'active' ? 'disabled' : 'active' });
+      if (intent === 'flag') {
+        await api.flagUser(user.id, { reason });
+      } else if (intent === 'disable' || intent === 'enable') {
+        await api.updateUser(user.id, {
+          status: intent === 'disable' ? 'disabled' : 'active',
+          reason,
+        });
+      } else {
+        await api.updateUser(user.id, { chatBanned: intent === 'chatBan', reason });
+      }
       account.reload();
-      setBanner({
-        tone: 'success',
-        text:
-          user.status === 'active' ? t('admin.userDetail.disabled') : t('admin.userDetail.enabled'),
-      });
+      setModerationNonce((value) => value + 1);
+      setDialog(null);
+      setBanner({ tone: 'success', text: t(`admin.userDetail.moderation.done.${intent}`) });
+      return true;
     } catch (err) {
       setBanner({ tone: 'error', text: errorMessage(err, t) });
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
-  async function toggleChatBan() {
+  /** Clearing a flag is non-destructive and reversible — no dialog, no reason. */
+  async function clearFlag() {
     if (!user) return;
     setBanner(null);
     setBusy(true);
     try {
-      await api.updateUser(user.id, { chatBanned: !user.chatBanned });
+      await api.unflagUser(user.id);
       account.reload();
-      setBanner({
-        tone: 'success',
-        text: user.chatBanned
-          ? t('admin.userDetail.chatUnbanned')
-          : t('admin.userDetail.chatBanned'),
-      });
+      setModerationNonce((value) => value + 1);
+      setBanner({ tone: 'success', text: t('admin.userDetail.moderation.done.unflag') });
     } catch (err) {
       setBanner({ tone: 'error', text: errorMessage(err, t) });
     } finally {
@@ -226,6 +264,14 @@ export function UserDetailPage() {
     { key: 'sharing', label: t('admin.userDetail.tabs.sharing') },
     { key: 'activity', label: t('admin.userDetail.tabs.activity') },
     {
+      key: 'moderation',
+      label: t('admin.userDetail.tabs.moderation'),
+      // The flag is the one tab marker that is not a count: an operator
+      // scanning the strip has to see "somebody asked for a second look here"
+      // without opening anything.
+      ...(user.flagged ? { marker: t('admin.userDetail.moderation.flaggedMarker') } : {}),
+    },
+    {
       key: 'notes',
       label: t('admin.userDetail.tabs.notes'),
       ...(noteCount !== undefined ? { count: noteCount } : {}),
@@ -237,7 +283,7 @@ export function UserDetailPage() {
       <BackLink />
 
       <PageHeader
-        eyebrow={t('admin.nav.sections.people')}
+        eyebrow={eyebrow}
         title={user.username}
         description={user.email}
         actions={
@@ -264,7 +310,17 @@ export function UserDetailPage() {
               size="sm"
               disabled={busy || isSelf}
               title={isSelf ? t('admin.userDetail.actions.notYourself') : undefined}
-              onClick={() => void toggleStatus()}
+              onClick={() => {
+                // A banner from an earlier attempt would render inside the new
+                // dialog as if THIS action had already failed (the dialog shows
+                // the page banner's error), so it goes first — the pattern the
+                // users list already follows when it opens its bulk dialog.
+                setBanner(null);
+                setDialog({
+                  type: 'reason',
+                  intent: user.status === 'active' ? 'disable' : 'enable',
+                });
+              }}
             >
               {user.status === 'active'
                 ? t('admin.userDetail.actions.disable')
@@ -280,6 +336,7 @@ export function UserDetailPage() {
         {user.privacyMode === 'paranoid' ? (
           <Badge tone="amber">{t('admin.users.privacy.paranoid')}</Badge>
         ) : null}
+        {user.flagged ? <Badge tone="amber">{t('admin.users.flags.underReview')}</Badge> : null}
         {user.chatBanned ? <Badge tone="red">{t('admin.users.flags.chatBanned')}</Badge> : null}
         {user.mustChangePassword ? (
           <Badge tone="amber">{t('admin.users.flags.mustChangePassword')}</Badge>
@@ -307,7 +364,13 @@ export function UserDetailPage() {
               setBanner({ tone: 'success', text });
             }}
             onError={(text) => setBanner({ tone: 'error', text })}
-            onChatBan={() => void toggleChatBan()}
+            onChatBan={() => {
+              setBanner(null);
+              setDialog({
+                type: 'reason',
+                intent: user.chatBanned ? 'chatUnban' : 'chatBan',
+              });
+            }}
             onTestEmail={() => void sendTestEmail()}
             onDelete={() => setDialog({ type: 'delete' })}
           />
@@ -316,6 +379,19 @@ export function UserDetailPage() {
         {tab === 'support' ? <SupportTab resource={support} /> : null}
         {tab === 'sharing' ? <SharingTab userId={user.id} /> : null}
         {tab === 'activity' ? <ActivityTab userId={user.id} email={user.email} /> : null}
+        {tab === 'moderation' ? (
+          <ModerationTab
+            userId={user.id}
+            flagged={user.flagged === true}
+            busy={busy}
+            nonce={moderationNonce}
+            onFlag={() => {
+              setBanner(null);
+              setDialog({ type: 'reason', intent: 'flag' });
+            }}
+            onUnflag={() => void clearFlag()}
+          />
+        ) : null}
         {tab === 'notes' ? <NotesTab userId={user.id} notes={notes} /> : null}
       </TabPanel>
 
@@ -338,6 +414,20 @@ export function UserDetailPage() {
           user={user}
           onClose={() => setDialog(null)}
           onDeleted={() => navigate('/admin/users')}
+        />
+      )}
+      {dialog?.type === 'reason' && (
+        <ReasonDialog
+          intent={dialog.intent}
+          username={user.username}
+          busy={busy}
+          // A failed write leaves the dialog open, so its error has to render
+          // INSIDE the dialog: the page banner sits behind the modal backdrop,
+          // where the operator cannot read it. Same treatment the bulk-disable
+          // confirmation gives its own failures.
+          error={banner?.tone === 'error' ? banner.text : null}
+          onClose={() => setDialog(null)}
+          onConfirm={(reason) => runModeration(dialog.intent, reason)}
         />
       )}
       {dialog?.type === 'snapshot' && (
@@ -937,7 +1027,14 @@ function UserEmailLog({ userId, email }: { userId: string; email: string }) {
   return <EmailLogTable load={load} emptyLabel={t('admin.emailLog.emptyForUser', { email })} />;
 }
 
-/** Compact per-user audit history, cursor-paged newest-first (§6.12). */
+/**
+ * Compact per-user audit history, cursor-paged newest-first (§6.12).
+ *
+ * ADMIN-W6 (#1908): the rows are the same rows the global log shows, so this
+ * mirror reuses the shared row drawer and actor rendering rather than growing a
+ * second renderer for them — and the truncated `JSON.stringify` cell it used to
+ * end in is now a summary with the detail behind the drawer.
+ */
 function UserAuditLog({ userId }: { userId: string }) {
   const t = useT();
   const { clearSession, requireTwoFactorSetup } = useAuth();
@@ -945,6 +1042,7 @@ function UserAuditLog({ userId }: { userId: string }) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [selected, setSelected] = useState<AuditLogEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
@@ -1005,6 +1103,7 @@ function UserAuditLog({ userId }: { userId: string }) {
           <tr>
             <Th>{t('admin.userDetail.activity.when')}</Th>
             <Th>{t('admin.userDetail.activity.action')}</Th>
+            <Th>{t('admin.audit.columns.actor')}</Th>
             <Th>{t('admin.userDetail.activity.details')}</Th>
           </tr>
         </thead>
@@ -1015,13 +1114,24 @@ function UserAuditLog({ userId }: { userId: string }) {
                 {formatDateTime(entry.createdAt)}
               </Td>
               <Td className="font-medium text-neutral-200">{entry.action}</Td>
-              <Td className="max-w-xs truncate text-neutral-500" title={metaSummary(entry.meta)}>
-                {metaSummary(entry.meta)}
+              <Td>
+                <ActorValue entry={entry} />
+              </Td>
+              <Td>
+                <span className="flex items-center justify-between gap-2">
+                  <span className="max-w-[12rem] truncate text-neutral-500">
+                    {metaSummary(entry.meta)}
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(entry)}>
+                    {t('admin.audit.drawer.open')}
+                  </Button>
+                </span>
               </Td>
             </tr>
           ))}
         </tbody>
       </DataTable>
+      <AuditEntryDrawer entry={selected} onClose={() => setSelected(null)} />
       {cursor ? (
         <div className="flex justify-center">
           <Button
@@ -1041,11 +1151,7 @@ function UserAuditLog({ userId }: { userId: string }) {
 function metaSummary(meta: unknown): string {
   if (meta === null || meta === undefined) return '—';
   if (typeof meta === 'string') return meta;
-  try {
-    return JSON.stringify(meta);
-  } catch {
-    return '—';
-  }
+  return stringify(meta);
 }
 
 // ── Notes ───────────────────────────────────────────────────────────────────
@@ -1218,7 +1324,195 @@ function NotesTab({
   );
 }
 
+/**
+ * The Moderation tab (#1907 ADMIN-W5).
+ *
+ * The question it answers is the one the raw audit stream could not: *why is
+ * this account in the state it is in, who decided, and was it ever reversed?*
+ * Every row carries the operator's own words, so the next operator does not
+ * have to reconstruct a decision from a timestamp and an action name.
+ *
+ * The flag control lives here rather than in the header on purpose: it is not a
+ * suspension and must not sit beside the controls that are (§6.12 — `disabled`
+ * remains THE suspension).
+ */
+function ModerationTab({
+  userId,
+  flagged,
+  busy,
+  nonce,
+  onFlag,
+  onUnflag,
+}: {
+  userId: string;
+  flagged: boolean;
+  busy: boolean;
+  nonce: number;
+  onFlag: () => void;
+  onUnflag: () => void;
+}) {
+  const t = useT();
+  const record = useResource(
+    (signal) => api.listUserModeration(userId, {}, signal),
+    [userId, nonce],
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Panel>
+        <PanelHeader
+          title={t('admin.userDetail.moderation.flagTitle')}
+          description={
+            flagged
+              ? t('admin.userDetail.moderation.flagOnDescription')
+              : t('admin.userDetail.moderation.flagOffDescription')
+          }
+          actions={
+            flagged ? (
+              <Button variant="secondary" size="sm" disabled={busy} onClick={onUnflag}>
+                {t('admin.userDetail.moderation.unflag')}
+              </Button>
+            ) : (
+              <Button variant="secondary" size="sm" disabled={busy} onClick={onFlag}>
+                {t('admin.userDetail.moderation.flag')}
+              </Button>
+            )
+          }
+        />
+      </Panel>
+
+      {record.loading || record.error || !record.data ? (
+        <AsyncReadState
+          error={record.error}
+          loading={record.loading}
+          loadingLabel={t('admin.userDetail.moderation.loading')}
+          onRetry={record.reload}
+          retryable={record.retryable}
+        />
+      ) : record.data.actions.length === 0 ? (
+        <EmptyState>{t('admin.userDetail.moderation.empty')}</EmptyState>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {record.data.actions.map((entry) => (
+            <li key={entry.id}>
+              <ModerationRow entry={entry} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** One recorded decision: what, by whom, when — and why, in their words. */
+function ModerationRow({ entry }: { entry: AdminModerationEntry }) {
+  const t = useT();
+  const transition =
+    entry.previousValue !== null && entry.nextValue !== null
+      ? t('admin.userDetail.moderation.transition', {
+          previous: t(`admin.userDetail.moderation.values.${entry.previousValue}`),
+          next: t(`admin.userDetail.moderation.values.${entry.nextValue}`),
+        })
+      : null;
+
+  return (
+    <Panel className="border-l-[3px] border-l-neutral-700">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-[13px] font-medium text-neutral-100">
+          {t(`admin.userDetail.moderation.actions.${entry.action}`)}
+        </span>
+        <span className={cx(TEXT_MUTED, TEXT_NUM)} title={entry.createdAt}>
+          {formatDateTime(entry.createdAt)}
+        </span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-baseline gap-2">
+        <span className="text-[12px] font-semibold text-amber-300">
+          {/* A tombstone, never a blank: the record outlives the operator. */}
+          {entry.actorUsername ?? t('admin.userDetail.moderation.unknownActor')}
+        </span>
+        {transition ? <span className={TEXT_MUTED}>{transition}</span> : null}
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-neutral-200">
+        {entry.reason}
+      </p>
+    </Panel>
+  );
+}
+
 // ── Dialogs ─────────────────────────────────────────────────────────────────
+
+/**
+ * The required-reason confirmation (#1907 ADMIN-W5). The Confirm button is
+ * disabled until the operator has typed something that is not whitespace, so an
+ * unreasoned suspension is not merely refused by the server — it is not
+ * submittable from the console at all.
+ */
+function ReasonDialog({
+  intent,
+  username,
+  busy,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  intent: ReasonIntent;
+  username: string;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: (reason: string) => Promise<boolean>;
+}) {
+  const t = useT();
+  const [reason, setReason] = useState('');
+  const trimmed = reason.trim();
+  const tooLong = trimmed.length > ADMIN_MODERATION_REASON_MAX_LENGTH;
+  const blocked = trimmed.length === 0 || tooLong || busy;
+
+  return (
+    <Modal
+      title={t(`admin.userDetail.moderation.confirm.${intent}.title`)}
+      onClose={onClose}
+      dismissable={!busy}
+    >
+      <form
+        className="flex flex-col gap-4"
+        onSubmit={(event: FormEvent) => {
+          event.preventDefault();
+          if (blocked) return;
+          void onConfirm(trimmed);
+        }}
+      >
+        <p className="text-[13px] text-neutral-400">
+          {t(`admin.userDetail.moderation.confirm.${intent}.description`, { username })}
+        </p>
+        <TextAreaField
+          label={t('admin.userDetail.moderation.reasonLabel')}
+          hint={t('admin.userDetail.moderation.reasonHint')}
+          name="moderation-reason"
+          rows={3}
+          autoFocus
+          maxLength={ADMIN_MODERATION_REASON_MAX_LENGTH}
+          placeholder={t('admin.userDetail.moderation.reasonPlaceholder')}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        {error ? <Alert tone="error">{error}</Alert> : null}
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="secondary" type="button" disabled={busy} onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant={intent === 'disable' || intent === 'chatBan' ? 'danger' : 'primary'}
+            type="submit"
+            disabled={blocked}
+          >
+            {busy ? t('common.saving') : t(`admin.userDetail.moderation.confirm.${intent}.action`)}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 function SnapshotDialog({ text, onClose }: { text: string; onClose: () => void }) {
   const t = useT();

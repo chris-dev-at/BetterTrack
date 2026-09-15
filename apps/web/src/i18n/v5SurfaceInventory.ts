@@ -954,6 +954,16 @@ export const NON_V5_SURFACES = [
     note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
   },
   {
+    path: 'admin/components/AnnouncementPreview.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W7a (#1909): the composer’s EN + DE banner preview; localized and tested in its own feature change.',
+  },
+  {
+    path: 'admin/components/AuditEntryDrawer.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W6 (#1406/#1908): the audit row detail drawer — the meta tree and the field-by-field diff — shared by the audit log and People 360’s Activity tab; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/LiveRefreshControl.tsx',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W4 (#1406): the Operations cockpit’s cadence picker and refresh button; localized and tested in its own feature change.',
@@ -986,7 +996,7 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/pages/AnnouncementsPage.tsx',
     reason: 'no-v5-deliverable',
-    note: 'V4-P5 announcement composer (#519); still English-only.',
+    note: 'V4-P5 announcement composer (#519); rebuilt on the W2 token layer and catalogued in EN + DE by post-V5 admin wave 7a (#1909).',
   },
   {
     path: 'admin/pages/AuditPage.tsx',
@@ -2266,7 +2276,31 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // reviewed V5 inventory, not this ledger.)
 // 81 → 79 with #1699: the news and dividends home widgets leave this deferred
 // ledger for the reviewed V5-P5 inventory, taking their one read each with them.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 79;
+// 79 → 80 with the admin rebuild ADMIN-W5 (#1907): People 360's Moderation tab
+// reads one account's moderation record. It adds no state gap — the tab renders
+// `AsyncReadState` for BOTH loading and error at its own read site, and its
+// empty case is explicit ("no moderation action has been taken on this
+// account") rather than an empty list that reads as a failed load. The debt
+// ceiling below is therefore unchanged.
+//
+// 80 → 81 with the admin rebuild ADMIN-W6 (#1908): the audit page's Signals
+// read, the one new read of that wave. It renders `AsyncReadState` for both
+// loading and error at its own read site, so the debt ceiling below is
+// unchanged. Its sibling — the audit list itself — is NOT in this count: it
+// keeps the page's own effect-driven loader, which the #1848 pass gave the same
+// 401 / mandatory-2FA / catalogue-copy handling `useResource` has, and which no
+// gate counts in either direction. The row drawer (`AuditEntryDrawer.tsx`) adds
+// no read at all: it renders a row the page already holds.
+// 81 → 84 with the admin rebuild ADMIN-W7b (#1910): the ⌘K palette learns to
+// search content, so it gains three client-filtered reads — announcements,
+// invites and registration tokens. None adds a state gap: each renders the
+// section's row-shaped note for BOTH loading ("Searching…") and error ("Could
+// not load announcements." / "…invites or registration tokens."), and each has
+// an explicit empty case distinct from the error one, which is the whole reason
+// the palette's existing two reads are not in the debt ledger either. The fourth
+// new section (feature flags) reads nothing at all — the registry is a contract
+// constant — so it adds no site. The debt ceiling below is therefore unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 84;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error
@@ -2391,7 +2425,13 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
  * in the universe fails.
  */
 export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
-  'admin/pages/AnnouncementsPage.tsx': 36,
+  // 36 → 0 with ADMIN-W7a (#1909). The composer — the console's most drifted
+  // page, 489 lines of hardcoded English with no `admin.announcements.*`
+  // namespace in either catalogue — is fully catalogued in EN + DE. Dropped to
+  // zero rather than deleted, like the W2 pages below, so the ratchet still
+  // names the file: one hardcoded string reappearing here fails the suite
+  // instead of quietly re-spending a budget nobody is watching.
+  'admin/pages/AnnouncementsPage.tsx': 0,
   // 13 → 0 with #1848: the page rendered the server's raw error envelope — the
   // offender #1814 was meant to be the last of — and every label around it was
   // English-only. Both are now catalogue copy in EN + DE, so the same zero-floor

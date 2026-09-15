@@ -1,4 +1,7 @@
-import * as Sentry from '@sentry/node';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { loadConfig, type AppConfig } from '../../config/env';
@@ -59,14 +62,15 @@ describe('initObservability (retired external tracker)', () => {
     expect(SENTRY_REFUSED_MESSAGE).toContain('admin Problems page');
   });
 
-  it('constructs no network client even with the DSN set, in either process', () => {
+  it('is disabled in both the api and worker process, even with a DSN configured', () => {
     const config = configWithSentry();
-    initObservability(config, testLogger(), { serverName: 'api' });
-    initObservability(config, testLogger(), { serverName: 'worker' });
+    const obsApi = initObservability(config, testLogger(), { serverName: 'api' });
+    const obsWorker = initObservability(config, testLogger(), { serverName: 'worker' });
 
-    // The SDK was never initialised, so it holds no client — and therefore no
-    // transport pointed at an ingest endpoint.
-    expect(Sentry.getClient()).toBeUndefined();
+    // No client can exist to construct in either process — enabled is always
+    // false, on the same inert handle shape whichever server calls it.
+    expect(obsApi.enabled).toBe(false);
+    expect(obsWorker.enabled).toBe(false);
   });
 
   it('never carries the DSN onto the config, so no code path can reach it', () => {
@@ -80,6 +84,57 @@ describe('initObservability (retired external tracker)', () => {
     await expect(obs.flush()).resolves.toBe(true);
     await expect(obs.close()).resolves.toBe(true);
     expect(() => obs.captureException(new Error('ignored'))).not.toThrow();
+  });
+});
+
+/**
+ * The dependency itself is gone too (#1925), not just unused: no code path
+ * needs `@sentry/*` installed, so it cannot quietly come back as production
+ * weight (the SDK plus its OpenTelemetry tree) shipped for nothing.
+ */
+describe('the retired SDK stays gone (#1925)', () => {
+  const apiPackageJsonPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../package.json',
+  );
+
+  it('is declared nowhere in apps/api/package.json', () => {
+    const apiPackage = JSON.parse(readFileSync(apiPackageJsonPath, 'utf8')) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const declared = [
+      ...Object.keys(apiPackage.dependencies ?? {}),
+      ...Object.keys(apiPackage.devDependencies ?? {}),
+    ];
+    // Guard the fixture itself: an empty package.json would make this vacuous.
+    expect(declared.length).toBeGreaterThan(10);
+
+    expect(declared.filter((name) => /^@sentry\//.test(name))).toEqual([]);
+  });
+
+  it('is imported by no source file under services/observability/', () => {
+    const observabilityDir = path.dirname(fileURLToPath(import.meta.url));
+
+    // Source only — test files legitimately talk ABOUT the retired SDK (this
+    // one included) without importing it, so scanning them risks a false
+    // positive on prose rather than a real import.
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return walk(full);
+        return entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')
+          ? [full]
+          : [];
+      });
+
+    const sourceFiles = walk(observabilityDir);
+    // Guard the scanner itself: an empty sweep would make the assertion vacuous.
+    expect(sourceFiles.length).toBeGreaterThan(3);
+
+    // Matches `@sentry/node`, `@sentry/core`, or any other scoped entry point.
+    const importers = sourceFiles.filter((file) => /@sentry\//.test(readFileSync(file, 'utf8')));
+    expect(importers.map((file) => path.relative(observabilityDir, file))).toEqual([]);
   });
 });
 

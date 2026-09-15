@@ -79,7 +79,19 @@ export default defineConfig({
       // #1485: disposing one harness must never close the worker-shared Redis
       // singleton that another harness is still using.
       'src/testing/createTestApp.test.ts',
+      // #1914: …and it must hand back the two pub/sub connections buildContext
+      // opens for the event bus. Only real Redis can be asked, via CLIENT LIST,
+      // whether a harness actually gave its sockets back.
+      'src/__tests__/harnessLifecycle.test.ts',
     ],
+    // Every test file gets the harness reapers: the #1936 `afterAll` that
+    // releases any `createTestApp()` harness the file did not dispose itself,
+    // and the #1940 `beforeEach` that releases a describe's harnesses as soon
+    // as the runner leaves it. Registered from a setup file so — under Vitest's
+    // default `sequence.hooks: "stack"` — the `afterAll` is the last hook to
+    // run (after any hook of the file's own that still uses its harness) and
+    // the `beforeEach` is the first, before any hook that builds a harness.
+    setupFiles: ['src/testing/setupHarnessReaper.ts'],
     pool: 'forks',
     poolOptions: {
       forks: { singleFork: true },

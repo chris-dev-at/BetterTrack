@@ -84,7 +84,7 @@ describe.skipIf(!REDIS_URL)('BullMQ integration (real Redis)', () => {
       deadLetter,
       redis: deadLetterRedis,
       logger,
-      isFeatureEnabled: async () => true,
+      isFeatureEnabledGlobally: async () => true,
     };
     const running = createJobWorkers({
       createConnection: connect,
