@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -39,7 +39,9 @@ const settings: AppSettingsResponse = {
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <MemoryRouter>
+      {/* The real path, so the page renders the Product & Comms tab strip it
+          owns since the W7c fold (#1406). */}
+      <MemoryRouter initialEntries={['/admin/settings']}>
         <AuthProvider>
           <SettingsPage />
         </AuthProvider>
@@ -166,4 +168,21 @@ test('renders the P13b settings surface in German', async () => {
   expect(screen.getByText('Geschlossen')).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: /Beta-Modus/i })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Einstellungen speichern' })).toBeInTheDocument();
+});
+
+/**
+ * The page IS a tab of the Product & Comms workspace since the W7c fold (#1406),
+ * and this is what makes that true of the PAGE rather than only of the strip
+ * component. `WorkspaceTabs.test.tsx` renders the strip on its own and
+ * `AdminLayout.test.tsx` mounts route stubs, so without an assertion here
+ * deleting `<WorkspaceTabs />` from this component left the whole suite green.
+ */
+test('renders the Product & Comms tab strip with this page as the current tab', async () => {
+  renderPage();
+
+  const nav = await screen.findByRole('navigation', { name: 'Product & Comms' });
+  expect(within(nav).getByRole('link', { name: 'Settings' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });
