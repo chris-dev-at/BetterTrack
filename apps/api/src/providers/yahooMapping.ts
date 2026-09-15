@@ -449,6 +449,16 @@ function determineForwardYield(detail: YahooSummaryDetail): number | null {
  *
  * The chart's own series wins over `lastDividendValue` when both name the day:
  * the chart's currency is what `scale` was derived from.
+ *
+ * The day is compared as the UTC day of each ISO stamp, and deliberately
+ * STRICTLY. Yahoo dates these two fields independently: an ex-date stamped late
+ * UTC (`…T23:30:00.000Z`, which renders as the NEXT day in the deploy zone, see
+ * `displayDay.marketIntelEventDay`) sitting beside a date-only `lastDividendDate`
+ * on that displayed day reads as two different days here, and the amount is
+ * dropped. That is the safe direction and the intended one: a missed match costs
+ * a payout identity (the marker then says `ambiguous` and the run reports
+ * degraded — visible), while a loose match would put the WRONG amount in a
+ * holder's notification and merge two payouts that are not one.
  */
 function declaredAmountOn(
   exDateIso: string | null,

@@ -375,6 +375,49 @@ describe('marketIntel.dividendScan — notify-once guard (#1791)', () => {
     };
   }
 
+  /**
+   * Run the scan on EVERY day of the horizon, clearing the inbox between runs —
+   * the `notifies once across the whole horizon window` idiom above. A
+   * single-day snapshot cannot see a marker decision that is RE-TAKEN daily: the
+   * band's evidence (`anchorVacated`) changes as the anchored date approaches,
+   * so "suppressed on day 1" says nothing about day 6. `payloadOn(d)` is what
+   * the provider answers on day `d`.
+   */
+  async function dayWalk(
+    userId: string,
+    notify: NotificationCenter & { emits: DispatchableEvent[] },
+    payloadOn: (d: number) => DividendEvents['upcoming'],
+  ): Promise<DividendScanResult[]> {
+    const repo = createNotificationRepository(db);
+    const results: DividendScanResult[] = [];
+    for (let d = 0; d < DIVIDEND_EVENT_HORIZON_DAYS; d += 1) {
+      results.push(
+        await runDividendEventsScan({
+          ...scanDeps({ holders: [holder(userId)], upcoming: payloadOn(d) }),
+          notify,
+          now: () => day(d),
+        }),
+      );
+      await repo.deleteBulk(userId, 'all');
+    }
+    return results;
+  }
+
+  /** A payout that is announced on day 0 and reads differently from day `from`. */
+  function moves(
+    announced: string,
+    moved: string,
+    opts: { amount?: number | null; movedAmount?: number | null; from?: number } = {},
+  ) {
+    const amount = opts.amount === undefined ? 0.3 : opts.amount;
+    const movedAmount = opts.movedAmount === undefined ? amount : opts.movedAmount;
+    const from = opts.from ?? 1;
+    return (d: number): DividendEvents['upcoming'] =>
+      d < from
+        ? [{ exDate: announced, payDate: null, amount, currency: 'USD' }]
+        : [{ exDate: moved, payDate: null, amount: movedAmount, currency: 'USD' }];
+  }
+
   it('does not re-notify after the holder deletes the in-app row', async () => {
     const user = await harness.seedUser({ email: 'clears@bt.test', username: 'clears' });
     await optIn(user.id);
@@ -448,51 +491,6 @@ describe('marketIntel.dividendScan — notify-once guard (#1791)', () => {
     expect(DIVIDEND_EVENT_AMENDMENT_DAYS).toBeLessThanOrEqual(DIVIDEND_EVENT_HORIZON_DAYS);
   });
 
-  it('notifies once when the provider amends the ex-date past the match window (#1948)', async () => {
-    // The 4–7-day band #1903 left open: the move is too far for the match
-    // window, so the candidate took a fresh per-date lock and sent a SECOND
-    // `dividend.event` for one payout — against the #1758 ruling. The evidence
-    // that closes it is the payload itself: the announced ex-date is STILL IN
-    // THE FUTURE and the provider no longer lists it, so that payout did not
-    // happen beside this one, it MOVED to it. The identity then confirms.
-    const user = await harness.seedUser({ email: 'amend5@bt.test', username: 'amend5' });
-    await optIn(user.id);
-    const notify = countingCenter();
-    const announcedEx = exOn(3);
-    const amendedEx = exOn(3 + 5);
-    expect(5).toBeGreaterThan(DIVIDEND_EVENT_MATCH_DAYS);
-    expect(5).toBeLessThanOrEqual(DIVIDEND_EVENT_AMENDMENT_DAYS);
-    const deps = {
-      ...scanDeps({
-        holders: [holder(user.id)],
-        upcoming: [{ exDate: announcedEx, payDate: null, amount: 0.3, currency: 'USD' }],
-      }),
-      notify,
-    };
-
-    const announced = await runDividendEventsScan(deps);
-    const amended = await runDividendEventsScan({
-      ...deps,
-      // The announced date is GONE from the payload — the payout moved.
-      marketData: marketDataWith([
-        { exDate: amendedEx, payDate: null, amount: 0.3, currency: 'USD' },
-      ]),
-      now: () => day(1),
-    });
-
-    expect(announced.emitted).toBe(1);
-    expect(amended).toMatchObject({
-      candidates: 1,
-      emitted: 0,
-      suppressed: 1,
-      ambiguous: 0,
-      skipped: 0,
-      degraded: false,
-    });
-    expect(notify.emits).toHaveLength(1);
-    expect(notify.emits[0]).toMatchObject({ exDate: announcedEx });
-  });
-
   it('notifies for a second payout inside the amendment band while the first is still listed', async () => {
     // The #1894 guarantee, enforced INSIDE the band closed above: two payouts
     // the provider itself still lists as two are two notifications, and an
@@ -530,68 +528,121 @@ describe('marketIntel.dividendScan — notify-once guard (#1791)', () => {
     ]);
   });
 
-  it('counts an amount-less payout inside the amendment band as ambiguous, not as a second payout', async () => {
-    // Same shape as the amendment above, with the payload the shipped provider
-    // sends when Yahoo dates no per-payout amount to the ex-date: nothing
-    // confirms the move. The marker still refuses — a duplicate notification is
-    // the worse failure — and the run says so instead of logging complete.
-    const user = await harness.seedUser({ email: 'amend5null@bt.test', username: 'amend5null' });
+  it('notifies once for a FORWARD amendment, on every day of the window (#1948)', async () => {
+    // The defect a day-1 snapshot hid: the band returned `duplicate` without
+    // moving the marker, so the decision was re-taken every day — and on the day
+    // the ANNOUNCED date arrived, `anchorVacated` went false (an arrived date is
+    // not evidence of a move), the distance fell through to a per-date `SET NX`
+    // that had never been taken, and a SECOND notification went out for one
+    // payout, naming a date that never happened.
+    //
+    // Announced 6 days out, moved 4 days later. The move is observable from day
+    // 1, the new date enters the horizon on day 3 — while the announced date is
+    // still MATCH_DAYS away, which is what makes it a move rather than a
+    // provider rolling its single slot on to the next payout — and the announced
+    // date ARRIVES on day 6.
+    const user = await harness.seedUser({ email: 'fwd@bt.test', username: 'fwd' });
     await optIn(user.id);
     const notify = countingCenter();
-    const deps = {
-      ...scanDeps({
-        holders: [holder(user.id)],
-        upcoming: [{ exDate: exOn(3), payDate: null, amount: null, currency: 'USD' }],
-      }),
-      notify,
-    };
+    const announced = exOn(6);
+    const moved = exOn(6 + 4);
 
-    const announced = await runDividendEventsScan(deps);
-    const amended = await runDividendEventsScan({
-      ...deps,
-      marketData: marketDataWith([
-        { exDate: exOn(3 + 5), payDate: null, amount: null, currency: 'USD' },
-      ]),
-      now: () => day(1),
-    });
+    const walk = await dayWalk(user.id, notify, moves(announced, moved));
 
-    expect(announced.emitted).toBe(1);
-    expect(amended).toMatchObject({
-      candidates: 1,
-      emitted: 0,
-      suppressed: 0,
-      ambiguous: 1,
-      skipped: 1,
-      degraded: true,
-    });
+    expect(walk.map((r) => r.emitted)).toEqual([1, 0, 0, 0, 0, 0, 0]);
+    // Day 3 transfers the claim to the moved date; days 4-6 are then simply the
+    // same date, including day 6, when the announced one arrives.
+    expect(walk.map((r) => r.suppressed)).toEqual([0, 0, 0, 1, 1, 1, 1]);
+    expect(walk.map((r) => r.ambiguous)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(walk.every((r) => !r.degraded)).toBe(true);
+    expect(notify.emits).toHaveLength(1);
+    expect(notify.emits[0]).toMatchObject({ exDate: announced });
+  });
+
+  it('notifies once for a BACKWARD amendment, on every day of the window (#1948)', async () => {
+    // A provider never moves a payout EARLIER as part of its cadence, so a
+    // backward move inside the band is unambiguously an amendment. Announced at
+    // the horizon edge, pulled five days in on day 1; the moved date arrives on
+    // day 2 and leaves the window after it.
+    const user = await harness.seedUser({ email: 'back@bt.test', username: 'back' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const announced = exOn(7);
+    const moved = exOn(7 - 5);
+
+    const walk = await dayWalk(user.id, notify, moves(announced, moved));
+
+    expect(walk.map((r) => r.emitted)).toEqual([1, 0, 0, 0, 0, 0, 0]);
+    expect(walk.map((r) => r.candidates)).toEqual([1, 1, 1, 0, 0, 0, 0]);
+    expect(walk.map((r) => r.suppressed)).toEqual([0, 1, 1, 0, 0, 0, 0]);
+    expect(walk.every((r) => !r.degraded)).toBe(true);
+    expect(notify.emits).toHaveLength(1);
+    expect(notify.emits[0]).toMatchObject({ exDate: announced });
+  });
+
+  it('decides an amount-less amendment ONCE instead of degrading daily and notifying late', async () => {
+    // The same forward move with the payload Yahoo sends when it dates no
+    // per-payout amount to the ex-date: nothing confirms the move. The marker
+    // still refuses — a duplicate notification is the worse failure — but it
+    // must refuse ONCE: before #1948 this booked `ambiguous` (and a degraded
+    // run) on every day the announced date was still ahead, and then sent the
+    // second notification anyway on the day it arrived.
+    const user = await harness.seedUser({ email: 'amb@bt.test', username: 'amb' });
+    await optIn(user.id);
+    const notify = countingCenter();
+
+    const walk = await dayWalk(user.id, notify, moves(exOn(6), exOn(6 + 4), { amount: null }));
+
+    expect(walk.map((r) => r.emitted)).toEqual([1, 0, 0, 0, 0, 0, 0]);
+    expect(walk.map((r) => r.ambiguous)).toEqual([0, 0, 0, 1, 0, 0, 0]);
+    expect(walk.map((r) => r.degraded)).toEqual([false, false, false, true, false, false, false]);
+    expect(walk.map((r) => r.suppressed)).toEqual([0, 0, 0, 0, 1, 1, 1]);
     expect(notify.emits).toHaveLength(1);
   });
 
+  it('never merges a weekly payout when the provider rolls its single slot early (#1894)', async () => {
+    // THE production shape: `yahooMapping` publishes ONE upcoming slot, so
+    // "the announced date is still listed" — the evidence that two payouts
+    // coexist — is not available, and a slot rolling on to the next payout looks
+    // exactly like a move. What separates them is WHEN: a roll happens as the
+    // announced date arrives. Here Yahoo rolls a day early, on day 2, and the
+    // weekly payout seven days later must still notify.
+    //
+    // The band can never swallow it, whatever the amounts: a forward merge needs
+    // the announced date to be at least MATCH_DAYS away AND the candidate inside
+    // the horizon, so its distance can never exceed HORIZON - MATCH_DAYS = 4 —
+    // below every real payout cadence, weekly included.
+    const user = await harness.seedUser({ email: 'roll@bt.test', username: 'roll' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const first = exOn(3);
+    const second = exOn(3 + 7);
+
+    const walk = await dayWalk(user.id, notify, moves(first, second, { from: 2 }));
+
+    // Two payouts, two notifications — the second on the day the first arrives.
+    expect(walk.map((r) => r.emitted)).toEqual([1, 0, 0, 1, 0, 0, 0]);
+    expect(walk.map((r) => r.suppressed)).toEqual([0, 1, 0, 0, 1, 1, 1]);
+    expect(walk.map((r) => r.ambiguous)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(notify.emits.map((e) => e.type === 'dividend.event' && e.exDate)).toEqual([
+      first,
+      second,
+    ]);
+  });
+
   it('notifies inside the amendment band when the vanished payout paid a different amount', async () => {
-    // The anchored ex-date vanished, but this payout pays something else — a
-    // cancelled payout replaced by a different one is a second notification,
-    // not a silent amendment.
+    // The announced date vanished with every piece of evidence pointing at a
+    // move — but this payout pays something else, and an amendment never changes
+    // the amount. A cancelled payout replaced by a different one is a second
+    // notification, not a silent amendment.
     const user = await harness.seedUser({ email: 'replaced@bt.test', username: 'replaced' });
     await optIn(user.id);
     const notify = countingCenter();
-    const deps = {
-      ...scanDeps({
-        holders: [holder(user.id)],
-        upcoming: [{ exDate: exOn(3), payDate: null, amount: 0.3, currency: 'USD' }],
-      }),
-      notify,
-    };
 
-    await runDividendEventsScan(deps);
-    const replaced = await runDividendEventsScan({
-      ...deps,
-      marketData: marketDataWith([
-        { exDate: exOn(3 + 5), payDate: null, amount: 2.5, currency: 'USD' },
-      ]),
-      now: () => day(1),
-    });
+    const walk = await dayWalk(user.id, notify, moves(exOn(6), exOn(6 + 4), { movedAmount: 2.5 }));
 
-    expect(replaced).toMatchObject({ emitted: 1, suppressed: 0, ambiguous: 0, degraded: false });
+    expect(walk.map((r) => r.emitted)).toEqual([1, 0, 0, 1, 0, 0, 0]);
+    expect(walk.map((r) => r.ambiguous)).toEqual([0, 0, 0, 0, 0, 0, 0]);
     expect(notify.emits.map((e) => e.type === 'dividend.event' && e.amount)).toEqual([0.3, 2.5]);
   });
 

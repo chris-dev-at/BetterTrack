@@ -437,3 +437,52 @@ describe('mapDividendEvents — the upcoming payout’s amount (#1948)', () => {
     expect(event).toMatchObject({ exDate: null, amount: null });
   });
 });
+
+describe('mapDividendEvents — the per-payout amount is dated STRICTLY (#1948)', () => {
+  /** An ex-date stamped late UTC: 08 Aug 23:30 UTC renders as 09 Aug in Vienna. */
+  const LATE_EX = new Date('2026-08-08T23:30:00.000Z');
+
+  it('matches a date-only per-payout date against the ex-date’s own UTC day', () => {
+    // Same UTC day, different times of day — this is the normal shape, and the
+    // clock time must not defeat it.
+    const events = mapDividendEvents(
+      { meta: { currency: 'USD' }, dividends: [], splits: [] },
+      {
+        calendarEvents: { exDividendDate: LATE_EX },
+        summaryDetail: { currency: 'USD' },
+        defaultKeyStatistics: {
+          lastDividendValue: 0.25,
+          lastDividendDate: new Date('2026-08-08T00:00:00.000Z'),
+        },
+      },
+    );
+    expect(events.upcoming[0]).toMatchObject({
+      exDate: '2026-08-08T23:30:00.000Z',
+      amount: 0.25,
+    });
+  });
+
+  it('drops the amount when the two fields land on different UTC days', () => {
+    // The late stamp DISPLAYS as 09 Aug (#1827/#1903), and Yahoo dates the two
+    // fields independently, so `lastDividendDate` can be the date-only 09 Aug of
+    // the same payout. Strictness costs an identity here — the marker says
+    // `ambiguous` and the run reports degraded, in the open — and that is the
+    // deliberate trade: a loose match would attach a WRONG amount to a holder's
+    // notification and merge two payouts on the strength of it.
+    const events = mapDividendEvents(
+      { meta: { currency: 'USD' }, dividends: [], splits: [] },
+      {
+        calendarEvents: { exDividendDate: LATE_EX },
+        summaryDetail: { currency: 'USD' },
+        defaultKeyStatistics: {
+          lastDividendValue: 0.25,
+          lastDividendDate: new Date('2026-08-09T00:00:00.000Z'),
+        },
+      },
+    );
+    expect(events.upcoming[0]).toMatchObject({
+      exDate: '2026-08-08T23:30:00.000Z',
+      amount: null,
+    });
+  });
+});

@@ -165,24 +165,17 @@ export async function claimReminderMarker(spec: ReminderMarkerSpec): Promise<Rem
     if (anchor !== null) {
       const previous = decodeAnchor(anchor);
       const distance = dayDistance(previous.dateKey, dateKey);
+      const withinMatch = distance <= matchDays;
       // The outer band: too far for proximity to mean anything, close enough
       // that one event could have MOVED here. Nothing is merged on distance —
-      // the payload has to say the anchored event vacated its date, and the
-      // identity has to agree. A different identity falls through and claims,
-      // because a payout that was cancelled and replaced by a different one is
-      // a second notification, not a silent amendment.
-      if (
-        distance > matchDays &&
+      // the caller has to say the anchored event vacated its date, and the
+      // identity has to agree.
+      const movedInBand =
+        !withinMatch &&
         distance <= amendmentDays &&
         identity !== undefined &&
-        spec.anchorVacated?.(previous.dateKey) === true
-      ) {
-        if (identity !== null && previous.identity === identity)
-          return { status: 'duplicate', reason: 'same-event' };
-        if (identity === null || previous.identity === null)
-          return { status: 'duplicate', reason: 'ambiguous' };
-      }
-      if (distance <= matchDays) {
+        spec.anchorVacated?.(previous.dateKey) === true;
+      if (withinMatch || movedInBand) {
         // Distance ZERO is not a proximity question at all: it is the same date,
         // which the per-date `SET NX` lock below would classify `same-date` on
         // its own. Deciding it HERE, before the identity branches, is what keeps
@@ -192,18 +185,52 @@ export async function claimReminderMarker(spec: ReminderMarkerSpec): Promise<Rem
         // identities existed, would otherwise be `ambiguous` on every day of the
         // window and turn every run after the first notification into a degraded
         // one. Only a DIFFERENT nearby date is genuinely undecidable.
-        if (previous.dateKey === dateKey) return { status: 'duplicate', reason: 'same-date' };
+        if (withinMatch && previous.dateKey === dateKey)
+          return { status: 'duplicate', reason: 'same-date' };
         // Without an identity concept the distance IS the rule, exactly as
-        // before. With one, only an equal identity keeps the marker silent for
-        // a date this far away; a different identity falls through and claims.
+        // before — and so is the marker it leaves behind (the band above is
+        // unreachable without an identity, so this is the earnings scan, whose
+        // 21-day window no drift can walk out of inside one report cycle).
         if (identity === undefined) return { status: 'duplicate', reason: 'same-event' };
-        if (identity !== null && previous.identity === identity)
-          return { status: 'duplicate', reason: 'same-event' };
-        if (identity === null || previous.identity === null)
-          return { status: 'duplicate', reason: 'ambiguous' };
+        // With one, only an equal identity keeps the marker silent for a date
+        // this far away; a different identity falls through and claims, because
+        // a payout that was cancelled and replaced by a different one is a
+        // second notification, not a silent amendment.
+        const reason: ReminderDuplicateReason | null =
+          identity !== null && previous.identity === identity
+            ? 'same-event'
+            : identity === null || previous.identity === null
+              ? 'ambiguous'
+              : null;
+        if (reason !== null) {
+          // TRANSFER the claim to the date the event moved to, and only then
+          // refuse. Refusing WITHOUT moving the marker leaves the decision to be
+          // re-taken on every later scan against evidence that decays: the
+          // anchored date eventually ARRIVES, `anchorVacated` goes false (an
+          // arrived date is not a vanished one), the distance falls through to a
+          // per-date lock that was never taken, and a second notification goes
+          // out for one event — on the day the date it names never happened.
+          // After the transfer the distance is ZERO forever after, so the answer
+          // is `same-date` no matter what the payload does next.
+          //
+          // The key shapes are unchanged: the per-date `SET NX` is taken for the
+          // date being refused (its result is deliberately ignored — either this
+          // scan takes it or a concurrent one already holds it, and both mean
+          // the same thing: this date must never be emitted), and the anchor
+          // still holds exactly one date per (recipient, asset). An identity the
+          // candidate does not carry is never allowed to erase one the anchor
+          // already knows.
+          await redis.set(lockKey, '1', 'EX', ttlSeconds, 'NX');
+          await redis.set(
+            anchorKey,
+            encodeAnchor(dateKey, identity ?? previous.identity),
+            'EX',
+            ttlSeconds,
+          );
+          return { status: 'duplicate', reason };
+        }
       }
     }
-
     const acquired = await redis.set(lockKey, '1', 'EX', ttlSeconds, 'NX');
     if (acquired !== 'OK') return { status: 'duplicate', reason: 'same-date' };
     locked = true;
