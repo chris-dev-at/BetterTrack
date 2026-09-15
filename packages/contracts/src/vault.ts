@@ -1856,6 +1856,10 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
  * than reporting every one: a document already refused does not become more
  * refused, and a malformed document must not be able to make the server build an
  * issue list proportional to its own size.
+ *
+ * COUNTS LIVE LINKS ONLY — see the tombstone note in the loop; it is the half of
+ * this refinement that keeps it in step with the service gate and keeps it off
+ * the paranoid exit path.
  */
 function refineCashRuleTagFanOut(
   value: { readonly entities: readonly VaultStrictEntity[] },
@@ -1863,7 +1867,18 @@ function refineCashRuleTagFanOut(
 ): void {
   const perRule = new Map<string, number>();
   for (const entity of value.entities) {
-    if (entity.kind !== 'cashRuleTag') continue;
+    // LIVE LINKS ONLY. A tombstone is not a tag the rule carries: the restore
+    // service counts `liveEntities()` (`deletedAt === null`) and never writes a
+    // soft-deleted row, so counting them here would refuse documents the service
+    // accepts — two gates disagreeing about one document. It would also lock the
+    // EXIT: `paranoidDisable.ts`'s `toStrictRestoreDocument` parses every row of
+    // the unlocked vault through this schema, tombstones included, and throws
+    // `document-invalid` with no bypass. The day the client can soft-delete a
+    // `cashRuleTag` (§16 2026-08-19 item 6), a user who unlinked one tag from a
+    // fully-tagged rule could no longer disable paranoid mode or move a
+    // portfolio out. The rows stay in the document either way — §4's merge rules
+    // key off them — they just do not count against the fan-out.
+    if (entity.kind !== 'cashRuleTag' || entity.deletedAt !== null) continue;
     const count = (perRule.get(entity.data.ruleId) ?? 0) + 1;
     if (count > CASH_TAGS_PER_ITEM_MAX) {
       ctx.addIssue({

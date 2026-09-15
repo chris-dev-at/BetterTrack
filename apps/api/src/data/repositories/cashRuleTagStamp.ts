@@ -418,8 +418,20 @@ export async function applyCashRulesForOwner(
             -- a restored vault row carries whatever the document held. Clipping
             -- in JS after the fetch would still materialize 500 unbounded notes
             -- per page, so the ceiling is applied HERE and a full-length note
-            -- never exists in this process at all. left() counts characters,
-            -- which is what CASH_MOVEMENT_NOTE_MAX means everywhere else.
+            -- never exists in this process at all.
+            --
+            -- THE TWO ENFORCEMENTS COUNT DIFFERENT UNITS, and the difference is
+            -- a constant factor rather than a hole. left() counts CHARACTERS
+            -- (code points); zod's .max(), which bounds the same constant on
+            -- every write path, counts UTF-16 CODE UNITS. So 1000 code points of
+            -- astral text (emoji, historic scripts) is up to 2000 JS units and
+            -- up to 4 KB on the wire, where 1000 units of BMP text is ~1-3 KB.
+            -- A page is therefore bounded at ~2 MB rather than ~1.5 MB in the
+            -- worst case — still a bound, and still the point. Matching is
+            -- unaffected: applyCashRuleTags slices the result to 1000 UTF-16
+            -- units, and the first 1000 code points always contain the first
+            -- 1000 units, so the matched window is byte-identical to the one the
+            -- unclipped SELECT produced.
             left("note", ${CASH_MOVEMENT_NOTE_MAX}) AS "note",
             "executed_at"::text AS "cursorExecutedAt"
           FROM "portfolio_cash_movements"
