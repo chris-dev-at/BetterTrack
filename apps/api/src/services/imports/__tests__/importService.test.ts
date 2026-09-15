@@ -438,6 +438,28 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
+  it('refuses a nested field name with the same generic upload error', async () => {
+    const { agent, pid } = await setup();
+    // `fieldNestingDepth` is multer's other opt-in guard (#1931) and is checked
+    // one step BEFORE the array-index bound. Without it `append-field` walks
+    // `a[b][c]` into a nested object inside `req.body` and the request survives
+    // to the strict contract, which refuses it as VALIDATION_ERROR — a
+    // different error, one layer too late, for the same class of input. With it
+    // the upload is refused where every other multipart breach is.
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .field('a[b][c]', '1')
+      .attach('file', Buffer.from(FIXTURE, 'utf8'), 'export.csv');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
   it('accepts the distinct-instrument cap and rejects cap+1 before queued resolution', async () => {
     const { user, pid } = await setup();
     const mapper: BrokerMapper = {
