@@ -208,7 +208,7 @@ export class VaultCaptureUnstableError extends Error {
  * order to mean anything.
  *
  * The second read is not extra caution about other sessions. THE CAPTURE'S OWN
- * READS WRITE. Six of them seed or self-heal rows in tables the revision hashes:
+ * READS WRITE. Five of them seed or self-heal rows in tables the revision hashes:
  *
  * - `GET /portfolios` materializes "Main" (`portfolios`);
  * - `GET /portfolios/:id/cash` materializes its main source
@@ -216,11 +216,12 @@ export class VaultCaptureUnstableError extends Error {
  * - `GET …/reports/tax-years` and `…/tax-years/:year` run the #635 self-heal,
  *   posting each documented year's pending tax correction (`portfolio_cash_movements`,
  *   and through the auto-tagger `cash_movement_tags` / `cash_tags`);
- * - `GET /expenses/categories` seeds the default categories
- *   (`expense_categories`);
  * - `GET /cash/tags` seeds the app-owned system tags (`cash_tags`).
  *
- * Four of those are self-covering — the read that seeds also returns what it
+ * (`GET /expenses/categories` used to seed the retired area's starter set too;
+ * it is a pure read since #1550.)
+ *
+ * Three of those are self-covering — the read that seeds also returns what it
  * seeded. The tax reconciler is not: it inserts CASH MOVEMENTS, while
  * `getCashMovements` sits in the same `Promise.all` as the year list and runs
  * strictly before the per-year reports. Those corrections are missing from the
@@ -409,7 +410,14 @@ export async function buildNormalVaultDocument(
           executedAt: movement.executedAt,
           note: movement.note,
           source: movement.source,
-          dedupHash: null,
+          // The statement-import idempotency key, carried — NOT stamped null.
+          // This table is `vault`-classified: enable hard-deletes it server-side
+          // and disable restores from this document alone, so a null here
+          // destroys the only key the ledger has and the next re-import of the
+          // same statement books every row a second time (NULLs never collide in
+          // `UNIQUE(portfolio, dedup_hash)`). Absent on the DTO means the row
+          // carries no hash — a manual entry — which is what null means here too.
+          dedupHash: movement.dedupHash ?? null,
           originalCurrency: movement.originalCurrency ?? null,
           createdAt: movement.createdAt,
         },
@@ -612,7 +620,11 @@ export async function buildNormalVaultDocument(
         bookedOn: expense.bookedOn,
         description: expense.description,
         source: expense.source,
-        dedupHash: null,
+        // Same key, same reason as the cash movement above: `UNIQUE(user,
+        // dedup_hash)` is the bank importer's only defence against booking an
+        // already-landed statement twice, and this document is the sole copy
+        // that survives enable.
+        dedupHash: expense.dedupHash ?? null,
         createdAt: expense.createdAt,
         updatedAt: expense.updatedAt,
       },
@@ -637,7 +649,6 @@ export async function buildNormalVaultDocument(
     );
   }
   for (const budget of budgets.budgets) {
-    const migratedAt = now();
     append(
       'expenseBudget',
       budget.id,
@@ -646,10 +657,13 @@ export async function buildNormalVaultDocument(
         categoryId: budget.categoryId,
         amount: decimal(budget.amount),
         currency: budget.currency,
-        createdAt: migratedAt,
-        updatedAt: migratedAt,
+        // The row's own age, not the migration instant. The budgets list is
+        // ordered by `createdAt`, so stamping every row with `now()` collapsed
+        // the restored list to one age and reordered it by UUID.
+        createdAt: budget.createdAt,
+        updatedAt: budget.updatedAt,
       },
-      migratedAt,
+      budget.updatedAt,
     );
   }
 

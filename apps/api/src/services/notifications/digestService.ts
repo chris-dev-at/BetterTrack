@@ -1,15 +1,21 @@
-import type { DigestCadence } from '@bettertrack/contracts';
+import { isUrgentNotification, type DigestCadence } from '@bettertrack/contracts';
 
 import type {
+  DigestChannel,
   DigestQueueItem,
   EnqueueDeferredItemInput,
   NotificationDigestRepository,
 } from '../../data/repositories/notificationDigestRepository';
+import type {
+  NotificationRepository,
+  TypeRouting,
+} from '../../data/repositories/notificationRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { EmailService } from '../email/emailService';
 import { notificationCopy, resolveEmailLocale } from '../email/emailI18n';
 import type { Logger } from '../../logger';
 
+import { notificationTypeShipsEmail } from './emailTypeRules';
 import type { FcmChannel, PushMessage } from './fcm';
 import { isInQuietHours, quietHoursWindowEnd, zonedCalendarDate } from './quietHours';
 import { quietHoursConfigForUser } from './quietHoursConfig';
@@ -26,7 +32,101 @@ import type { WebPushChannel } from './webPush';
  * second worker claims zero rows and no second send happens. Delivery itself is
  * best-effort past the claim (the §6.10 channel philosophy) — the in-app center
  * already holds every item as the durable record.
+ *
+ * Everything a queued item was decided against at ENQUEUE time is re-evaluated
+ * at RELEASE time (#1590), because a queue row can outlive the settings that
+ * produced it: the global mute, the channel matrix, and — for a quiet-hours
+ * deferral — the window itself. `deliver_after` is a frozen instant, so a user
+ * who moves their timezone or window between defer and release would otherwise
+ * be woken inside their NEW quiet window, the precise outcome quiet hours exist
+ * to prevent; such a row is re-deferred to the new window end instead of sent.
+ * That re-evaluation covers a deferred digest SUMMARY too (#1696): it carries a
+ * manifest of the types it summarizes, so the matrix is re-checked against those
+ * rather than waved through on the synthetic summary type.
  */
+
+/**
+ * The synthetic type a rendered digest summary carries. It is not a matrix type
+ * — its constituent items were already routed at enqueue — so it cannot be fed
+ * to the release-time matrix re-check directly; a summary is checked against the
+ * types it CARRIES instead (see {@link DIGEST_SUMMARY_ITEMS_KEY}).
+ */
+export const DIGEST_SUMMARY_TYPE = 'notifications.digest';
+
+/**
+ * Reserved `data` key on a quiet-hours-deferred digest summary (#1696): the
+ * manifest of the items that summary carries, so the release-time matrix
+ * re-check can resolve the real types behind {@link DIGEST_SUMMARY_TYPE}. Pure
+ * bookkeeping — it is stripped from the outbound push payload — and it rides in
+ * the existing `data` column, so no migration is involved.
+ */
+export const DIGEST_SUMMARY_ITEMS_KEY = 'digestItems';
+
+/** One item a deferred summary carries: its matrix type + its rendered line. */
+interface CarriedDigestItem {
+  type: string;
+  /** The `title: body` line an email summary renders for it (email rows only). */
+  line?: string;
+}
+
+/** The manifest for the items a summary of `channel` is about to carry. */
+function carriedItemsOf(
+  channel: DigestChannel,
+  items: readonly DigestQueueItem[],
+): CarriedDigestItem[] {
+  return items.map((item) =>
+    channel === 'email'
+      ? { type: item.type, line: `${item.title}: ${item.body}` }
+      : { type: item.type },
+  );
+}
+
+/** The manifest as the row's `data` payload. */
+function encodeCarried(carried: readonly CarriedDigestItem[]): Record<string, string> {
+  return { [DIGEST_SUMMARY_ITEMS_KEY]: JSON.stringify(carried) };
+}
+
+/**
+ * The manifest a claimed row carries, or `null` when it has none — a summary
+ * queued before #1696, or anything unparseable. `null` means "no manifest to
+ * check", which keeps the pre-#1696 behaviour (delivered as queued) rather than
+ * silently dropping a row whose types cannot be resolved.
+ */
+function decodeCarried(data: Record<string, string> | null): CarriedDigestItem[] | null {
+  const raw = data?.[DIGEST_SUMMARY_ITEMS_KEY];
+  if (typeof raw !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const carried: CarriedDigestItem[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const { type, line } = entry as { type?: unknown; line?: unknown };
+    if (typeof type !== 'string' || type.length === 0) return null;
+    carried.push(typeof line === 'string' ? { type, line } : { type });
+  }
+  return carried.length > 0 ? carried : null;
+}
+
+/** The email summary body: one rendered line per carried item. */
+function emailSummaryBody(carried: readonly CarriedDigestItem[]): string {
+  return carried
+    .map((item) => item.line ?? '')
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+/** A push payload never carries this module's own bookkeeping key outbound. */
+function pushData(data: Record<string, string> | null): Record<string, string> {
+  if (!data) return {};
+  const rest = { ...data };
+  delete rest[DIGEST_SUMMARY_ITEMS_KEY];
+  return rest;
+}
 
 /**
  * The period key an item is grouped under — `d:YYYY-MM-DD` / `w:GGGG-Www` — in
@@ -78,6 +178,10 @@ export interface DeferredDeliveryResult {
   claimed: number;
   /** Email/push/webpush deferrals actually dispatched. */
   sent: number;
+  /** Rows dropped at release: the recipient muted the type/channel meanwhile. */
+  dropped: number;
+  /** Rows re-deferred: the recipient's CURRENT window still covers now (#1590). */
+  requeued: number;
 }
 
 export interface DigestServiceDeps {
@@ -98,6 +202,14 @@ export interface DigestServiceDeps {
    * (the pre-quiet-hours behaviour; existing users have quiet hours off anyway).
    */
   quietHours?: Pick<NotificationDigestRepository, 'enqueueDeferred'> | null;
+  /**
+   * Channel matrix as of RELEASE time (#1590). A queued item was routed when it
+   * was enqueued, but the user may have turned that (type, channel) off since —
+   * re-resolving here drops it instead of delivering a notification the user has
+   * already switched off. Omit/null ⇒ no re-check (the pre-#1590 behaviour); the
+   * global mute is read off the recipient row and is always honoured.
+   */
+  routing?: Pick<NotificationRepository, 'routingFor'> | null;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => Date;
   logger?: Logger;
@@ -115,13 +227,46 @@ export interface DigestService {
    * rows atomically and send each INDIVIDUALLY (email as a single notification,
    * push/webpush as the same message). Idempotent (the claim stamps
    * `delivered_at`) and restart-safe (pending rows persist in the DB).
+   *
+   * Due is necessary, not sufficient (#1590): a claimed row is dropped if the
+   * recipient has muted it since, and re-deferred to the CURRENT window end if
+   * their (possibly since-changed) quiet-hours window covers this moment.
    */
   deliverDeferred(): Promise<DeferredDeliveryResult>;
 }
 
 export function createDigestService(deps: DigestServiceDeps): DigestService {
-  const { repo, users, email, fcm, webPush, quietHours, logger } = deps;
+  const { repo, users, email, fcm, webPush, quietHours, routing, logger } = deps;
   const now = deps.now ?? (() => new Date());
+
+  /**
+   * Whether a claimed item's (type, channel) is STILL routed on, resolved once
+   * per (user, type) within a run (#1590). Without the `routing` dep the answer
+   * is yes — only an explicit off wins. {@link DIGEST_SUMMARY_TYPE} is not a
+   * matrix type and never resolves here: a summary is checked against its
+   * carried types instead (#1696), and a pre-#1696 summary with no manifest
+   * keeps the old "deliver it" answer.
+   */
+  async function stillRouted(
+    userId: string,
+    type: string,
+    channel: DigestChannel,
+    cache: Map<string, TypeRouting>,
+  ): Promise<boolean> {
+    // A type that ships no e-mail is not deliverable on the e-mail channel, no
+    // matter what the matrix says (#1816). The dispatcher no longer enqueues
+    // such a row, so this only catches rows queued before that fix — and the
+    // admin account-defaults grid, which can still persist the cell.
+    if (channel === 'email' && !notificationTypeShipsEmail(type)) return false;
+    if (!routing || type === DIGEST_SUMMARY_TYPE) return true;
+    const key = `${userId} ${type}`;
+    let resolved = cache.get(key);
+    if (!resolved) {
+      resolved = await routing.routingFor(userId, type);
+      cache.set(key, resolved);
+    }
+    return resolved[channel];
+  }
 
   /** Build the summary push message for a channel's claimed items (localized). */
   function pushDigest(
@@ -131,8 +276,20 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
   ): PushMessage {
     const copy = notificationCopy(resolveEmailLocale(locale)).digest;
     const title = cadence === 'daily' ? copy.pushTitleDaily : copy.pushTitleWeekly;
-    const body = copy.pushBody.replace('{count}', String(items.length));
-    return { type: 'notifications.digest', title, body, data: { cadence } };
+    return {
+      type: DIGEST_SUMMARY_TYPE,
+      title,
+      body: pushSummaryBody(items.length, locale),
+      data: { cadence },
+    };
+  }
+
+  /** The push summary body for `count` items, localized. */
+  function pushSummaryBody(count: number, locale: string): string {
+    return notificationCopy(resolveEmailLocale(locale)).digest.pushBody.replace(
+      '{count}',
+      String(count),
+    );
   }
 
   /**
@@ -141,6 +298,10 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
    * window end: email as generic title+body, push/webpush as the same message
    * the digest would have pushed. Content mirrors the digest (localized chrome,
    * the already-rendered item strings), so nothing is lost across the defer.
+   *
+   * The row also carries the manifest of the items it summarizes (#1696), which
+   * is what lets the release-time matrix re-check resolve real types rather than
+   * the synthetic summary type.
    */
   function deferredSummaryRow(
     cadence: DigestCadence,
@@ -151,19 +312,27 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
     deliverAfter: Date,
   ): EnqueueDeferredItemInput {
     const copy = notificationCopy(resolveEmailLocale(locale)).digest;
+    const carried = carriedItemsOf(channel, items);
     if (channel === 'email') {
       const title = cadence === 'daily' ? copy.subjectDaily : copy.subjectWeekly;
-      const body = items.map((i) => `${i.title}: ${i.body}`).join('\n');
-      return { userId, type: 'notifications.digest', channel, title, body, deliverAfter };
+      return {
+        userId,
+        type: DIGEST_SUMMARY_TYPE,
+        channel,
+        title,
+        body: emailSummaryBody(carried),
+        data: encodeCarried(carried),
+        deliverAfter,
+      };
     }
     const message = pushDigest(cadence, items, locale);
     return {
       userId,
-      type: 'notifications.digest',
+      type: DIGEST_SUMMARY_TYPE,
       channel,
       title: message.title,
       body: message.body,
-      data: message.data,
+      data: { ...message.data, ...encodeCarried(carried) },
       deliverAfter,
     };
   }
@@ -175,6 +344,7 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
       // timezone alignment "the current period" differs per recipient.
       const nowDate = now();
       const groups = await repo.pendingGroups(cadence);
+      const routingCache = new Map<string, TypeRouting>();
       let sent = 0;
       let deferred = 0;
       let processed = 0;
@@ -189,10 +359,24 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
         if (group.period >= digestPeriodKey(cadence, nowDate, tz)) continue;
 
         // Atomic claim — a second worker on the same group gets nothing back.
-        const items = await repo.claimPeriod(group.userId, group.period, cadence, nowDate);
-        if (items.length === 0) continue;
+        const claimed = await repo.claimPeriod(group.userId, group.period, cadence, nowDate);
+        if (claimed.length === 0) continue;
         processed += 1;
         const locale = recipient.locale ?? 'en';
+
+        // Re-evaluate the suppression settings at RELEASE time (#1590): a queue
+        // row can outlive the routing that produced it. A global mute drops the
+        // whole group, a (type, channel) turned off since drops just that item —
+        // dropped, not re-queued: the claim already consumed them and the in-app
+        // bell holds each one as the durable record.
+        if (recipient.notificationsMuted) continue;
+        const items: DigestQueueItem[] = [];
+        for (const item of claimed) {
+          if (await stillRouted(item.userId, item.type, item.channel, routingCache)) {
+            items.push(item);
+          }
+        }
+        if (items.length === 0) continue;
 
         // Quiet hours (§13.5 V5-P3): a digest whose delivery moment lands inside
         // the user's window is itself deferred to window end — re-queued as a
@@ -292,12 +476,86 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
       // Claim every due row atomically up front — the claim is the idempotency
       // barrier, so a delivery that throws afterwards never redelivers (the
       // in-app center already holds each item as the durable record).
-      const items = await repo.claimDueDeferred(now());
+      const nowDate = now();
+      const items = await repo.claimDueDeferred(nowDate);
+      const routingCache = new Map<string, TypeRouting>();
       let sent = 0;
+      let dropped = 0;
+      let requeued = 0;
       for (const item of items) {
         const recipient = await users.findById(item.userId);
         if (!recipient) continue;
+
+        // Release-time re-evaluation (#1590). The stored `deliver_after` froze
+        // the window as it stood at enqueue, and the matrix/mute may have moved
+        // since — so mute, routing and the quiet-hours window are ALL resolved
+        // against the recipient row as of now.
+        if (recipient.notificationsMuted) {
+          dropped += 1;
+          continue;
+        }
         const locale = recipient.locale ?? 'en';
+        // A deferred digest SUMMARY is re-checked against the types it carries
+        // (#1696), not against its synthetic type: these are the longest-lived
+        // rows in the table — a whole quiet window sits between the enqueue-time
+        // routing decision and this moment — so exempting them defeats the
+        // release-time re-check precisely where it matters most. Items whose
+        // (type, channel) went off meanwhile are dropped from the summary, which
+        // is re-rendered from what remains; nothing left ⇒ the whole row is
+        // dropped, exactly as the grouped path drops a claimed item. A row with
+        // no manifest (queued before #1696) keeps the old behaviour.
+        const carried = item.type === DIGEST_SUMMARY_TYPE ? decodeCarried(item.data) : null;
+        let body = item.body;
+        if (carried) {
+          const routed: CarriedDigestItem[] = [];
+          for (const entry of carried) {
+            if (await stillRouted(item.userId, entry.type, item.channel, routingCache)) {
+              routed.push(entry);
+            }
+          }
+          if (routed.length === 0) {
+            dropped += 1;
+            continue;
+          }
+          if (routed.length < carried.length) {
+            body =
+              item.channel === 'email'
+                ? emailSummaryBody(routed)
+                : pushSummaryBody(routed.length, locale);
+          }
+        } else if (!(await stillRouted(item.userId, item.type, item.channel, routingCache))) {
+          dropped += 1;
+          continue;
+        }
+        const cfg = quietHoursConfigForUser(recipient);
+        if (
+          quietHours &&
+          !isUrgentNotification({ type: item.type }) &&
+          isInQuietHours(cfg, nowDate)
+        ) {
+          // The recipient changed timezone or window after the defer and is
+          // asleep again (or still): re-defer to the CURRENT window end rather
+          // than delivering inside the new window. The claim stays stamped, so
+          // the re-queued row is the only live copy — never a duplicate.
+          try {
+            await quietHours.enqueueDeferred({
+              userId: item.userId,
+              type: item.type,
+              channel: item.channel,
+              title: item.title,
+              body: item.body,
+              data: item.data,
+              deliverAfter: quietHoursWindowEnd(cfg, nowDate),
+            });
+            requeued += 1;
+          } catch (err) {
+            logger?.warn(
+              { err, type: item.type, userId: item.userId, channel: item.channel },
+              'quiet-hours deferral re-defer failed',
+            );
+          }
+          continue;
+        }
         if (item.channel === 'email') {
           if (email && recipient.email) {
             try {
@@ -305,7 +563,11 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
                 to: recipient.email,
                 userId: recipient.id,
                 title: item.title,
-                body: item.body,
+                body,
+                // The row's own type + deep-link ids, so the e-mail links to the
+                // notification's target rather than the app root (#1816).
+                type: item.type,
+                data: item.data,
                 locale,
               });
               sent += 1;
@@ -318,8 +580,10 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
         const message: PushMessage = {
           type: item.type,
           title: item.title,
-          body: item.body,
-          data: item.data ?? {},
+          body,
+          // The carried-items manifest is bookkeeping for the re-check above —
+          // it never reaches the device.
+          data: pushData(item.data),
         };
         if (item.channel === 'push' && fcm) {
           try {
@@ -337,7 +601,7 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
           }
         }
       }
-      return { claimed: items.length, sent };
+      return { claimed: items.length, sent, dropped, requeued };
     },
   };
 }

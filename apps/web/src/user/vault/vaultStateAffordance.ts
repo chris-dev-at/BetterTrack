@@ -8,12 +8,15 @@ type StateCase<State extends EndpointVaultState> = State extends {
 
 export type EndpointVaultStateCase = StateCase<EndpointVaultState>;
 
-export type VaultStateActionKind =
-  | 'unlock'
-  | 'open'
-  | 'provide-phrase'
-  | 'scan-qr'
-  | 'reset-endpoint';
+export const VAULT_STATE_ACTION_KINDS = [
+  'unlock',
+  'open',
+  'provide-phrase',
+  'scan-qr',
+  'reset-endpoint',
+] as const;
+
+export type VaultStateActionKind = (typeof VAULT_STATE_ACTION_KINDS)[number];
 
 export interface VaultStateAffordance {
   action: VaultStateActionKind;
@@ -85,6 +88,68 @@ function assertNeverVaultState(state: never): never {
 
 export function vaultStateAffordance(state: EndpointVaultState): VaultStateAffordance {
   return VAULT_STATE_AFFORDANCES[endpointVaultStateCase(state)];
+}
+
+export function isVaultStateActionKind(action: string): action is VaultStateActionKind {
+  return (VAULT_STATE_ACTION_KINDS as readonly string[]).includes(action);
+}
+
+/**
+ * The actions a state actually offers. `not-on-this-endpoint` offers two — the
+ * row renders "Enter words" next to "Scan QR" — every other state offers exactly
+ * the one its affordance names.
+ */
+export function vaultStateOfferedActions(
+  state: EndpointVaultState,
+): readonly VaultStateActionKind[] {
+  const { action } = vaultStateAffordance(state);
+  return action === 'provide-phrase' ? ['provide-phrase', 'scan-qr'] : [action];
+}
+
+/**
+ * Whether a requested action — typically one carried by a `?action=` deep link —
+ * is still on offer for this live state. A URL is a request, not a state: a link
+ * made before the fifth wrong password still says `unlock` long after the
+ * endpoint withdrew it.
+ */
+export function vaultStateOffersAction(state: EndpointVaultState, action: string): boolean {
+  return (
+    isVaultStateActionKind(action) &&
+    (vaultStateOfferedActions(state) as readonly string[]).includes(action)
+  );
+}
+
+/**
+ * The badge tone a state wears. Kept beside the affordance table because it is
+ * the same total map over the same union — and because the one distinction the
+ * COPY cannot make lives here: a locked vault and a locked-OUT vault share
+ * `state.locked` ("Locked on this device"), so only the tone separates "type
+ * your password" from "five wrong tries, wait". No new string, no new state.
+ */
+export type VaultStateTone = 'pos' | 'neg' | 'gold' | 'blue';
+
+export function vaultStateTone(state: EndpointVaultState): VaultStateTone {
+  if (vaultStateRetryAt(state) != null) return 'neg';
+  switch (endpointVaultStateCase(state)) {
+    case 'stored+wrapped:unlocked:open-silently':
+    case 'stored+plain:open-silently':
+      return 'pos';
+    case 'not-on-this-endpoint:provide-phrase':
+      return 'blue';
+    case 'endpoint-keystore-invalid:reset-endpoint-keystore':
+      return 'neg';
+    default:
+      return 'gold';
+  }
+}
+
+/** The instant a locked-out endpoint accepts a device password again, if it is. */
+export function vaultStateRetryAt(state: EndpointVaultState): number | null {
+  return state.status === 'stored+wrapped' &&
+    state.session === 'locked' &&
+    state.requiredAction.kind === 'wait-or-reset'
+    ? state.requiredAction.retryAt
+    : null;
 }
 
 export function vaultStateActionHref(vaultId: string, action: VaultStateActionKind): string {

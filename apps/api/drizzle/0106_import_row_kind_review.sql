@@ -1,0 +1,24 @@
+-- Import wizard (#964, §16 2026-08-29 gap (b)): a bank statement with NO
+-- booking-type column — memo plus a signed amount, Raiffeisen ELBA is the
+-- reference fixture — previewed correctly and could never be imported. Every
+-- row classified below the review bar, and staging wrote a `!ok` line with all
+-- columns null, so there was nothing left to book from and the upload itself is
+-- never retained.
+--
+-- This flag marks a row held back ONLY by the kind question: its parsed fields
+-- are kept in the columns above (`amount_eur` still signed as the file wrote
+-- it, the identity columns still filled), and a person confirms a kind through
+-- PATCH /imports/:batchId/rows/:rowId, which re-derives the booking server-side
+-- from exactly those fields.
+--
+-- The wire `flag` vocabulary is deliberately NOT widened — shipped mobile
+-- builds parse `import_row_flag` with zod, and such a row is `error` there for
+-- the same reason every error row is: this import will not book it. The
+-- distinction is internal, which is why it lives in a column rather than in the
+-- enum.
+--
+-- NOT NULL DEFAULT false: every row staged before this change was decided (or
+-- unreadable) by definition, and Postgres applies the default without rewriting
+-- the table. A staged batch is a short-lived preview, so there is nothing to
+-- backfill either way.
+ALTER TABLE "import_rows" ADD COLUMN "kind_undecided" boolean DEFAULT false NOT NULL;

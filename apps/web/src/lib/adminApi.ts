@@ -1,12 +1,15 @@
 import {
   adminApiKeyListResponseSchema,
   adminFeedbackListResponseSchema,
+  adminFeedbackSubmissionSchema,
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
   adminBackupStatusResponseSchema,
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
+  adminOpsJobsResponseSchema,
+  adminOpsProvidersResponseSchema,
   adminStatsSchema,
   adminTwoFactorStatusResponseSchema,
   adminUserListResponseSchema,
@@ -25,6 +28,7 @@ import {
   auditLogListResponseSchema,
   bulkUserActionResponseSchema,
   createInviteResponseSchema,
+  sessionListResponseSchema,
   createOAuthClientResponseSchema,
   createUserResponseSchema,
   emailLogListResponseSchema,
@@ -37,6 +41,9 @@ import {
   problemSchema,
   problemListResponseSchema,
   updateFeedbackStatusResponseSchema,
+  updateFeedbackArchiveResponseSchema,
+  feedbackThreadResponseSchema,
+  sendFeedbackMessageResponseSchema,
   monitoringStatusResponseSchema,
   aiSettingsResponseSchema,
   aiTestConnectionResponseSchema,
@@ -53,13 +60,17 @@ import {
   versionResponseSchema,
   type AdminBackupStatusResponse,
   type AdminHealthResponse,
+  type AdminOpsJobsResponse,
+  type AdminOpsProvidersResponse,
   type AdminFeedbackListResponse,
+  type AdminFeedbackSubmission,
   type AdminFeedbackListQuery,
   type AdminInviteListResponse,
   type AdminStats,
   type AdminTwoFactorEmailStartRequest,
   type AdminTwoFactorStatusResponse,
   type AdminSessionPolicyResponse,
+  type SessionSummary,
   type AdminUser,
   type AdminUserListResponse,
   type AccountDefaultsResponse,
@@ -86,6 +97,12 @@ import {
   type ProblemListResponse,
   type ProblemStatus,
   type UpdateFeedbackStatusRequest,
+  type UpdateFeedbackArchiveRequest,
+  type UpdateFeedbackArchiveResponse,
+  type FeedbackThreadQuery,
+  type FeedbackThreadResponse,
+  type SendFeedbackMessageRequest,
+  type SendFeedbackMessageResponse,
   type UpdateFeedbackStatusResponse,
   type MonitoringStatusResponse,
   type AiSettingsResponse,
@@ -105,6 +122,7 @@ import {
   type RegistrationRequestListResponse,
   type RegistrationTokenListResponse,
   type ResetPasswordResponse,
+  type AdminListQuery,
   type AdminUserListQuery,
   type AdminUserAccessResponse,
   type AdminUserSharingResponse,
@@ -316,8 +334,14 @@ export async function deleteUser(id: string, confirmUsername: string): Promise<v
 
 // --- Admin: invites -------------------------------------------------------
 
-export async function listInvites(signal?: AbortSignal): Promise<AdminInviteListResponse> {
-  const data = await apiRequest<unknown>('/admin/invites', { signal });
+export async function listInvites(
+  params: Partial<AdminListQuery> = {},
+  signal?: AbortSignal,
+): Promise<AdminInviteListResponse> {
+  const data = await apiRequest<unknown>('/admin/invites', {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
   return adminInviteListResponseSchema.parse(data);
 }
 
@@ -334,9 +358,13 @@ export async function revokeInvite(id: string): Promise<void> {
 // --- Admin: registration tokens + approval queue (§6.12, §13.4 V4-P4a) -----
 
 export async function listRegistrationTokens(
+  params: Partial<AdminListQuery> = {},
   signal?: AbortSignal,
 ): Promise<RegistrationTokenListResponse> {
-  const data = await apiRequest<unknown>('/admin/registration-tokens', { signal });
+  const data = await apiRequest<unknown>('/admin/registration-tokens', {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
   return registrationTokenListResponseSchema.parse(data);
 }
 
@@ -355,9 +383,13 @@ export async function revokeRegistrationToken(id: string): Promise<void> {
 }
 
 export async function listRegistrationRequests(
+  params: Partial<AdminListQuery> = {},
   signal?: AbortSignal,
 ): Promise<RegistrationRequestListResponse> {
-  const data = await apiRequest<unknown>('/admin/registration-requests', { signal });
+  const data = await apiRequest<unknown>('/admin/registration-requests', {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
   return registrationRequestListResponseSchema.parse(data);
 }
 
@@ -435,11 +467,22 @@ export async function listAudit(
 // --- Admin: Problems (§13.5 V5-P2 arc (d)) ---------------------------------
 
 export async function listProblems(
-  params: { kind?: ProblemKind; status?: ProblemStatus; limit?: number } = {},
+  params: {
+    kind?: ProblemKind;
+    status?: ProblemStatus;
+    limit?: number;
+    /** Rows to skip — the "load more" cursor. */
+    offset?: number;
+  } = {},
   signal?: AbortSignal,
 ): Promise<ProblemListResponse> {
   const data = await apiRequest<unknown>('/admin/problems', {
-    query: { kind: params.kind, status: params.status, limit: params.limit },
+    query: {
+      kind: params.kind,
+      status: params.status,
+      limit: params.limit,
+      offset: params.offset,
+    },
     signal,
   });
   return problemListResponseSchema.parse(data);
@@ -464,6 +507,14 @@ export async function listAdminFeedback(
   const data = await apiRequest<unknown>('/admin/feedback', {
     query: {
       category: params.category,
+      status: params.status,
+      version: params.version,
+      q: params.q,
+      // `archived` and `unread` are booleans on the wire's TEXT side: the query
+      // builder drops `undefined`, so an omitted `unread` stays "don't filter",
+      // while an explicit `false` must still be sent as the string "false".
+      archived: params.archived === undefined ? undefined : String(params.archived),
+      unread: params.unread === undefined ? undefined : String(params.unread),
       sort: params.sort,
       page: params.page,
       limit: params.limit,
@@ -471,6 +522,52 @@ export async function listAdminFeedback(
     signal,
   });
   return adminFeedbackListResponseSchema.parse(data);
+}
+
+/**
+ * One submission by id (#1406 W3). The split pane opens whatever `?thread=`
+ * names even when the current filters exclude it, so the thread pane reads this
+ * rather than hunting the row inside the paged list.
+ *
+ * A 404 here means "this submission is gone", not "you are not an admin" — that
+ * distinction is made by the caller through `useResource`'s `notFound: 'gone'`
+ * policy, not by swallowing the error in the client.
+ */
+export async function getAdminFeedback(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminFeedbackSubmission> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, { signal });
+  return adminFeedbackSubmissionSchema.parse(data);
+}
+
+export async function getAdminFeedbackThread(
+  id: string,
+  params: FeedbackThreadQuery = {},
+  signal?: AbortSignal,
+): Promise<FeedbackThreadResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
+  });
+  return feedbackThreadResponseSchema.parse(data);
+}
+
+export async function sendAdminFeedbackReply(
+  id: string,
+  body: SendFeedbackMessageRequest,
+): Promise<SendFeedbackMessageResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+    method: 'POST',
+    body,
+  });
+  return sendFeedbackMessageResponseSchema.parse(data);
+}
+
+/** Idempotent: the route advances the shared admin marker on every open. */
+export async function markAdminFeedbackRead(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/read`, { method: 'POST' });
+  okResponseSchema.parse(data);
 }
 
 export async function updateFeedbackStatus(
@@ -482,6 +579,18 @@ export async function updateFeedbackStatus(
     body,
   });
   return updateFeedbackStatusResponseSchema.parse(data);
+}
+
+/** Workspace hygiene, not a lifecycle transition — and never a delete. */
+export async function setAdminFeedbackArchived(
+  id: string,
+  archived: boolean,
+): Promise<UpdateFeedbackArchiveResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, {
+    method: 'PATCH',
+    body: { archived } satisfies UpdateFeedbackArchiveRequest,
+  });
+  return updateFeedbackArchiveResponseSchema.parse(data);
 }
 
 // --- Admin: Usage analytics (§13.5 V5-P2 arc (b), first-party only) --------
@@ -577,6 +686,18 @@ export async function updateSessionPolicy(
   return adminSessionPolicyResponseSchema.parse(data);
 }
 
+/**
+ * `GET /auth/sessions` — the caller's own sessions. Not an `/admin/*` route: it
+ * is the same self-service read the user app's session manager uses, and the
+ * console needs exactly one field off it, the current session's `createdAt`.
+ * That is the anchor the V5-P13c absolute window is measured from server-side,
+ * so it is the only honest anchor for the client-held deadline too.
+ */
+export async function listOwnSessions(signal?: AbortSignal): Promise<SessionSummary[]> {
+  const data = await apiRequest<unknown>('/auth/sessions', { signal });
+  return sessionListResponseSchema.parse(data).sessions;
+}
+
 // --- Admin: runtime feature kill-switches (§13.5 V5-P2 arc (c)) ------------
 
 export async function getFeatureFlags(signal?: AbortSignal): Promise<AdminFeatureFlagsResponse> {
@@ -620,6 +741,24 @@ export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthR
 export async function getBackupStatus(signal?: AbortSignal): Promise<AdminBackupStatusResponse> {
   const data = await apiRequest<unknown>('/admin/ops/backup-status', { signal });
   return adminBackupStatusResponseSchema.parse(data);
+}
+
+/**
+ * Queue depths, repeatable schedules and the §9 dead-letter list (#1406 W4).
+ * Read-only — there is no retry/discard companion, by decision.
+ */
+export async function getOpsJobs(signal?: AbortSignal): Promise<AdminOpsJobsResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/jobs', { signal });
+  return adminOpsJobsResponseSchema.parse(data);
+}
+
+/**
+ * Per-capability breaker state, provider call outcomes and market-cache rates
+ * (#1406 W4). The counters are process-local; `sampledSince` is their epoch.
+ */
+export async function getOpsProviders(signal?: AbortSignal): Promise<AdminOpsProvidersResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/providers', { signal });
+  return adminOpsProvidersResponseSchema.parse(data);
 }
 
 export async function updateAccountDefaults(
@@ -795,8 +934,20 @@ export async function deleteApiKeyTier(id: string): Promise<void> {
   await apiRequest<unknown>(`/admin/api-key-tiers/${id}`, { method: 'DELETE' });
 }
 
-export async function listAdminApiKeys(signal?: AbortSignal): Promise<AdminApiKeyListResponse> {
-  const data = await apiRequest<unknown>('/admin/api-keys', { signal });
+export async function listAdminApiKeys(
+  params: { limit?: number; offset?: number; includeRevoked?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<AdminApiKeyListResponse> {
+  const data = await apiRequest<unknown>('/admin/api-keys', {
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      // Omitted unless asked for: the contract's default already excludes
+      // revoked keys, and a literal "false" must never be coerced to true.
+      includeRevoked: params.includeRevoked ? 'true' : undefined,
+    },
+    signal,
+  });
   return adminApiKeyListResponseSchema.parse(data);
 }
 

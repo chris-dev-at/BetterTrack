@@ -296,6 +296,7 @@ describe('presence suppression (#368 owner mandate)', () => {
     const broken: PresenceStore = {
       enter: async () => undefined,
       leave: async () => undefined,
+      leaveMany: async () => undefined,
       isPresent: vi.fn().mockRejectedValue(new Error('redis down')),
     };
     const failing = createNotificationDispatcher({

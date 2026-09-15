@@ -175,6 +175,33 @@ export interface FollowPublishedEvent {
 }
 
 /**
+ * `comment.created` → somebody posted a comment on an item the recipient OWNS
+ * and shares (§13.5 V5-P8). `userId` is the item owner — the one person holding
+ * the moderation right over that thread, and the only recipient: a comment is
+ * not fanned out to the rest of the item's audience (that would turn every
+ * shared item into a mailing list). The commenter never receives their own
+ * notice, so the producer skips the emit when author === owner.
+ *
+ * `itemName` renders the bell row and the email without a second lookup, and
+ * `itemKind`/`itemId` deep-link straight to the thread on the owner's My items
+ * surface. Deduped per comment id, so a redelivered emit no-ops.
+ */
+export interface CommentCreatedEvent {
+  type: 'comment.created';
+  /** Recipient — the commented item's owner. */
+  userId: string;
+  /** Actor — the comment's author. */
+  actorId: string;
+  actorUsername: string;
+  itemKind: 'portfolio' | 'watchlist' | 'conglomerate' | 'idea';
+  itemId: string;
+  itemName: string;
+  /** The comment that was posted — the dedupe identity. */
+  commentId: string;
+  occurredAt: string;
+}
+
+/**
  * `follow.alert.created` → a user the recipient FOLLOWS created a new price
  * alert, and the recipient opted into created-alert news for that person
  * (`user_follows.notify_on_alert_create`, #455). Emitted once per opted-in
@@ -321,9 +348,12 @@ export interface DividendEventNotice {
 /**
  * `budget.exceeded` → a per-category monthly expense budget was blown (§13.5
  * V5-P9, issue 3/3). `userId` is the budget's owner. Emitted at most once per
- * (budget, period): the producer claims the `expense_budget_fires` marker before
- * emitting, and the dispatcher additionally dedupes per (recipient, budget,
- * period) via its eventKey — so a blown budget fires exactly one alert per month.
+ * FIRE CLAIM: the producer claims a marker row before emitting, and the
+ * dispatcher dedupes per (recipient, claim) via its eventKey — so a blown
+ * budget fires exactly one alert while it stays blown. The cash producer
+ * releases that claim when the budget falls back under its target, which is
+ * why {@link BudgetExceededEvent.fireId} is part of the key (#1754); the
+ * retired expense island never releases, so it keeps the (budget, period) key.
  * All display strings ride the event (category name, target, spend, period) so
  * the dispatcher renders the notification without any expense-side lookup —
  * keeping the notification core free of the strictly-separate expense tables.
@@ -350,6 +380,18 @@ export interface BudgetExceededEvent {
   portfolioId?: string;
   /** The month whose spend blew the budget (`YYYY-MM`) — the dedupe period. */
   period: string;
+  /**
+   * The identity of the FIRE CLAIM this alert was emitted under (#1754) —
+   * `cash_budget_fires.id`, the row the cash producer inserts before emitting.
+   *
+   * It exists because a claim is no longer permanent: the cash evaluator
+   * RELEASES it when the budget drops back under its target, so the same
+   * (budget, period) may legitimately alert again later in the month. The
+   * dispatcher keys its dedupe off this when present — one alert per claim, so
+   * a redelivered emit still no-ops — and falls back to (budget, period) for
+   * the retired expense island, whose marker is never released.
+   */
+  fireId?: string;
   /** The monthly target that was exceeded. */
   amount: number;
   /** The recorded spend for the period (`> amount`). */
@@ -492,6 +534,7 @@ export type DomainEvent =
   | ConglomerateSharedEvent
   | FriendActivityEvent
   | FollowPublishedEvent
+  | CommentCreatedEvent
   | FollowAlertCreatedEvent
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
@@ -546,4 +589,5 @@ export const DOMAIN_EVENT_TYPES = [
   'standing_order.skipped',
   'feedback.status_changed',
   'feedback.reply_created',
+  'comment.created',
 ] as const satisfies readonly DomainEventType[];

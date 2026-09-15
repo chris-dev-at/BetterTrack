@@ -93,6 +93,7 @@ function importRow(batchId = IMPORT_BATCH_ID): Extract<Entity, { kind: 'importRo
     contentHash: 'test-vector-content-hash',
     result: 'applied',
     resultMessage: null,
+    kindUndecided: false,
   });
 }
 

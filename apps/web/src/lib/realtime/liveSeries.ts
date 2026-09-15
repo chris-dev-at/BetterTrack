@@ -79,6 +79,52 @@ export function mergePoints(
 export const MAX_LIVE_CHART_POINTS = 3600;
 
 /**
+ * How far past the live window the retained series may run before
+ * {@link trimToWindow} cuts it back.
+ *
+ * A generation lasts as long as the (asset, window, rate) and the connection
+ * hold — hours — while the chart only ever renders `[now − window, now]`, so
+ * keeping every observation since the generation started is unbounded growth for
+ * data nothing draws (§13.5 V5-P2). Trimming on EVERY tick would instead break
+ * the append-only contract `PriceChart`'s `series.update()` streaming relies on,
+ * so the cut happens in chunks: the series is allowed to overrun by a quarter
+ * window and then drops back to exactly one window — one clean rebuild per
+ * quarter window instead of a per-tick redraw.
+ */
+export const LIVE_RETENTION_SLACK = 1.25;
+
+/**
+ * The hard ceiling on what {@link densify} materialises, whatever span it is
+ * handed: one slack-trimmed window's worth of grid slots. In normal operation
+ * {@link trimToWindow} has already bounded the input, so this never bites; it
+ * exists so a single over-long input (a backfill reaching past the window, a
+ * series that has not been trimmed yet) can never materialise one slot per
+ * second since the generation started.
+ */
+export const MAX_DENSIFIED_POINTS = Math.ceil(MAX_LIVE_CHART_POINTS * LIVE_RETENTION_SLACK);
+
+/**
+ * Drop everything older than `windowSeconds` before the newest point — but only
+ * once the series has overrun that window by {@link LIVE_RETENTION_SLACK}.
+ *
+ * Returns `points` BY REFERENCE while inside the slack, so the caller can tell
+ * "nothing to do" from "one clean rebuild" by identity alone. The cutoff is
+ * anchored on the NEWEST point rather than the wall clock: a lagging series (a
+ * closed market, a stalled stream) then keeps at least the rendered window
+ * instead of being trimmed into it.
+ */
+export function trimToWindow(points: readonly LivePoint[], windowSeconds: number): LivePoint[] {
+  if (points.length === 0) return points as LivePoint[];
+  const window = Math.max(1, Math.floor(windowSeconds));
+  const newest = points[points.length - 1]!.time;
+  if (newest - points[0]!.time <= window * LIVE_RETENTION_SLACK) return points as LivePoint[];
+  const cutoff = newest - window;
+  const from = points.findIndex((point) => point.time >= cutoff);
+  if (from <= 0) return points as LivePoint[];
+  return points.slice(from);
+}
+
+/**
  * The uniform grid step (whole seconds) {@link densify} resamples onto for a
  * given window + rate: the live rate itself, coarsened only when `window / rate`
  * would exceed {@link MAX_LIVE_CHART_POINTS}. It depends solely on window + rate
@@ -117,7 +163,11 @@ export function liveChartStepSeconds(windowMs: number, rateMs: number): number {
  * series — only the newest slot mutates or extends, so PriceChart keeps streaming
  * via `series.update()` and never falls back to a per-tick redraw.
  */
-export function densify(points: readonly LivePoint[], stepSeconds: number): LivePoint[] {
+export function densify(
+  points: readonly LivePoint[],
+  stepSeconds: number,
+  maxPoints: number = MAX_DENSIFIED_POINTS,
+): LivePoint[] {
   if (points.length === 0) return [];
   const step = Math.max(1, Math.floor(stepSeconds));
   // Newest value per grid slot wins; sort first so the result is order-independent
@@ -127,10 +177,20 @@ export function densify(points: readonly LivePoint[], stepSeconds: number): Live
     bySlot.set(Math.floor(point.time / step) * step, point.value);
   }
   const slots = [...bySlot.keys()].sort((a, b) => a - b);
-  const firstSlot = slots[0]!;
   const lastSlot = slots[slots.length - 1]!;
+  // Never materialise more than the ceiling, however long the input span is: the
+  // newest `maxPoints` slots are the ones the pinned viewport can show. Both
+  // candidates are step-aligned, so the resulting grid is too.
+  const cap = Math.max(1, Math.floor(maxPoints));
+  const firstSlot = Math.max(slots[0]!, lastSlot - (cap - 1) * step);
   const out: LivePoint[] = [];
-  let carry = bySlot.get(firstSlot)!;
+  // The clamp can land mid-gap, where no observation opens the grid — carry the
+  // newest one at or before it, exactly like an interior slot would.
+  let carry = bySlot.get(slots[0]!)!;
+  for (const slot of slots) {
+    if (slot > firstSlot) break;
+    carry = bySlot.get(slot)!;
+  }
   for (let slot = firstSlot; slot <= lastSlot; slot += step) {
     const value = bySlot.get(slot);
     if (value !== undefined) carry = value;

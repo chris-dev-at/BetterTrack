@@ -102,7 +102,14 @@ beforeEach(() => {
     pendingRegistrationCount: 0,
   });
   vi.mocked(api.getAdminHealth).mockResolvedValue(healthyHealth);
-  vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 0 });
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [],
+    openCount: 0,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
+    total: 0,
+    hasMore: false,
+  });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: true });
   vi.mocked(api.getBackupStatus).mockResolvedValue(readyBackup);
   vi.mocked(api.getVersion).mockResolvedValue({
@@ -137,7 +144,14 @@ test('ranks the attention queue with the worst signal first and links each row t
     pendingInviteCount: 1,
     pendingRegistrationCount: 2,
   });
-  vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 4 });
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [],
+    openCount: 4,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
+    total: 4,
+    hasMore: false,
+  });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: false });
   vi.mocked(api.getAdminHealth).mockResolvedValue({
     ...healthyHealth,
@@ -287,6 +301,22 @@ test('humanizes recent admin activity and links to the audit log', async () => {
     'href',
     '/admin/audit',
   );
+});
+
+test('the attention column may shrink below its longest detail line', async () => {
+  // One queued row, so the truncating detail line this guards actually renders.
+  vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: false });
+  renderPage();
+
+  await screen.findByText('Outbound email is off');
+  const attention = screen.getByRole('region', { name: 'Needs your attention' });
+  // jsdom does no layout, so the class is the regression contract: a grid item
+  // defaults to `min-width: auto` (= its min-content width), and the rows below
+  // truncate a `white-space: nowrap` detail line. Without `min-w-0` the column
+  // is sized to the longest detail string — 387px of document on a 360px phone,
+  // which is what the admin half of `e2e/mobile-overflow.spec.ts` caught.
+  expect(attention).toHaveClass('min-w-0');
+  expect(attention.querySelector('.truncate')).not.toBeNull();
 });
 
 test('renders the operator Overview in German', async () => {

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 
@@ -11,7 +11,7 @@ import type {
 } from '@bettertrack/contracts';
 import { PER_VAULT_ERROR_CODES } from '@bettertrack/contracts';
 
-import { useT } from '../../../i18n';
+import { useT, type TranslateVars } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
 import {
   deleteVault,
@@ -22,21 +22,46 @@ import {
   renameVault,
   VAULTS_QUERY_KEY,
 } from '../../../lib/vaultApi';
-import { Button, Field, Input, Select, SkeletonBlock } from '../../../ui/origin';
-import { CHECKBOX_STYLE } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  CheckRow,
+  Disclosure,
+  Empty,
+  Field,
+  Icon,
+  Input,
+  LinkButton,
+  Panel,
+  Select,
+  SkeletonBlock,
+} from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { portfolioDisplayName } from '../../portfolio/lockedPortfolio';
 import { usePortfolioStore } from '../../portfolio/PortfolioStoreProvider';
 import { PER_VAULT_DRIVE_PROVISIONING_AVAILABLE } from '../capabilities';
 import type { EndpointVaultState } from '../keystore';
+import { EndpointKeystoreError } from '../keystore/errors';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import { provisionVault, type ProvisionVaultInput } from '../provisionVault';
+import { useUnlockedPortfolioNames } from '../useUnlockedPortfolioNames';
 import type { RestoreCandidate } from '../restore';
-import { vaultStateAffordance } from '../vaultStateAffordance';
+import {
+  isVaultStateActionKind,
+  vaultStateAffordance,
+  vaultStateOffersAction,
+  vaultStateRetryAt,
+  vaultStateTone,
+} from '../vaultStateAffordance';
+import { vaultRetryTimeLabel } from './retryTime';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
 import { VaultStateAction } from './VaultStateAction';
-import { useVaultEndpointState, vaultEndpointStateQueryKey } from './useVaultEndpointState';
+import {
+  readVaultEndpointState,
+  useVaultEndpointState,
+  vaultEndpointStateQueryKey,
+} from './useVaultEndpointState';
 
 export interface VaultManagerOperations {
   provision(input: ProvisionVaultInput): Promise<VaultConfig>;
@@ -89,6 +114,29 @@ const ACCESS_ACTIONS: ReadonlySet<string> = new Set([
   'start-fresh',
   'restore',
 ]);
+
+/**
+ * A read that failed and offers a retry. It was four copies of a `bt-soft` div
+ * — a class that is ONE declaration, `color`, so the "banner" had no surface at
+ * all and read as loose text with a button beside it. One component, one soft
+ * panel, one retry.
+ */
+function RetryNotice({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const t = useT();
+  return (
+    <Panel
+      className="flex flex-wrap items-center justify-between gap-3 p-3"
+      pad={false}
+      role="alert"
+      soft
+    >
+      <span className="bt-soft text-sm">{message}</span>
+      <Button icon="refresh" onClick={onRetry} size="sm" type="button">
+        {t('common.retry')}
+      </Button>
+    </Panel>
+  );
+}
 
 /** Null when the action can run; otherwise the i18n key explaining why not. */
 function deferredReasonKey(action: string, operations: VaultManagerOperations): string | null {
@@ -143,10 +191,16 @@ export function VaultManager({
     queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
+  // Resolved over the WHOLE roster, never per row: the resolution registry is
+  // keyed by roster, so asking per vault would open each vault and decrypt its
+  // documents once per row instead of once per panel.
+  const unlockedNames = useUnlockedPortfolioNames(
+    useMemo(() => portfoliosQuery.data?.portfolios ?? [], [portfoliosQuery.data]),
+  );
   const endpointQueries = useQueries({
     queries: vaults.map((vault) => ({
       queryKey: vaultEndpointStateQueryKey(vault.id),
-      queryFn: () => endpointVaultKeystore.stateFor(vault.id),
+      queryFn: () => readVaultEndpointState(vault.id),
       staleTime: 5_000,
     })),
   });
@@ -195,13 +249,27 @@ export function VaultManager({
         ) : null}
       </div>
 
-      <ul className="grid gap-2 text-sm sm:grid-cols-3">
-        {(['names', 'storage', 'privacy'] as const).map((item) => (
-          <li className="bt-soft" key={item}>
-            {t(`vault.manager.explainer.${item}`)}
-          </li>
-        ))}
-      </ul>
+      {/* The cleartext boundaries. Three sentences with nothing behind them read
+          as loose prose; on one soft panel, ruled and glyphed, they read as the
+          rules of the surface they introduce. */}
+      <Panel pad={false} soft>
+        <ul className="bt-band flex flex-col">
+          {(
+            [
+              ['names', 'eye'],
+              ['storage', 'database'],
+              ['privacy', 'lock'],
+            ] as const
+          ).map(([item, icon]) => (
+            <li className="bt-soft flex items-start gap-2.5 px-3 py-2.5 text-sm" key={item}>
+              <span className="bt-muted mt-0.5 shrink-0">
+                <Icon name={icon} size={15} />
+              </span>
+              <span className="min-w-0">{t(`vault.manager.explainer.${item}`)}</span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
 
       {creating ? (
         <>
@@ -209,12 +277,10 @@ export function VaultManager({
             <SkeletonBlock height={48} />
           ) : null}
           {driveConnectionsNeeded && connectionsQuery.isError ? (
-            <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-              <span>{t('vault.manager.connectionsError')}</span>
-              <Button onClick={() => void connectionsQuery.refetch()} size="sm" type="button">
-                {t('common.retry')}
-              </Button>
-            </div>
+            <RetryNotice
+              message={t('vault.manager.connectionsError')}
+              onRetry={() => void connectionsQuery.refetch()}
+            />
           ) : null}
           <VaultCreationCeremony
             connections={connectionsQuery.data ?? []}
@@ -227,25 +293,21 @@ export function VaultManager({
 
       {vaultsQuery.isPending ? <SkeletonBlock height={112} /> : null}
       {vaultsQuery.isError ? (
-        <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-          <span>{t('vault.manager.loadError')}</span>
-          <Button onClick={() => void vaultsQuery.refetch()} size="sm" type="button">
-            {t('common.retry')}
-          </Button>
-        </div>
+        <RetryNotice
+          message={t('vault.manager.loadError')}
+          onRetry={() => void vaultsQuery.refetch()}
+        />
       ) : null}
       {vaultsQuery.isSuccess && vaults.length === 0 && !creating ? (
-        <p className="bt-soft text-sm">{t('vault.manager.empty')}</p>
+        <Empty icon="shield" title={t('vault.manager.empty')} />
       ) : null}
 
       {portfoliosQuery.isPending && vaults.length > 0 ? <SkeletonBlock height={36} /> : null}
       {portfoliosQuery.isError && vaults.length > 0 ? (
-        <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-          <span>{t('vault.manager.portfoliosError')}</span>
-          <Button onClick={() => void portfoliosQuery.refetch()} size="sm" type="button">
-            {t('common.retry')}
-          </Button>
-        </div>
+        <RetryNotice
+          message={t('vault.manager.portfoliosError')}
+          onRetry={() => void portfoliosQuery.refetch()}
+        />
       ) : null}
 
       {vaults.length > 0 ? (
@@ -263,6 +325,7 @@ export function VaultManager({
               membershipReady={portfoliosQuery.isSuccess}
               onChanged={refreshVaults}
               operations={operations}
+              unlockedNames={unlockedNames}
               vault={vault}
             />
           ))}
@@ -270,16 +333,18 @@ export function VaultManager({
       ) : null}
 
       {activeVault && activeAction ? (
-        <VaultAccessAction
-          action={activeAction}
-          onClose={closeAction}
-          onDone={async () => {
-            await refreshVaults();
-            closeAction();
-          }}
-          operations={operations}
-          vault={activeVault}
-        />
+        <ArrivedFromDeepLink>
+          <VaultAccessAction
+            action={activeAction}
+            onClose={closeAction}
+            onDone={async () => {
+              await refreshVaults();
+              closeAction();
+            }}
+            operations={operations}
+            vault={activeVault}
+          />
+        </ArrivedFromDeepLink>
       ) : null}
     </section>
   );
@@ -293,6 +358,7 @@ function VaultManagerRow({
   membershipReady,
   onChanged,
   operations,
+  unlockedNames,
 }: {
   vault: VaultConfig;
   endpointQuery: UseQueryResult<EndpointVaultState, Error> | undefined;
@@ -301,8 +367,11 @@ function VaultManagerRow({
   membershipReady: boolean;
   onChanged(): Promise<void>;
   operations: VaultManagerOperations;
+  /** Decrypted names for the portfolios this device currently holds open. */
+  unlockedNames: ReadonlyMap<string, string>;
 }) {
   const t = useT();
+  const deferredFoldId = useId();
   const [renameOpen, setRenameOpen] = useState(false);
   const [name, setName] = useState(vault.name);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -351,18 +420,30 @@ function VaultManagerRow({
     }
   }
 
+  const deferredReasons = [
+    'vault.manager.deferred.changeMedia',
+    rotateDeferred,
+    startFreshDeferred,
+  ].filter((key): key is string => key != null);
+
   return (
     <li className="bt-panel flex flex-col gap-3 p-3">
+      {/* Identity, live state, and the one act this row is FOR. Everything
+          below the rule is maintenance. */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="bt-row-title truncate">{vault.name}</p>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <p className="bt-row-title truncate">{vault.name}</p>
+            {state ? (
+              <Badge tone={vaultStateTone(state)}>{t(vaultStateAffordance(state).stateKey)}</Badge>
+            ) : null}
+          </div>
           <p className="bt-row-sub">
             {t(
               vault.media.length === 2
                 ? 'vault.manager.media.both'
                 : `vault.manager.media.${vault.media[0] ?? 'server'}`,
             )}
-            {state ? ` · ${t(vaultStateAffordance(state).stateKey)}` : ''}
           </p>
           {vault.driveConnectionId ? (
             <p className="bt-row-sub">
@@ -377,7 +458,7 @@ function VaultManagerRow({
           ) : null}
         </div>
         {state ? (
-          <VaultStateAction state={state} vaultId={vault.id} />
+          <VaultStateAction emphasis="primary" state={state} vaultId={vault.id} />
         ) : (
           <Button
             onClick={() => void endpointQuery?.refetch()}
@@ -393,10 +474,21 @@ function VaultManagerRow({
       {!membershipReady ? null : memberships.length > 0 ? (
         <div>
           <p className="bt-label">{t('vault.manager.portfolios')}</p>
-          <ul className="mt-1 flex flex-wrap gap-2">
+          <ul className="mt-1.5 flex flex-wrap gap-2">
             {memberships.map((portfolio) => (
-              <li className="bt-badge" key={portfolio.id}>
-                {portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias'))}
+              <li key={portfolio.id}>
+                {/* "Private Holdings · Private Holdings" — the vault named after
+                    itself — is what this chip read while the vault was open
+                    (failure map #6). With the name in hand it says which
+                    portfolio; locked, it stays the alias. */}
+                <Badge>
+                  <Icon name="portfolios" size={12} />
+                  {portfolioDisplayName(
+                    portfolio,
+                    t('vault.lockedStub.fallbackAlias'),
+                    unlockedNames.get(portfolio.id),
+                  )}
+                </Badge>
               </li>
             ))}
           </ul>
@@ -405,55 +497,104 @@ function VaultManagerRow({
         <p className="bt-row-sub">{t('vault.manager.noPortfolios')}</p>
       )}
 
-      <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
-        <button className="bt-link" onClick={() => setRenameOpen((open) => !open)} type="button">
+      {/* The maintenance bar. It used to be five underlined words in a line —
+          three of them `<span>`s pretending to be links — followed by up to
+          three explainer paragraphs. Now it is one ruled action bar with real
+          hierarchy, and the paragraphs are folded into the single disclosure
+          below it. */}
+      <div className="bt-action-bar bt-t-rule bt-row-actions flex flex-wrap items-center gap-2 pt-3">
+        <Button
+          icon="pen"
+          onClick={() => setRenameOpen((open) => !open)}
+          size="sm"
+          type="button"
+          variant="quiet"
+        >
           {t('vault.manager.action.rename')}
-        </button>
-        <Link className="bt-link" to={`/control/connections?vault=${encodeURIComponent(vault.id)}`}>
-          {t('vault.manager.action.changeMedia')}
-        </Link>
-        {/* An action this build cannot finish is never a link: it stays visible
-            as what it is, with the missing piece named beside it. */}
+        </Button>
+        {/* "Change storage" WAS a link to `/control/connections?vault=<id>`,
+            and that panel has never read the `vault` param (#1520): the link
+            landed on an unscoped Drive-connection list with no per-vault media
+            control on it, because this build provisions no per-vault Drive
+            medium at all (`PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false`,
+            E5/#1415). Honouring the param would have scoped the page to a
+            control that is not there. So it follows the same rule as `rotate`
+            and `start-fresh` below — stated as what it is, with the missing
+            piece named, and never a link.
+
+            `aria-disabled` rather than `disabled`: §12 forbids a SILENT
+            disabled control, and a real `disabled` button drops out of the tab
+            order, so a keyboard user would meet three actions that simply are
+            not there. This way each one is still reachable, still announced,
+            and points at the fold that names what is missing. */}
+        <DeferredAction
+          describedBy={deferredFoldId}
+          label={t('vault.manager.action.changeMedia')}
+        />
         {rotateDeferred ? (
-          <span className="bt-muted">{t('vault.manager.action.rotate')}</span>
+          <DeferredAction describedBy={deferredFoldId} label={t('vault.manager.action.rotate')} />
         ) : (
-          <Link
-            className="bt-link"
+          <LinkButton
+            size="sm"
             to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=rotate`}
+            variant="quiet"
           >
             {t('vault.manager.action.rotate')}
-          </Link>
+          </LinkButton>
         )}
         {startFreshDeferred ? (
-          <span className="bt-muted">{t('vault.manager.action.startFresh')}</span>
+          <DeferredAction
+            describedBy={deferredFoldId}
+            label={t('vault.manager.action.startFresh')}
+          />
         ) : (
-          <Link
-            className="bt-link"
+          <LinkButton
+            size="sm"
             to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=start-fresh`}
+            variant="quiet"
           >
             {t('vault.manager.action.startFresh')}
-          </Link>
+          </LinkButton>
         )}
-        <button
-          className="bt-link bt-neg"
+        <span className="grow" />
+        <Button
           disabled={!membershipReady || memberships.length > 0}
+          icon="trash"
           onClick={() => setDeleteOpen((open) => !open)}
+          size="sm"
           type="button"
+          variant="danger"
         >
           {t('common.delete')}
-        </button>
+        </Button>
       </div>
-      {rotateDeferred ? <p className="bt-meta">{t(rotateDeferred)}</p> : null}
-      {startFreshDeferred ? <p className="bt-meta">{t(startFreshDeferred)}</p> : null}
+
+      {/* Three "isn't available yet" paragraphs stacked above the fold were the
+          wall the owner met on this panel. Same words, one disclosure. */}
+      {deferredReasons.length > 0 ? (
+        <div id={deferredFoldId}>
+          <Disclosure summary={t('vault.manager.deferredFold')}>
+            <div className="flex flex-col gap-2">
+              {deferredReasons.map((key) => (
+                <p className="bt-meta" key={key}>
+                  {t(key)}
+                </p>
+              ))}
+            </div>
+          </Disclosure>
+        </div>
+      ) : null}
+
       {/* "Delete refuses while a portfolio is inside, and says so" — said with
           the membership list already in hand, not after a server round trip.
-          The server refusal below still stands for the cross-device race. */}
+          It stays OUT of the fold above: that fold explains what this build
+          cannot do, while this explains a control the user can see is off. */}
       {membershipReady && memberships.length > 0 ? (
         <p className="bt-meta">{t('vault.manager.deleteReferenced')}</p>
       ) : null}
 
       {renameOpen ? (
-        <div className="flex flex-wrap items-end gap-2">
+        <Panel className="flex flex-wrap items-end gap-2 p-3" pad={false} soft>
           <Field htmlFor={`vault-name-${vault.id}`} label={t('vault.manager.nameLabel')}>
             <Input
               id={`vault-name-${vault.id}`}
@@ -469,12 +610,12 @@ function VaultManagerRow({
           >
             {t('common.save')}
           </Button>
-        </div>
+        </Panel>
       ) : null}
 
       {deleteOpen ? (
-        <div className="bt-soft flex flex-col gap-3">
-          <p className="text-sm">{t('vault.manager.deleteWarning')}</p>
+        <Panel className="flex flex-col gap-3 p-3" pad={false} soft>
+          <p className="bt-soft text-sm">{t('vault.manager.deleteWarning')}</p>
           <CredentialFields
             credential={credential}
             credentialKind={credentialKind}
@@ -482,16 +623,18 @@ function VaultManagerRow({
             onCredentialChange={setCredential}
             onKindChange={setCredentialKind}
           />
-          <Button
-            disabled={working || credential.trim() === ''}
-            onClick={() => void remove()}
-            size="sm"
-            type="button"
-            variant="danger"
-          >
-            {t('vault.manager.deleteAction')}
-          </Button>
-        </div>
+          <div>
+            <Button
+              disabled={working || credential.trim() === ''}
+              onClick={() => void remove()}
+              size="sm"
+              type="button"
+              variant="danger"
+            >
+              {t('vault.manager.deleteAction')}
+            </Button>
+          </div>
+        </Panel>
       ) : null}
       {errorKey ? (
         <p className="bt-neg text-sm" role="alert">
@@ -500,6 +643,65 @@ function VaultManagerRow({
       ) : null}
     </li>
   );
+}
+
+/**
+ * An action this build cannot finish, kept in the bar as a peer of the ones it
+ * can. Focusable and announced (`aria-disabled`, not `disabled`) and pointed at
+ * the disclosure that names the missing piece — §12's "never a silent disabled
+ * control", without the three paragraphs that used to say it above the fold.
+ */
+function DeferredAction({ describedBy, label }: { describedBy: string; label: string }) {
+  return (
+    <Button
+      aria-describedby={describedBy}
+      aria-disabled="true"
+      size="sm"
+      type="button"
+      variant="quiet"
+    >
+      {label}
+    </Button>
+  );
+}
+
+/**
+ * The settings side of #4: a `?vault=…&action=…` deep link must LAND on its
+ * form, not somewhere above it.
+ *
+ * The Control Center opens on the Privacy panel with the access section far
+ * down the page, under the deferred-capability paragraphs — which is how the
+ * old bare `Unlock` link stranded users on a screen whose password field was
+ * below the fold. The in-place dialog is now the primary path; this keeps the
+ * secondary one honest.
+ *
+ * The focus deliberately does NOT run on mount: the section renders
+ * "Checking what this vault needs…" first and only grows its field once the
+ * live endpoint state arrives. So it waits for a field to exist, takes it once,
+ * and never fights the user for the caret afterwards.
+ */
+function ArrivedFromDeepLink({ children }: { children: ReactNode }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const claimed = useRef(false);
+
+  useEffect(() => {
+    if (claimed.current) return;
+    const container = containerRef.current;
+    if (container == null) return;
+    // Never steal focus from a checkbox or a button — only the credential the
+    // link came for.
+    const field = container.querySelector<HTMLInputElement>(
+      'input[type="password"], input[type="text"]',
+    );
+    if (field == null) return;
+    claimed.current = true;
+    if (typeof container.scrollIntoView === 'function') {
+      container.scrollIntoView({ block: 'center' });
+    }
+    field.focus();
+  });
+
+  return <div ref={containerRef}>{children}</div>;
 }
 
 function VaultAccessAction({
@@ -523,36 +725,44 @@ function VaultAccessAction({
   const [stepUpKind, setStepUpKind] = useState<'password' | 'code' | 'recoveryCode'>('password');
   const [stepUpValue, setStepUpValue] = useState('');
   const [working, setWorking] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const effectiveAction = action;
+  const [failure, setFailure] = useState<AccessFailure | null>(null);
+  // A URL is a request, not a state. This surface is the only one reachable
+  // without passing a row affordance, so it reconciles `?action=` against the
+  // live endpoint state below (see the withdrawn-action branch) exactly as
+  // `vaultStateAffordance` does for the rows — otherwise a link minted before
+  // the fifth wrong password keeps rendering a live unlock form that submission
+  // can only refuse (#1526).
+  const stateQuery = useVaultEndpointState(vault.id);
+  const liveState = stateQuery.data ?? null;
+  const stateGoverned = isVaultStateActionKind(action);
   const restoreAvailable =
     operations.listRestoreCandidates != null && operations.restoreCandidate != null;
   const restoreCandidates = useQuery({
     queryKey: ['vaults', vault.id, 'restore-candidates'],
     queryFn: () => operations.listRestoreCandidates!(vault),
-    enabled: effectiveAction === 'restore' && restoreAvailable,
+    enabled: action === 'restore' && restoreAvailable,
     retry: false,
   });
 
   async function submit() {
     setWorking(true);
-    setFailed(false);
+    setFailure(null);
     try {
       const fetchHeaderEnvelope = () => operations.fetchHeader(vault);
-      if (effectiveAction === 'unlock') {
+      if (action === 'unlock') {
         await endpointVaultKeystore.unlock(secret);
         await endpointVaultKeystore.openStoredVault(
           vault.id,
           fetchHeaderEnvelope,
           vault.keyFingerprint,
         );
-      } else if (effectiveAction === 'open') {
+      } else if (action === 'open') {
         await endpointVaultKeystore.openStoredVault(
           vault.id,
           fetchHeaderEnvelope,
           vault.keyFingerprint,
         );
-      } else if (effectiveAction === 'provide-phrase') {
+      } else if (action === 'provide-phrase') {
         await endpointVaultKeystore.storeAfterVerifiedOpen({
           vaultId: vault.id,
           mnemonic: secret,
@@ -560,41 +770,44 @@ function VaultAccessAction({
           expectedFingerprint: vault.keyFingerprint,
           fetchHeaderEnvelope,
         });
-      } else if (effectiveAction === 'reset-endpoint') {
+      } else if (action === 'reset-endpoint') {
         if (!resetAcknowledged) return;
         await endpointVaultKeystore.reset();
-      } else if (effectiveAction === 'rotate' && operations.rotate) {
+      } else if (action === 'rotate' && operations.rotate) {
         await operations.rotate(vault);
-      } else if (effectiveAction === 'start-fresh' && operations.startFresh) {
+      } else if (action === 'start-fresh' && operations.startFresh) {
         if (!destructionAcknowledged || stepUpValue.trim() === '') return;
         await operations.startFresh(vault, {
           [stepUpKind]: stepUpValue.trim(),
         } as VaultStepUpCredential);
-      } else if (effectiveAction === 'scan-qr' && operations.scanQr) {
+      } else if (action === 'scan-qr' && operations.scanQr) {
         await operations.scanQr(vault);
       } else {
         throw new Error('vault-action-unavailable');
       }
       await onDone();
-    } catch {
-      setFailed(true);
+    } catch (cause) {
+      setFailure(accessFailure(cause));
+      // A lockout also changed this endpoint's state: re-read it so the surface
+      // stops offering the action the keystore just withdrew.
+      if (isLockedOut(cause)) void stateQuery.refetch();
     } finally {
       setWorking(false);
     }
   }
 
-  const needsPhrase = effectiveAction === 'provide-phrase';
-  const needsSecret = effectiveAction === 'unlock' || needsPhrase;
-  const isReset = effectiveAction === 'reset-endpoint';
-  const isStartFresh = effectiveAction === 'start-fresh';
+  const needsPhrase = action === 'provide-phrase';
+  const needsSecret = action === 'unlock' || needsPhrase;
+  const isReset = action === 'reset-endpoint';
+  const isStartFresh = action === 'start-fresh';
   // A deep link can still reach a deferred action. It gets the reason and the
   // vault's live next step — never a Continue button that can only refuse.
-  const deferredKey = deferredReasonKey(effectiveAction, operations);
+  const deferredKey = deferredReasonKey(action, operations);
 
   // A stale or hand-edited `?action=` never becomes a raw key on screen with a
   // Continue that can only throw: it gets named as unknown, plus this vault's
   // own live next step.
-  if (!ACCESS_ACTIONS.has(effectiveAction)) {
+  if (!ACCESS_ACTIONS.has(action)) {
     return (
       <section
         aria-label={t('vault.manager.access.title', { name: vault.name })}
@@ -611,17 +824,76 @@ function VaultAccessAction({
     );
   }
 
-  if (effectiveAction === 'open') {
+  // A state-governed action is never rendered on a guess: until this endpoint's
+  // own state is known, the surface says it is checking rather than painting a
+  // form that the next tick may withdraw.
+  if (stateGoverned && liveState == null) {
+    return (
+      <section
+        aria-label={t('vault.manager.access.title', { name: vault.name })}
+        className="bt-panel flex flex-col gap-3 p-4"
+      >
+        <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
+        {stateQuery.isPending ? (
+          <p aria-live="polite" className="bt-row-sub">
+            {t('vault.manager.access.checkingState')}
+          </p>
+        ) : null}
+        {stateQuery.isError ? (
+          <RetryNotice
+            message={t('vault.manager.access.stateError')}
+            onRetry={() => void stateQuery.refetch()}
+          />
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onClose} type="button" variant="quiet">
+            {t('common.cancel')}
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  // The reconciliation itself: an action this state no longer offers is answered
+  // with the affordance the row would give — and, in lockout, with the instant
+  // the endpoint accepts a password again instead of an invitation to type one.
+  if (liveState != null && stateGoverned && !vaultStateOffersAction(liveState, action)) {
+    const retryAt = vaultStateRetryAt(liveState);
+    return (
+      <section
+        aria-label={t('vault.manager.access.title', { name: vault.name })}
+        className="bt-panel flex flex-col gap-3 p-4"
+      >
+        <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
+        <DeferredActionNotice
+          reasonKey={
+            retryAt == null
+              ? 'vault.manager.access.withdrawnAction'
+              : 'vault.manager.access.lockedOut'
+          }
+          reasonVars={retryAt == null ? undefined : { time: vaultRetryTimeLabel(retryAt) }}
+          vault={vault}
+        />
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onClose} type="button" variant="quiet">
+            {t('common.cancel')}
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  if (action === 'open') {
     return (
       <SilentVaultOpen
-        failed={failed}
+        failure={failure}
         open={() => void submit()}
         title={t('vault.manager.access.title', { name: vault.name })}
       />
     );
   }
 
-  if (effectiveAction === 'restore') {
+  if (action === 'restore') {
     return (
       <section
         aria-label={t('vault.manager.access.title', { name: vault.name })}
@@ -636,12 +908,10 @@ function VaultAccessAction({
         ) : restoreCandidates.isPending ? (
           <SkeletonBlock height={96} />
         ) : restoreCandidates.isError ? (
-          <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-            <span>{t('vault.manager.access.restoreLoadError')}</span>
-            <Button onClick={() => void restoreCandidates.refetch()} size="sm" type="button">
-              {t('common.retry')}
-            </Button>
-          </div>
+          <RetryNotice
+            message={t('vault.manager.access.restoreLoadError')}
+            onRetry={() => void restoreCandidates.refetch()}
+          />
         ) : (
           <VaultRestorePicker
             candidates={restoreCandidates.data}
@@ -666,7 +936,7 @@ function VaultAccessAction({
       <div>
         <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
         <p className={isStartFresh ? 'bt-gold-note' : 'bt-row-sub'}>
-          {t(`vault.manager.access.${effectiveAction}`)}
+          {t(`vault.manager.access.${action}`)}
         </p>
       </div>
       {deferredKey ? <DeferredActionNotice reasonKey={deferredKey} vault={vault} /> : null}
@@ -715,27 +985,19 @@ function VaultAccessAction({
         </>
       ) : null}
       {isReset ? (
-        <label className="bt-soft flex items-start gap-2 text-sm">
-          <input
-            checked={resetAcknowledged}
-            onChange={(event) => setResetAcknowledged(event.target.checked)}
-            style={CHECKBOX_STYLE}
-            type="checkbox"
-          />
-          <span>{t('vault.manager.access.resetConfirm')}</span>
-        </label>
+        <CheckRow checked={resetAcknowledged} onChange={setResetAcknowledged} tone="gold">
+          {t('vault.manager.access.resetConfirm')}
+        </CheckRow>
       ) : null}
       {isStartFresh ? (
         <>
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={destructionAcknowledged}
-              onChange={(event) => setDestructionAcknowledged(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.manager.access.startFreshConfirm')}</span>
-          </label>
+          <CheckRow
+            checked={destructionAcknowledged}
+            onChange={setDestructionAcknowledged}
+            tone="gold"
+          >
+            {t('vault.manager.access.startFreshConfirm')}
+          </CheckRow>
           <CredentialFields
             credential={stepUpValue}
             credentialKind={stepUpKind}
@@ -745,11 +1007,7 @@ function VaultAccessAction({
           />
         </>
       ) : null}
-      {failed ? (
-        <p className="bt-neg text-sm" role="alert">
-          {t('vault.manager.access.error')}
-        </p>
-      ) : null}
+      {failure ? <AccessFailureNotice failure={failure} /> : null}
       <div className="flex flex-wrap justify-end gap-2">
         <Button disabled={working} onClick={onClose} type="button" variant="quiet">
           {t('common.cancel')}
@@ -780,12 +1038,20 @@ function VaultAccessAction({
  * missing, and still offer the vault's own live next step. Never a silent
  * disabled control — "a state without a next action is a design bug".
  */
-function DeferredActionNotice({ reasonKey, vault }: { reasonKey: string; vault: VaultConfig }) {
+function DeferredActionNotice({
+  reasonKey,
+  reasonVars,
+  vault,
+}: {
+  reasonKey: string;
+  reasonVars?: TranslateVars;
+  vault: VaultConfig;
+}) {
   const t = useT();
   const stateQuery = useVaultEndpointState(vault.id);
   return (
-    <div className="bt-soft flex flex-col items-start gap-2 text-sm">
-      <p>{t(reasonKey)}</p>
+    <Panel className="flex flex-col items-start gap-2 p-3" pad={false} soft>
+      <p className="bt-soft text-sm">{t(reasonKey, reasonVars)}</p>
       {stateQuery.data ? (
         <VaultStateAction state={stateQuery.data} vaultId={vault.id} />
       ) : (
@@ -799,17 +1065,51 @@ function DeferredActionNotice({ reasonKey, vault }: { reasonKey: string; vault: 
           {stateQuery.isError ? t('common.retry') : t('common.loading')}
         </Button>
       )}
-    </div>
+    </Panel>
+  );
+}
+
+/**
+ * A refusal this surface can name. §12: a device-password lockout is not "that
+ * action could not be completed" — it has a code and a deadline, and the QR
+ * sender already says so. Collapsing it here would invite the user to retype a
+ * password no verification will look at, with the retry instant never shown.
+ */
+interface AccessFailure {
+  key: string;
+  vars?: TranslateVars;
+}
+
+function isLockedOut(cause: unknown): cause is EndpointKeystoreError {
+  return cause instanceof EndpointKeystoreError && cause.code === 'locked-out';
+}
+
+function accessFailure(cause: unknown): AccessFailure {
+  const retryAt = isLockedOut(cause) ? cause.details.retryAt : undefined;
+  return retryAt == null
+    ? { key: 'vault.manager.access.error' }
+    : {
+        key: 'vault.manager.access.lockedOut',
+        vars: { time: vaultRetryTimeLabel(retryAt) },
+      };
+}
+
+function AccessFailureNotice({ failure }: { failure: AccessFailure }) {
+  const t = useT();
+  return (
+    <p className="bt-neg text-sm" role="alert">
+      {t(failure.key, failure.vars)}
+    </p>
   );
 }
 
 function SilentVaultOpen({
   open,
-  failed,
+  failure,
   title,
 }: {
   open(): void;
-  failed: boolean;
+  failure: AccessFailure | null;
   title: string;
 }) {
   const t = useT();
@@ -822,11 +1122,7 @@ function SilentVaultOpen({
   return (
     <section aria-label={title} className="bt-panel flex flex-col gap-3 p-4">
       <p className="bt-row-sub">{t('vault.manager.access.opening')}</p>
-      {failed ? (
-        <p className="bt-neg text-sm" role="alert">
-          {t('vault.manager.access.error')}
-        </p>
-      ) : null}
+      {failure ? <AccessFailureNotice failure={failure} /> : null}
     </section>
   );
 }

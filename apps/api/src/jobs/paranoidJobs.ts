@@ -131,7 +131,12 @@ export function bindParanoidJob<N extends QueueName>(
         if (typeof portfolioId !== 'string') {
           throw new Error(`${definition.name} paranoid binding requires portfolioId`);
         }
-        const ran = await binding.runIfAllowed(portfolioId, () => handler(job, ctx));
+        // The wrapped handler's counts summary (#1406 W4) is discarded here on
+        // purpose: a paranoid-gated run may not have happened at all, so
+        // reporting its numbers as this run's outcome would be a lie.
+        const ran = await binding.runIfAllowed(portfolioId, async () => {
+          await handler(job, ctx);
+        });
         if (!ran) {
           ctx.logger.info({ portfolioId }, `${definition.name} skipped by paranoid registry`);
         }

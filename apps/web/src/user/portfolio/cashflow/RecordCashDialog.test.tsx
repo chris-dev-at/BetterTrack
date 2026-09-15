@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { CashTag } from '@bettertrack/contracts';
+import type { CashMovement, CashTag } from '@bettertrack/contracts';
 
 vi.mock('../../../lib/portfolioApi');
 vi.mock('../../../lib/cashApi', () => ({
@@ -14,6 +14,7 @@ vi.mock('../../../lib/cashApi', () => ({
 }));
 
 import { ApiError } from '../../../lib/apiClient';
+import { displayZoneDay } from '../../../lib/format';
 import { listCashTags, previewCashRules, setCashMovementTags } from '../../../lib/cashApi';
 import {
   chargeCashFee,
@@ -155,6 +156,7 @@ test.each([
     expect(withdrawCash).toHaveBeenCalledWith('p1', {
       amountEur: 25,
       sourceId: 's-savings',
+      executedAt: `${displayZoneDay()}T12:00:00.000Z`,
     }),
   );
 });
@@ -171,12 +173,15 @@ test('a spend is two fields — amount, what for, record', async () => {
   await user.click(screen.getByRole('button', { name: 'Record' }));
 
   // No date, no account, no direction click: money out is the default and today
-  // is the date, so neither is sent.
+  // is the date. The date is still SENT (#1792) — anchored at noon UTC on the
+  // day this form is showing, rather than left for the server to stamp with an
+  // instant whose Vienna day can already be tomorrow.
   await waitFor(() =>
     expect(withdrawCash).toHaveBeenCalledWith('p1', {
       amountEur: 300,
       sourceId: 's1',
       note: 'SPAR MARKT 4021',
+      executedAt: `${displayZoneDay()}T12:00:00.000Z`,
     }),
   );
 });
@@ -199,6 +204,69 @@ test('stamps backdated cash at noon UTC, after same-day trades', async () => {
       executedAt: '2020-01-02T12:00:00.000Z',
     }),
   );
+});
+
+/**
+ * ── THE FIRST HOURS OF A VIENNA MONTH (#1792) ──
+ *
+ * The pre-fill was the UTC day. Between 00:00 and 02:00 Vienna that is
+ * YESTERDAY, so the picker opened on a date every list on the screen had already
+ * moved past — and, because "today" was also the branch that omitted
+ * `executedAt`, the row was stamped with an instant the ledger dates into the
+ * NEXT month from the one the picker showed.
+ */
+test('opens on the day the ledger shows, in the first hours of a Vienna month', async () => {
+  // 01:15 on 1 October 2026 in Vienna (CEST, UTC+2) — the UTC day is 30 September.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-30T23:15:00.000Z'));
+  try {
+    vi.mocked(withdrawCash).mockResolvedValue({
+      movement: { id: 'm-tz', tags: [] },
+    } as unknown as Awaited<ReturnType<typeof withdrawCash>>);
+    renderDialog();
+
+    const amount = await screen.findByLabelText('Amount');
+    expect(screen.getByLabelText('Date')).toHaveValue('2026-10-01');
+
+    fireEvent.change(amount, { target: { value: '400' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }));
+
+    // Anchored on the day it showed, so the summary month, the budget period and
+    // the date the movements list prints are the same October.
+    await waitFor(() =>
+      expect(withdrawCash).toHaveBeenCalledWith('p1', {
+        amountEur: 400,
+        sourceId: 's1',
+        executedAt: '2026-10-01T12:00:00.000Z',
+      }),
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('an edit opens on the day the ledger printed, not the UTC day', async () => {
+  const movement = {
+    id: 'm-late',
+    kind: 'withdrawal',
+    amountEur: -400,
+    sourceId: 's1',
+    transactionId: null,
+    transferId: null,
+    counterpartSourceId: null,
+    dividendId: null,
+    taxYear: null,
+    // 01:15 on 1 October in Vienna: the list renders "1 Oct", so the editor must
+    // not open on 30 September and silently move the row back a month on save.
+    executedAt: '2026-09-30T23:15:00.000Z',
+    note: 'Rent',
+    source: 'manual',
+    createdAt: '2026-09-30T23:15:00.000Z',
+    tags: [],
+  } as unknown as CashMovement;
+  renderDialog({ movement });
+
+  expect(await screen.findByLabelText('Date')).toHaveValue('2026-10-01');
 });
 
 test('shows the tag the rules WOULD apply, while you are still typing', async () => {
@@ -229,7 +297,11 @@ test('"counts against performance" books a FEE, not a withdrawal', async () => {
   // The whole point of the checkbox: this drags the return curve instead of
   // being divided back out of it (§16 2026-07-30).
   await waitFor(() =>
-    expect(chargeCashFee).toHaveBeenCalledWith('p1', { amountEur: 30, sourceId: 's1' }),
+    expect(chargeCashFee).toHaveBeenCalledWith('p1', {
+      amountEur: 30,
+      sourceId: 's1',
+      executedAt: `${displayZoneDay()}T12:00:00.000Z`,
+    }),
   );
   expect(withdrawCash).not.toHaveBeenCalled();
 });

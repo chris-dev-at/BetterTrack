@@ -187,6 +187,7 @@ payload. The table is therefore the complete **pre-merge** data contract
 | `chat.message`                 | New chat message                                         | `conversationId`, `messageId`                              |
 | `dividend.event`               | A held asset's upcoming ex-date                          | `assetId`                                                  |
 | `budget.exceeded`              | A category budget exceeded its monthly target            | `categoryId`, `period`                                     |
+| `comment.created`              | Someone commented on an item the recipient shares        | `itemKind`, `itemId`, `commentId`                          |
 | `mirror.invite`                | Invitation to a MIRRORCHAIN group portfolio              | `chainId`, `inviteId`                                      |
 | `mirror.member_joined`         | A member joined a MIRRORCHAIN group portfolio            | `chainId`                                                  |
 | `mirror.member_left`           | A member left a MIRRORCHAIN group portfolio              | `chainId`                                                  |
@@ -278,6 +279,7 @@ a portfolio id.
 | `earnings.reminder`            | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | Notification inbox                                      |
 | `dividend.event`               | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | Notification inbox                                      |
 | `budget.exceeded`              | Notification inbox; never construct an expense URL                      | `categoryId`, `period`                                    | Notification inbox                                      |
+| `comment.created`              | Shared items thread: `/people/shared#thread-{itemKind}-{itemId}`        | `itemKind`, `itemId`, `commentId`                         | `/people/shared`                                        |
 | `mirror.invite`                | Social MIRRORCHAIN invitation                                           | `chainId`, `inviteId`                                     | Notification inbox                                      |
 | `mirror.member_joined`         | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
 | `mirror.member_left`           | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |

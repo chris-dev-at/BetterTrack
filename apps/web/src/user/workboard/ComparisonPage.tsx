@@ -22,7 +22,6 @@ import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Button, PageHead } from '../../ui/origin';
 import { overlayColor, PriceChart, type ChartPoint } from '../../ui/charts';
-import { MAIN_SERIES } from '../../ui/charts/palette';
 import { Alert } from '../components/ui';
 
 /**
@@ -34,9 +33,14 @@ import { Alert } from '../components/ui';
  * (anti-bloat): a selection list, one chart, one grid.
  */
 
-/** Colour of the `i`-th overlaid series — index 0 is the chart's main (sky) line. */
+/**
+ * Colour of the `i`-th compared series. Every series — the primary included —
+ * is drawn as a chart OVERLAY (see the render), so the categorical palette is
+ * assigned straight through and the grid's chips match the chart's legend
+ * swatch for the same basket.
+ */
 function seriesColor(i: number): string {
-  return i === 0 ? MAIN_SERIES : overlayColor(i - 1);
+  return overlayColor(i);
 }
 
 function toChartPoints(series: ReadonlyArray<{ date: string; value: number }>): ChartPoint[] {
@@ -152,24 +156,6 @@ function ConglomeratePicker({
   );
 }
 
-/** Colour-chip legend mapping each overlaid series to its name. */
-function ChartLegend({ series }: { series: ComparisonSeries[] }) {
-  const t = useT();
-  return (
-    <ul
-      aria-label={t('workboard.comparison.legendAriaLabel')}
-      className="bt-meta flex flex-wrap gap-x-4 gap-y-1"
-    >
-      {series.map((s, i) => (
-        <li className="inline-flex items-center gap-1.5" key={s.conglomerateId}>
-          <span aria-hidden="true" className="bt-dot" style={{ background: seriesColor(i) }} />
-          <span className="truncate">{s.name}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 /** One stat row of the grid: how to pull its value + delta out of a series. */
 interface MetricRow {
   key: ComparisonMetricKey;
@@ -249,6 +235,16 @@ function ComparisonGrid({
                     />
                     <span className="bt-soft">{s.name}</span>
                   </span>
+                  {/* The slice of this basket that resolved to no asset (#1755):
+                      the curve and every stat below cover only the rest of it,
+                      normalized to 100, so the column is not the whole blueprint. */}
+                  {s.unresolvedPct > 0 ? (
+                    <span className="bt-meta block">
+                      {t('workboard.comparison.unresolvedShare', {
+                        pct: formatPercent(s.unresolvedPct),
+                      })}
+                    </span>
+                  ) : null}
                   <label className="bt-meta mt-1 flex items-center justify-end gap-1">
                     <input
                       aria-label={t('workboard.comparison.setBaseline', { name: s.name })}
@@ -393,16 +389,26 @@ export function ComparisonPage() {
               </div>
             ) : !data ? null : (
               <>
+                {/*
+                  ONE legend for all N series. PriceChart builds its legend from
+                  `overlays` alone, so passing only series 1..n left the page with
+                  two: the chart's (missing the primary) above the page's own
+                  (complete). Every series is an overlay here instead — the
+                  primary also feeds the main-series slot, which the shared chart
+                  needs to anchor its scale and draws under its own overlay line —
+                  so the chart's single legend names them all, in the same
+                  categorical colours the stats grid chips use.
+                */}
                 <PriceChart
                   series={toChartPoints(data.series[0]!.series)}
-                  overlays={data.series
-                    .slice(1)
-                    .map((s) => ({ label: s.name, series: toChartPoints(s.series) }))}
+                  overlays={data.series.map((s) => ({
+                    label: s.name,
+                    series: toChartPoints(s.series),
+                  }))}
                   showRangeToggle={false}
                   loading={compareQuery.isFetching}
                   ariaLabel={t('workboard.comparison.chartAriaLabel')}
                 />
-                <ChartLegend series={data.series} />
                 <ComparisonGrid
                   series={data.series}
                   baselineId={data.baselineId}

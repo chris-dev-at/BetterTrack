@@ -1,5 +1,6 @@
 import {
   SOURCE_TAG_STANDING_ORDER,
+  standingOrderQuoteRefusal,
   type CreateStandingOrderRequest,
   type StandingOrder,
   type StandingOrderListResponse,
@@ -125,9 +126,10 @@ export interface ProcessDueResult {
   deferred: number;
   /**
    * Orders whose final in-lock recheck aborted the write: the portfolio was
-   * archived or moved into a vault — or the order paused, removed, or its
-   * watermark advanced past the candidate period — between the scan's
-   * optimistic `listActive` read and the locked claim.
+   * archived or moved into a vault — or the order paused, removed, its
+   * watermark advanced past the candidate period, or its end date pulled back
+   * behind that period — between the scan's optimistic `listActive` read and
+   * the locked claim.
    */
   skippedArchived: number;
   /**
@@ -145,10 +147,11 @@ export interface ProcessDueResult {
 interface BookQuote {
   price: number;
   /**
-   * What `lastRunAt` will record for this booking: the provider's `asOf` for an
-   * upstream asset (clamped to the scan instant when the provider clock runs
-   * ahead), or the scan instant itself for a local/custom asset. Record-only —
-   * never the money row's `executedAt`.
+   * What `lastRunAt` will record for this booking: the market stamp behind the
+   * price, clamped to the scan instant when the clock supplying it runs ahead.
+   * For an upstream asset that is the provider's `asOf`; for a local/custom one
+   * it is the owner's value-point day (#1793), which is exactly as old as the
+   * basis being booked. Record-only — never the money row's `executedAt`.
    */
   recordedAt: Date;
 }
@@ -263,15 +266,38 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       suspendedByArchive,
       lastRunAt: record.lastRunAt ? record.lastRunAt.toISOString() : null,
       lastPeriodKey: record.lastPeriodKey,
-      nextRunDate: nextRunDate(
+      nextRunDate: displayNextRunDate(record, today, suspendedByArchive),
+      createdAt: record.createdAt.toISOString(),
+      updatedAt: record.updatedAt.toISOString(),
+    };
+  }
+
+  /**
+   * `nextRunDate` for display. A schedule the math refuses (a non-calendar
+   * watermark, a monthly row without its anchor) reads as "nothing scheduled"
+   * rather than taking the whole list down — or, as before this guard, printing
+   * a fabricated `YYYY-MM-NaN` day into the DTO. The vault twin's UI drops the
+   * same row's copy the same way; the scan is where a corrupt row gets reported.
+   */
+  function displayNextRunDate(
+    record: StandingOrderWithAsset,
+    today: string,
+    suspendedByArchive: boolean,
+  ): string | null {
+    try {
+      return nextRunDate(
         specOf(record),
         today,
         record.lastPeriodKey,
         record.status === 'active' && !suspendedByArchive,
-      ),
-      createdAt: record.createdAt.toISOString(),
-      updatedAt: record.updatedAt.toISOString(),
-    };
+      );
+    } catch (err) {
+      logger?.warn(
+        { orderId: record.id, err },
+        'standing order: schedule is not computable; reporting no next run',
+      );
+      return null;
+    }
   }
 
   async function requireOwnedOrder(userId: string, id: string): Promise<StandingOrderWithAsset> {
@@ -317,7 +343,9 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       let assetId: string | null = null;
       if (input.kind === 'buy-asset') {
         // The asset must be visible to the caller; its native currency is stored
-        // for display (the buy executes at the quote's currency).
+        // on the order and becomes the booking contract — a quote answered in
+        // any other currency is refused rather than booked (see
+        // {@link resolveBookQuote}).
         const asset = await assetRepo.findByIdForUser(input.assetId!, userId);
         if (!asset) throw badRequest('Asset not found.', 'STANDING_ORDER_ASSET_NOT_FOUND');
         assetId = asset.id;
@@ -501,50 +529,81 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             return;
           }
 
-          // Retriable pre-checks BEFORE claiming, so a failure never claims the
-          // period and it retries cleanly next run (no double-book risk).
+          // The one retriable pre-check BEFORE claiming, so a failure never
+          // claims the period and it retries cleanly next run (no double-book
+          // risk). Only the buy's quote lives out here: it is a network read
+          // that must not hold the portfolio lock. Everything that TOUCHES the
+          // portfolio — provisioning its Main cash source included — waits for
+          // the lock below (#1712).
           let bookPrice: number | null = null;
-          let cashSourceId: string | null = null;
           let quoteRecordedAt: Date | null = null;
           try {
             if (order.kind === 'buy-asset') {
               const bookQuote = await resolveBookQuote(order, executedAt);
               bookPrice = bookQuote.price;
               quoteRecordedAt = bookQuote.recordedAt;
-            } else {
-              cashSourceId = (await cashSourceRepo.getOrCreateMain(order.portfolioId)).id;
             }
           } catch (err) {
             result.deferred += 1;
             logger?.warn(
               { orderId: order.id, kind: order.kind, due, err },
-              'standing order: period deferred (provider failure / insufficient cash), will retry',
+              'standing order: period deferred (provider failure / unbookable quote), will retry',
             );
-            // A same-day transient is not yet "deferred past its anchor". If it
-            // remains unbooked, a later scan emits one stable notice for this
-            // period; daily schedules instead surface the old period as dropped
-            // when tomorrow's occurrence becomes due.
-            if (due < today) await notifyFailure(order, due, 'deferred');
+            // Announced on the period's own day, not a day later (#1793). The
+            // old `due < today` gate never opened for a `daily` order — its due
+            // occurrence IS today, every scan — so a daily buy could defer
+            // forever without one deferred notice. The dedupe key folds in
+            // (period, outcome), so the retry on a later day stays silent and a
+            // subsequent `dropped` still lands.
+            await notifyFailure(order, due, 'deferred');
             return;
           }
 
           // The scan's `listActive` result is intentionally only an optimistic
           // candidate list. Archive or vault move-in can commit while a quote
-          // is in flight, so the final eligible check, claim and money write
-          // share one portfolio mutation lock. A transition that wins that lock
-          // makes this a no-op; an execution that wins finishes while the
-          // portfolio is still active and non-vaulted.
+          // is in flight, so the final eligible check, cash-source
+          // provisioning, claim and money write share one portfolio mutation
+          // lock. A transition that wins that lock makes this a no-op; an
+          // execution that wins finishes while the portfolio is still active
+          // and non-vaulted.
           const outcome = await repo.withActivePortfolioLock(
             order.portfolioId,
             order.id,
             due,
-            async (tx) => {
-              if (order.kind === 'cash-deduct') {
-                const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
-                if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
+            async (tx, current) => {
+              // The `listActive` snapshot named the candidate; the row this
+              // lock just pinned decides the money (#1836). On a book of a few
+              // hundred orders the snapshot is minutes old by the time the last
+              // order gets here — each one polls a quote and takes this lock —
+              // so an owner who edited the amount, the note or the end date in
+              // that window would otherwise have the stale figure booked. The
+              // asset join is carried over: `assetId` is not patchable, and the
+              // accepted quote was fetched for exactly that ref.
+              const fresh: StandingOrderWithAsset = { ...order, ...current };
+              // An end date pulled back behind the candidate retires this
+              // period outright: booking it would record an occurrence the
+              // order no longer has. Aborting is the safe direction — an
+              // earlier occurrence that is now the due one simply books on the
+              // next scan, through the same claim ledger.
+              if (dueOccurrence(specOf(fresh), today) !== due) return 'superseded' as const;
+
+              // Provisioning Main is itself a cleartext write, so it belongs
+              // inside the lock and inside this transaction: outside, a
+              // move-in that purged `portfolio_cash_sources` a moment earlier
+              // would be handed a fresh orphan row across the vault boundary
+              // (#1712).
+              const cashSourceId =
+                fresh.kind === 'buy-asset'
+                  ? null
+                  : (await cashSourceRepo.getOrCreateMain(fresh.portfolioId, tx)).id;
+              if (fresh.kind === 'cash-deduct') {
+                const movements = await cashMovementRepo.listForPortfolio(fresh.portfolioId, tx);
+                // Affordability is judged against the very amount the booking
+                // below will write — never against the snapshotted one.
+                if (!cashCovers(fresh, cashSourceId!, movements)) return 'deferred' as const;
               }
 
-              const claimed = await repo.claimPeriod(order.id, due, tx);
+              const claimed = await repo.claimPeriod(fresh.id, due, tx);
               if (!claimed) return 'duplicate' as const;
 
               try {
@@ -554,7 +613,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
                 // lock or rolling back the durable claim.
                 await tx.transaction(async (savepoint) => {
                   await bookRow(
-                    order,
+                    fresh,
                     bookPrice,
                     executedAt,
                     cashSourceId,
@@ -580,15 +639,23 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             );
             return;
           }
+          if (outcome === 'superseded') {
+            result.skippedArchived += 1;
+            logger?.info(
+              { orderId: order.id, portfolioId: order.portfolioId, due },
+              'standing order: skipped — the schedule no longer covers this period (edited during execution)',
+            );
+            return;
+          }
           if (outcome === 'deferred') {
             result.deferred += 1;
             logger?.warn(
               { orderId: order.id, kind: order.kind, due },
               'standing order: period deferred (insufficient cash), will retry',
             );
-            // Same rule as the pre-check deferral above: a same-day transient
-            // is not yet "deferred past its anchor".
-            if (due < today) await notifyFailure(order, due, 'deferred');
+            // Same rule as the pre-check deferral above: the period is named on
+            // its own day (#1793).
+            await notifyFailure(order, due, 'deferred');
             return;
           }
           if (outcome === 'duplicate') {
@@ -686,10 +753,17 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
    * The response's market timestamp is then judged by AGE, not by the cache
    * flag: an `asOf` older than {@link STANDING_ORDER_MAX_QUOTE_AGE_MS} is a
    * halted/delisted symbol's frozen close, not a booking basis, and defers too.
-   * Local (custom) assets are exempt — their `asOf` is the owner's latest
-   * value-point day, routinely months old without indicating an outage — and
-   * record the scan instant instead. Either way the stamp is record-only
+   * Local (custom) assets are exempt from that ceiling — their `asOf` is the
+   * owner's latest value-point day, routinely months old without indicating an
+   * outage — but not from stating it: their valuation day is recorded exactly
+   * like any other market stamp (#1793). Either way the stamp is record-only
    * (`lastRunAt`); the money row is dated at the scan instant.
+   *
+   * The PRICE itself is judged by {@link standingOrderQuoteRefusal} — the rule
+   * the vault twin enforces too (#1712): the quote must be denominated in the
+   * order's and the asset's currency, and be finite, positive and below the
+   * manual path's {@link MAX_TRANSACTION_PRICE} ceiling. A refusal throws like
+   * any other pre-check failure, so the period stays unclaimed and retries.
    */
   async function resolveBookQuote(order: StandingOrderWithAsset, scanAt: Date): Promise<BookQuote> {
     if (!order.assetProviderId || !order.assetProviderRef) {
@@ -700,10 +774,42 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       providerRef: order.assetProviderRef,
     };
     const quote = await marketData.pollQuote(ref);
-    if (marketData.isLocalProvider(ref)) {
-      return { price: quote.value.price, recordedAt: new Date(scanAt.getTime()) };
+    // The asset's own currency is the join `listActive` carries for exactly
+    // this check: the stored price is a bare number that later converts at
+    // `assets.currency`, so quote, order and asset must all agree.
+    const refusal = standingOrderQuoteRefusal({
+      price: quote.value.price,
+      quoteCurrency: quote.value.currency,
+      orderCurrency: order.currency,
+      assetCurrency: order.assetCurrency,
+    });
+    if (refusal !== null) {
+      throw new Error(
+        `standing order ${order.id}: quote refused (${refusal}) — ` +
+          `${quote.value.price} ${quote.value.currency} against ${order.currency} order / ` +
+          `${order.assetCurrency ?? 'unknown'} asset`,
+      );
     }
     const providerAsOfMs = new Date(quote.value.asOf).getTime();
+    if (marketData.isLocalProvider(ref)) {
+      // Exempt from the age ceiling, NOT from stating its age (#1793). The
+      // owner's own value point is the price basis, so it is what `lastRunAt`
+      // records — recording the scan instant made a 14-month-old valuation read
+      // as freshly priced, with nothing anywhere to say otherwise. An
+      // unparseable local stamp falls back to the scan instant rather than
+      // deferring: a manual valuation is never an outage.
+      const localAsOfMs = Number.isFinite(providerAsOfMs) ? providerAsOfMs : scanAt.getTime();
+      if (scanAt.getTime() - localAsOfMs > STANDING_ORDER_MAX_QUOTE_AGE_MS) {
+        logger?.info(
+          { orderId: order.id, assetId: order.assetId, valuationAsOf: quote.value.asOf },
+          'standing order: booking a local asset at a valuation older than the quote-age ceiling',
+        );
+      }
+      return {
+        price: quote.value.price,
+        recordedAt: new Date(Math.min(localAsOfMs, scanAt.getTime())),
+      };
+    }
     if (!Number.isFinite(providerAsOfMs)) {
       throw new Error(`standing order ${order.id}: quote has an invalid asOf timestamp`);
     }

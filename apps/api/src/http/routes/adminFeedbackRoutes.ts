@@ -33,6 +33,19 @@ export function registerAdminFeedbackRoutes(
     res.json(await ctx.feedback.listForAdmin(query));
   });
 
+  /**
+   * One submission by id (#1406 W3). The helpdesk's split pane opens whatever
+   * `?thread=` names, which the paged inbox cannot answer: a shared link is
+   * routinely opened by an operator whose filters exclude that row. Read-only,
+   * and the same projection the list already returns.
+   */
+  router.get('/feedback/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    const submission = await ctx.feedback.getForAdmin(id);
+    if (!submission) throw notFound('Feedback not found.');
+    res.json(submission);
+  });
+
   router.get(
     '/feedback/:id/messages',
     validateParams(idParamSchema),

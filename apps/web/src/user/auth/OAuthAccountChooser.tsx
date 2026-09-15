@@ -7,6 +7,7 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
+import { Avatar } from '../components/Avatar';
 import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { PinInput } from '../components/PinInput';
 import { Alert, AuthCard, Button } from '../components/ui';
@@ -26,9 +27,20 @@ function quickAuthErrorMessage(t: TranslateFn, err: unknown): AttributedError<'p
   return { field: null, message: t('auth.pin.verifyFailed') };
 }
 
-/** A lettered placeholder for the remembered account (there is no avatar system yet). */
-function AccountAvatar({ username }: { username: string }) {
-  const initial = username.trim().charAt(0).toUpperCase() || '?';
+/**
+ * The remembered account's face. A user who picked a curated profile icon
+ * (§13.5 V5-P0 (c)) sees exactly that icon here — the same one every social
+ * surface renders — because this screen's whole job is "confirm this is you".
+ * Nobody picked one (or a stale record predates the field): the lettered tile
+ * stands, deliberately NOT the deterministic icon {@link Avatar} would derive,
+ * so the chooser never invents an identity the rest of the app hasn't shown.
+ */
+function AccountAvatar({ account }: { account: RememberedAccount }) {
+  if (account.profileIcon != null) {
+    // `md` is 40px — the same box as the `bt-avatar--lg` tile below.
+    return <Avatar name={account.username} iconId={account.profileIcon} size="md" />;
+  }
+  const initial = account.username.trim().charAt(0).toUpperCase() || '?';
   return (
     <span aria-hidden className="bt-avatar bt-avatar--lg">
       {initial}
@@ -146,7 +158,7 @@ export function OAuthAccountChooser({
           ref={formRef}
         >
           <div className="flex items-center gap-3">
-            <AccountAvatar username={account.username} />
+            <AccountAvatar account={account} />
             <p className="bt-soft text-sm">
               {t('auth.oauthChooser.pinPrompt', {
                 username: account.username,
@@ -208,7 +220,7 @@ export function OAuthAccountChooser({
             whiteSpace: 'normal',
           }}
         >
-          <AccountAvatar username={account.username} />
+          <AccountAvatar account={account} />
           <span className="flex flex-col">
             <span className="bt-row-title">
               {t('auth.oauthChooser.loginAs', { username: account.username })}

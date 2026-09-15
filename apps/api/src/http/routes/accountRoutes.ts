@@ -66,6 +66,12 @@ export { PARANOID_RESTORE_PLAINTEXT_FACTOR };
  * a fleet of stalled ones is released after this bound rather than never. See the
  * matching note beside the pool in `server.ts` / `scripts/worker.ts`; raising the
  * concurrent-download ceiling means raising that pool, not lengthening this.
+ *
+ * An inactivity bound alone is not enough: a client that reads one byte just
+ * inside every window resets it forever and pins the connection indefinitely.
+ * `EXPORT_DOWNLOAD_MAX_MS` (in the export service, where the lock is taken) is
+ * the ABSOLUTE companion bound that ends such a transfer regardless of pacing;
+ * this one exists to cut a dead-but-open socket long before that.
  */
 export const EXPORT_DOWNLOAD_STALL_TIMEOUT_MS = 60_000;
 
@@ -277,16 +283,27 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
       try {
         await ctx.dataExport.withDownload(
           { userId: req.authUser!.id, token },
-          (file) =>
+          (file, signal) =>
             new Promise<void>((resolve, reject) => {
               let settled = false;
               const finish = (error?: Error): void => {
                 if (settled) return;
                 settled = true;
                 res.setTimeout(0);
+                signal.removeEventListener('abort', onDeadline);
                 if (error) reject(error);
                 else resolve();
               };
+              // The absolute bound (EXPORT_DOWNLOAD_MAX_MS) fires on the service
+              // side, which releases the lock regardless; cutting the socket here
+              // is what stops a drip-feeding reader from also holding a worker
+              // slot and an open file handle past that point.
+              function onDeadline(): void {
+                const expired = new Error('The export download exceeded its time limit.');
+                res.destroy(expired);
+                finish(expired);
+              }
+              signal.addEventListener('abort', onDeadline, { once: true });
               // The watchdog settles the promise itself rather than relying on
               // the stream to call back after the socket dies: holding the
               // account lock forever would be far worse than a spurious error.

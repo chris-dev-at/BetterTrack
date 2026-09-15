@@ -8,6 +8,7 @@ import { portfolioVaultTransitionStates, portfolios } from '../data/schema';
 import { paranoidRestoreJsonLimitBytes } from '../http/bodyLimits';
 import { getOpenApiDocument } from '../http/openapi';
 import { buildRouteTable, checkCoverage } from '../scripts/checkOpenapiCoverage';
+import { PortfolioVaultTransitionError } from '../services/account/portfolioVaultTransitionService';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -138,7 +139,10 @@ function stubTransitions(harness: TestHarness, portfolioId: string) {
   const lifecycle = vi
     .spyOn(harness.ctx.portfolioVaultTransitions, 'lifecycle')
     .mockResolvedValue({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
-  return { revision, lifecycle, moveIn, moveOutChallenge, moveOut };
+  const captureImportBatches = vi
+    .spyOn(harness.ctx.portfolioVaultTransitions, 'captureImportBatches')
+    .mockResolvedValue({ batches: [], rows: [], nextCursor: null });
+  return { revision, lifecycle, moveIn, moveOutChallenge, moveOut, captureImportBatches };
 }
 
 async function mintKey(
@@ -159,56 +163,88 @@ async function mintKey(
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
 describe('E4 portfolio-vault HTTP boundary', () => {
-  it('mounts all five cookie-session routes and marks every successful response no-store', async () => {
-    const harness = await createTestApp();
-    const { user, portfolioId, agent } = await seedPrincipal(harness, 'cookie');
-    const spies = stubTransitions(harness, portfolioId);
+  // The seeded principal costs an argon2 hash and this arc now carries the
+  // #1529 read's happy/400/409 probes as well: its own budget, not the suite's.
+  it(
+    'mounts all five cookie-session routes and marks every successful response no-store',
+    { timeout: 60_000 },
+    async () => {
+      const harness = await createTestApp();
+      const { user, portfolioId, agent } = await seedPrincipal(harness, 'cookie');
+      const spies = stubTransitions(harness, portfolioId);
 
-    const revision = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/revision`);
-    expect(revision.status, JSON.stringify(revision.body)).toBe(200);
-    expect(revision.headers['cache-control']).toContain('no-store');
-    expect(revision.body).toEqual({ portfolioDataRevision: REVISION, importBatchCount: 0 });
+      const revision = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/revision`);
+      expect(revision.status, JSON.stringify(revision.body)).toBe(200);
+      expect(revision.headers['cache-control']).toContain('no-store');
+      expect(revision.body).toEqual({ portfolioDataRevision: REVISION, importBatchCount: 0 });
 
-    const lifecycle = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/lifecycle`);
-    expect(lifecycle.status, JSON.stringify(lifecycle.body)).toBe(200);
-    expect(lifecycle.headers['cache-control']).toContain('no-store');
-    expect(lifecycle.body).toEqual({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
+      const lifecycle = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/lifecycle`);
+      expect(lifecycle.status, JSON.stringify(lifecycle.body)).toBe(200);
+      expect(lifecycle.headers['cache-control']).toContain('no-store');
+      expect(lifecycle.body).toEqual({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
 
-    const movedIn = await agent
-      .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
-      .set(...XRW)
-      .send(moveInBody(user.password));
-    expect(movedIn.status, JSON.stringify(movedIn.body)).toBe(200);
-    expect(movedIn.headers['cache-control']).toContain('no-store');
-    expect(movedIn.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, docVersion: 7 });
+      // #1529: the lossless import-capture read — paged, no-store, query-validated.
+      const captured = await agent
+        .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+        .query({ limit: 2 });
+      expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+      expect(captured.headers['cache-control']).toContain('no-store');
+      expect(captured.body).toEqual({ batches: [], rows: [], nextCursor: null });
+      expect(spies.captureImportBatches).toHaveBeenCalledWith(user.id, portfolioId, { limit: 2 });
+      const badLimit = await agent
+        .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+        .query({ limit: 0 });
+      expect(badLimit.status).toBe(400);
+      // Review F2: an unservable STORED row is a typed 409, never the request
+      // validator's 400 — the request was fine, the data is not exactly servable.
+      spies.captureImportBatches.mockRejectedValueOnce(
+        new PortfolioVaultTransitionError('CAPTURE_UNSERVABLE', 'TEST VECTOR unservable row'),
+      );
+      const unservable = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`);
+      expect(unservable.status).toBe(409);
+      expect(unservable.body.error.code).toBe('PORTFOLIO_VAULT_CAPTURE_UNSERVABLE');
+      expect(unservable.headers['cache-control']).toContain('no-store');
 
-    const challenge = await agent
-      .post(`/api/v1/portfolios/${portfolioId}/vault/move-out/challenge`)
-      .set(...XRW)
-      .send(moveOutChallengeBody());
-    expect(challenge.status, JSON.stringify(challenge.body)).toBe(200);
-    expect(challenge.headers['cache-control']).toContain('no-store');
-    expect(challenge.body).toMatchObject({
-      portfolioId,
-      vaultId: VAULT_ID,
-      documentDigest: DOCUMENT_DIGEST,
-      documentSetHash: DOCUMENT_SET_HASH,
-    });
+      const movedIn = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
+        .set(...XRW)
+        .send(moveInBody(user.password));
+      expect(movedIn.status, JSON.stringify(movedIn.body)).toBe(200);
+      expect(movedIn.headers['cache-control']).toContain('no-store');
+      expect(movedIn.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, docVersion: 7 });
 
-    const movedOut = await agent
-      .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
-      .set(...XRW)
-      .send(moveOutBody(user.id, portfolioId, user.password));
-    expect(movedOut.status, JSON.stringify(movedOut.body)).toBe(200);
-    expect(movedOut.headers['cache-control']).toContain('no-store');
-    expect(movedOut.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, moveOutId: MOVE_OUT_ID });
+      const challenge = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-out/challenge`)
+        .set(...XRW)
+        .send(moveOutChallengeBody());
+      expect(challenge.status, JSON.stringify(challenge.body)).toBe(200);
+      expect(challenge.headers['cache-control']).toContain('no-store');
+      expect(challenge.body).toMatchObject({
+        portfolioId,
+        vaultId: VAULT_ID,
+        documentDigest: DOCUMENT_DIGEST,
+        documentSetHash: DOCUMENT_SET_HASH,
+      });
 
-    expect(spies.revision).toHaveBeenCalledWith(user.id, portfolioId);
-    expect(spies.lifecycle).toHaveBeenCalledWith(user.id, portfolioId);
-    expect(spies.moveIn).toHaveBeenCalledOnce();
-    expect(spies.moveOutChallenge).toHaveBeenCalledOnce();
-    expect(spies.moveOut).toHaveBeenCalledOnce();
-  });
+      const movedOut = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
+        .set(...XRW)
+        .send(moveOutBody(user.id, portfolioId, user.password));
+      expect(movedOut.status, JSON.stringify(movedOut.body)).toBe(200);
+      expect(movedOut.headers['cache-control']).toContain('no-store');
+      expect(movedOut.body).toMatchObject({
+        portfolioId,
+        vaultId: VAULT_ID,
+        moveOutId: MOVE_OUT_ID,
+      });
+
+      expect(spies.revision).toHaveBeenCalledWith(user.id, portfolioId);
+      expect(spies.lifecycle).toHaveBeenCalledWith(user.id, portfolioId);
+      expect(spies.moveIn).toHaveBeenCalledOnce();
+      expect(spies.moveOutChallenge).toHaveBeenCalledOnce();
+      expect(spies.moveOut).toHaveBeenCalledOnce();
+    },
+  );
 
   it('strictly rejects a missing stepUp on both commits before any service or database mutation', async () => {
     const harness = await createTestApp();
@@ -315,6 +351,21 @@ describe('E4 portfolio-vault HTTP boundary', () => {
       .send({});
     expect(future.status).toBe(403);
     expect(future.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    // #1529 (review F1, Chief ruling): the import-capture read is SESSION-ONLY —
+    // closed to the account:security key that the transition routes admit AND
+    // to an ordinary portfolio:read key. Raw staging rows never reach a bearer.
+    const readerToken = await mintKey(harness, user.id, 'E4 reader TEST VECTOR', [
+      'portfolio:read',
+    ]);
+    for (const token of [allowedToken, readerToken, deniedToken]) {
+      const closed = await request(harness.app)
+        .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+        .set(bearer(token));
+      expect(closed.status).toBe(403);
+      expect(closed.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+    expect(spies.captureImportBatches).not.toHaveBeenCalled();
     expect(spies.revision).toHaveBeenCalledOnce();
     expect(spies.moveIn).toHaveBeenCalledOnce();
     expect(spies.moveOutChallenge).toHaveBeenCalledOnce();
@@ -389,6 +440,7 @@ describe('E4 portfolio-vault HTTP boundary', () => {
 
   it('keeps the mounted-route and generated-OpenAPI censuses converged', () => {
     const expectedMounted = [
+      'GET /api/v1/portfolios/{portfolioId}/vault/import-batches',
       'GET /api/v1/portfolios/{portfolioId}/vault/lifecycle',
       'GET /api/v1/portfolios/{portfolioId}/vault/revision',
       'POST /api/v1/portfolios/{portfolioId}/vault/move-in',

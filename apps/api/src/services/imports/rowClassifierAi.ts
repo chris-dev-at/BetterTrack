@@ -1,4 +1,3 @@
-import type { AiService } from '../ai/aiService';
 import { MAX_CELL_CHARS } from './table';
 
 export { MAX_CELL_CHARS };
@@ -12,27 +11,18 @@ export { MAX_CELL_CHARS };
  * the caller injects the AI seam, so tests run without any model.
  *
  * Two hard mandates live here rather than in discipline:
- * - **CHEAP tier only.** {@link ROW_CLASSIFICATION_AI_TIER} is pinned to
- *   `'cheap'`; HEAVY (`qwen3.8`) is reserved for schema-level reasoning in
- *   another task and is structurally unreachable from the classifier: the seam
- *   below is a one-argument interface that `Pick<AiService, 'complete'>` (whose
- *   `complete` takes userId + request) does NOT satisfy, so raw service objects
- *   are rejected at compile time and wiring must go through {@link
- *   bindCheapTierAi}, which fixes temperature 0 and nothing else.
+ * - **The shared seam only.** Wiring goes through {@link bindImportAi}, which
+ *   fixes temperature 0 and nothing else: {@link ImportAiSeam} is a one-argument
+ *   interface that `Pick<AiService, 'complete'>` (whose `complete` takes userId
+ *   + request) does NOT satisfy, so a raw service object is a compile error.
+ *   There is no model tier — §6.18 configures ONE local endpoint/model pair, and
+ *   this feature shares it, and the caller's per-user daily budget, with the
+ *   header mapper and with insights/NL builder (see `importAi.ts`).
  * - **Kind labels only.** The model names a kind per row; it never produces or
  *   alters a number, date, amount, or asset id (§16 2026-07-22 LOCAL AI ONLY
  *   mandate, same as insights/NL builder). Every value comes from the parsed
  *   row.
  */
-
-/**
- * The configured model tier this feature consumes. Bulk row classification is
- * exactly what the CHEAP tier exists for (measured: a 7B local model classified
- * German broker rows 6/6 in 8.6 s at temperature 0 with the `<index>=<LABEL>`
- * contract below) — spending HEAVY here would be a bug, and this constant is
- * what deployment wiring resolves to the configured cheap endpoint/model.
- */
-export const ROW_CLASSIFICATION_AI_TIER = 'cheap' as const;
 
 /** Truncate one cell to the sniffer's analysable window, {@link MAX_CELL_CHARS}. */
 export function capCell(value: string): string {
@@ -45,34 +35,6 @@ export type RowClassificationAiLabel = (typeof AI_ROW_LABELS)[number];
 
 function isAiRowLabel(value: string): value is RowClassificationAiLabel {
   return (AI_ROW_LABELS as readonly string[]).includes(value);
-}
-
-/**
- * The narrow one-argument completion seam the classifier consumes. Deliberately
- * NOT satisfied by `Pick<AiService, 'complete'>` (two parameters) — passing the
- * raw AI service is a compile error, so the guarded `complete()` path can only
- * be reached through {@link bindCheapTierAi}.
- */
-export interface ImportRowAiSeam {
-  complete(request: { system: string; prompt: string }): Promise<{ text: string; model: string }>;
-}
-
-/**
- * Bind the guarded {@link AiService.complete} path (feature flag + daily cap +
- * refund-on-failure) to the classifier's narrow CHEAP-tier seam. Temperature 0
- * is fixed: the measured stage-3 result holds only for deterministic decoding.
- */
-export function bindCheapTierAi(ai: Pick<AiService, 'complete'>, userId: string): ImportRowAiSeam {
-  return {
-    complete: async ({ system, prompt }) => {
-      const completion = await ai.complete(userId, {
-        system,
-        prompt,
-        temperature: 0,
-      });
-      return { text: completion.text, model: completion.model };
-    },
-  };
 }
 
 export const ROW_CLASSIFY_SYSTEM_PROMPT = [

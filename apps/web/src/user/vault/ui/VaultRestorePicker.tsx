@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import { useT } from '../../../i18n';
-import { Button } from '../../../ui/origin';
+import { Badge, Button, Choice, ChoiceGroup, Empty, type BadgeTone } from '../../../ui/origin';
 import type { RestoreCandidate } from '../restore';
 
 export function VaultRestorePicker({
@@ -20,28 +20,30 @@ export function VaultRestorePicker({
     <div className="flex flex-col gap-3">
       <p className="bt-row-sub">{t('vault.restorePicker.hint')}</p>
       {candidates.length === 0 ? (
-        <p className="bt-meta">{t('vault.restorePicker.empty')}</p>
+        <Empty icon="clock" title={t('vault.restorePicker.empty')} />
       ) : (
-        <ul className="flex max-h-72 flex-col gap-2 overflow-y-auto">
-          {candidates.map((candidate) => (
-            <li className="bt-panel p-3" key={candidate.id}>
-              <label className="flex items-start gap-3">
-                <input
-                  checked={selected === candidate.id}
-                  disabled={candidate.status !== 'available'}
-                  onChange={() => setSelected(candidate.id)}
-                  type="radio"
-                />
-                <span>
-                  <span className="bt-row-title">{t(restoreSourceKey(candidate.source))}</span>
-                  <span className="bt-row-sub block">
+        <div className="max-h-72 overflow-y-auto">
+          <ChoiceGroup label={t('vault.restorePicker.hint')}>
+            {candidates.map((candidate) => (
+              <Choice
+                // A copy that cannot be restored keeps its row and says why on
+                // a badge, instead of a muted sub-line under an inert radio.
+                badge={
+                  <Badge tone={restoreStatusTone(candidate.status)}>
                     {t(`vault.restorePicker.status.${candidate.status}`)}
-                  </span>
-                </span>
-              </label>
-            </li>
-          ))}
-        </ul>
+                  </Badge>
+                }
+                disabled={candidate.status !== 'available'}
+                key={candidate.id}
+                muted={candidate.status !== 'available'}
+                name="vault-restore-candidate"
+                onSelect={() => setSelected(candidate.id)}
+                selected={selected === candidate.id}
+                title={t(restoreSourceKey(candidate.source))}
+              />
+            ))}
+          </ChoiceGroup>
+        </div>
       )}
       {failed ? (
         <p className="bt-neg text-sm" role="alert">
@@ -66,6 +68,11 @@ export function VaultRestorePicker({
       </Button>
     </div>
   );
+}
+
+function restoreStatusTone(status: RestoreCandidate['status']): BadgeTone {
+  if (status === 'available') return 'pos';
+  return status === 'corrupt' ? 'neg' : 'neutral';
 }
 
 function restoreSourceKey(source: string): string {

@@ -23,6 +23,9 @@ describe('German per-vault translations', () => {
       portfolioMove: de.vault.portfolioMove,
       restorePicker: de.vault.restorePicker,
       aggregateSync: de.vault.sync.aggregate,
+      // The in-place unlock is now the primary vault prompt app-wide, so it is
+      // held to the same calm, informal register as the surfaces around it.
+      unlockDialog: de.vault.unlockDialog,
     });
 
     expect(strings.filter((value) => formalAddress.test(value))).toEqual([]);

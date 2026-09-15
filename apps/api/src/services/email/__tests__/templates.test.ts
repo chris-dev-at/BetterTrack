@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   alertTriggeredEmail,
+  deferredNotificationEmail,
+  digestEmail,
   friendAcceptedEmail,
   friendRequestEmail,
   portfolioSharedEmail,
@@ -57,6 +59,51 @@ describe('notification email templates (§6.10)', () => {
     expect(email.html).toContain('Netflix &lt;bill&gt;');
     expect(email.html).toContain(`${APP_URL}/workbench/forecasts#standing-order-so-1`);
     expect(email.text).toContain('2026-04-01');
+  });
+
+  /**
+   * The deferred/digest heading is built from user-supplied data (a chain name,
+   * a budget tag, a custom asset's symbol) and used to be interpolated raw
+   * (#1816) — the same guarantee `friendRequestEmail` has above.
+   */
+  describe('deferred + digest titles are inert (#1816)', () => {
+    // 99 chars, so it passes `chainNameSchema` (trim, min 1, max 120).
+    const PAYLOAD = '</td></tr><tr><td><a href="https://evil.example">Reset your password</a>';
+
+    it('escapes a caller-supplied title in deferredNotificationEmail', () => {
+      const email = deferredNotificationEmail({
+        title: PAYLOAD,
+        body: 'Somebody joined the chain.',
+        appUrl: APP_URL,
+      });
+      expect(email.html).not.toContain('href="https://evil.example"');
+      expect(email.html).not.toContain('</td></tr><tr><td><a');
+      expect(email.html).toContain('&lt;/td&gt;&lt;/tr&gt;');
+      expect(email.html).toContain('&quot;https://evil.example&quot;');
+      // Exactly one anchor survives: the template's own button.
+      expect(email.html.match(/<a /g) ?? []).toHaveLength(1);
+    });
+
+    it('escapes item titles and bodies in digestEmail', () => {
+      const email = digestEmail({
+        cadence: 'daily',
+        items: [{ title: PAYLOAD, body: PAYLOAD }],
+        appUrl: APP_URL,
+      });
+      expect(email.html).not.toContain('href="https://evil.example"');
+      expect(email.html).toContain('&lt;/td&gt;&lt;/tr&gt;');
+      expect(email.html.match(/<a /g) ?? []).toHaveLength(1);
+    });
+
+    it('keeps a heading with HTML-significant characters readable, not double-escaped', () => {
+      const email = alertTriggeredEmail({
+        symbol: 'A&B',
+        body: 'A&B crossed above 10.',
+        appUrl: APP_URL,
+      });
+      expect(email.html).toContain('A&amp;B');
+      expect(email.html).not.toContain('A&amp;amp;B');
+    });
   });
 });
 

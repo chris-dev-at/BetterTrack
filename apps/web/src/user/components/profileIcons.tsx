@@ -4,7 +4,7 @@ import type { ProfileIconId } from '@bettertrack/contracts';
 import { PROFILE_ICON_IDS } from '@bettertrack/contracts';
 
 /**
- * The curated profile-icon set (§13.5 V5-P0c) — one bundled SVG per id from
+ * The curated profile-icon set (§13.5 V5-P0 (c)) — one bundled SVG per id from
  * {@link PROFILE_ICON_IDS}. Old-Xbox-style avatars: bold shapes, two-tone
  * palette per icon, no fine detail. Rendered inline (no `<img>` fetch) so the
  * picker + every render site paints in the same paint as the surface, and no
@@ -236,7 +236,11 @@ export function defaultProfileIconIdFor(seed: string): ProfileIconId {
   return PROFILE_ICON_IDS[hash]!;
 }
 
-/** Render one curated avatar's SVG contents for the given id. */
+/**
+ * Render one curated avatar's SVG contents for the given id. `data-icon-id` is
+ * an inert marker: the SVG is decorative (`aria-hidden`), so it is the only
+ * handle a test has on WHICH icon a surface actually painted.
+ */
 export function ProfileIconSvg({ id, className }: { id: ProfileIconId; className?: string }) {
   const paint = PALETTES[id];
   const renderer = RENDERERS[id];
@@ -246,6 +250,7 @@ export function ProfileIconSvg({ id, className }: { id: ProfileIconId; className
       viewBox="0 0 64 64"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
+      data-icon-id={id}
     >
       <rect width="64" height="64" fill={paint.bg} rx="12" />
       {renderer(paint)}

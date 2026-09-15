@@ -1,11 +1,24 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 import { useT } from '../../i18n';
 import { Badge } from '../../ui/origin';
 import type { UnlockedVaultPortfolioAccess } from '../vault/resolvedPortfolioStore';
 import type { PortfolioVaultStub } from './lockedPortfolio';
 import { PortfolioMoveOutAction } from './PortfolioMoveOutAction';
-import { PortfolioStoreProvider } from './PortfolioStoreProvider';
+import { PortfolioStoreProvider, type PortfolioStoreCapabilities } from './PortfolioStoreProvider';
+
+/**
+ * What a resolver-backed access can serve, as the surfaces below are told
+ * BEFORE they offer anything (#1416, `resolvedPortfolioStore.refusingRowStore`):
+ * the overview's derivations, and nothing else. Row reads refuse because this
+ * resolution carries a derivation engine rather than the account-level mutation
+ * store those projections are written against; writes refuse because a
+ * resolution is a READ of an authenticated snapshot and owns no CAS write path.
+ */
+const RESOLVED_VAULT_STORE_CAPABILITIES: PortfolioStoreCapabilities = {
+  writes: false,
+  rowReads: false,
+};
 
 /**
  * The unlocked in-place view of a vaulted portfolio (PARANOID-E6 residual,
@@ -34,6 +47,9 @@ export function UnlockedVaultPortfolio({
   onMoved?: () => void;
 }) {
   const t = useT();
+  // The cache scope is the ACCESS's, so the answers a disposed resolution left
+  // behind can never be read as this one's (failure map #1).
+  const scope = useMemo(() => [{ vaultAccess: access.accessId }], [access.accessId]);
 
   return (
     <section className="flex flex-col gap-4" data-testid="unlocked-vault-portfolio">
@@ -46,7 +62,13 @@ export function UnlockedVaultPortfolio({
           portfolio={portfolio}
         />
       </div>
-      <PortfolioStoreProvider store={access.store}>{children}</PortfolioStoreProvider>
+      <PortfolioStoreProvider
+        capabilities={RESOLVED_VAULT_STORE_CAPABILITIES}
+        scope={scope}
+        store={access.store}
+      >
+        {children}
+      </PortfolioStoreProvider>
     </section>
   );
 }

@@ -408,6 +408,46 @@ describe('POST /api/v1/backtest/preview', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects a duplicated assetId with a 400 in every mode × schedule, never a 500 (#1811)', async () => {
+    // The engine keys a basket by asset id, so `[{A,60},{A,40}]` is two cursors
+    // on one key: `clip`+`none` used to answer 200 and every other combination
+    // 500ed on the rebalance primitive's duplicate-key guard — the same request
+    // failing or not depending on a dropdown. The boundary refuses all six.
+    const { h, agent } = await harnessWith(() =>
+      cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: 110 },
+      ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      for (const rebalance of ['none', 'monthly'] as const) {
+        const res = await agent
+          .post('/api/v1/backtest/preview')
+          .set(...XRW)
+          .send({
+            positions: [
+              { assetId: a.id, weight: 60 },
+              { assetId: a.id, weight: 40 },
+            ],
+            range: '1Y',
+            mode,
+            rebalance,
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      }
+    }
+
+    // The merged basket — the same weight expressed once — still works.
+    const merged = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions: [{ assetId: a.id, weight: 100 }], range: '1Y', rebalance: 'monthly' });
+    expect(merged.status).toBe(200);
+  });
+
   it('rejects a malformed body (empty positions) with a 400', async () => {
     const user = await harness.seedUser({ email: 'x@bt.test', username: 'xuser' });
     const agent = await loginAgent(harness.app, user.email, user.password);
@@ -630,6 +670,81 @@ describe('POST /api/v1/backtest/preview — custom benchmarks (V4-P7)', () => {
     // 50/50 of +10 % and +25 % = +17.5 % — the full stat set, benchmark-side.
     expect(res.body.benchmark.stats.totalReturnPct).toBeCloseTo(17.5, 6);
     expect(res.body.benchmark.stats.maxDrawdownPct).toBeDefined();
+  });
+
+  it("recomputes the overlay after the benchmark's NESTED child is edited (#1849)", async () => {
+    const { h, agent, marketData } = await harnessWith((ref) =>
+      ref.providerRef === 'AAA'
+        ? cachedHistory([
+            { time: tsOffset(-300), close: 100 },
+            { time: tsOffset(-1), close: 110 },
+          ])
+        : cachedHistory([
+            { time: tsOffset(-300), close: 200 },
+            { time: tsOffset(-1), close: 250 },
+          ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const b = await seedAsset(h, { providerRef: 'BBB', symbol: 'BBB', name: 'Asset B' });
+
+    const create = async (name: string) => {
+      const res = await agent
+        .post('/api/v1/conglomerates')
+        .set(...XRW)
+        .send({ name });
+      expect(res.status).toBe(201);
+      return res.body.id as string;
+    };
+    const put = (id: string, positions: unknown[]) =>
+      agent
+        .put(`/api/v1/conglomerates/${id}/positions`)
+        .set(...XRW)
+        .send({ positions });
+
+    // "Bonds" nests inside "Core"; "Core" is the benchmark the picker sends.
+    const bonds = await create('Bonds');
+    expect((await put(bonds, [{ assetId: b.id, weightPct: 100 }])).status).toBe(200);
+    const core = await create('Core');
+    expect(
+      (
+        await put(core, [
+          { assetId: a.id, weightPct: 50 },
+          { childId: bonds, weightPct: 50 },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const body = {
+      positions: [{ assetId: a.id, weight: 100 }],
+      range: 'MAX',
+      benchmark: { conglomerateId: core },
+    };
+    const preview = () =>
+      agent
+        .post('/api/v1/backtest/preview')
+        .set(...XRW)
+        .send(body);
+
+    const first = await preview();
+    expect(first.status).toBe(200);
+    expect(first.body.benchmark.unresolvedPct).toBe(0);
+    // 50/50 of +10 % and +25 %.
+    expect(first.body.benchmark.stats.totalReturnPct).toBeCloseTo(17.5, 6);
+
+    // Empty the NESTED child. Core's id is unchanged, and so is every field of
+    // the request — the memo used to answer the next hour from the pre-edit run.
+    expect((await put(bonds, [])).status).toBe(200);
+
+    const second = await preview();
+    expect(second.status).toBe(200);
+    expect(second.body.benchmark.unresolvedPct).toBeCloseTo(50, 6);
+    expect(second.body.benchmark.stats.totalReturnPct).toBeCloseTo(10, 6);
+
+    // …and with nothing edited, the identical request is still a memo hit.
+    const historyBefore = marketData.calls.history;
+    const third = await preview();
+    expect(third.body).toEqual(second.body);
+    expect(marketData.calls.history).toBe(historyBefore);
   });
 
   it("404s another user's conglomerate as benchmark — no existence leak", async () => {

@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import {
   API_KEY_TOKEN_PREFIX,
   type AdminApiKey,
+  type AdminApiKeyListQuery,
   type ApiKeyAuditResponse,
   type ApiKeyScope,
   type ApiKeySummary,
@@ -12,6 +13,7 @@ import {
   type CreateApiKeyResponse,
   type CreateApiKeyTierRequest,
   type UpdateApiKeyTierRequest,
+  withImpliedReadScopes,
 } from '@bettertrack/contracts';
 
 import type { ApiKeyRepository } from '../../data/repositories/apiKeyRepository';
@@ -22,10 +24,12 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 import type { ApiKeyRequestLogRow, ApiKeyRow, ApiKeyTierRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import { API_KEY_LIMITER_NAMESPACE } from '../../http/middleware/rateLimit';
 import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
+import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 
 /** The resolved principal behind a valid bearer token. */
 export interface ApiKeyPrincipal {
@@ -113,7 +117,7 @@ export interface ApiKeyService {
     actor: ApiKeyAdminActor,
   ): Promise<ApiKeyTier>;
   deleteTier(id: string, actor: ApiKeyAdminActor): Promise<void>;
-  listAllKeys(): Promise<AdminApiKey[]>;
+  listKeysPage(params: AdminApiKeyListQuery): Promise<{ keys: AdminApiKey[]; total: number }>;
   assignTier(id: string, tierId: string | null, actor: ApiKeyAdminActor): Promise<AdminApiKey>;
   keyAudit(id: string): Promise<ApiKeyAuditResponse>;
 }
@@ -127,10 +131,22 @@ const DEFAULT_TIER_CACHE_TTL_MS = 15_000;
 /** Bound on the per-key audit view — the most recent lines only. */
 export const API_KEY_AUDIT_LIST_LIMIT = 200;
 
+/**
+ * Bound on the limiter-reset fan-out of one administrative tier edit (#1730).
+ * Beyond it the remaining keys keep their cooldown until it decays on its own,
+ * and the overflow is logged rather than silently dropped.
+ */
+export const API_KEY_TIER_RESET_MAX_KEYS = 500;
+
 const toSummary = (row: ApiKeyRow): ApiKeySummary => ({
   id: row.id,
   name: row.name,
-  scopes: row.scopes as ApiKeyScope[],
+  // Report the EFFECTIVE scope set, not the stored one (#1730): `scopeSatisfies`
+  // lets a held `:write` satisfy its `:read` at request time, so a key stored as
+  // `['portfolio:write']` really can call the read-only routes. The consent
+  // screen already expands this way; the key list must not understate what a
+  // credential can reach. Display-time only — the stored row is never rewritten.
+  scopes: withImpliedReadScopes(row.scopes as ApiKeyScope[]),
   createdAt: row.createdAt.toISOString(),
   lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
 });
@@ -213,6 +229,62 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
   const invalidateDefaultTier = (): void => {
     defaultTierCache = null;
   };
+
+  /**
+   * Clear the live per-key limiter state (cooldown marker, window counter and
+   * escalation level) for keys whose budget just changed (#1730).
+   *
+   * `consume` short-circuits on the cooldown marker BEFORE it reads the limit,
+   * and the escalation level outlives the cooldown by its decay window — so
+   * without this a key that climbed to rung 3 keeps 429ing for the rest of the
+   * old cooldown after an admin RAISES its tier, and its next overflow still
+   * jumps a rung. Best-effort: the tier change is already durable in Postgres,
+   * so a Redis failure is logged, never propagated into the admin response.
+   */
+  async function clearKeyLimiterState(keyIds: readonly string[]): Promise<void> {
+    if (keyIds.length === 0) return;
+    try {
+      await Promise.all(
+        keyIds.map((keyId) => resetProgressiveLimiter(redis, API_KEY_LIMITER_NAMESPACE, keyId)),
+      );
+    } catch (err) {
+      logger.warn({ err, keys: keyIds.length }, 'api-key limiter reset after tier change failed');
+    }
+  }
+
+  /**
+   * Resolve the keys one tier mutation moves onto a different allowance, as the
+   * union of "buckets": a tier id = the keys explicitly assigned to that tier,
+   * `null` = the untiered keys that inherit whichever row is currently default.
+   *
+   * Bounded by construction (#1730, #1835): at most `API_KEY_TIER_RESET_MAX_KEYS`
+   * ids are read per bucket and no mutation passes more than two buckets, so an
+   * administrative tier edit can never fan out into an unbounded per-key burst.
+   * Keys past the cap keep their cooldown until it decays on its own, and the
+   * overflow is logged rather than silently dropped.
+   */
+  async function resolveTierResetTargets(
+    buckets: readonly (string | null)[],
+    context: { tierId: string; operation: string },
+  ): Promise<string[]> {
+    const affected = new Set<string>();
+    for (const bucket of buckets) {
+      const ids = await repo.listActiveIdsByTier(bucket, API_KEY_TIER_RESET_MAX_KEYS);
+      if (ids.length === API_KEY_TIER_RESET_MAX_KEYS) {
+        // Never silently truncate: an operator can see that it happened.
+        logger.warn(
+          {
+            ...context,
+            bucket: bucket === null ? 'untiered' : 'assigned',
+            cap: API_KEY_TIER_RESET_MAX_KEYS,
+          },
+          'api-key tier change hit the limiter-reset cap; remaining keys cool down normally',
+        );
+      }
+      for (const id of ids) affected.add(id);
+    }
+    return [...affected];
+  }
 
   async function publishInvalidation(
     event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
@@ -379,6 +451,15 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         isDefault: input.isDefault ?? false,
       });
       invalidateDefaultTier();
+      // Creating a tier AS the default demotes the previous default row, which
+      // moves EVERY untiered key onto this new allowance (#1835) — their live
+      // cooldown and escalation rung have to move with it, exactly as on the
+      // assign path. A non-default tier starts empty and changes no budget.
+      if (row.isDefault) {
+        await clearKeyLimiterState(
+          await resolveTierResetTargets([null], { tierId: row.id, operation: 'tier-create' }),
+        );
+      }
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierCreated,
@@ -391,9 +472,31 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
     },
 
     async updateTier(id, patch, actor) {
+      // The default flag BEFORE the edit: flipping it off is a budget change for
+      // the untiered keys just as flipping it on is, and the updated row alone
+      // cannot tell the two apart (#1835).
+      const before = await tierRepo.getById(id);
       const row = await tierRepo.update(id, patch);
       if (!row) throw notFound('API key tier not found.', 'API_KEY_TIER_NOT_FOUND');
       invalidateDefaultTier();
+      // A budget edit must take effect on the very next request of every key it
+      // covers, not after the old cooldown expires (#1730). A rename changes no
+      // budget, so it clears nothing. `isDefault` counts: flipping it moves the
+      // untiered keys onto (or off) this allowance.
+      if (
+        patch.requestLimit !== undefined ||
+        patch.windowSec !== undefined ||
+        patch.isDefault !== undefined
+      ) {
+        // Keys with no explicit tier resolve the default row, so they carry this
+        // tier's budget exactly while it IS the default — and stop carrying it
+        // the moment it is not, falling onto whatever now resolves.
+        const buckets: (string | null)[] = [id];
+        if (row.isDefault || before?.isDefault) buckets.push(null);
+        await clearKeyLimiterState(
+          await resolveTierResetTargets(buckets, { tierId: id, operation: 'tier-update' }),
+        );
+      }
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierUpdated,
@@ -412,8 +515,19 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         // Never leave keys homeless: the default must be re-pointed first.
         throw badRequest('Cannot delete the default tier.', 'API_KEY_TIER_DEFAULT');
       }
+      // `api_keys.tier_id` is ON DELETE SET NULL, so every key on this tier drops
+      // onto the default allowance the instant the row goes (#1835). Read the
+      // members BEFORE the delete — afterwards nothing points at this tier — and
+      // clear them after it, so a request racing the delete cannot re-arm a
+      // cooldown under the tier that no longer exists. The deleted row is never
+      // the default (refused above), so untiered keys are untouched.
+      const assigned = await resolveTierResetTargets([id], {
+        tierId: id,
+        operation: 'tier-delete',
+      });
       await tierRepo.delete(id);
       invalidateDefaultTier();
+      await clearKeyLimiterState(assigned);
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierDeleted,
@@ -423,8 +537,9 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
-    async listAllKeys() {
-      return (await repo.listAllForAdmin()).map(toAdminKey);
+    async listKeysPage(params) {
+      const { rows, total } = await repo.listPageForAdmin(params);
+      return { keys: rows.map(toAdminKey), total };
     },
 
     async assignTier(id, tierId, actor) {
@@ -434,6 +549,9 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       }
       const row = await repo.setTier(id, tierId);
       if (!row) throw notFound('API key not found.', 'API_KEY_NOT_FOUND');
+      // The new allowance must be live on this key's very next request, even if
+      // it is mid-cooldown under the old one (#1730).
+      await clearKeyLimiterState([id]);
       // One targeted joined read to rehydrate the tier name — no O(N) scan.
       const withTier = await repo.findByIdWithTier(id);
       await audit.record({

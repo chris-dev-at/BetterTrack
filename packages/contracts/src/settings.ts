@@ -506,13 +506,26 @@ export type WidgetLayoutResponse = z.infer<typeof widgetLayoutResponseSchema>;
  *  2. `GET` — poll the latest job's status (no secret in the response).
  *  3. `POST /download` — exchange the raw token in the request body for the zip.
  *     The session owner may consume a matching, ready, unexpired token exactly
- *     once; a foreign, expired, or replayed token fails closed.
+ *     once; a foreign, expired, or replayed token fails closed. The token is
+ *     spent by a COMPLETED transfer, so a download cut short may be retried
+ *     with the same token inside the download window.
  */
 
 /** Lifecycle of one export job. `expired` is a ready job past its download window. */
 export const EXPORT_STATUSES = ['pending', 'ready', 'failed', 'expired'] as const;
 export type ExportStatus = (typeof EXPORT_STATUSES)[number];
 export const exportStatusSchema = z.enum(EXPORT_STATUSES);
+
+/**
+ * How long a `pending` job may sit before both sides treat it as one that can
+ * no longer make progress (#1812). A build takes seconds, and a build deferred
+ * by a vault finalization gives up long before this, so a row still `pending`
+ * after this window means the queue lost the work (a dead-lettered job, a
+ * worker that never came back). Shared so the two sides cannot drift: the API
+ * lets a fresh request supersede such a row instead of 429-ing on it, and the
+ * settings panel stops polling and offers the request form again.
+ */
+export const EXPORT_PENDING_STALE_MS = 30 * 60 * 1000;
 
 /**
  * `POST /account/export` body — the re-auth gate. Send the current password, or
@@ -548,6 +561,13 @@ export const exportStatusResponseSchema = z
     expiresAt: z.string().datetime().nullable(),
     /** Zip size in bytes once ready (null otherwise). */
     sizeBytes: z.number().int().nonnegative().nullable(),
+    /**
+     * Coarse reason a `failed` job failed — never a stack or a secret. Lets the
+     * surface distinguish an actionable refusal (`EXPORT_TOO_LARGE`: the account
+     * is past the packaging ceiling, so retrying unchanged cannot help) from a
+     * transient build failure. Null unless the job failed.
+     */
+    error: z.string().nullable(),
   })
   .strict();
 export type ExportStatusResponse = z.infer<typeof exportStatusResponseSchema>;

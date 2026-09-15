@@ -14,6 +14,7 @@ import { formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Button, PageHead, Stat, StatStrip } from '../../ui/origin';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
+import { Avatar } from '../components/Avatar';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 import type { AllocationSegment } from '../../ui/charts';
@@ -260,6 +261,7 @@ export function SharedPortfolioPage() {
             ownerId={owner.id}
           />
         }
+        media={<Avatar iconId={owner.profileIcon} name={owner.username} size="lg" />}
         sub={t('social.shared.sharedByReadOnly', { username: owner.username })}
         title={name}
       />

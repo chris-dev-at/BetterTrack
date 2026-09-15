@@ -12,7 +12,7 @@ export interface AuthUser {
   pinLockIdleMinutes: number | null;
   baseCurrency: string;
   locale: string;
-  /** Curated profile icon id (§13.5 V5-P0c) or `null` when never picked. */
+  /** Curated profile icon id (§13.5 V5-P0 (c)) or `null` when never picked. */
   profileIcon: ProfileIconId | null;
   /** Discreet mode (§13.5 V5-P13 arc (a)) — masks every absolute money amount in the SPA. */
   discreetMode: boolean;

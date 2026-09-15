@@ -26,12 +26,12 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${WORKERS:=2}"
 : "${MF_TICK:=15}"                # seconds between master loop ticks
 : "${MF_STALL_SECS:=3600}"        # heartbeat silence that counts as a worker stall
-: "${COMPOSER_BATCH:=10}"         # issues per composer run (owner 2026-07-16: big batches — amortize the per-cycle cost of the priciest role)
+: "${COMPOSER_BATCH:=5}"          # issues per composer run (the owner's 2026-07-16 "big batches" note is honoured by keeping this configurable, not by defaulting high)
 : "${MF_COMPOSER_COOLDOWN:=900}"  # min seconds between composer runs (base; also the floor after a reset)
 : "${MF_COMPOSER_BACKOFF_MAX:=14400}"  # cap on the idle-backoff cooldown (empty composer runs)
-: "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # one corrective retry for a missing/malformed manifest
-: "${MF_COMPOSER_PROTOCOL_COOLDOWN:=120}" # malformed runs retry separately from valid empty runs
-: "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=900}"
+: "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # corrective retries for a missing/malformed manifest — ONE PER TICK, never back-to-back; 0 = none (see composer_protocol_attempt)
+: "${MF_COMPOSER_PROTOCOL_COOLDOWN:=$MF_COMPOSER_COOLDOWN}" # a malformed run waits a full composer cooldown before its retry
+: "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=$MF_COMPOSER_BACKOFF_MAX}"
 : "${MF_COMPOSER_DISCOVERY_ATTEMPTS:=6}" # no-cache post-create snapshots (GitHub lists can lag)
 : "${MF_COMPOSER_DISCOVERY_SLEEP:=2}" # seconds between post-create snapshots
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
@@ -184,6 +184,7 @@ runnable_issues(){
     grep -qx "$n" "$CONTROL/composer-quarantine" 2>/dev/null && continue
     issue_has_label "$n" autopilot || continue
     issue_has_label "$n" awaiting-owner && continue
+    issue_has_label "$n" mf:bad-meta && continue
     issue_schedule_contract_valid "$n" || continue
     # Dry-run cycles don't close real issues; skip ones already fake-completed.
     [ "$MF_DRY_RUN" = 1 ] && grep -qx "$n" "$CONTROL/dry-done" 2>/dev/null && continue
@@ -285,6 +286,17 @@ composer_snapshot(){ # $1=mode — state the backoff should be sensitive to
   { printf 'mode=%s\nphase=%s\n' "$1" "$phase"; jq -r '[.[].number]|sort|.[]' "$TICK_ISSUES" 2>/dev/null; }
 }
 
+# Composer outcome model (owner survey 2026-09-01). A run is exactly one of:
+#   created — the run created ≥1 repository issue, whether those issues turned
+#             out schedulable or had to be quarantined. It cost the money, so it
+#             books the normal cooldown and is NEVER retried: replaying a run
+#             that already created issues just buys duplicates.
+#   idle    — zero issues created and a valid empty result → idle backoff.
+#   protocol— zero issues created and malformed output / a transport failure.
+#             It gets MF_COMPOSER_PROTOCOL_ATTEMPTS *corrective* attempts, one
+#             per tick, each gated by the protocol cooldown — never twice inside
+#             the same tick. Once those are spent the attempt number saturates
+#             and the doubling protocol backoff alone bounds the re-runs.
 composer_record_outcome(){ # $1=created|idle $2=snapshot $3=current backoff
   local outcome=$1 snap=$2 backoff=$3 prev="" next=$MF_COMPOSER_COOLDOWN
   [ -f "$CONTROL/.composer-snapshot" ] && prev=$(<"$CONTROL/.composer-snapshot")
@@ -299,7 +311,7 @@ composer_record_outcome(){ # $1=created|idle $2=snapshot $3=current backoff
   atomic_write "$CONTROL/.composer-snapshot" "$snap" || return 1
   touch "$CONTROL/.composer-last" || return 1
   rm -f "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff" \
-    || return 1
+    "$CONTROL/.composer-protocol-attempt" || return 1
 }
 
 composer_protocol_ready(){
@@ -308,8 +320,36 @@ composer_protocol_ready(){
   [ "$(file_age "$CONTROL/.composer-protocol-last")" -ge "$wait" ]
 }
 
-composer_record_protocol_failure(){
-  local current next
+# The corrective retry is bounded ACROSS ticks, so the attempt number has to
+# outlive the process. It is cleared by composer_record_outcome — any created or
+# idle run ends the correction sequence.
+#
+# What the knob actually bounds, precisely: the number of invocations that carry
+# the PROTOCOL CORRECTION RETRY preamble, and the point at which a claimed owner
+# brief is blocked for review. It does NOT bound how many times ordinary
+# composition re-runs after a malformed result — the attempt number saturates at
+# max and the doubling protocol backoff is the only thing bounding it from there
+# (up to MF_COMPOSER_PROTOCOL_BACKOFF_MAX, default 4 h).
+# 0 is a legal value and means "no corrective attempt": no invocation ever
+# carries the correction preamble, and a claimed brief is blocked on its first
+# protocol failure instead of being replayed. Only a non-numeric/empty setting
+# falls back to the default.
+composer_protocol_attempt_max(){ # sanitized bound; the raw env var must never reach an -ge test
+  local max=$MF_COMPOSER_PROTOCOL_ATTEMPTS
+  case "$max" in ''|*[!0-9]*) max=2;; esac
+  echo "$max"
+}
+composer_protocol_attempt(){ # attempt number this tick would consume (1-based)
+  local n max; max=$(composer_protocol_attempt_max)
+  n=$(cat "$CONTROL/.composer-protocol-attempt" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=0;; esac
+  n=$(( n + 1 ))
+  [ "$n" -le "$max" ] || n=$max
+  echo "$n"
+}
+
+composer_record_protocol_failure(){ # $1=attempt just consumed (optional)
+  local current next attempt=${1:-}
   current=$(cat "$CONTROL/.composer-protocol-backoff" 2>/dev/null)
   case "$current" in ''|*[!0-9]*) current=$MF_COMPOSER_PROTOCOL_COOLDOWN;; esac
   if [ -f "$CONTROL/.composer-protocol-last" ]; then
@@ -319,6 +359,10 @@ composer_record_protocol_failure(){
     next=$current
   fi
   atomic_write "$CONTROL/.composer-protocol-backoff" "$next" || return 1
+  case "$attempt" in
+    ''|*[!0-9]*) ;;
+    *) atomic_write "$CONTROL/.composer-protocol-attempt" "$attempt" || return 1;;
+  esac
   touch "$CONTROL/.composer-protocol-last"
 }
 
@@ -716,7 +760,7 @@ composer_manifest_validate_or_repair(){ # validate args + $6=exact-count-or-0 $7
 
 composer_discovery_fence_reconcile(){
   local fence="$CONTROL/composer-discovery-fence" before after newnums snapshot
-  local manifest_count valid=0 outcome=protocol archive
+  local manifest_count valid=0 outcome=protocol archive created=0
   if ! composer_discovery_fence_load; then
     composer_discovery_fence_alert_once invalid-fence \
       "composer discovery fence is corrupt — scheduler remains fenced; owner reconciliation required"
@@ -735,6 +779,7 @@ composer_discovery_fence_reconcile(){
   fi
   newnums=$(xargs <<<"$newnums")
   log "composer fence discovery ($COMPOSER_FENCE_RUN_ID): new repository issues [${newnums:-none}]"
+  [ -n "$newnums" ] && created=1
 
   if composer_manifest_validate_or_repair "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
     "$COMPOSER_FENCE_RUN_ID" "" "$COMPOSER_FENCE_EXACT_COUNT" \
@@ -761,8 +806,12 @@ composer_discovery_fence_reconcile(){
         fi
         ;;
       none)
-        outcome=idle
-        [ -z "$COMPOSER_FENCE_REQUEST_ID" ] \
+        # A NONE manifest beside freshly created issues is not an empty run: the
+        # money was spent and the issues exist. It stays a `created` outcome and
+        # falls through to the quarantine path below.
+        [ "$created" -eq 1 ] || outcome=idle
+        [ "$created" -eq 0 ] \
+          && [ -z "$COMPOSER_FENCE_REQUEST_ID" ] \
           && [ "$COMPOSER_FENCE_TRANSPORT" -eq 0 ] \
           && [ "$COMPOSER_FENCE_INVALID_NEW_SEEN" -eq 0 ] \
           && valid=1
@@ -800,7 +849,34 @@ composer_discovery_fence_reconcile(){
       "composer discovery was invalid and quarantine persistence failed — scheduler remains fenced"
     return 2
   fi
-  composer_record_protocol_failure || {
+  if [ "$created" -eq 1 ]; then
+    # created-but-quarantined: the run produced issues, so it is NOT a protocol
+    # failure. Book the ordinary cooldown so the corrective retry never fires —
+    # replaying a run that already created issues only produces duplicates.
+    snapshot=$(<"$fence/snapshot")
+    composer_record_outcome created "$snapshot" "$COMPOSER_FENCE_BACKOFF" || {
+      composer_discovery_fence_alert_once outcome-write-failed \
+        "composer discovery created issues but outcome persistence failed — scheduler remains fenced"
+      return 2
+    }
+    if [ -n "$COMPOSER_FENCE_REQUEST_ID" ]; then
+      composer_request_restore_from_fence || {
+        composer_discovery_fence_alert_once request-restore-failed \
+          "composer request discovery was invalid — scheduler remains fenced for owner reconciliation"
+        return 2
+      }
+      composer_request_mark_blocked discovery-reconciliation-invalid || {
+        composer_discovery_fence_alert_once request-block-write-failed \
+          "composer request discovery was invalid but its replay block could not be persisted — scheduler remains fenced"
+        return 2
+      }
+    fi
+    composer_discovery_fence_clear || return 2
+    notify "composer discovery reconciled: issues were created but their artifact contract was invalid — quarantined, no retry"
+    [ -n "$COMPOSER_FENCE_REQUEST_ID" ] && return 2
+    return 1
+  fi
+  composer_record_protocol_failure "$COMPOSER_FENCE_ATTEMPT" || {
     composer_discovery_fence_alert_once protocol-write-failed \
       "composer discovery was invalid and protocol state could not be persisted — scheduler remains fenced"
     return 2
@@ -914,6 +990,22 @@ composer_step(){ # $1=mode
   fi
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
+  # Merge lane first (2026-08-29): a successful composer run blocks this tick for
+  # ~45 min, freezing scheduling AND merging. Never spend that while PRs wait in
+  # the merge queue. Owner-brief requests are exempt — they were explicitly asked
+  # for — and BOTH shapes of "there is an owner brief" must be checked here:
+  #   - COMPOSER_REQUEST_LOADED=1 — an already-claimed request (.composer-request-
+  #     active.json / .composer-request-claim), reconciled above the mode gate;
+  #   - composer-request.json — a FRESH, owner-written request that is not claimed
+  #     until composer_request_prepare runs BELOW this guard.
+  # Testing only the flag would let a stuck queue record silently swallow every
+  # new brief, since a fresh request never reaches its claim.
+  if [ "$COMPOSER_REQUEST_LOADED" -ne 1 ] \
+    && [ ! -f "$CONTROL/composer-request.json" ] \
+    && find "$QUEUE" -maxdepth 1 -type f -name '[0-9]*-pr*.json' -print -quit 2>/dev/null | grep -q .; then
+    log "composer deferred: merge queue non-empty"
+    return 0
+  fi
   if ! composer_protocol_ready; then
     # A claimed owner request remains a scheduler fence while its protocol
     # cooldown is active. Returning ordinary success here could expose artifacts
@@ -956,11 +1048,18 @@ composer_step(){ # $1=mode
   local attempt before after manifest run_id transport outcome=protocol newnums prompt
   local prompt_batch=$COMPOSER_BATCH manifest_issue_count
   local outcome_recorded=0 protocol_recorded=0 owner_blocked=0
+  local attempt_max; attempt_max=$(composer_protocol_attempt_max)
   [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
     && prompt_batch=$COMPOSER_REQUEST_EXACT_COUNT
+  # Always 0 today: a run that creates artifacts ends the correction sequence as
+  # `created`, so no later attempt can follow a quarantining one. The fence still
+  # carries the flag because a persisted fence from an older master may set it.
   local invalid_new_seen=0
   mkdir -p "$CONTROL/composer-manifests"
-  for attempt in $(seq 1 "$MF_COMPOSER_PROTOCOL_ATTEMPTS"); do
+  # ONE model invocation per tick. The corrective retry is bounded ACROSS ticks
+  # by .composer-protocol-attempt and gated by the protocol cooldown above, so a
+  # malformed run can never start a second paid composer inside the same tick.
+  for attempt in "$(composer_protocol_attempt)"; do
     before=$(mf_recent_issues_json) || {
       log "composer protocol: cannot snapshot repository issues — retrying next tick"
       break
@@ -1090,15 +1189,43 @@ finish the manifest contract this time."
       esac
     fi
     if [ -n "$newnums" ]; then
-      invalid_new_seen=1
       composer_quarantine "$newnums" || {
         composer_discovery_fence_alert_once quarantine-failed \
           "composer artifact quarantine failed — scheduler remains fenced"
         return 2
       }
+      # created-but-quarantined. The run filed real issues, so it is a `created`
+      # outcome that books the ordinary cooldown — NOT a protocol failure. The
+      # corrective retry must not fire: replaying a run that already created
+      # issues only buys duplicates, at composer prices.
+      if ! composer_record_outcome created "$snap" "$backoff"; then
+        composer_discovery_fence_alert_once outcome-write-failed \
+          "composer created issues but cooldown persistence failed — scheduler remains fenced"
+        return 2
+      fi
+      outcome_recorded=1
+      if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+        composer_request_mark_blocked artifact-contract-invalid || {
+          composer_discovery_fence_alert_once request-block-write-failed \
+            "composer request created issues under an invalid contract but its replay block could not be persisted — scheduler remains fenced"
+          return 2
+        }
+        owner_blocked=1
+      fi
+      composer_discovery_fence_clear || {
+        notify "composer artifacts were quarantined but the discovery fence could not be cleared — scheduler remains fenced"
+        return 2
+      }
+      outcome=created
+      # This is the most expensive terminal state in the model: a paid run filed
+      # real issues that composer-quarantine now excludes from runnable_issues
+      # until a human reconciles them, and nothing will retry. It reaches the
+      # owner's webhook, not just events.log — same as its fence-reconcile twin.
+      notify "composer outcome created: issues [$newnums] quarantined (invalid artifact contract) — no retry, owner reconciliation needed"
+      break
     fi
     if [ "$protocol_recorded" -ne 1 ]; then
-      composer_record_protocol_failure || {
+      composer_record_protocol_failure "$attempt" || {
         composer_discovery_fence_alert_once protocol-write-failed \
           "composer artifact contract failed and protocol persistence failed — scheduler remains fenced"
         return 2
@@ -1106,7 +1233,7 @@ finish the manifest contract this time."
       protocol_recorded=1
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
-      && [ "$attempt" -eq "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
+      && [ "$attempt" -ge "$attempt_max" ]; then
       composer_request_mark_blocked protocol-failure || {
         composer_discovery_fence_alert_once request-block-write-failed \
           "composer request exhausted its attempts but its replay block could not be persisted — scheduler remains fenced"
@@ -1118,19 +1245,22 @@ finish the manifest contract this time."
       notify "composer discovery completed but its safety fence could not be cleared — scheduler remains fenced"
       return 2
     }
-    log "composer protocol failure (attempt $attempt/$MF_COMPOSER_PROTOCOL_ATTEMPTS, transport=$transport)"
+    log "composer protocol failure (attempt $attempt/$attempt_max, transport=$transport)"
   done
 
   if [ "$outcome" = protocol ]; then
     # A malformed run does not advance the valid-empty cooldown, but it has its
     # own bounded backoff so a bad provider cannot fire twice every 15-second tick.
-    if [ "$protocol_recorded" -ne 1 ] && ! composer_record_protocol_failure; then
+    if [ "$protocol_recorded" -ne 1 ] && ! composer_record_protocol_failure "$attempt"; then
       notify "composer protocol failed and its retry cooldown could not be persisted"
       [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
       return 1
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+      # The brief keeps its bounded corrective attempt — it is just spread over
+      # ticks now, so the retry can never fire back-to-back inside this one.
       if [ "$owner_blocked" -ne 1 ] \
+        && [ "$attempt" -ge "$attempt_max" ] \
         && ! composer_request_mark_blocked protocol-failure; then
         return 2
       fi
@@ -1144,6 +1274,12 @@ finish the manifest contract this time."
       log "composer: failed to persist cooldown outcome"
       return 1
     }
+  fi
+  if [ "$owner_blocked" -eq 1 ]; then
+    # The brief is retained for owner review; keep the scheduler fenced exactly
+    # as a protocol-exhausted request does.
+    [ "$outcome" = created ] && fetch_issues
+    return 2
   fi
   [ "$outcome" = created ] && fetch_issues
 }
@@ -1160,6 +1296,18 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
     [ "$wphase" = idle ] || continue
     for n in $runnable; do
       claims=$(issue_claims "$n")
+      if [ "$claims" = '**' ]; then
+        # Empty/absent mf-meta touches claims '**' and conflicts with EVERYTHING,
+        # silently serializing the fleet. Surface it and skip. Drop it from
+        # $runnable in the same breath: the label is what keeps it out on LATER
+        # ticks, but within THIS tick every remaining idle worker would otherwise
+        # re-reach it and repeat the API call — and if the edit fails (it is
+        # best-effort), that repeat becomes WORKERS calls every tick forever.
+        gh issue edit "$n" --add-label mf:bad-meta >/dev/null 2>&1 || true
+        log "scheduler: issue #$n has empty mf-meta touches — labeled mf:bad-meta, skipped"
+        runnable=$(grep -vx "$n" <<<"$runnable" || true)
+        continue
+      fi
       claimsets_conflict "$claims" "$inflight" && continue
       local touches payload
       touches=$(printf '%s\n' "$claims" | jq -R . | jq -cs 'map(select(length>0))')
@@ -1187,19 +1335,48 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
 # backoff) and refused merges may continue the scan. LLM work and the rare
 # BEHIND re-gate remain blocking by design (single sequential merger).
 requeue_for_review(){ # $1=queue file $2=issue $3=reason
-  local f=$1 n=$2 why=$3
-  log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review"
+  local f=$1 n=$2 why=$3 rq pr
+  # The PR number is only reachable through the queue record — resolve it BEFORE
+  # any unlink, or the refusal counter, the CI-fix state and the log line that
+  # names them all outlive the record they belong to.
+  pr=$(jq -r '.pr // empty' "$f" 2>/dev/null || true)
+
+  # Requeue budget (2026-08-29): the assignment payload carries no attempt
+  # counter, so a first-pass-approved issue whose approval keeps invalidating
+  # re-entered review forever (#1232: 140 reviewer runs). Bound it durably.
+  # Idempotency key: $CONTROL/requeue-count/<issue> — one counter per ISSUE, so
+  # the budget survives the PR churn (new head, new PR) that the requeue causes.
+  # It is deliberately never cleared: the budget is a lifetime bound on how often
+  # one issue may re-enter review, not a per-cycle allowance.
+  mkdir -p "$CONTROL/requeue-count"
+  rq=$(cat "$CONTROL/requeue-count/$n" 2>/dev/null || echo 0)
+  case "$rq" in ''|*[!0-9]*) rq=0;; esac
+  rq=$((rq+1)); printf '%s' "$rq" >"$CONTROL/requeue-count/$n"
+  if [ "$rq" -gt "${MF_REQUEUE_MAX:-3}" ]; then
+    # This path retires the PR from the queue for good, so it owes the same
+    # cleanup every other park does.
+    log "merger: review requeue budget exhausted for PR #${pr:-unknown} (issue #$n) after $rq of ${MF_REQUEUE_MAX:-3} — dropping the queue entry and parking with a human; last: $why"
+    rm -f "$f"
+    if [ -n "$pr" ]; then
+      rm -f "$(ci_fix_state_file "$n" "$pr")"
+      mergefail_clear "$pr"
+    fi
+    mark_human "$n" "review requeued $rq times (budget ${MF_REQUEUE_MAX:-3}) — last: $why"
+    return 0
+  fi
+  log "merger: approval invalidated for PR #${pr:-unknown} (issue #$n) — $why; requeueing for fresh review ($rq/${MF_REQUEUE_MAX:-3})"
   rm -f "$f"
   gh issue edit "$n" --remove-label in-progress >/dev/null 2>&1 || true
 }
 
 # The merge-refusal budget is keyed per PR, not per head, so it survives the
-# update-branch head churn that used to reset it. It is deliberately NOT cleared
-# by requeue_for_review (a PR that keeps earning refusals across review cycles
-# must still reach the park bound) and has no age-based decay — but it IS cleared
-# on every path that retires the PR from the queue for good, so the queue dir
-# stays self-cleaning. Legacy `-<head>`-suffixed files predating the re-key are
-# swept alongside.
+# update-branch head churn that used to reset it. A requeue that sends the PR
+# back for a fresh review deliberately does NOT clear it (a PR that keeps earning
+# refusals across review cycles must still reach the park bound), and it has no
+# age-based decay — but it IS cleared on every path that retires the PR from the
+# queue for good, INCLUDING requeue_for_review's over-budget park, so the queue
+# dir stays self-cleaning. Legacy `-<head>`-suffixed files predating the re-key
+# are swept alongside.
 mergefail_clear(){ # $1=pr $2=legacy-only (optional; preserve the current counter)
   [ "${2:-}" = legacy-only ] || rm -f "$QUEUE/.mergefail-pr$1" 2>/dev/null || true
   rm -f "$QUEUE"/.mergefail-pr"$1"-* 2>/dev/null || true
@@ -1272,7 +1449,35 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
     rm -f "$f"; mergefail_clear "$pr"
     return 0
   fi
-  [ "$status" = exhausted ] && { rm -f "$f"; mergefail_clear "$pr"; return 0; }
+  # `exhausted` retires the PR — but ONLY for the head the record was written
+  # for. #1900: state/ci-fix/issue-1729-pr1737.json still named a head from ten
+  # days earlier, so this short-circuit fired on every later, freshly-approved
+  # head: it ate the queue entry with no log, no park and no requeue, the
+  # scheduler saw an autopilot issue with nothing queued and re-dispatched it,
+  # and the worker re-reviewed an already-approved head. 186 reviewer
+  # invocations, $434 of review, from one stale file. A record whose source_head
+  # is not the PR's current head (or that names no head at all) is stale by
+  # construction: drop the RECORD, not the queue entry, and let the new head
+  # earn its own 0/2 budget on the normal path below. Only a same-head record is
+  # terminal, and a terminal record parks with a human like every other terminal
+  # merger path — a queue entry never disappears silently again.
+  if [ "$status" = exhausted ]; then
+    current=$(mf_pr_head "$pr") || {
+      log "merger: cannot read the head of PR #$pr to age its exhausted CI-fix record — retaining the queue entry, retrying next tick"
+      MERGER_SCAN_NEXT=1
+      return 0
+    }
+    if [ -z "$source_head" ] || [ "$current" != "$source_head" ]; then
+      log "merger: stale exhausted CI-fix record for PR #$pr (issue #$n) — recorded head ${source_head:0:12}, current head ${current:0:12}; resetting the record and keeping the queue entry"
+      rm -f "$sf"
+      invocations=0; used=false; status=ready; next_at=0; source_head=$approved_head
+    else
+      log "merger: CI-fix budget exhausted for PR #$pr on head ${current:0:12} (issue #$n) — dropping the queue entry and parking with a human"
+      mark_human "$n" "CI-fix budget exhausted for PR #$pr on head $current"
+      rm -f "$f"; mergefail_clear "$pr"
+      return 0
+    fi
+  fi
   if [ "$status" = protocol-backoff ] && [ "$now" -lt "$next_at" ]; then
     log "merger: CI-fix protocol retry for PR #$pr is delayed until epoch $next_at"
     MERGER_SCAN_NEXT=1
@@ -1498,7 +1703,8 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
             finalize_issue "$pr" "$n"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
     OPEN)   ;;
     unknown) log "merger: cannot read PR #$pr (transient?) — retrying next tick"; MERGER_SCAN_NEXT=1; return 0;;
-    *)      mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
+    *)      log "merger: PR #$pr is $pstate without having merged (issue #$n) — dropping the queue entry and parking with a human"
+            mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
   esac
 
   # Approval is bound to both one canonical comment and the exact code SHA.
@@ -1634,6 +1840,7 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
     MERGER_SCAN_NEXT=1
     return 0
   fi
+  log "merger: PR #$pr merged (issue #$n) — dropping the queue entry"
   rm -f "$f" "$ci_state"; mergefail_clear "$pr"
 }
 
@@ -1734,7 +1941,7 @@ set_phase running
 [ -f "$PROMPTS/writer.md" ] || { notify "FATAL: factory prompts missing in $PROMPTS"; exit 1; }
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
+git config user.name "Christian Wiesinger"; git config user.email "chris.dev.at@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 for w in $(seq 1 "$WORKERS"); do
@@ -1744,7 +1951,7 @@ gh label create "mf:relocated" --color BFD4F2 --description "multi-factory: issu
 mf_labels_boot
 notify "multi-factory master started (workers=$WORKERS, mode=$(cat "$CONTROL/mode"), dry=$MF_DRY_RUN)"
 # Claude capacity gates startup only while some difficulty actually routes to the
-# claude provider — a codex/gemini-only configuration must start during a claude outage.
+# claude provider — a codex/claudex-only configuration must start during a claude outage.
 if [ "$MF_DRY_RUN" != 1 ] && mf_uses_claude; then
   mf_wait_for_claude_capacity "startup"
 fi

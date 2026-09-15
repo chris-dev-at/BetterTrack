@@ -17,6 +17,7 @@ import {
 import { createVaultTransferQrSource } from '../qr/senderSource';
 import { acknowledgePlainCustodyRisk } from './acknowledgment';
 import { EndpointVaultKeystore, lockoutDelayMs } from './core';
+import { NO_ENDPOINT_SESSION_PERSISTENCE } from './sessionPersistence';
 import type { DevicePasswordArgon2, DevicePasswordArgon2Options } from './deviceCrypto';
 import { encodeBase64Url } from './encoding';
 import {
@@ -236,6 +237,9 @@ function keystore(
     argon2: options.argon2 ?? fastArgon2(),
     randomBytes: deterministicRandom(),
     now: options.now,
+    // This suite pins the keystore itself; the device-side session record has
+    // its own suite in `sessionSharing.test.ts` (P1–P7).
+    sessionPersistence: NO_ENDPOINT_SESSION_PERSISTENCE,
   });
 }
 
@@ -297,6 +301,39 @@ describe('endpoint keystore custody and verified persistence', () => {
     await core.openStoredVault(VAULT_1, verifiedHeaderFetch(VAULT_1));
     expect(opened).toHaveBeenCalledTimes(beforeUnsubscribe);
     expect(throwing.mock.calls.length).toBeGreaterThan(beforeUnsubscribe);
+  });
+
+  /**
+   * The id the edge has to carry (#1533). A surface that re-reads on every open
+   * has to tell one vault's open from another's: without it, two vaults
+   * unlocked in quick succession are one indistinguishable ping, and the
+   * portfolio store registry dropped the second one's edge. It stays a "re-ask
+   * me about THAT vault" signal — an id, never key material — and the no-op
+   * re-open path stays silent (#1531), so a listener that reacts by re-reading
+   * cannot trigger its own next notification.
+   */
+  it('names the vault that opened and stays silent on a no-op re-open', async () => {
+    const core = keystore(new MemoryEndpointStorage());
+    const opened = vi.fn();
+    core.subscribeToVaultOpened(opened);
+
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+    expect(opened.mock.calls).toEqual([[VAULT_1]]);
+
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_2,
+      mnemonic: MNEMONIC,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_2),
+    });
+    expect(opened.mock.calls).toEqual([[VAULT_1], [VAULT_2]]);
+
+    await core.openStoredVault(VAULT_1, verifiedHeaderFetch(VAULT_1));
+    expect(opened.mock.calls).toEqual([[VAULT_1], [VAULT_2]]);
   });
 
   /**
@@ -1127,6 +1164,7 @@ describe('never persisted across sessions', () => {
       storage,
       argon2,
       randomBytes: deterministicRandom(),
+      sessionPersistence: NO_ENDPOINT_SESSION_PERSISTENCE,
     });
     await first.storeAfterVerifiedOpen({
       vaultId: VAULT_1,
@@ -1163,6 +1201,7 @@ describe('never persisted across sessions', () => {
       storage,
       argon2,
       randomBytes: deterministicRandom(),
+      sessionPersistence: NO_ENDPOINT_SESSION_PERSISTENCE,
     });
     await expect(reopened.readMnemonic(VAULT_1)).rejects.toMatchObject({ code: 'phrase-locked' });
     expect(await reopened.stateFor(VAULT_1)).toMatchObject({

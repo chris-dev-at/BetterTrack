@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull, lte } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, lte } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { exportJobs, users, type ExportJobRow } from '../schema';
@@ -6,6 +6,13 @@ import { exportJobs, users, type ExportJobRow } from '../schema';
 export type ExportJobReservation =
   | { kind: 'created'; job: ExportJobRow }
   | { kind: 'rate_limited'; latest: ExportJobRow };
+
+/**
+ * The coarse reason recorded on a `pending` row a fresh request superseded
+ * because it had stopped making progress (#1812): the queue lost the build, so
+ * the row would otherwise hold the surface and the daily allowance forever.
+ */
+export const EXPORT_BUILD_STALLED = 'BUILD_STALLED';
 
 /**
  * Account data-export job persistence (§13.4 V4-P6a, #494). Owns the
@@ -20,11 +27,17 @@ export interface ExportRepository {
    * Atomically reserve the user's daily export slot and insert a fresh
    * `pending` job. The stable user row is locked so concurrent first-time
    * requests serialize even when there is no export row to lock yet.
+   *
+   * A `pending` row created at or before `stalePendingBefore` can no longer
+   * make progress (#1812): it is recorded as {@link EXPORT_BUILD_STALLED} in
+   * this same transaction and does NOT rate-limit the new request, so a lost
+   * build can never hold the export surface — or the daily allowance — hostage.
    */
   reserveWithinRateLimit(input: {
     userId: string;
     downloadTokenHash: string;
     since: Date;
+    stalePendingBefore: Date;
   }): Promise<ExportJobReservation>;
   /** The user's most recent job (any status), or null. */
   findLatestForUser(userId: string): Promise<ExportJobRow | null>;
@@ -33,9 +46,21 @@ export interface ExportRepository {
   /** A job by id, regardless of owner — for the build job (which trusts its jobId). */
   findById(id: string): Promise<ExportJobRow | null>;
   /**
+   * Resolve a READY, unexpired job by its download-token hash WITHOUT consuming
+   * it. Any mismatch — foreign token, expired, already consumed, not yet ready
+   * — resolves to null so the download fails closed. The token is spent only
+   * once the transfer actually completes ({@link consumeDownloadable}), so a
+   * dropped socket does not destroy the user's only way to the archive (#1812).
+   */
+  findDownloadable(input: {
+    userId: string;
+    downloadTokenHash: string;
+    now: Date;
+  }): Promise<ExportJobRow | null>;
+  /**
    * Atomically consume a READY, unexpired job's matching download-token hash.
    * Any mismatch — foreign token, expired, replayed, not yet ready — resolves
-   * to null so the download fails closed.
+   * to null so a replay after a completed transfer fails closed.
    */
   consumeDownloadable(input: {
     userId: string;
@@ -52,15 +77,23 @@ export interface ExportRepository {
   }): Promise<void>;
   /** Mark a job failed with a coarse reason (never a stack/secret). */
   markFailed(id: string, error: string): Promise<void>;
+  /** Every job the user owns, newest first — for the pre-deletion artifact reap. */
+  findAllForUser(userId: string): Promise<ExportJobRow[]>;
   /** Ready jobs whose download window has closed (for the cleanup sweep). */
   findExpired(now: Date): Promise<ExportJobRow[]>;
+  /**
+   * Of the given absolute paths, the subset some job row still points at. The
+   * directory sweep asks this to tell a live artifact from an orphan; the input
+   * is the sweep's own bounded candidate list, so the IN list stays small.
+   */
+  findReferencedFilePaths(paths: string[]): Promise<Set<string>>;
   /** Delete a job row by id. */
   deleteById(id: string): Promise<void>;
 }
 
 export function createExportRepository(db: Database): ExportRepository {
   return {
-    async reserveWithinRateLimit({ userId, downloadTokenHash, since }) {
+    async reserveWithinRateLimit({ userId, downloadTokenHash, since, stalePendingBefore }) {
       return db.transaction(async (tx) => {
         const [owner] = await tx
           .select({ id: users.id })
@@ -75,7 +108,25 @@ export function createExportRepository(db: Database): ExportRepository {
           .where(eq(exportJobs.userId, userId))
           .orderBy(desc(exportJobs.createdAt))
           .limit(1);
-        if (latest && latest.status !== 'failed' && latest.createdAt.getTime() > since.getTime()) {
+        // A build that stopped making progress is retired here rather than
+        // treated as a live reservation: the user gets a new job, and the dead
+        // row stops reading as `pending` on the status surface forever (#1812).
+        const stalled =
+          latest !== undefined &&
+          latest.status === 'pending' &&
+          latest.createdAt.getTime() <= stalePendingBefore.getTime();
+        if (stalled) {
+          await tx
+            .update(exportJobs)
+            .set({ status: 'failed', error: EXPORT_BUILD_STALLED })
+            .where(eq(exportJobs.id, latest.id));
+        }
+        if (
+          latest &&
+          !stalled &&
+          latest.status !== 'failed' &&
+          latest.createdAt.getTime() > since.getTime()
+        ) {
           return { kind: 'rate_limited' as const, latest };
         }
 
@@ -109,6 +160,22 @@ export function createExportRepository(db: Database): ExportRepository {
       return row ?? null;
     },
 
+    async findDownloadable({ userId, downloadTokenHash, now }) {
+      const [row] = await db
+        .select()
+        .from(exportJobs)
+        .where(
+          and(
+            eq(exportJobs.userId, userId),
+            eq(exportJobs.downloadTokenHash, downloadTokenHash),
+            eq(exportJobs.status, 'ready'),
+            gt(exportJobs.expiresAt, now),
+          ),
+        )
+        .limit(1);
+      return row ?? null;
+    },
+
     async consumeDownloadable({ userId, downloadTokenHash, now }) {
       const [row] = await db
         .update(exportJobs)
@@ -136,11 +203,30 @@ export function createExportRepository(db: Database): ExportRepository {
       await db.update(exportJobs).set({ status: 'failed', error }).where(eq(exportJobs.id, id));
     },
 
+    async findAllForUser(userId) {
+      return db
+        .select()
+        .from(exportJobs)
+        .where(eq(exportJobs.userId, userId))
+        .orderBy(desc(exportJobs.createdAt));
+    },
+
     async findExpired(now) {
       return db
         .select()
         .from(exportJobs)
         .where(and(isNotNull(exportJobs.expiresAt), lte(exportJobs.expiresAt, now)));
+    },
+
+    async findReferencedFilePaths(paths) {
+      if (paths.length === 0) return new Set<string>();
+      const rows = await db
+        .select({ filePath: exportJobs.filePath })
+        .from(exportJobs)
+        .where(inArray(exportJobs.filePath, paths));
+      return new Set(
+        rows.map((row) => row.filePath).filter((path): path is string => path !== null),
+      );
     },
 
     async deleteById(id) {

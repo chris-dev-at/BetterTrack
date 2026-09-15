@@ -117,6 +117,10 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
       if (q.isYahooFinance === false) continue;
       const symbol = (q.symbol ?? '').trim();
       if (symbol === '') continue;
+      // Yahoo's search payload has no currency field, so the hit carries what
+      // the symbol shape yields plus whether that was a reading or the house
+      // default — the catalog must not store a default as a denomination.
+      const currency = currencyForSearchResult(symbol, q.exchange);
       out.push({
         providerId: PROVIDER_ID,
         providerRef: symbol,
@@ -124,7 +128,8 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
         name: q.longname ?? q.shortname ?? symbol,
         exchange: q.exchDisp ?? q.exchange ?? null,
         type: mapAssetType(q.quoteType, symbol),
-        currency: currencyForSearchResult(symbol, q.exchange),
+        currency: currency.code,
+        currencyGuessed: currency.guessed,
       });
     }
     return out;
@@ -278,6 +283,13 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
 
   return {
     id: PROVIDER_ID,
+    // Daily-and-longer candles carry `adjclose`, i.e. a dividend/split-adjusted
+    // total-return series (§13.5 states portfolio history and backtests are
+    // total return). Intraday candles have no adjclose and fall back to the raw
+    // close, but they cover at most a few days, where the two bases coincide
+    // except across a corporate action. The declaration is what the failover
+    // chain compares, so only a secondary that is adjusted too may substitute.
+    historyBasis: 'adjusted',
     search,
     getQuote,
     getHistory,

@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+
+import { QueryClientContext, type QueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useOptionalAuth } from '../AuthContext';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
+import { removePlaintextQueries } from './plaintextQueries';
 import type { UnlockedVaultPortfolioAccess } from './resolvedPortfolioStore';
-import type { VaultedPortfolioStoresBatch } from './vaultedPortfolioStores';
+import type {
+  VaultedPortfolioFailure,
+  VaultedPortfolioStoresBatch,
+} from './vaultedPortfolioStores';
 
 /**
  * The one seam production surfaces use to ask "can this device read that
@@ -32,12 +38,26 @@ import type { VaultedPortfolioStoresBatch } from './vaultedPortfolioStores';
 export interface VaultedPortfolioStores {
   /** Vaulted portfolios unlocked on this device, by portfolio id. */
   unlocked: ReadonlyMap<string, UnlockedVaultPortfolioAccess>;
+  /**
+   * Vaulted portfolios this device tried to open and could not, by portfolio
+   * id — a vault that IS unlocked but whose documents refused, or a resolution
+   * that failed before any vault was looked at (the vault directory could not
+   * be read, the heavy chunk failed to load). Never a merely locked vault: the
+   * stub for one of those still shows its unlock step, not an error.
+   *
+   * Surfacing these is what turns "unlock worked, portfolio still shows the
+   * locked stub with an Open link" into a sentence the user can act on.
+   */
+  failures: ReadonlyMap<string, VaultedPortfolioFailure>;
 }
 
-const NO_UNLOCKED_PORTFOLIOS: VaultedPortfolioStores = { unlocked: new Map() };
+const NO_UNLOCKED_PORTFOLIOS: VaultedPortfolioStores = { unlocked: new Map(), failures: new Map() };
 
 interface RegistryEntry {
   refs: number;
+  /** The account and roster this entry resolves for — kept so a re-run can be asked for from outside the hook. */
+  accountId: string | null;
+  portfolios: readonly PortfolioSummary[];
   /** Stable snapshot identity — `useSyncExternalStore` compares by reference. */
   stores: VaultedPortfolioStores;
   batch: VaultedPortfolioStoresBatch | null;
@@ -59,9 +79,19 @@ interface RegistryEntry {
    */
   resolving: boolean;
   /**
-   * A vault-opened edge that arrived mid-resolution, waiting to be judged when
-   * the run settles. `consumeRerunRequest` decides what it was really about.
+   * The vaults whose open edge arrived mid-resolution, waiting to be judged when
+   * the run settles. `consumeVaultOpenEdges` decides what each one was about.
+   * A SET, not a flag: two vaults unlocked inside one resolution window are two
+   * independent pieces of news, and collapsing them into one dropped the second
+   * (#1533).
    */
+  pendingVaultOpens: Set<string>;
+  /**
+   * Vaults whose edge already bought a re-run in the current chain. The chain
+   * bound (see `consumeVaultOpenEdges`), per vault instead of per run.
+   */
+  rerunVaultIds: Set<string>;
+  /** A user Retry that landed while a run was in flight; honoured when it settles. */
   rerunRequested: boolean;
   /**
    * Id of the newest resolution on this entry. A run whose id is no longer
@@ -73,6 +103,42 @@ interface RegistryEntry {
 }
 
 const registry = new Map<string, RegistryEntry>();
+
+/**
+ * The query caches to sweep when a vault session ends.
+ *
+ * DROPPING THE BATCH IS NOT ENOUGH. `dispose()` releases the decrypted
+ * documents this module holds, but every figure derived from them has already
+ * been copied into React Query — the portfolio response, its history, Home's
+ * `readTotals` — and those entries outlive the lock by `gcTime`. The
+ * account-level v1 stack always swept on its lock (`AccountModeRoot` →
+ * `removePlaintextQueries`); the per-portfolio model had no equivalent, so a
+ * lock left decrypted holdings sitting in the cache, servable to the next
+ * mount, with the vault itself correctly closed.
+ *
+ * Registered by the hook rather than imported: the app owns exactly one
+ * `QueryClient`, but importing it here would pull the whole `UserApp` graph
+ * into the module that exists to stay light, and every test builds its own.
+ *
+ * REFERENCE-COUNTED, like the resolution registry above and for the same
+ * reason: the hook runs in the workspace, the switcher, the manager and every
+ * Home widget at once, so a plain Set would let the first of them to unmount
+ * deregister the cache the others are still filling.
+ */
+const plaintextCaches = new Map<QueryClient, number>();
+
+function retainPlaintextCache(cache: QueryClient): () => void {
+  plaintextCaches.set(cache, (plaintextCaches.get(cache) ?? 0) + 1);
+  return () => {
+    const refs = (plaintextCaches.get(cache) ?? 1) - 1;
+    if (refs <= 0) plaintextCaches.delete(cache);
+    else plaintextCaches.set(cache, refs);
+  };
+}
+
+function sweepPlaintextCaches(): void {
+  for (const cache of [...plaintextCaches.keys()]) removePlaintextQueries(cache);
+}
 
 interface VaultGraph {
   listVaults: typeof import('../../lib/vaultApi').listVaults;
@@ -123,6 +189,17 @@ export function useVaultedPortfolioStores(
   // authenticated account there is no vault to open.
   const auth = useOptionalAuth();
   const accountId = auth?.status === 'authenticated' ? (auth.user?.id ?? null) : null;
+
+  // Read through the CONTEXT rather than `useQueryClient()`, which throws when
+  // there is no provider above. Same reason `useOptionalAuth` is used above:
+  // this hook sits under every Home widget, and "no query client in this thin
+  // tree" must not become a crashed board. No client simply means there is no
+  // derived plaintext here to sweep.
+  const queryClient = useContext(QueryClientContext);
+  useEffect(() => {
+    if (queryClient === undefined) return;
+    return retainPlaintextCache(queryClient);
+  }, [queryClient]);
 
   /**
    * Identity of the ROSTER, not of the array.
@@ -197,6 +274,8 @@ function subscribe(token: string, onChange: () => void): () => void {
 function placeholderEntry(): RegistryEntry {
   return {
     refs: 0,
+    accountId: null,
+    portfolios: [],
     stores: NO_UNLOCKED_PORTFOLIOS,
     batch: null,
     listeners: new Set(),
@@ -204,6 +283,8 @@ function placeholderEntry(): RegistryEntry {
     releaseKeystoreListeners: null,
     released: false,
     resolving: false,
+    pendingVaultOpens: new Set(),
+    rerunVaultIds: new Set(),
     rerunRequested: false,
     loadSeq: 0,
   };
@@ -235,9 +316,34 @@ function acquire(token: string, accountId: string, portfolios: readonly Portfoli
   // stays because `release`'s keep-the-entry decision is the one that is
   // allowed to change: reusing an entry is only ever safe with a live signal.
   if (entry.abort.signal.aborted) entry.abort = new AbortController();
+  entry.accountId = accountId;
+  entry.portfolios = portfolios;
   registry.set(token, entry);
 
   void load(entry, accountId, portfolios);
+}
+
+/**
+ * Ask every live roster to resolve again — the "Retry" behind a surfaced
+ * failure. It re-runs exactly what a mount would, against the same registry
+ * entries, so a stub that just reported "could not be opened" re-asks the
+ * keystore and the media instead of waiting for the next navigation. Entries
+ * nothing is rendering are left alone.
+ */
+export function rerunVaultedPortfolioStores(): void {
+  for (const entry of registry.values()) {
+    if (entry.refs <= 0 || entry.released || entry.accountId === null) continue;
+    if (entry.resolving) {
+      // A Retry pressed while a run is in flight is not a no-op: the run that
+      // is settling may be the very one that will fail again, so one more run
+      // is queued and starts the moment this one settles (see `load`'s finally).
+      entry.rerunRequested = true;
+      continue;
+    }
+    entry.batch?.dispose();
+    entry.batch = null;
+    void load(entry, entry.accountId, entry.portfolios, true);
+  }
 }
 
 async function load(
@@ -249,6 +355,9 @@ async function load(
   const seq = (entry.loadSeq += 1);
   const superseded = () => entry.released || entry.loadSeq !== seq;
   entry.resolving = true;
+  // A fresh resolution starts a new edge chain, so the per-vault bound below
+  // starts over with it.
+  if (!isRerun) entry.rerunVaultIds.clear();
   try {
     const {
       listVaults,
@@ -264,15 +373,25 @@ async function load(
         entry.batch?.dispose();
         entry.batch = null;
         publish(entry, NO_UNLOCKED_PORTFOLIOS);
+        // Evict the DERIVED plaintext too, not just the documents it came from
+        // (see `plaintextCaches`). Ordered after `publish` so the surfaces have
+        // already been told to fall back to their stubs: the sweep then removes
+        // entries nothing is reading, rather than yanking data out from under a
+        // render that is still showing it.
+        sweepPlaintextCaches();
       });
-      const releaseVaultOpened = vaultOpenedSubscription(() => {
+      const releaseVaultOpened = vaultOpenedSubscription((vaultId: string) => {
         if (entry.released) return;
+        // A vault no portfolio in THIS roster lives in cannot change this
+        // snapshot, however it was opened: re-resolving for it would decrypt
+        // the same documents again for nothing.
+        if (!rosterHoldsVault(portfolios, vaultId)) return;
         // Our own `openStoredVault` fires this too, so an edge that lands while
-        // a resolution is in flight cannot be acted on blind. Remember it and
-        // let `consumeRerunRequest` judge it once the run has settled and its
-        // outcome is known.
+        // a resolution is in flight cannot be acted on blind. Remember which
+        // vault it named and let `consumeVaultOpenEdges` judge it once the run
+        // has settled and its outcome is known.
         if (entry.resolving) {
-          entry.rerunRequested = true;
+          entry.pendingVaultOpens.add(vaultId);
           return;
         }
         entry.batch?.dispose();
@@ -301,48 +420,114 @@ async function load(
     }
     entry.batch?.dispose();
     entry.batch = batch;
-    publish(entry, { unlocked: batch.unlocked });
-  } catch {
-    // Fail closed to the stub. Nothing here is worth a console line: a locked
-    // vault, a cancelled navigation and a failed chunk load all produce the
-    // same, already-correct, screen.
-    if (!superseded()) publish(entry, NO_UNLOCKED_PORTFOLIOS);
+    publish(entry, { unlocked: batch.unlocked, failures: batch.failures });
+  } catch (cause) {
+    // Fail closed to the stub — but SAY SO. A cancelled navigation is silent
+    // (its entry is superseded); everything else that reaches here failed
+    // before a single vault could be judged — the vault directory read, the
+    // heavy chunk, the resolver's own preconditions — and hiding that behind
+    // a "Locked" stub is what made a working unlock look broken. Every vaulted
+    // portfolio in the roster carries the same failure, because the failure
+    // is the roster's.
+    if (!superseded()) publish(entry, rosterWideFailure(portfolios, cause));
   } finally {
     if (entry.loadSeq === seq) {
       entry.resolving = false;
-      consumeRerunRequest(entry, accountId, portfolios, isRerun);
+      if (entry.rerunRequested && !entry.released) {
+        // A Retry that arrived mid-run (see `rerunVaultedPortfolioStores`).
+        entry.rerunRequested = false;
+        entry.batch?.dispose();
+        entry.batch = null;
+        void load(entry, accountId, portfolios, true);
+      } else {
+        entry.rerunRequested = false;
+        consumeVaultOpenEdges(entry, accountId, portfolios);
+      }
     }
   }
 }
 
+function rosterWideFailure(
+  portfolios: readonly PortfolioSummary[],
+  cause: unknown,
+): VaultedPortfolioStores {
+  const failures = new Map<string, VaultedPortfolioFailure>();
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const code =
+    typeof cause === 'object' &&
+    cause !== null &&
+    'code' in cause &&
+    typeof (cause as { code: unknown }).code === 'string'
+      ? (cause as { code: string }).code
+      : 'VAULT_RESOLUTION_FAILED';
+  for (const portfolio of portfolios) {
+    if (!isVaultedPortfolio(portfolio)) continue;
+    failures.set(portfolio.id, { vaultId: portfolio.vaultId, code, message });
+  }
+  return { unlocked: new Map(), failures };
+}
+
+/** Does any portfolio in this roster live in that vault? */
+function rosterHoldsVault(portfolios: readonly PortfolioSummary[], vaultId: string): boolean {
+  return portfolios.some((portfolio) => portfolio.vaultId === vaultId);
+}
+
 /**
- * Decide what a vault-opened edge that arrived MID-RESOLUTION was about, now
- * that the run it interrupted has settled.
+ * Did the settled run leave that vault's portfolios stale?
  *
- * The signal itself is ambiguous: the resolver's own `openStoredVault` raises
- * it, and so does the user unlocking through the access surface a moment later.
- * The OUTCOME disambiguates it. This resolution can only have raised the edge
- * if it opened a vault — and a run that opened one publishes a non-empty batch.
- * So a run that opened nothing and still saw an edge is the real case (#1531
- * F2): the vault was locked when the resolver looked, the user unlocked while
- * documents were in flight, and the empty batch just published is already
- * stale. Dropping that edge left the portfolio a stub until a reload.
- *
- * Bounded twice over. A re-run never queues another, so an edge chain is at
- * most two resolutions whatever the keystore notifies; and the keystore only
- * raises the edge on a REAL key transition, so the no-op re-open inside the
- * second run is silent anyway.
+ * The question the edge really asks. A run that opened the vault itself ends
+ * with every one of its portfolios in the published batch, so its own edge
+ * answers no; an unlock that landed WHILE the resolver was looking at a locked
+ * vault leaves them missing, and that is the news worth another resolution.
  */
-function consumeRerunRequest(
+function vaultLeftStale(
+  entry: RegistryEntry,
+  portfolios: readonly PortfolioSummary[],
+  vaultId: string,
+): boolean {
+  const unlocked = entry.batch?.unlocked;
+  return portfolios.some(
+    (portfolio) => portfolio.vaultId === vaultId && unlocked?.has(portfolio.id) !== true,
+  );
+}
+
+/**
+ * Decide what the vault-opened edges that arrived MID-RESOLUTION were about,
+ * now that the run they interrupted has settled.
+ *
+ * Each signal on its own is ambiguous: the resolver's own `openStoredVault`
+ * raises one, and so does the user unlocking through the access surface a
+ * moment later. The vault id disambiguates it PER VAULT. This resolution can
+ * only have raised the edge for a vault it opened — and a vault it opened has
+ * its portfolios in the batch just published. So an edge naming a vault whose
+ * portfolios are still missing is the real case (#1531 F2): the vault was
+ * locked when the resolver looked, the user unlocked while documents were in
+ * flight, and what was just published is already stale.
+ *
+ * Judging that by the RUN's outcome instead — "opened nothing, saw an edge" —
+ * was right for one vault and wrong for two (#1533): a re-run that unlocks the
+ * first vault publishes a non-empty batch, and a second vault unlocked inside
+ * that window was then indistinguishable from the re-run's own open, so its
+ * portfolios stayed stubs until the next remount.
+ *
+ * STILL BOUNDED, now per vault: a vault's edge buys at most one re-run per
+ * chain, so a chain is at most one resolution per roster vault however the
+ * keystore notifies. The keystore's own silence on a no-op re-open (#1531)
+ * keeps the ordinary case at two.
+ */
+function consumeVaultOpenEdges(
   entry: RegistryEntry,
   accountId: string,
   portfolios: readonly PortfolioSummary[],
-  isRerun: boolean,
 ): void {
-  if (!entry.rerunRequested) return;
-  entry.rerunRequested = false;
-  if (entry.released || isRerun) return;
-  if ((entry.batch?.unlocked.size ?? 0) > 0) return;
+  const pending = [...entry.pendingVaultOpens];
+  entry.pendingVaultOpens.clear();
+  if (pending.length === 0 || entry.released) return;
+  const stale = pending.filter(
+    (vaultId) => !entry.rerunVaultIds.has(vaultId) && vaultLeftStale(entry, portfolios, vaultId),
+  );
+  if (stale.length === 0) return;
+  for (const vaultId of stale) entry.rerunVaultIds.add(vaultId);
   entry.batch?.dispose();
   entry.batch = null;
   void load(entry, accountId, portfolios, true);
@@ -354,6 +539,8 @@ function release(token: string): void {
   entry.refs -= 1;
   if (entry.refs > 0) return;
   entry.released = true;
+  entry.pendingVaultOpens.clear();
+  entry.rerunVaultIds.clear();
   entry.rerunRequested = false;
   entry.abort.abort();
   entry.releaseKeystoreListeners?.();
@@ -375,6 +562,9 @@ function release(token: string): void {
  * listeners — so its ONLY symptom is that it is still there.
  */
 export function resetVaultedPortfolioStoreRegistry(): number {
+  // A retained cache outliving its suite would let one test's `QueryClient` be
+  // swept by the next test's lock.
+  plaintextCaches.clear();
   const cleared = registry.size;
   for (const token of [...registry.keys()]) {
     const entry = registry.get(token)!;

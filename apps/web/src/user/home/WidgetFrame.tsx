@@ -78,6 +78,12 @@ export interface WidgetFrameProps {
   /** What the header says about scope, or null when the widget spans everything. */
   scopeTag: ScopeTag | null;
   portfolios: readonly PortfolioSummary[];
+  /**
+   * Decrypted names for the vaulted portfolios this device is holding open,
+   * resolved ONCE over the whole roster by the board above (see HomePage) and
+   * handed down rather than re-resolved per widget from its filtered subset.
+   */
+  unlockedNames: ReadonlyMap<string, string>;
   /** This widget is the one picked up and waiting to be placed. */
   armed: boolean;
   /**
@@ -106,6 +112,7 @@ export function WidgetFrame({
   editing,
   scopeTag,
   portfolios,
+  unlockedNames,
   armed,
   placeBefore,
   placeAfter,
@@ -209,6 +216,7 @@ export function WidgetFrame({
                 portfolios={portfolios}
                 settings={widget.settings}
                 title={title}
+                unlockedNames={unlockedNames}
               />
             ) : null}
             <Button
@@ -297,22 +305,24 @@ function ScopePicker({
   portfolios,
   scopeIds,
   onSettingsChange,
+  unlockedNames,
 }: {
   portfolios: readonly PortfolioSummary[];
   scopeIds: readonly string[] | undefined;
   onSettingsChange: (patch: WidgetSettings) => void;
+  unlockedNames: ReadonlyMap<string, string>;
 }) {
   const t = useT();
   const lockedFallback = t('vault.lockedStub.fallbackAlias');
+  const nameOf = (portfolio: PortfolioSummary) =>
+    portfolioDisplayName(portfolio, lockedFallback, unlockedNames.get(portfolio.id));
   const [filter, setFilter] = useState('');
   const chosen = scopeIds ?? [];
   const needle = filter.trim().toLowerCase();
   const shown =
     needle === ''
       ? portfolios
-      : portfolios.filter((portfolio) =>
-          portfolioDisplayName(portfolio, lockedFallback).toLowerCase().includes(needle),
-        );
+      : portfolios.filter((portfolio) => nameOf(portfolio).toLowerCase().includes(needle));
 
   function toggle(id: string, checked: boolean) {
     const next = checked
@@ -352,9 +362,7 @@ function ScopePicker({
                   onChange={(event) => toggle(portfolio.id, event.target.checked)}
                   type="checkbox"
                 />
-                <span className="bt-home-scope__name">
-                  {portfolioDisplayName(portfolio, lockedFallback)}
-                </span>
+                <span className="bt-home-scope__name">{nameOf(portfolio)}</span>
               </label>
             </li>
           );
@@ -394,12 +402,14 @@ function SettingsPopover({
   portfolios,
   onSettingsChange,
   title,
+  unlockedNames,
 }: {
   definition: WidgetDefinition;
   settings: WidgetSettings;
   portfolios: readonly PortfolioSummary[];
   onSettingsChange: (patch: WidgetSettings) => void;
   title: string;
+  unlockedNames: ReadonlyMap<string, string>;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -462,7 +472,11 @@ function SettingsPopover({
                   ) : null}
                   {portfolios.map((portfolio) => (
                     <option key={portfolio.id} value={portfolio.id}>
-                      {portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias'))}
+                      {portfolioDisplayName(
+                        portfolio,
+                        t('vault.lockedStub.fallbackAlias'),
+                        unlockedNames.get(portfolio.id),
+                      )}
                     </option>
                   ))}
                 </Select>
@@ -472,6 +486,7 @@ function SettingsPopover({
                   onSettingsChange={onSettingsChange}
                   portfolios={portfolios}
                   scopeIds={settings.scopeIds}
+                  unlockedNames={unlockedNames}
                 />
               ) : null}
             </>

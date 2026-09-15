@@ -1,13 +1,39 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
-import type { Problem, ProblemKind, ProblemStatus } from '@bettertrack/contracts';
+import {
+  PROBLEM_KINDS,
+  PROBLEM_STATUSES,
+  problemContextSchema,
+  type Problem,
+  type ProblemContext,
+  type ProblemKind,
+  type ProblemListResponse,
+  type ProblemStatus,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { useAdminMutation } from '../useAdminMutation';
+import { useLiveRefresh } from '../useLiveRefresh';
 import { useResource } from '../useResource';
-import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
+import { LiveRefreshControl } from '../components/LiveRefreshControl';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
+import { TEXT_MICRO, TEXT_MONO, TEXT_MUTED, TEXT_NUM, type Tone } from '../components/tokens';
+import {
+  Alert,
+  Badge,
+  Button,
+  EmptyState,
+  KeyValueList,
+  PageHeader,
+  Panel,
+  SelectField,
+  Spinner,
+  cx,
+} from '../components/ui';
 
-const KIND_TONE: Record<ProblemKind, 'red' | 'amber' | 'sky'> = {
+const KIND_TONE: Record<ProblemKind, Tone> = {
   error: 'red',
   job: 'amber',
   provider: 'sky',
@@ -16,120 +42,294 @@ const KIND_TONE: Record<ProblemKind, 'red' | 'amber' | 'sky'> = {
 type KindFilter = ProblemKind | 'all';
 type StatusFilter = ProblemStatus | 'all';
 
+const DEFAULT_STATUS: StatusFilter = 'open';
+
 /**
- * Admin Problems page (PROJECTPLAN.md §13.5 V5-P2 arc (d)). Lists captured
- * problems — unhandled errors, permanently-failed jobs and provider failures —
- * next to Health, with kind/status filters, occurrence counts, an expandable
- * detail (scrubbed message + context) and a resolve/reopen flow. All copy is
- * localized through `admin.problems.*`.
+ * Rows per request. The list is paged rather than "the newest 50, forever":
+ * nothing but a resolve ever took a row out of the default view, so before
+ * paging every row past the first page was unreachable AND unresolvable.
+ */
+const PAGE_SIZE = 25;
+
+function readKind(raw: string | null): KindFilter {
+  return raw !== null && (PROBLEM_KINDS as readonly string[]).includes(raw)
+    ? (raw as ProblemKind)
+    : 'all';
+}
+
+function readStatus(raw: string | null): StatusFilter {
+  if (raw === 'all') return 'all';
+  return raw !== null && (PROBLEM_STATUSES as readonly string[]).includes(raw)
+    ? (raw as ProblemStatus)
+    : DEFAULT_STATUS;
+}
+
+/**
+ * Operations → Problems (§13.5 V5-P2 arc (d); folded into the W4 workspace).
+ *
+ * The capture and the resolve/reopen flow are unchanged — both are already
+ * audit-logged in `problemService`, which is exactly why they survive the
+ * "read-only unless the action already exists and is audited" rule W4 works
+ * under. What W4 changes is the surroundings: the workspace tab strip, the
+ * sharp token layer, filters that live in the URL (so a triage view is a link a
+ * second operator can open), and the shared `useAdminMutation` seam in place of
+ * the page's own `busyId`/`setActionError` pair.
  */
 export function ProblemsPage() {
   const t = useT();
-  const [kind, setKind] = useState<KindFilter>('all');
-  const [status, setStatus] = useState<StatusFilter>('open');
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
 
-  const resource = useResource(
-    (signal) =>
-      api.listProblems(
-        {
-          kind: kind === 'all' ? undefined : kind,
-          status: status === 'all' ? undefined : status,
+  const kind = readKind(params.get('kind'));
+  const status = readStatus(params.get('status'));
+
+  const patchQuery = useCallback(
+    (patch: Record<string, string | null>) => {
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          for (const [key, value] of Object.entries(patch)) {
+            if (value === null) next.delete(key);
+            else next.set(key, value);
+          }
+          return next;
         },
-        signal,
-      ),
-    [kind, status],
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
+
+  // How many PAGE_SIZE windows the operator has opened. A filter change resets
+  // it — a page of `error` rows must never be shown under a `job` filter.
+  const [pageCount, setPageCount] = useState(1);
+  useEffect(() => {
+    setPageCount(1);
+  }, [kind, status]);
+
+  /**
+   * Every window currently on screen, re-read together and merged by id
+   * (#1848).
+   *
+   * The previous shape kept a growing `rows` array and spliced each response in
+   * by numeric offset. But the offset is a position in a MUTATING, time-ordered
+   * set: one capture arriving shifts every row down by one, so the live tick's
+   * re-read of `offset=25` returned a window starting one row earlier and the
+   * splice rendered that row TWICE under the same React key. A resolve shrank
+   * the set and dropped the row at the page boundary instead. And page 1 was
+   * frozen the moment "Load more" was clicked — `current.slice(0, offset)` was
+   * never re-read, so a problem a colleague had resolved kept offering
+   * "Resolve" forever.
+   *
+   * Re-reading the pages that are still shown fixes all three at once, and the
+   * id-keyed merge (rather than a single `limit: PAGE_SIZE * pageCount` read)
+   * keeps the request bounded by the contract's `limit` cap of 200 no matter
+   * how far the operator pages. A row that moves between two windows during the
+   * read is rendered once, at its first sighting.
+   */
+  const resource = useResource(
+    async (signal) => {
+      const filter = {
+        ...(kind === 'all' ? {} : { kind }),
+        ...(status === 'all' ? {} : { status }),
+      };
+      const windows = await Promise.all(
+        Array.from({ length: pageCount }, (_, index) =>
+          api.listProblems({ ...filter, limit: PAGE_SIZE, offset: index * PAGE_SIZE }, signal),
+        ),
+      );
+      const head = windows[0]!;
+      const tail = windows[windows.length - 1]!;
+      const seen = new Set<string>();
+      const problems: Problem[] = [];
+      for (const window of windows) {
+        for (const problem of window.problems) {
+          if (seen.has(problem.id)) continue;
+          seen.add(problem.id);
+          problems.push(problem);
+        }
+      }
+      return {
+        ...tail,
+        problems,
+        // The drop tally is a trailing-window counter, identical in every
+        // concurrent response — read it once rather than summing it per window.
+        droppedCaptures: head.droppedCaptures,
+        droppedCapturesTotal: head.droppedCapturesTotal,
+      } satisfies ProblemListResponse;
+    },
+    [kind, status, pageCount],
   );
   const { data, loading, error, reload } = resource;
 
+  // The rendered list IS the last read of the pages on screen; nothing is
+  // accumulated locally, so nothing can drift out of step with the server.
+  const rows = data?.problems ?? [];
+
+  const live = useLiveRefresh(reload);
+
+  // Both actions address one problem row, which the retention sweep or a second
+  // operator can retire between the list read and the click — a banner, not a
+  // forced sign-out (V5-P13c audit of every `useAdminMutation` call site). The
+  // reload behind them re-reads every window on screen, so the acted-on row and
+  // the counts settle together.
+  const resolve = useAdminMutation(async (id: string) => void (await api.resolveProblem(id)), {
+    errorKey: 'admin.problems.actionError',
+    notFound: 'surface',
+    onSuccess: reload,
+  });
+  const reopen = useAdminMutation(async (id: string) => void (await api.reopenProblem(id)), {
+    errorKey: 'admin.problems.actionError',
+    notFound: 'surface',
+    onSuccess: reload,
+  });
+
   const mutate = useCallback(
-    async (id: string, next: ProblemStatus) => {
-      setBusyId(id);
-      setActionError(null);
-      try {
-        if (next === 'resolved') await api.resolveProblem(id);
-        else await api.reopenProblem(id);
-        reload();
-      } catch {
-        setActionError(t('admin.problems.actionError'));
-      } finally {
-        setBusyId(null);
-      }
+    (id: string, next: ProblemStatus) => {
+      void (next === 'resolved' ? resolve.runFor(id, id) : reopen.runFor(id, id));
     },
-    [reload, t],
+    [resolve, reopen],
   );
+
+  const counts =
+    loading || error !== null || !data?.openCount
+      ? undefined
+      : { '/admin/problems': data.openCount };
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <PageHeader title={t('admin.problems.title')} description={t('admin.problems.subtitle')} />
-        <Button variant="secondary" onClick={reload}>
-          {t('admin.problems.refresh')}
-        </Button>
-      </div>
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        actions={<LiveRefreshControl busy={loading} live={live} />}
+        description={t('admin.problems.subtitle')}
+        eyebrow={t('admin.nav.sections.operations')}
+        title={t('admin.problems.title')}
+      />
 
-      <div className="flex flex-wrap items-end gap-4">
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          <span className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.filters.kind')}
-          </span>
-          <select
+      <WorkspaceTabs {...(counts ? { counts } : {})} />
+
+      <Panel>
+        <div className="flex flex-wrap items-end gap-3">
+          <SelectField
+            label={t('admin.problems.filters.kind')}
+            onChange={(event) =>
+              patchQuery({ kind: event.target.value === 'all' ? null : event.target.value })
+            }
+            options={[
+              { value: 'all', label: t('admin.problems.filters.all') },
+              ...PROBLEM_KINDS.map((value) => ({
+                value,
+                label: t(`admin.problems.kind.${value}`),
+              })),
+            ]}
             value={kind}
-            onChange={(e) => setKind(e.target.value as KindFilter)}
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100"
-          >
-            <option value="all">{t('admin.problems.filters.all')}</option>
-            <option value="error">{t('admin.problems.kind.error')}</option>
-            <option value="job">{t('admin.problems.kind.job')}</option>
-            <option value="provider">{t('admin.problems.kind.provider')}</option>
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          <span className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.filters.status')}
-          </span>
-          <select
+          />
+          <SelectField
+            label={t('admin.problems.filters.status')}
+            onChange={(event) =>
+              patchQuery({
+                status: event.target.value === DEFAULT_STATUS ? null : event.target.value,
+              })
+            }
+            options={[
+              { value: 'all', label: t('admin.problems.filters.all') },
+              ...PROBLEM_STATUSES.map((value) => ({
+                value,
+                label: t(`admin.problems.status.${value}`),
+              })),
+            ]}
             value={status}
-            onChange={(e) => setStatus(e.target.value as StatusFilter)}
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100"
-          >
-            <option value="all">{t('admin.problems.filters.all')}</option>
-            <option value="open">{t('admin.problems.status.open')}</option>
-            <option value="resolved">{t('admin.problems.status.resolved')}</option>
-          </select>
-        </label>
-        {data ? (
-          <span className="text-xs text-neutral-400">
-            {t('admin.problems.openCount', { count: data.openCount })}
-          </span>
+          />
+          {data ? (
+            <span className={cx(TEXT_MICRO, 'pb-2')}>
+              {t('admin.problems.openCount', { count: data.openCount })}
+            </span>
+          ) : null}
+          {data && data.total > rows.length ? (
+            <span className={cx(TEXT_MICRO, 'pb-2')}>
+              {t('admin.problems.shownCount', { shown: rows.length, total: data.total })}
+            </span>
+          ) : null}
+        </div>
+      </Panel>
+
+      {/* The capture budget refused rows in this window: what is listed below
+          is then a TRUNCATED incident, and reading it as the whole one is the
+          exact mistake this banner exists to prevent. */}
+      {data && data.droppedCaptures > 0 ? (
+        <Alert tone="info">{t('admin.problems.dropped', { count: data.droppedCaptures })}</Alert>
+      ) : null}
+
+      {resolve.error ? <Alert tone="error">{resolve.error}</Alert> : null}
+      {reopen.error ? <Alert tone="error">{reopen.error}</Alert> : null}
+
+      <section aria-busy={loading} aria-label={t('admin.problems.title')}>
+        {loading && data === null ? <Spinner /> : null}
+        {/* Keeps the page's own wording rather than the generic read banner:
+            "couldn't load problems" is what an operator needs to read here, and
+            it is the copy this surface has always shown. */}
+        {error ? (
+          <Alert tone="error">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t('admin.problems.loadError')}</span>
+              <Button onClick={reload} size="sm" variant="secondary">
+                {t('common.retry')}
+              </Button>
+            </div>
+          </Alert>
         ) : null}
-      </div>
 
-      {loading && !data ? <Spinner label={t('common.loading')} /> : null}
-      {error ? <Alert tone="error">{t('admin.problems.loadError')}</Alert> : null}
-      {actionError ? <Alert tone="error">{actionError}</Alert> : null}
+        {data && rows.length === 0 ? <EmptyState>{t('admin.problems.empty')}</EmptyState> : null}
 
-      {data && data.problems.length === 0 ? (
-        <p className="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-6 text-center text-sm text-neutral-400">
-          {t('admin.problems.empty')}
-        </p>
-      ) : null}
+        {rows.length > 0 ? (
+          <ul className="flex flex-col gap-3">
+            {rows.map((problem) => (
+              <ProblemRow
+                busy={resolve.isPending(problem.id) || reopen.isPending(problem.id)}
+                key={problem.id}
+                onMutate={mutate}
+                problem={problem}
+              />
+            ))}
+          </ul>
+        ) : null}
 
-      {data && data.problems.length > 0 ? (
-        <ul className="flex flex-col gap-3">
-          {data.problems.map((problem) => (
-            <ProblemRow
-              key={problem.id}
-              problem={problem}
-              busy={busyId === problem.id}
-              onMutate={mutate}
-            />
-          ))}
-        </ul>
-      ) : null}
+        {data?.hasMore ? (
+          <div className="mt-3 flex justify-center">
+            <Button
+              disabled={loading}
+              onClick={() => setPageCount((count) => count + 1)}
+              size="sm"
+              variant="secondary"
+            >
+              {t('admin.problems.loadMore')}
+            </Button>
+          </div>
+        ) : null}
+      </section>
     </div>
   );
+}
+
+/** Context keys the row renders itself, so they are not repeated in the JSON. */
+const RENDERED_CONTEXT_KEYS = new Set(['method', 'route', 'status', 'requestId', 'stack']);
+
+/**
+ * Split the stored context into the request facts the row renders as their own
+ * lines, the stack it collapses, and whatever else is left for the JSON block.
+ * Parsed through the contract schema rather than cast: `context` is `jsonb`, so
+ * an older row (captured before the request facts existed) simply has none.
+ */
+function readContext(context: unknown): {
+  detail: ProblemContext | null;
+  rest: Record<string, unknown> | null;
+} {
+  const parsed = problemContextSchema.safeParse(context);
+  if (!parsed.success) return { detail: null, rest: null };
+  // The known keys get their own lines; `rest` is everything a non-request
+  // capture kind (job/provider/import) carries, shown as JSON below.
+  const rest = Object.fromEntries(
+    Object.entries(parsed.data).filter(([key]) => !RENDERED_CONTEXT_KEYS.has(key)),
+  );
+  return { detail: parsed.data, rest: Object.keys(rest).length > 0 ? rest : null };
 }
 
 function ProblemRow({
@@ -142,75 +342,136 @@ function ProblemRow({
   onMutate: (id: string, next: ProblemStatus) => void;
 }) {
   const t = useT();
+  const { detail, rest } = readContext(problem.context);
+  const stack = detail?.stack ?? null;
+
   return (
-    <li className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={KIND_TONE[problem.kind]}>{t(`admin.problems.kind.${problem.kind}`)}</Badge>
-            <Badge tone={problem.status === 'open' ? 'amber' : 'green'}>
-              {t(`admin.problems.status.${problem.status}`)}
-            </Badge>
-            <span className="text-sm font-medium text-neutral-100">{problem.title}</span>
+    <li>
+      <Panel padded={false}>
+        <div className="flex flex-col gap-3 p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={KIND_TONE[problem.kind]}>
+                  {t(`admin.problems.kind.${problem.kind}`)}
+                </Badge>
+                <Badge tone={problem.status === 'open' ? 'amber' : 'green'}>
+                  {t(`admin.problems.status.${problem.status}`)}
+                </Badge>
+                {/* A problem an admin cleared that then happened again: the
+                    capture reopened it, and it must READ as a regression rather
+                    than as one more open row. */}
+                {problem.regressed ? (
+                  <Badge tone="red">{t('admin.problems.regressed')}</Badge>
+                ) : null}
+                <span className="text-[13px] font-medium text-neutral-100">{problem.title}</span>
+              </div>
+              {problem.message ? (
+                <p className={cx('break-words', TEXT_MUTED)}>{problem.message}</p>
+              ) : null}
+            </div>
+            <div className="shrink-0">
+              {problem.status === 'open' ? (
+                <Button
+                  disabled={busy}
+                  onClick={() => onMutate(problem.id, 'resolved')}
+                  size="sm"
+                  variant="secondary"
+                >
+                  {t('admin.problems.resolve')}
+                </Button>
+              ) : (
+                <Button
+                  disabled={busy}
+                  onClick={() => onMutate(problem.id, 'open')}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {t('admin.problems.reopen')}
+                </Button>
+              )}
+            </div>
           </div>
-          {problem.message ? (
-            <p className="break-words text-xs text-neutral-400">{problem.message}</p>
+
+          <KeyValueList
+            rows={[
+              // The request facts first: for an unhandled 500 they are what
+              // names the broken endpoint, and `requestId` is the handle back
+              // to the log line for the same request.
+              ...(detail?.route
+                ? [
+                    {
+                      label: t('admin.problems.route'),
+                      value: (
+                        <span className={TEXT_MONO}>
+                          {detail.method ? `${detail.method} ` : ''}
+                          {detail.route}
+                        </span>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(typeof detail?.status === 'number'
+                ? [
+                    {
+                      label: t('admin.problems.httpStatus'),
+                      value: <span className={TEXT_NUM}>{detail.status}</span>,
+                    },
+                  ]
+                : []),
+              ...(detail?.requestId
+                ? [
+                    {
+                      label: t('admin.problems.requestId'),
+                      value: <span className={TEXT_MONO}>{detail.requestId}</span>,
+                    },
+                  ]
+                : []),
+              {
+                label: t('admin.problems.occurrencesLabel'),
+                value: <span className={TEXT_NUM}>{problem.occurrenceCount}</span>,
+              },
+              {
+                label: t('admin.problems.firstSeen'),
+                value: new Date(problem.firstSeenAt).toLocaleString(),
+              },
+              {
+                label: t('admin.problems.lastSeen'),
+                value: new Date(problem.lastSeenAt).toLocaleString(),
+              },
+              {
+                label: t('admin.problems.fingerprint'),
+                value: <span className={TEXT_MONO}>{problem.fingerprint}</span>,
+              },
+            ]}
+          />
+
+          {/* Collapsed, never inline: the stack is the thing to hand a
+              developer, and expanded by default it would bury every other row
+              on the page. */}
+          {stack ? (
+            <details className="text-[12px]">
+              <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
+                {t('admin.problems.stack')}
+              </summary>
+              <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
+                {stack}
+              </pre>
+            </details>
+          ) : null}
+
+          {rest !== null || (detail === null && problem.context != null) ? (
+            <details className="text-[12px]">
+              <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
+                {t('admin.problems.context')}
+              </summary>
+              <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
+                {JSON.stringify(rest ?? problem.context, null, 2)}
+              </pre>
+            </details>
           ) : null}
         </div>
-        <div className="shrink-0">
-          {problem.status === 'open' ? (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => onMutate(problem.id, 'resolved')}
-            >
-              {t('admin.problems.resolve')}
-            </Button>
-          ) : (
-            <Button variant="ghost" disabled={busy} onClick={() => onMutate(problem.id, 'open')}>
-              {t('admin.problems.reopen')}
-            </Button>
-          )}
-        </div>
-      </div>
-
-      <dl className="grid grid-cols-2 gap-2 text-xs text-neutral-400 sm:grid-cols-4">
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.occurrencesLabel')}
-          </dt>
-          <dd className="text-neutral-200">{problem.occurrenceCount}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.firstSeen')}
-          </dt>
-          <dd className="text-neutral-200">{new Date(problem.firstSeenAt).toLocaleString()}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.lastSeen')}
-          </dt>
-          <dd className="text-neutral-200">{new Date(problem.lastSeenAt).toLocaleString()}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.fingerprint')}
-          </dt>
-          <dd className="truncate font-mono text-neutral-300">{problem.fingerprint}</dd>
-        </div>
-      </dl>
-
-      {problem.context != null ? (
-        <details className="text-xs">
-          <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
-            {t('admin.problems.context')}
-          </summary>
-          <pre className="mt-2 overflow-x-auto rounded-md bg-neutral-950 p-3 text-neutral-300">
-            {JSON.stringify(problem.context, null, 2)}
-          </pre>
-        </details>
-      ) : null}
+      </Panel>
     </li>
   );
 }

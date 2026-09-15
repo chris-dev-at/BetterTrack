@@ -129,16 +129,19 @@ test('authenticated admins reach the guarded users page', async () => {
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
 });
 
-test('authenticated admins reach the guarded feedback inbox', async () => {
+test('the retired feedback URL redirects into the Support workspace', async () => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.listAdminFeedback).mockResolvedValue({
     submissions: [],
-    pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+    pagination: { page: 1, limit: 25, total: 0, totalPages: 0 },
   });
 
-  renderAt('/admin/feedback');
+  // W3 replaced the #1316 inbox with the split-pane helpdesk. The old URL is a
+  // redirect, not a second live inbox — "old URLs stay as redirects" (#1406).
+  renderAtWithLocation('/admin/feedback');
 
-  expect(await screen.findByText('No feedback yet.')).toBeInTheDocument();
+  expect(await screen.findByText('Nothing has been submitted yet.')).toBeInTheDocument();
+  expect(screen.getByTestId('location')).toHaveTextContent('/admin/support');
 });
 
 test('the admin language control persists across an admin remount', async () => {

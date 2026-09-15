@@ -29,17 +29,13 @@ import { ADMIN_DESTINATIONS } from '../adminWorkspaces';
 import { AdminLayout } from './AdminLayout';
 import { Modal } from './Modal';
 
-// Every CHILD ROW the six-workspace sidebar offers (#1406 W1). Workspaces that
-// carry their landing route on the workspace label itself live in
-// ADMIN_WORKSPACE_LANDING_KEYS below, and the People workspace's pages are no
-// longer rows at all — see ADMIN_PEOPLE_TAB_KEYS.
+// Every CHILD ROW the six-workspace sidebar still offers (#1406 W1). Three
+// workspaces have since folded and contribute none: People (W2) and Operations
+// (W4) carry their pages as tabs — see ADMIN_PEOPLE_TAB_KEYS and
+// ADMIN_OPERATIONS_TAB_KEYS — and Support (W3) absorbed its one row into the
+// helpdesk landing itself. What remains here is Product & Comms and
+// Security & API, the two workspaces no package has folded.
 const ADMIN_NAV_KEYS = [
-  'admin.nav.feedback',
-  'admin.nav.health',
-  'admin.nav.problems',
-  'admin.nav.monitoring',
-  'admin.nav.email',
-  'admin.nav.usageAnalytics',
   'admin.nav.settings',
   'admin.nav.featureFlags',
   'admin.nav.ai',
@@ -67,6 +63,9 @@ const ADMIN_WORKSPACE_LANDING_KEYS = [
   // People landed here in #1406 W2: it folded, so its label is the only rail
   // entry it has, and it links at the account list.
   'admin.nav.sections.people',
+  // Operations folded the same way in W4, landing on the health-and-queues
+  // cockpit.
+  'admin.nav.sections.operations',
 ] as const;
 
 /**
@@ -81,6 +80,21 @@ const ADMIN_PEOPLE_TAB_KEYS = [
   'admin.nav.testAccounts',
 ] as const;
 
+/**
+ * The Operations workspace's pages after the W4 fold. Same contract as the
+ * People tabs above: not sidebar rows any more, still real routes, so their
+ * labels must still translate and they must still be reachable.
+ */
+const ADMIN_OPERATIONS_TAB_KEYS = [
+  'admin.nav.opsHealth',
+  'admin.nav.problems',
+  'admin.nav.providers',
+  'admin.nav.monitoring',
+  'admin.nav.email',
+  'admin.nav.usageAnalytics',
+  'admin.nav.marketData',
+] as const;
+
 const ADMIN_SHELL_KEYS = [
   'admin.nav.console',
   'admin.nav.loading',
@@ -90,6 +104,7 @@ const ADMIN_SHELL_KEYS = [
   ...ADMIN_WORKSPACE_KEYS,
   ...ADMIN_NAV_KEYS,
   ...ADMIN_PEOPLE_TAB_KEYS,
+  ...ADMIN_OPERATIONS_TAB_KEYS,
 ] as const;
 
 function Bomb(): never {
@@ -118,6 +133,14 @@ function AdminTestApp({
             <Route path="/admin/registration" element={<p>Registration page</p>} />
             <Route path="/admin/invites" element={invitesElement} />
             <Route path="/admin/health" element={<p>Health page</p>} />
+            {/* The rest of the Operations tabs, so the W4 fold's rail cue can
+                be checked on every path the workspace owns. */}
+            <Route path="/admin/problems" element={<p>Problems page</p>} />
+            <Route path="/admin/providers" element={<p>Providers page</p>} />
+            <Route path="/admin/monitoring" element={<p>Monitoring page</p>} />
+            <Route path="/admin/email" element={<p>Email page</p>} />
+            <Route path="/admin/usage-analytics" element={<p>Usage page</p>} />
+            <Route path="/admin/market-data" element={<p>Market data page</p>} />
             {/* A narrow workspace, for the content-width test. */}
             <Route path="/admin/settings" element={<p>Settings page</p>} />
           </Route>
@@ -243,7 +266,9 @@ test('navigating to a different route clears a stuck error boundary', async () =
 
   expect(screen.getByRole('alert')).toBeInTheDocument();
 
-  await userEvent.setup().click(screen.getByRole('link', { name: 'Health' }));
+  // W4 folded Operations: the rail row that reaches the health page is now
+  // the workspace label, not a per-page child row.
+  await userEvent.setup().click(screen.getByRole('link', { name: 'Operations' }));
 
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByText('Health page')).toBeInTheDocument();
@@ -260,7 +285,7 @@ test('the admin nav is a vertical sidebar — no horizontal scroll, no wrap', ()
   // The sharp console's rail geometry (#1406 W2): a 34 px row carrying a 2 px
   // leading edge bar, coloured only while the row is the active one so
   // activating an item never nudges its label sideways.
-  const active = screen.getByRole('link', { name: 'Health' });
+  const active = screen.getByRole('link', { name: 'Operations' });
   expect(active.className).toContain('min-h-[34px]');
   expect(active.className).toContain('border-l-2');
   expect(active.className).toContain('border-l-sky-500');
@@ -288,7 +313,30 @@ test.each([
 
   // Control: an unrelated workspace's row must NOT light up on the same path,
   // so "everything is active" cannot pass this test.
-  expect(screen.getByRole('link', { name: 'Health' }).className).toContain('border-l-transparent');
+  expect(screen.getByRole('link', { name: 'Operations' }).className).toContain(
+    'border-l-transparent',
+  );
+});
+
+// W4 folds the second workspace, so the same cue must hold for it: every
+// Operations tab has to leave the Operations rail entry marked, or the fold
+// costs the "where am I" cue exactly as it would have for People.
+test.each([
+  ['/admin/problems'],
+  ['/admin/providers'],
+  ['/admin/monitoring'],
+  ['/admin/email'],
+  ['/admin/usage-analytics'],
+  ['/admin/market-data'],
+])('the folded Operations rail entry stays marked on %s', (path) => {
+  render(<AdminTestApp initialPath={path} usersElement={<p>Users page</p>} />);
+
+  const operations = screen.getByRole('link', { name: 'Operations' });
+  expect(operations.className).toContain('border-l-sky-500');
+
+  // Control: People must NOT light up on the same path, so "everything is
+  // active" cannot pass this test.
+  expect(screen.getByRole('link', { name: 'People' }).className).toContain('border-l-transparent');
 });
 
 test('a workspace that is not folded keeps exact-match highlighting', () => {
@@ -362,16 +410,16 @@ test.each(['en', 'de'] as const)(
     const column = people.closest('div')!;
     expect(within(column).getAllByRole('link')).toEqual([people]);
 
-    // Control, same query: Support has NOT folded (that is W7's package), so its
-    // column still carries its label plus its one child row. Without this, "one
-    // link in the column" could just mean the query never sees child rows.
-    const support = within(nav).getByRole('link', {
-      name: localizedMessage(locale, 'admin.nav.sections.support'),
+    // Control, same query: Product & Comms has NOT folded — W7 was cut, so it
+    // keeps W1's page rows — and its column still carries child rows. Without
+    // this, "one link in the column" could just mean the query never sees child
+    // rows at all. Its label is a heading rather than a link because that
+    // workspace has no landing route of its own; only folded workspaces put a
+    // link on the label. (This control was Operations until W4 folded that too.)
+    const unfolded = within(nav).getByRole('heading', {
+      name: localizedMessage(locale, 'admin.nav.sections.product'),
     });
-    expect(within(support.closest('div')!).getAllByRole('link')).toEqual([
-      support,
-      within(nav).getByRole('link', { name: localizedMessage(locale, 'admin.nav.feedback') }),
-    ]);
+    expect(within(unfolded.closest('div')!).getAllByRole('link').length).toBeGreaterThan(1);
 
     for (const key of ADMIN_PEOPLE_TAB_KEYS) {
       expect(

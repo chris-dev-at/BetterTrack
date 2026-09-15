@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams, type Location } from 'react-router-dom';
 
 import { I18nProvider, useI18n, useT } from '../i18n';
+import { apiRetryPolicy, backoffDelayMs } from '../lib/apiClient';
 import { RealtimeProvider } from '../lib/realtime';
 import { NotFoundState } from '../ui';
 
@@ -13,6 +14,7 @@ import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { FreshStartNotice } from './components/FreshStartNotice';
+import { InstallPrompt } from './components/InstallPrompt';
 import { AuthCard, Button, Spinner, Splash } from './components/ui';
 import { apiPortfolioStore } from '../lib/portfolioStore';
 import { PortfolioStoreProvider } from './portfolio/PortfolioStoreProvider';
@@ -25,6 +27,11 @@ import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyM
 import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
 import { useThemeWatcher } from '../lib/useTheme';
 import { useUiScaleWatcher } from './useUiScale';
+import {
+  applyDisplayModeAttribute,
+  useStandaloneDisplay,
+  useStandaloneExternalLinks,
+} from '../lib/pwaDisplayMode';
 
 /**
  * The app-wide query cache. Exported so tests that mount {@link UserApp} more
@@ -39,7 +46,15 @@ export const queryClient = new QueryClient({
       // these guardrails only apply when a new query forgets to declare them.
       staleTime: 30_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      // One retry for a transient failure — but NEVER for a 429 (§10). A plain
+      // `retry: 1` doubled the request count at the exact moment a limiter was
+      // already refusing: a page mounting dozens of queries turned one tripped
+      // cooldown into twice the traffic, which is what climbed the escalation
+      // ladder from a 20 s pause to a 10 min one. See `apiRetryPolicy`.
+      retry: apiRetryPolicy(1),
+      // Jittered, and it honours the server's Retry-After when there is one, so
+      // the retries that DO happen never re-synchronise into a thundering herd.
+      retryDelay: backoffDelayMs,
     },
   },
 });
@@ -795,6 +810,22 @@ function UiScaleWatcher() {
   return null;
 }
 
+/**
+ * Standalone-mode handling (§7.1, V5-P13b). Publishes the display mode to CSS
+ * as a root attribute — `@media (display-mode: standalone)` is unavailable to
+ * the iOS versions that only expose `navigator.standalone` — and, while the
+ * browser chrome is absent, sends cross-origin links out to the real browser so
+ * a chromeless window cannot become a dead end. Renders nothing.
+ */
+function StandaloneDisplayRoot() {
+  const standalone = useStandaloneDisplay();
+  useEffect(() => {
+    applyDisplayModeAttribute(standalone);
+  }, [standalone]);
+  useStandaloneExternalLinks(standalone);
+  return null;
+}
+
 /** Keeps a `system` theme following the OS as it flips (board #68). */
 function ThemeWatcher() {
   useThemeWatcher();
@@ -823,8 +854,13 @@ export function UserApp() {
           <AuthProvider>
             <UiScaleWatcher />
             <ThemeWatcher />
+            <StandaloneDisplayRoot />
             <LocaleSync />
             <RateLimitToastBridge />
+            {/* Outside the session gate on purpose: installing is a browser
+                decision, not an account one, and the sign-in screen is where a
+                first-time visitor on a phone actually meets the app. */}
+            <InstallPrompt />
             <Suspense fallback={<Splash />}>
               <AccountModeRoot>
                 <RealtimeRoot>

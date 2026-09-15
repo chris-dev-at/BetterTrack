@@ -2,7 +2,10 @@ import type { PortfolioSummary, VaultConfig } from '@bettertrack/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PortfolioStore } from '../../lib/portfolioStore';
-import type { PortfolioStoreResolution } from './portfolioStoreResolver';
+import {
+  PortfolioStoreResolutionError,
+  type PortfolioStoreResolution,
+} from './portfolioStoreResolver';
 import { resolveVaultedPortfolioStores } from './vaultedPortfolioStores';
 
 /**
@@ -105,7 +108,8 @@ describe('resolving the vaulted portfolios of one roster', () => {
         subscribeToSessionEnd: () => () => {},
         resolve: async (_portfolios, _vaults, dependencies) => {
           seen.push(dependencies.isDocumentSetCurrent as never);
-          return [unlockedResolution('p-2')];
+          const resolution = unlockedResolution('p-2');
+          return [{ status: 'resolved', portfolio: resolution.portfolio, resolution }];
         },
       },
     );
@@ -118,6 +122,38 @@ describe('resolving the vaulted portfolios of one roster', () => {
     // A different object for the same vault is a RELOAD, not the set this
     // batch's engine derives from.
     expect(isCurrent(second)).toBe(false);
+  });
+
+  it('names a portfolio whose open failed instead of dropping it into the locked stub', async () => {
+    const failing = vaulted('p-3');
+    const opened = unlockedResolution('p-2');
+    const batch = await resolveVaultedPortfolioStores(
+      { accountId: ACCOUNT_ID, portfolios: [opened.portfolio, failing], vaults: [vaultConfig()] },
+      {
+        subscribeToSessionEnd: () => () => {},
+        resolve: async () => [
+          { status: 'resolved', portfolio: opened.portfolio, resolution: opened },
+          {
+            status: 'failed',
+            portfolio: failing,
+            cause: new PortfolioStoreResolutionError(
+              'VAULT_DOCUMENT_INVALID',
+              'The vault header roster disagrees with the server membership.',
+            ),
+          },
+        ],
+      },
+    );
+
+    // One vault's failure never hides the other's success…
+    expect([...batch.unlocked.keys()]).toEqual(['p-2']);
+    // …and never hides itself: the surface gets the typed code and the sentence.
+    expect(batch.failures.get('p-3')).toEqual({
+      vaultId: VAULT_ID,
+      code: 'VAULT_DOCUMENT_INVALID',
+      message: 'The vault header roster disagrees with the server membership.',
+    });
+    batch.dispose();
   });
 });
 
@@ -143,11 +179,16 @@ async function resolveWith(resolutions: PortfolioStoreResolution[]) {
       // answers it — through `isDocumentSetCurrent`. Without that the batch's
       // revocation would be asserted against a stub that cannot observe it.
       resolve: async (_portfolios, _vaults, dependencies) =>
-        resolutions.map((resolution) =>
-          resolution.kind === 'vaulted-unlocked'
-            ? bindResolution(resolution, dependencies, () => disposed.push(resolution.portfolio.id))
-            : resolution,
-        ),
+        resolutions.map((resolution) => ({
+          status: 'resolved' as const,
+          portfolio: resolution.portfolio,
+          resolution:
+            resolution.kind === 'vaulted-unlocked'
+              ? bindResolution(resolution, dependencies, () =>
+                  disposed.push(resolution.portfolio.id),
+                )
+              : resolution,
+        })),
     },
   );
   return {

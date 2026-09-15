@@ -427,3 +427,43 @@ it('requires a session', async () => {
     .send({ note: 'anything' });
   expect(preview.status).toBe(401);
 });
+
+/**
+ * REGRESSION (#1538). `PATCH /cash/rules/:ruleId` without `tagIds` still has to
+ * report the tag set the patch left alone, and that read happens inside the
+ * update's own transaction. Issuing it on the outer pool handle instead makes
+ * the request wait on a transaction only it can commit — under PGlite (one
+ * connection) the PATCH never answers at all, so this test would time out
+ * rather than fail. It also keeps the read transaction-consistent: the tags
+ * come back as of the same snapshot that just wrote `enabled`.
+ */
+it('patches a rule without touching its tags and reports the untouched tag set', async () => {
+  const agent = await newUserAgent('rulepatch@bettertrack.test', 'rulepatch');
+  const groceries = await createTag(agent, 'Groceries');
+  const household = await createTag(agent, 'Household');
+  const ruleId = await createRule(agent, {
+    tagIds: [groceries.id, household.id],
+    pattern: 'SPAR',
+  });
+
+  const res = await agent
+    .patch(`/api/v1/cash/rules/${ruleId}`)
+    .set(...XRW)
+    .send({ enabled: false });
+
+  expect(res.status).toBe(200);
+  const rule = cashRuleResponseSchema.parse(res.body).rule;
+  expect(rule.enabled).toBe(false);
+  expect([...rule.tagIds].sort()).toEqual([groceries.id, household.id].sort());
+
+  // And the same again for a patch that touches no column at all — the branch
+  // that reads without having written anything first.
+  const noop = await agent
+    .patch(`/api/v1/cash/rules/${ruleId}`)
+    .set(...XRW)
+    .send({});
+  expect(noop.status).toBe(200);
+  expect([...cashRuleResponseSchema.parse(noop.body).rule.tagIds].sort()).toEqual(
+    [groceries.id, household.id].sort(),
+  );
+});

@@ -1,0 +1,18 @@
+--- HYGIENE-SCHEMA (#1619): snapshot baseline — INTENTIONALLY A NO-OP.
+---
+--- `drizzle-kit generate` diffs `schema.ts` against the newest snapshot in
+--- `meta/`. That snapshot had been stuck at `0022` while 84 hand-written SQL
+--- migrations landed on top, so a `generate` run produced a "migration" that
+--- re-created most of the schema from scratch — 1359 lines of CREATE TABLE
+--- against a database that already had every one of them. Nobody could run
+--- `generate` safely, which is precisely how the declaration drift this issue
+--- fixes was able to build up unnoticed.
+---
+--- This entry adopts a snapshot regenerated from `schema.ts` (see
+--- `meta/0108_snapshot.json`), so the NEXT `generate` starts from the current
+--- truth and emits nothing. Its SQL body is empty on purpose: migrations
+--- 0000-0107 already built exactly this schema, so there is nothing left to
+--- apply. `check:schema-drift` is what proves the two agree — it introspects a
+--- freshly migrated database and fails on any table, CHECK, UNIQUE, FOREIGN KEY
+--- or index that only one side knows about.
+SELECT 1;

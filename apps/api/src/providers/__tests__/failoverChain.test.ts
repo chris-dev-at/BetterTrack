@@ -1,7 +1,7 @@
-import type { AssetRef, Quote } from '@bettertrack/contracts';
+import type { AssetRef, PricePoint, Quote } from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
 
-import type { AssetProvider } from '../AssetProvider';
+import type { AssetProvider, HistoryBasis } from '../AssetProvider';
 import { CircuitOpenError, type CircuitState } from '../circuitBreaker';
 import { AssetNotFoundError, isNotFoundError } from '../errors';
 import {
@@ -230,5 +230,225 @@ describe('FailoverResolver.run — not-found semantics', () => {
     expect(err).toBeInstanceOf(Error);
     expect(isNotFoundError(err)).toBe(false);
     expect((err as Error).message).toBe('network blip');
+  });
+});
+
+describe('FailoverResolver — the history basis gate (§13.5 V5-P1c, money)', () => {
+  const ADJUSTED: PricePoint[] = [{ time: '2026-07-15T00:00:00.000Z', close: 100 }];
+  const RAW: PricePoint[] = [{ time: '2026-07-15T00:00:00.000Z', close: 140 }];
+
+  /** A provider that declares (or withholds) a history basis and counts its reads. */
+  function historyProvider(
+    id: string,
+    historyBasis: HistoryBasis | undefined,
+    history: () => Promise<PricePoint[]>,
+    quote: () => Promise<Quote> = () => Promise.resolve(Q(1)),
+  ): AssetProvider & { calls: { history: number } } {
+    const calls = { history: 0 };
+    return {
+      id,
+      calls,
+      ...(historyBasis ? { historyBasis } : {}),
+      search: async () => [],
+      getQuote: quote,
+      getHistory: async () => {
+        calls.history += 1;
+        return history();
+      },
+      getMeta: async () => ({
+        providerId: id,
+        providerRef: 'AAPL',
+        symbol: 'AAPL',
+        name: 'Apple',
+        exchange: null,
+        currency: 'USD',
+        type: 'stock',
+      }),
+    };
+  }
+
+  function chainOf(primary: AssetProvider, secondary: AssetProvider) {
+    return createFailoverResolver({
+      registry: createProviderRegistry([primary, secondary]),
+      chains: { byClass: {}, default: [secondary.id] },
+      breakerState: () => 'closed',
+    });
+  }
+
+  const readHistory = (resolver: ReturnType<typeof chainOf>) =>
+    resolver.run(
+      REF,
+      passthrough,
+      (p) => p.getHistory(REF, '1Y', '1d'),
+      isNotFoundError,
+      'history',
+    );
+
+  it('drops an unadjusted secondary from the history chain while quotes keep flowing', async () => {
+    const yahoo = historyProvider(
+      'yahoo',
+      'adjusted',
+      () => Promise.reject(new Error('yahoo history down')),
+      () => Promise.reject(new Error('yahoo down')),
+    );
+    const stooq = historyProvider(
+      'stooq',
+      'unadjusted',
+      () => Promise.resolve(RAW),
+      () => Promise.resolve(Q(2)),
+    );
+    const resolver = chainOf(yahoo, stooq);
+
+    expect(resolver.candidates(REF, 'history').map((p) => p.id)).toEqual(['yahoo']);
+    expect(resolver.candidates(REF, 'quote').map((p) => p.id)).toEqual(['yahoo', 'stooq']);
+
+    // The backtest read surfaces the PRIMARY's error instead of silently
+    // handing back a raw series, and the secondary is never even asked.
+    await expect(readHistory(resolver)).rejects.toThrowError('yahoo history down');
+    expect(stooq.calls.history).toBe(0);
+
+    // Quotes for the same dead primary still fail over (§13.5 acceptance clause):
+    // the gate is history-only, because a spot price has no adjustment basis.
+    const quote = await resolver.run<Quote>(REF, passthrough, op, isNotFoundError, 'quote');
+    expect(quote.price).toBe(2);
+  });
+
+  it('lets a secondary declaring the SAME basis serve history', async () => {
+    const yahoo = historyProvider('yahoo', 'adjusted', () =>
+      Promise.reject(new Error('yahoo history down')),
+    );
+    const mirror = historyProvider('mirror', 'adjusted', () => Promise.resolve(ADJUSTED));
+    const resolver = chainOf(yahoo, mirror);
+
+    expect(resolver.candidates(REF, 'history').map((p) => p.id)).toEqual(['yahoo', 'mirror']);
+    await expect(readHistory(resolver)).resolves.toEqual(ADJUSTED);
+    expect(mirror.calls.history).toBe(1);
+  });
+
+  it('treats an UNDECLARED basis as unknown, never as "equal"', async () => {
+    const adjustedPrimary = historyProvider('yahoo', 'adjusted', () => Promise.resolve(ADJUSTED));
+    const mystery = historyProvider('mystery', undefined, () => Promise.resolve(RAW));
+    expect(
+      chainOf(adjustedPrimary, mystery)
+        .candidates(REF, 'history')
+        .map((p) => p.id),
+    ).toEqual(['yahoo']);
+
+    const undeclaredPrimary = historyProvider('yahoo', undefined, () => Promise.resolve(ADJUSTED));
+    const declaredSecondary = historyProvider('stooq', 'unadjusted', () => Promise.resolve(RAW));
+    expect(
+      chainOf(undeclaredPrimary, declaredSecondary)
+        .candidates(REF, 'history')
+        .map((p) => p.id),
+    ).toEqual(['yahoo']);
+  });
+});
+
+describe('FailoverResolver — partial outage: one switch per ASSET, not per read', () => {
+  const A: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
+  const B: AssetRef = { providerId: 'yahoo', providerRef: 'BAYN.DE' };
+
+  /** A provider whose behaviour depends on the ref (partial outages). */
+  function refProvider(id: string, quote: (ref: AssetRef) => Promise<Quote>): AssetProvider {
+    return {
+      id,
+      search: async () => [],
+      getQuote: quote,
+      getHistory: async () => [],
+      getMeta: async () => ({
+        providerId: id,
+        providerRef: 'AAPL',
+        symbol: 'AAPL',
+        name: 'Apple',
+        exchange: null,
+        currency: 'USD',
+        type: 'stock',
+      }),
+    };
+  }
+
+  it('records one switch for the degraded ref and leaves `since` stable across alternating reads', async () => {
+    let t = 1000;
+    let aplBroken = true;
+    // Yahoo is broken for AAPL only; BAYN.DE keeps being served by the primary.
+    const yahoo = refProvider('yahoo', (ref) =>
+      ref.providerRef === 'AAPL' && aplBroken
+        ? Promise.reject(new Error('yahoo down for AAPL'))
+        : Promise.resolve(Q(1)),
+    );
+    const backup = refProvider('backup', () => Promise.resolve(Q(2)));
+    const resolver = createFailoverResolver({
+      registry: createProviderRegistry([yahoo, backup]),
+      chains: { byClass: {}, default: ['backup'] },
+      breakerState: () => 'closed',
+      now: () => t,
+    });
+    const read = (ref: AssetRef): Promise<Quote> =>
+      resolver.run(ref, passthrough, (p) => p.getQuote(ref), isNotFoundError, 'quote');
+
+    // Three alternating rounds: A degraded to the secondary, B still primary.
+    for (let i = 0; i < 3; i += 1) {
+      t = 2000 + i * 100;
+      expect((await read(A)).price).toBe(2);
+      t += 10;
+      expect((await read(B)).price).toBe(1);
+    }
+
+    const status = resolver.status();
+    // ONE switch — the moment AAPL moved — not one per alternating read.
+    expect(status.switches).toEqual([{ primaryId: 'yahoo', from: null, to: 'backup', at: 2000 }]);
+    expect(status.chains).toEqual([
+      { primaryId: 'yahoo', serving: 'backup', since: 2000, providerIds: ['yahoo', 'backup'] },
+    ]);
+    expect(status.attribution).toEqual(
+      expect.arrayContaining([
+        { providerId: 'backup', serves: 3, lastServedAt: 2200 },
+        { providerId: 'yahoo', serves: 3, lastServedAt: 2210 },
+      ]),
+    );
+
+    // AAPL recovers ⇒ the chain is back on the primary, and only THEN does
+    // `since` move: it marks a real transition, not the last read.
+    aplBroken = false;
+    t = 3000;
+    expect((await read(A)).price).toBe(1);
+    const recovered = resolver.status();
+    expect(recovered.chains[0]).toMatchObject({ serving: 'yahoo', since: 3000 });
+    expect(recovered.switches[0]).toEqual({
+      primaryId: 'yahoo',
+      from: 'backup',
+      to: 'yahoo',
+      at: 3000,
+    });
+    expect(recovered.switches).toHaveLength(2);
+  });
+});
+
+describe('FailoverResolver.status — the reported chain is class-specific (§16 2026-07-26)', () => {
+  it('an fx ref reports the primary alone, exactly as candidates() resolves it', async () => {
+    const yahoo = provider('yahoo', () => Q(1));
+    const backup = provider('backup', () => Q(2));
+    const resolver = createFailoverResolver({
+      registry: createProviderRegistry([yahoo, backup]),
+      // Crypto/FX/commodities stay single-source in v5; equities get the secondary.
+      chains: { byClass: { crypto: [], fx: [], commodity: [] }, default: ['backup'] },
+      breakerState: () => 'closed',
+      now: () => 5000,
+    });
+    const EURUSD: AssetRef = { providerId: 'yahoo', providerRef: 'EURUSD=X' };
+
+    await resolver.run(EURUSD, passthrough, (p) => p.getQuote(EURUSD), isNotFoundError, 'quote');
+    expect(resolver.candidates(EURUSD).map((p) => p.id)).toEqual(['yahoo']);
+    expect(resolver.status().chains).toEqual([
+      { primaryId: 'yahoo', serving: 'yahoo', since: 5000, providerIds: ['yahoo'] },
+    ]);
+
+    // An equity read adds the chain that DOES have a secondary; the fx row is
+    // still reported honestly rather than being widened to ['yahoo','backup'].
+    await resolver.run(REF, passthrough, op, isNotFoundError, 'quote');
+    expect(resolver.status().chains).toEqual([
+      { primaryId: 'yahoo', serving: 'yahoo', since: 5000, providerIds: ['yahoo'] },
+      { primaryId: 'yahoo', serving: 'yahoo', since: 5000, providerIds: ['yahoo', 'backup'] },
+    ]);
   });
 });

@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   adminApiKeyListResponseSchema,
@@ -11,7 +11,9 @@ import {
 
 import { apiKeyRequestLog, apiKeyTiers, portfolios, users, vaults } from '../data/schema';
 import { createApiKeyRequestLogRepository } from '../data/repositories/apiKeyRequestLogRepository';
+import { API_KEY_LIMITER_NAMESPACE } from '../http/middleware/rateLimit';
 import { createApiKeyService } from '../services/apiKeys/apiKeyService';
+import { createProgressiveLimiter, progressiveKeys } from '../services/security/progressiveLimiter';
 import { API_KEY_REQUEST_LOG_RETENTION_DAYS, createApiKeyRequestLogCleanupJob } from '../jobs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -357,6 +359,64 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.path).toBe('/fresh');
   });
+
+  it('drains more rows than one batch holds without an unbounded delete', async () => {
+    // This is the highest-volume table in the app — one row per bearer request —
+    // so the sweep must converge in bounded statements, not one range delete.
+    const { userId, keyId } = await mintKey();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const expired = Date.now() - (API_KEY_REQUEST_LOG_RETENTION_DAYS + 2) * dayMs;
+
+    await harness.db.insert(apiKeyRequestLog).values([
+      ...Array.from({ length: 5 }, (_row, index) => ({
+        keyId,
+        userId,
+        method: 'GET',
+        path: `/old/${index}`,
+        status: 200,
+        createdAt: new Date(expired + index * 1000),
+      })),
+      { keyId, userId, method: 'GET', path: '/fresh', status: 200, createdAt: new Date() },
+    ]);
+
+    const requestLog = createApiKeyRequestLogRepository(harness.db, harness.db);
+    const deleteOlderThan = vi.spyOn(requestLog, 'deleteOlderThan');
+    const job = createApiKeyRequestLogCleanupJob({ requestLog, batchSize: 2 });
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+
+    // 2 + 2 + the short batch that proves the cutoff is drained.
+    expect(deleteOlderThan.mock.calls.map(([, limit]) => limit)).toEqual([2, 2, 2]);
+    const remaining = await requestLog.listForKey(keyId, 50);
+    expect(remaining.map((row) => row.path)).toEqual(['/fresh']);
+  });
+
+  it('defers rows past the per-run ceiling to the next run', async () => {
+    const { userId, keyId } = await mintKey();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const expired = Date.now() - (API_KEY_REQUEST_LOG_RETENTION_DAYS + 2) * dayMs;
+
+    await harness.db.insert(apiKeyRequestLog).values(
+      Array.from({ length: 5 }, (_row, index) => ({
+        keyId,
+        userId,
+        method: 'GET',
+        path: `/old/${index}`,
+        status: 200,
+        createdAt: new Date(expired + index * 1000),
+      })),
+    );
+
+    const requestLog = createApiKeyRequestLogRepository(harness.db, harness.db);
+    const job = createApiKeyRequestLogCleanupJob({ requestLog, batchSize: 2, maxRowsPerRun: 2 });
+
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+    // The ceiling stops this run; the remaining rows are still eligible.
+    expect(await requestLog.listForKey(keyId, 50)).toHaveLength(3);
+
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+    expect(await requestLog.listForKey(keyId, 50)).toHaveLength(0);
+  });
 });
 
 describe('per-key rate tier — full HTTP stack (§13.5 V5-P10, issue 2/2)', () => {
@@ -399,5 +459,281 @@ describe('per-key rate tier — full HTTP stack (§13.5 V5-P10, issue 2/2)', () 
     const over = await hit();
     expect(over.status).toBe(429);
     expect(over.headers['retry-after']).toBeDefined();
+  });
+});
+
+/**
+ * #1730 — a tier change that does not clear the key's LIVE limiter state is not
+ * a tier change the key can feel: `consume` short-circuits on the cooldown
+ * marker before it ever reads the limit, and the escalation level outlives the
+ * cooldown by its decay window.
+ */
+describe('#1730 an admin tier change takes effect on the very next request', () => {
+  /** Put a key deep in the penalty box: rung-3 cooldown, live level, full window. */
+  async function arm(keyId: string): Promise<ReturnType<typeof progressiveKeys>> {
+    const keys = progressiveKeys(API_KEY_LIMITER_NAMESPACE, keyId);
+    await harness.ctx.redis.set(keys.cooldown, '1', 'EX', 600);
+    await harness.ctx.redis.set(keys.count, '999', 'EX', 60);
+    await harness.ctx.redis.set(keys.level, '3', 'EX', 900);
+    return keys;
+  }
+
+  it('raising a mid-cooldown key’s tier admits its next request at rung 0', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const { keyId } = await mintKey();
+    const tier = apiKeyTierSchema.parse(
+      (
+        await agent
+          .post('/api/v1/admin/api-key-tiers')
+          .set(...XRW)
+          .send({ name: 'Bulk', requestLimit: 5000, windowSec: 60 })
+      ).body,
+    );
+
+    const keys = await arm(keyId);
+    const assigned = await agent
+      .patch(`/api/v1/admin/api-keys/${keyId}/tier`)
+      .set(...XRW)
+      .send({ tierId: tier.id });
+    expect(assigned.status).toBe(200);
+
+    expect(await harness.ctx.redis.get(keys.cooldown)).toBeNull();
+    expect(await harness.ctx.redis.get(keys.count)).toBeNull();
+    expect(await harness.ctx.redis.get(keys.level)).toBeNull();
+
+    // The real limiter, on the freshly-assigned tier: admitted, and the next
+    // overflow would start at rung 0 rather than jumping one.
+    const limiter = createProgressiveLimiter(harness.ctx.redis, API_KEY_LIMITER_NAMESPACE, {
+      windowSec: 60,
+      limit: 5000,
+      cooldownsSec: [60, 300, 600],
+      decaySec: 900,
+    });
+    const decision = await limiter.consume(keyId);
+    expect(decision.allowed).toBe(true);
+    expect(decision.level).toBe(0);
+  });
+
+  it('clearing a key’s tier back to the default clears its cooldown too', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const { keyId } = await mintKey();
+    const keys = await arm(keyId);
+
+    const cleared = await agent
+      .patch(`/api/v1/admin/api-keys/${keyId}/tier`)
+      .set(...XRW)
+      .send({ tierId: null });
+    expect(cleared.status).toBe(200);
+    expect(await harness.ctx.redis.get(keys.cooldown)).toBeNull();
+  });
+
+  it('editing a tier’s budget clears the keys on it, and its inheritors once it is default', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    // Two keys of the SAME user: one assigned to the edited tier, one left on
+    // whatever tier is currently the default.
+    const user = await harness.seedUser();
+    const onTier = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'assigned key',
+      scopes: ['portfolio:read'] as never,
+    });
+    const untiered = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'inheriting key',
+      scopes: ['portfolio:read'] as never,
+    });
+    const tier = apiKeyTierSchema.parse(
+      (
+        await agent
+          .post('/api/v1/admin/api-key-tiers')
+          .set(...XRW)
+          .send({ name: 'Pro', requestLimit: 600, windowSec: 60 })
+      ).body,
+    );
+    await agent
+      .patch(`/api/v1/admin/api-keys/${onTier.key.id}/tier`)
+      .set(...XRW)
+      .send({ tierId: tier.id });
+
+    const assignedKeys = await arm(onTier.key.id);
+    const inheritingKeys = await arm(untiered.key.id);
+
+    // A budget edit on a non-default tier reaches only the keys assigned to it.
+    const raised = await agent
+      .patch(`/api/v1/admin/api-key-tiers/${tier.id}`)
+      .set(...XRW)
+      .send({ requestLimit: 900 });
+    expect(raised.status).toBe(200);
+    expect(await harness.ctx.redis.get(assignedKeys.cooldown)).toBeNull();
+    expect(await harness.ctx.redis.get(inheritingKeys.cooldown)).toBe('1');
+
+    // Marking it default moves the untiered keys onto this allowance, so they
+    // are cleared too.
+    const promoted = await agent
+      .patch(`/api/v1/admin/api-key-tiers/${tier.id}`)
+      .set(...XRW)
+      .send({ isDefault: true });
+    expect(promoted.status).toBe(200);
+    expect(await harness.ctx.redis.get(inheritingKeys.cooldown)).toBeNull();
+  });
+
+  // #1835 — the three sibling paths that change a key's effective budget without
+  // touching the key itself: deleting its tier, creating a new default tier, and
+  // flipping the current default off.
+  it('deleting a tier releases the keys it held from the old cooldown', async () => {
+    // Full HTTP stack with the real limiter: drive a genuine cooldown under a
+    // tight tier, delete the tier, and the very next request must be served.
+    const httpHarness = await createTestApp({ rateLimitsEnabled: true });
+    const admin = await httpHarness.seedAdmin();
+    const agent = await httpHarness.loginAdmin(admin);
+    const user = await httpHarness.seedUser();
+    const { key, token } = await httpHarness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'tight key',
+      scopes: ['portfolio:read'],
+    });
+    const tier = apiKeyTierSchema.parse(
+      (
+        await agent
+          .post('/api/v1/admin/api-key-tiers')
+          .set(...XRW)
+          .send({ name: 'Tight', requestLimit: 2, windowSec: 60 })
+      ).body,
+    );
+    await agent
+      .patch(`/api/v1/admin/api-keys/${key.id}/tier`)
+      .set(...XRW)
+      .send({ tierId: tier.id });
+
+    const hit = () =>
+      request(httpHarness.app).get('/api/v1/portfolios').set('Authorization', `Bearer ${token}`);
+    for (let i = 0; i < 2; i += 1) {
+      expect((await hit()).status).toBe(200);
+    }
+    expect((await hit()).status).toBe(429);
+
+    const removed = await agent.delete(`/api/v1/admin/api-key-tiers/${tier.id}`).set(...XRW);
+    expect(removed.status).toBe(204);
+
+    // `tier_id` is ON DELETE SET NULL, so the key now falls back to the 120/60
+    // default — cooldown, window counter and escalation rung all released.
+    const keys = progressiveKeys(API_KEY_LIMITER_NAMESPACE, key.id);
+    expect(await httpHarness.ctx.redis.get(keys.cooldown)).toBeNull();
+    expect(await httpHarness.ctx.redis.get(keys.count)).toBeNull();
+    expect(await httpHarness.ctx.redis.get(keys.level)).toBeNull();
+    expect((await hit()).status).toBe(200);
+  });
+
+  it('creating a new default tier clears the untiered keys it just re-homed', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const { keyId } = await mintKey();
+    const keys = await arm(keyId);
+
+    // A non-default tier starts empty and re-homes nobody: it clears nothing.
+    const sideways = await agent
+      .post('/api/v1/admin/api-key-tiers')
+      .set(...XRW)
+      .send({ name: 'Side', requestLimit: 5000, windowSec: 60 });
+    expect(sideways.status).toBe(201);
+    expect(await harness.ctx.redis.get(keys.cooldown)).toBe('1');
+
+    // Creating one AS the default demotes the previous default, moving every
+    // untiered key onto the new allowance.
+    const created = await agent
+      .post('/api/v1/admin/api-key-tiers')
+      .set(...XRW)
+      .send({ name: 'Wide', requestLimit: 5000, windowSec: 60, isDefault: true });
+    expect(created.status).toBe(201);
+    expect(await harness.ctx.redis.get(keys.cooldown)).toBeNull();
+    expect(await harness.ctx.redis.get(keys.count)).toBeNull();
+    expect(await harness.ctx.redis.get(keys.level)).toBeNull();
+
+    // The rung went with the cooldown: the next overflow starts at the bottom.
+    const limiter = createProgressiveLimiter(harness.ctx.redis, API_KEY_LIMITER_NAMESPACE, {
+      windowSec: 60,
+      limit: 5000,
+      cooldownsSec: [60, 300, 600],
+      decaySec: 900,
+    });
+    const decision = await limiter.consume(keyId);
+    expect(decision.allowed).toBe(true);
+    expect(decision.level).toBe(0);
+
+    // Exactly one default survives the create.
+    const list = apiKeyTierListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/api-key-tiers')).body,
+    );
+    expect(list.tiers.filter((t) => t.isDefault)).toHaveLength(1);
+  });
+
+  it('flipping a tier off default clears the keys that stop inheriting it', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const { keyId, token } = await mintKey();
+    const tier = apiKeyTierSchema.parse(
+      (
+        await agent
+          .post('/api/v1/admin/api-key-tiers')
+          .set(...XRW)
+          .send({ name: 'Wide', requestLimit: 5000, windowSec: 60, isDefault: true })
+      ).body,
+    );
+    expect((await harness.ctx.apiKeys.authenticate(token))?.rateLimit).toEqual({
+      limit: 5000,
+      windowSec: 60,
+    });
+
+    const keys = await arm(keyId);
+    const demoted = await agent
+      .patch(`/api/v1/admin/api-key-tiers/${tier.id}`)
+      .set(...XRW)
+      .send({ isDefault: false });
+    expect(demoted.status).toBe(200);
+    expect(apiKeyTierSchema.parse(demoted.body).isDefault).toBe(false);
+
+    expect(await harness.ctx.redis.get(keys.cooldown)).toBeNull();
+    expect(await harness.ctx.redis.get(keys.count)).toBeNull();
+    expect(await harness.ctx.redis.get(keys.level)).toBeNull();
+
+    // No default row resolves any more, so the key's next request is measured
+    // against the config fallback — the allowance it now actually falls under.
+    expect((await harness.ctx.apiKeys.authenticate(token))?.rateLimit).toEqual({
+      limit: 120,
+      windowSec: 60,
+    });
+    const list = apiKeyTierListResponseSchema.parse(
+      (await agent.get('/api/v1/admin/api-key-tiers')).body,
+    );
+    expect(list.tiers.filter((t) => t.isDefault)).toHaveLength(0);
+  });
+
+  it('a rename changes no budget, so it never clears a live cooldown', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const { keyId } = await mintKey();
+    const tier = apiKeyTierSchema.parse(
+      (
+        await agent
+          .post('/api/v1/admin/api-key-tiers')
+          .set(...XRW)
+          .send({ name: 'Pro', requestLimit: 600, windowSec: 60 })
+      ).body,
+    );
+    await agent
+      .patch(`/api/v1/admin/api-keys/${keyId}/tier`)
+      .set(...XRW)
+      .send({ tierId: tier.id });
+    const keys = await arm(keyId);
+
+    const renamed = await agent
+      .patch(`/api/v1/admin/api-key-tiers/${tier.id}`)
+      .set(...XRW)
+      .send({ name: 'Pro plan' });
+    expect(renamed.status).toBe(200);
+    expect(await harness.ctx.redis.get(keys.cooldown)).toBe('1');
   });
 });

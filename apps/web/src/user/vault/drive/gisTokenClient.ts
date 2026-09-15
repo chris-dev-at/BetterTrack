@@ -46,6 +46,8 @@ export interface GoogleOauth2 {
     callback: (response: GoogleTokenResponse) => void;
     error_callback?: (error: { type?: string; message?: string }) => void;
   }): GoogleTokenClient;
+  /** Hands a granted access token back to Google. Absent on older GIS builds. */
+  revoke?(accessToken: string, done?: (response?: unknown) => void): void;
 }
 
 export interface DriveTokenClientIdentity {
@@ -82,6 +84,13 @@ export interface GoogleDriveTokenClient {
    * Must be called from a user gesture. After `prepare()` the popup opens
    * synchronously; without it the GIS load is awaited first and the browser may
    * block the popup. Tokens remain only in this closure.
+   *
+   * Every surface that owns a Drive authorization button now reaches this BY
+   * CONSTRUCTION rather than by convention: the shared preparation hook keeps
+   * the button unavailable until `prepare()` settled, and the per-connection
+   * registry prepares the very client its gesture will use (#1518). The
+   * load-then-request fallback below is the last resort for a caller that
+   * skipped preparation entirely, not a path any shipped button takes.
    */
   authorize(): Promise<DriveAccessTokenResult>;
   /**
@@ -327,9 +336,11 @@ export function createGoogleDriveTokenClient(
       // script here can outlive the browser's transient user activation and get
       // the popup blocked — which is exactly why every control that OWNS an
       // authorization button prepares first and stays disabled until ready
-      // (#1337). It is kept because the E5 per-connection registry mints a
-      // fresh client per identity at gesture time; refusing to open the popup
-      // here would turn its first click into a silent no-op instead of the
+      // (#1337). No shipped surface relies on it any more: the E5 registry
+      // gained its own `prepare()` and prepares the client a gesture will use
+      // (#1518). It is kept for a client minted outside a prepared surface
+      // (e.g. a row that appears mid-session), where refusing to open the popup
+      // would turn a first click into a silent no-op instead of the
       // occasionally-blocked popup it has always been.
       const { generation, promise } = beginAuthorization();
       void prepare().then(

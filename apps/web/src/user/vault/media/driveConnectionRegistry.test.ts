@@ -330,4 +330,98 @@ describe('per-connection Drive registry', () => {
     await expect(registry.authorize(y)).resolves.toMatchObject({ status: 'ok', connection: y });
     expect(requestAccessToken).toHaveBeenCalledOnce();
   });
+
+  // #1518: the two tests above pin the FALLBACK path (an unprepared client that
+  // loads GIS from inside `authorize()`). The four below pin the prepared one —
+  // preparation is what makes "the popup opens synchronously from the click"
+  // true by construction rather than by convention, so it is driven through the
+  // real `createGoogleDriveTokenClient` too.
+  function preparedRegistryHarness(y: DriveConnection) {
+    let callback!: (response: GoogleTokenResponse) => void;
+    const loads: string[] = [];
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'prepared-token', expires_in: 3600 });
+    });
+    const registry = createDriveConnectionRegistry({
+      clientId: 'browser-client-id',
+      api: { create: vi.fn(async () => y), verify: vi.fn(async () => y), delete: vi.fn() },
+      tokenClient: (existing) =>
+        createGoogleDriveTokenClient({
+          clientId: 'browser-client-id',
+          ...driveTokenClientIdentity(existing),
+          loadOauth2: async () => {
+            loads.push(existing?.email ?? 'bootstrap');
+            return {
+              initTokenClient(config) {
+                callback = config.callback;
+                return { requestAccessToken };
+              },
+            };
+          },
+        }),
+      identify: vi.fn(async () => ({
+        googleSub: y.googleSub,
+        email: y.email,
+        displayName: y.displayName,
+      })),
+    });
+    return { loads, registry, requestAccessToken };
+  }
+
+  it('prepares the very client the connect gesture will use, so no load precedes its popup', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000410', 'sub-y', 'y@example.test');
+    const { loads, registry, requestAccessToken } = preparedRegistryHarness(y);
+
+    await registry.prepare();
+    expect(loads).toEqual(['bootstrap']);
+
+    // Nothing may be awaited between the gesture and the popup: `connect()`
+    // must reach `requestAccessToken` before its own promise is inspected.
+    const connecting = registry.connect();
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+    await expect(connecting).resolves.toMatchObject({ status: 'ok', connection: y });
+    // The registered client is the prepared one — no second GIS load happened.
+    expect(loads).toEqual(['bootstrap']);
+  });
+
+  it('prepares a registered identity so its re-authorization popup opens from the click', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000411', 'sub-y', 'y@example.test');
+    const { loads, registry, requestAccessToken } = preparedRegistryHarness(y);
+
+    await registry.prepare(y);
+    expect(loads).toEqual([y.email]);
+
+    const authorizing = registry.authorize(y);
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+    await expect(authorizing).resolves.toMatchObject({ status: 'ok', connection: y });
+  });
+
+  it('prepares every already-registered identity alongside the next connect client', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000412', 'sub-y', 'y@example.test');
+    const { loads, registry } = preparedRegistryHarness(y);
+
+    // Rendering a connection row registers its client through `authorization`.
+    expect(registry.authorization(y)).toBe('consent-required');
+    await registry.prepare();
+
+    expect(loads).toEqual(expect.arrayContaining(['bootstrap', y.email]));
+    expect(loads).toHaveLength(2);
+  });
+
+  it('gives the account registered by a connect gesture back its own next client', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000413', 'sub-y', 'y@example.test');
+    const { loads, registry, requestAccessToken } = preparedRegistryHarness(y);
+
+    await registry.prepare();
+    await expect(registry.connect()).resolves.toMatchObject({ status: 'ok' });
+    requestAccessToken.mockClear();
+
+    // The prepared client is now pinned to `y`; reusing it for "add another
+    // account" would re-register the same identity without a popup. The next
+    // preparation therefore mints — and loads — a fresh bootstrap, while the
+    // registered client keeps the GIS it already has.
+    await registry.prepare();
+    expect(loads).toEqual(['bootstrap', 'bootstrap']);
+    expect(requestAccessToken).not.toHaveBeenCalled();
+  });
 });

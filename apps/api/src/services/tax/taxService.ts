@@ -72,6 +72,7 @@ import {
   isDeSell,
   portfolioHasDeRows,
   portfolioHasFiRows,
+  reportCostBasisStrategy,
   type DeRowView,
 } from './countryState';
 import {
@@ -92,6 +93,7 @@ import {
 import { isCustomFifoSell } from './customState';
 import {
   activeCustomParams,
+  manualDefaultAppliesToSource,
   parseTaxOverride,
   PORTFOLIO_SETTING_KEY_TAX,
   settingsRecordFromInput,
@@ -175,11 +177,10 @@ export interface TransactionTaxPlanInput {
   /** Asset rows for every batch asset (already visibility-checked). */
   assetsById: ReadonlyMap<string, AssetRow>;
   /**
-   * The batch's V5-P0c source tag (`manual` | `import:<broker>` | …). The
-   * configurable manual default applies to `manual` rows only — imported
-   * broker history already settled its taxes at the broker, so an entry-less
-   * imported row must not have today's default frozen onto it. Absent = manual
-   * (every non-import caller records by hand).
+   * The batch's V5-P0c source tag (`manual` | `import:<broker>` | …). It
+   * decides whether the configurable manual default applies to an entry-less
+   * sell — see {@link manualDefaultAppliesToSource} for the whole mapping.
+   * Absent = manual (every caller that does not stamp a tag records by hand).
    */
   source?: string;
   /**
@@ -250,7 +251,9 @@ export interface TaxService {
   /**
    * Record a dividend (V3-P4c): gross EUR into a source, tax-mode aware.
    * `opts.source` is the V5-P0c source tag stamped on the dividend and its cash
-   * movements — `manual` by default, `import:<broker>` from the CSV apply path.
+   * movements — `manual` by default, `import:<broker>` from the CSV apply path,
+   * `sync:mirrorchain` from a replica apply — and decides whether the manual
+   * default applies ({@link manualDefaultAppliesToSource}).
    * Server-assigned only (the HTTP body carries no source field). `opts.force`
    * is the MIRRORCHAIN replica-apply mode (design §2/§8): the cash overdraw
    * gate is waived — the copy taxes the replicated dividend under its OWN mode
@@ -754,7 +757,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     // Manual rows are literal facts. They never enter automatic derivation,
     // irrespective of their calendar year.
     if (settings.mode === 'manual_per_trade') {
-      const defaultApplies = (planInput.source ?? 'manual') === 'manual';
+      const defaultApplies = manualDefaultAppliesToSource(planInput.source);
       const effectiveEntry = (input: TransactionInput) => {
         const hasExplicit = input.taxAmountEur !== undefined || input.taxRatePct !== undefined;
         if (hasExplicit) {
@@ -1077,7 +1080,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
     if (settings.mode === 'manual_per_trade') {
       const hasExplicit = input.taxAmountEur !== undefined || input.taxRatePct !== undefined;
-      const defaultApplies = sourceTag === 'manual';
+      const defaultApplies = manualDefaultAppliesToSource(sourceTag);
       taxAmountEur = manualTaxEur({
         taxAmountEur: hasExplicit
           ? (input.taxAmountEur ?? null)
@@ -1550,20 +1553,27 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
   /**
    * Automatic rows use the active regime's strategy in every year. Under the
-   * literal manual regime, stored DE/custom facts retain their original basis.
+   * literal manual regime, stored DE/FI/custom facts retain their original
+   * basis. The routing is the shared #1512 classifier
+   * (`reportCostBasisStrategy`), the same call the paranoid client makes —
+   * so a frozen FI sell now reads at the FIFO basis it was frozen under in
+   * manual mode too, instead of the moving average the hand-listed DE/custom
+   * branch fell through to.
    */
   function reportRealization(
     state: ReportState,
     t: TransactionRecord,
   ): SellRealizationEur | undefined {
-    if (state.liveRegime.kind !== 'manual' && isDerivableSell(t)) {
-      return state.liveStrategy === 'fifo'
-        ? state.deRealizations.get(t.id)
-        : state.realizations.get(t.id);
-    }
-    return isDeSell(t) || state.customFifoSellIds.has(t.id)
-      ? state.deRealizations.get(t.id)
-      : state.realizations.get(t.id);
+    const strategy = reportCostBasisStrategy(
+      t,
+      state.liveRegime,
+      t.taxMode === 'custom'
+        ? state.customFifoSellIds.has(t.id)
+          ? 'fifo'
+          : 'moving-average'
+        : null,
+    );
+    return strategy === 'fifo' ? state.deRealizations.get(t.id) : state.realizations.get(t.id);
   }
 
   /**

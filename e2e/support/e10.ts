@@ -8,8 +8,9 @@ import { API_BASE_URL, DATABASE_URL } from './config';
 import type { E2EUser } from './users';
 
 /**
- * E10-specific e2e harness — the PARANOID vault gate (`docs/paranoid-design.md`
- * §20 row E10, line 959).
+ * E10-specific e2e harness — the PARANOID vault gate (the §20 row E10 arc list,
+ * archived verbatim in `docs/history/paranoid-design-history.md` §D by the
+ * post-E9 condensation).
  *
  * Unlike the E1/E2/E3 harnesses, this module stands up NO out-of-band service:
  * every arc E10 can actually run is reachable through the shipped browser
@@ -20,12 +21,12 @@ import type { E2EUser } from './users';
  * Three seams needed a decision, and each is recorded here rather than in a
  * comment beside one assertion:
  *
- *  - **"Lock" is a reload.** E3's endpoint keystore holds the unwrapped device
- *    key in memory on one module-scoped singleton (`keystore/runtime.ts`) and
- *    zeroes it when the session ends; nothing about a live wrapped session is
- *    persisted. A fresh document is therefore the product's own lock gesture for
- *    a per-vault endpoint session, and {@link lockVaultsByReload} names it so a
- *    future reader does not mistake `page.reload()` for incidental navigation.
+ *  - **"Lock" is the account menu's "Lock vault".** A reload USED to be the
+ *    lock (K_dev lived only in tab memory); since the owner's 2026-09-03
+ *    amendment to §12 a session belongs to the device and survives reloads, so
+ *    {@link lockVaults} drives the explicit gesture the product ships and a
+ *    `page.reload()` in these arcs is exactly what it looks like — a reload the
+ *    session is expected to outlive.
  *
  *  - **The "mocked camera" is the shipped paste seam.** E7's receiver
  *    (`VaultReceivePhrase.tsx`) exposes its scan input as a textarea —
@@ -61,7 +62,10 @@ import type { E2EUser } from './users';
 /**
  * Every E10 sub-arc named by the spec line, and where it is discharged.
  *
- * `arc` quotes `docs/paranoid-design.md:959` verbatim — it is the CLAIM. `status`
+ * `arc` quotes the §20 row E10 scope sketch verbatim — it is the CLAIM. That row
+ * now lives in `docs/history/paranoid-design-history.md` §D; cite it by SECTION,
+ * never by line number, which is what went stale here (the row had drifted 217
+ * lines by the time anyone looked). `status`
  * and `note` are what this suite actually proves against it, which is not always
  * the same thing; `partial` entries name the missing half rather than rounding it
  * up. [E10-A0] holds the guard that keeps this table honest.
@@ -75,16 +79,31 @@ export const E10_TRACEABILITY = [
       'The whole arc runs for real since the E6 capture residual closed (#1525): ceremony, ' +
       'unlock through the access surface, SPA-only walk to the move-in wizard (the endpoint ' +
       'session lives in page memory), the destructive commit with the §15 step-up, the ' +
-      'VAULTED_PORTFOLIO stub proof, lock by navigation, the locked-endpoint move-out ' +
+      'VAULTED_PORTFOLIO stub proof, the explicit device lock, the locked-endpoint move-out ' +
       'refusal, unlock via the stub’s own §12 affordance, and the same-UUID restore of the ' +
       'recorded transaction. [E10-A1] keeps the focused ceremony/lock/unlock coverage; ' +
       '[E10-A6] keeps the unready-state refusal pinned.',
   },
   {
+    arc: 'imported + owner-manual portfolio round trip (#1529)',
+    assertion: '[E10-A10b] imported + manual portfolio moves in and back out losslessly',
+    status: 'covered',
+    note:
+      'The two portfolio classes the #1528 ruling refused fail-closed — historical import ' +
+      'batches and owner-manual assets — now run the A10 arc through the #1529 lossless ' +
+      'read seams (the paged import-capture read and the exact manual-asset snapshot ' +
+      'read). The bar is re-read identity: the applied batch’s staging rows and the manual ' +
+      'asset’s value points come back byte-for-byte after move-out, and both buys restore ' +
+      'under their original ids.',
+  },
+  {
     arc: 'Drive-only vault round trip',
     assertion: '[E10-A5] Drive storage is refused honestly, not offered',
     status: 'blocked',
-    note: 'PER_VAULT_DRIVE_PROVISIONING_AVAILABLE is false; [PD9-A3] covers the v1 account-level round trip.',
+    note:
+      'PER_VAULT_DRIVE_PROVISIONING_AVAILABLE is false. [PD9-A3] used to cover the v1 ' +
+      'account-level round trip; it is quarantined since the §16 2026-08-30 ruling retired ' +
+      'the v1 enable entry point, so no Drive medium has e2e coverage today.',
   },
   {
     arc: 'two-users-one-Drive isolation',
@@ -310,14 +329,27 @@ async function readChallengedWordNumber(ceremony: Locator): Promise<number> {
 }
 
 /**
- * End every live endpoint session. E3 keeps the unwrapped device key only in
- * memory, so a fresh document IS the lock — see the module header.
+ * End every live endpoint session on this device — the product's OWN lock
+ * gesture: the account menu's "Lock vault" item (`useEndpointVaultLock`).
+ *
+ * A reload used to be the lock (K_dev lived only in tab memory); since the
+ * owner's 2026-09-03 amendment to `docs/paranoid-design.md` §12 a session
+ * belongs to the device and SURVIVES reloads, tab closes and OAuth round-trips,
+ * so the only ways to end one are the explicit lock, sign-out, the PIN idle
+ * lock, an account switch, or the record's expiry. This helper drives the
+ * explicit one and then re-reads the manager so callers observe the locked
+ * state through the shipped surface. The sharing arc (`vault-session-sharing`)
+ * pins that a reload now keeps the session.
  */
-export async function lockVaultsByReload(page: Page): Promise<void> {
-  await page.reload();
-  await expect(page.getByRole('heading', { name: 'Vaults', exact: true })).toBeVisible({
-    timeout: 30_000,
-  });
+export async function lockVaults(page: Page): Promise<void> {
+  // The Control Center is an overlay whose scrim covers the rail, so the account
+  // menu is only clickable from an ordinary page. The session survives this
+  // navigation (that is the point of the amendment), so nothing is lost by it.
+  await page.goto('/portfolio');
+  await expect(page.locator('.bt-cc-root')).toHaveCount(0, { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Account menu' }).first().click();
+  await page.getByRole('menuitem', { name: 'Lock vault', exact: true }).click();
+  await openPrivacyPanel(page);
 }
 
 export type VaultAccessAction =
@@ -356,6 +388,14 @@ export async function attemptUnlock(
   await section.getByRole('button', { name: 'Continue', exact: true }).click();
   return section;
 }
+
+/**
+ * The access surface's two refusals, distinct since #1526: a lockout carries the
+ * keystore's own code and deadline, so it must never read as the generic "that
+ * action could not be completed" a wrong password gets.
+ */
+export const ACCESS_REFUSAL_COPY = 'That action could not be completed.';
+export const ACCESS_LOCKOUT_COPY = 'Too many wrong device passwords.';
 
 /**
  * E3's first lockout tier: the 5th consecutive wrong device password arms a
@@ -444,10 +484,12 @@ export async function ensureLockoutWindow(
   if (current.remainingMs >= minRemainingMs) return current;
   if (current.remainingMs > 0) await page.waitForTimeout(current.remainingMs + 250);
 
+  // Past the first tier every further failure arms the next window, so this
+  // refusal is itself a lockout and says so (#1526).
   const section = await attemptUnlock(page, vaultId, wrongPassword);
   await expect(
-    section.getByText('That action could not be completed.', { exact: false }),
-    're-arming the lockout must itself be refused',
+    section.getByText(ACCESS_LOCKOUT_COPY, { exact: false }),
+    're-arming the lockout must itself be refused, and named as a lockout',
   ).toBeVisible({ timeout: 60_000 });
 
   const rearmed = await readEndpointLockout(page);

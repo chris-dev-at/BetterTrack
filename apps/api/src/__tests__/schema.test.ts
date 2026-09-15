@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import * as schema from '../data/schema';
@@ -46,6 +46,41 @@ describe('schema (§5.5)', () => {
 
   afterAll(async () => {
     await h.dispose();
+  });
+
+  it('indexes both spellings of an accented catalog row, and keeps no index the read cannot scan (#1876)', async () => {
+    const row = one(
+      await h.db
+        .insert(schema.assets)
+        .values({
+          providerId: 'yahoo',
+          providerRef: 'DB1.DE',
+          type: 'stock',
+          symbol: 'DB1.DE',
+          name: 'Deutsche Börse AG',
+          currency: 'EUR',
+        })
+        .returning({ id: schema.assets.id, searchText: schema.assets.searchText }),
+    );
+    // `bettertrack_search_document`: the fold AND the German transliteration, so
+    // `Borse` and `Boerse` both reach the row (migration 0114).
+    expect(row.searchText).toContain("'borse'");
+    expect(row.searchText).toContain("'boerse'");
+    expect(row.searchText).not.toContain("'börse'");
+    await h.db.delete(schema.assets).where(eq(schema.assets.id, row.id));
+
+    // Neither GIN could ever be scanned by `searchCatalog`, and each cost a
+    // write on every catalog upsert (0110 dropped one, 0114 the other).
+    const indexes = await h.db.execute(
+      sql`select indexname from pg_indexes where tablename = 'assets'`,
+    );
+    const names = (
+      Array.isArray(indexes) ? indexes : ((indexes as { rows?: unknown[] }).rows ?? [])
+    )
+      .map((entry) => String((entry as { indexname: unknown }).indexname))
+      .sort();
+    expect(names).not.toContain('assets_search_text_gin');
+    expect(names).not.toContain('assets_symbol_name_trgm_gin');
   });
 
   it('rejects a paranoid account without a selected media set', async () => {

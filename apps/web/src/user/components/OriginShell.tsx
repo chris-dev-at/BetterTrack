@@ -10,7 +10,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery } from '@tanstack/react-query';
 
@@ -23,18 +23,24 @@ import { listVaults, VAULTS_QUERY_KEY } from '../../lib/vaultApi';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
+import { canNavigateBack, useStandaloneDisplay } from '../../lib/pwaDisplayMode';
 import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
-import { endpointVaultKeystore } from '../vault/keystore/runtime';
-import { vaultEndpointStateQueryKey } from '../vault/ui/useVaultEndpointState';
+import { useEndpointVaultSession } from '../vault/ui/useEndpointVaultSession';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { useEndpointVaultLock, type EndpointVaultLock } from '../vault/ui/useEndpointVaultLock';
+import {
+  readVaultEndpointState,
+  vaultEndpointStateQueryKey,
+} from '../vault/ui/useVaultEndpointState';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
   AskDock,
   toggleAskDock,
-  useAskDockEligible,
+  useAskDockAvailable,
   useAskDockState,
 } from './askdock';
 import { CmdKPalette } from './CmdKPalette';
@@ -163,8 +169,9 @@ function RailItem({
  * floating AI panel instead of navigating — same icon, same label, same
  * `bt-rail-item` styling as its neighbours, with `aria-expanded` carrying the
  * state and an open panel lighting the row the way an active route would.
- * Narrow viewports fall through to the plain link, because the panel doesn't
- * exist there and `/ask` must stay reachable from the rail either way.
+ * Narrow viewports — and a deployment with no local AI provider — fall through
+ * to the plain link, because the panel doesn't exist there and `/ask` must stay
+ * reachable from the rail either way.
  */
 function RailAskToggle({
   item,
@@ -178,9 +185,11 @@ function RailAskToggle({
   label: string;
 }) {
   const { open } = useAskDockState();
-  const eligible = useAskDockEligible();
+  // Viewport AND a configured local AI provider (§6.18): without either, the row
+  // is a plain link to `/ask`, which still works with every AI surface hidden.
+  const available = useAskDockAvailable();
 
-  if (!eligible) {
+  if (!available) {
     return <RailItem collapsed={collapsed} item={item} label={label} pathname={pathname} />;
   }
 
@@ -198,6 +207,16 @@ function RailAskToggle({
       <span className="bt-rail-item__label">{label}</span>
     </button>
   );
+}
+
+/**
+ * The floating panel's mount, gated on the same availability the rail row uses
+ * so the two can never disagree: no local AI provider ⇒ no AI surface at all.
+ */
+function AskDockMount() {
+  const available = useAskDockAvailable();
+  if (!available) return null;
+  return <AskDock />;
 }
 
 /**
@@ -337,9 +356,16 @@ function RailBrand() {
 export function AccountMenu({
   collapsed,
   placement = 'rail',
+  vaultLock,
 }: {
   collapsed: boolean;
   placement?: 'rail' | 'topbar';
+  /**
+   * The per-portfolio manual lock, computed by the shell from the endpoint
+   * states it already reads. Passed in rather than hooked up here so this menu
+   * — which every account renders — needs neither a query client nor a vault.
+   */
+  vaultLock?: EndpointVaultLock;
 }) {
   const inTopbar = placement === 'topbar';
   const { t } = useI18n();
@@ -379,7 +405,7 @@ export function AccountMenu({
   }, [closeAndRestoreFocus, open]);
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <button
         ref={triggerRef}
         aria-expanded={open}
@@ -487,6 +513,25 @@ export function AccountMenu({
               {t('vault.lock.action')}
             </button>
           ) : null}
+          {/* The per-portfolio counterpart. It is the way OUT of "keep unlocked
+              on this device", so it is offered wherever the account-level lock
+              is — and only while a wrapped session is actually open, since a
+              lock that locks nothing is noise. A paranoid account already has
+              the item above, which raises the same signal. */}
+          {privacyMode !== 'paranoid' && vaultLock?.canLock === true ? (
+            <button
+              className="bt-menu-item"
+              onClick={() => {
+                closeAndRestoreFocus();
+                vaultLock.lock();
+              }}
+              role="menuitem"
+              type="button"
+            >
+              <Icon name="lock" size={15} />
+              {t('vault.lock.action')}
+            </button>
+          ) : null}
           <div className="bt-menu-rule" />
           <button
             className="bt-menu-item"
@@ -561,7 +606,7 @@ export function CreateMenu() {
   );
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <Button
         ref={triggerRef}
         aria-expanded={open}
@@ -610,10 +655,47 @@ function sectionKey(pathname: string): string {
   return pathname.split('/')[1] || 'home';
 }
 
+/**
+ * The back affordance an installed window has to bring its own (§7.1, V5-P13b):
+ * standalone means no address bar and, on iOS, no back button at all.
+ *
+ * Renders NOTHING at history index 0. A dead control on the very first screen of
+ * a chromeless window is worse than no control, and where that window was opened
+ * from another page `navigate(-1)` would walk the user out of the app entirely.
+ * Exported for its test; the topbar is the only caller.
+ */
+export function StandaloneBack() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const standalone = useStandaloneDisplay();
+  // Re-read per location: the router writes the new index into
+  // `window.history.state` before it renders the location that produced it.
+  const canGoBack = useMemo(() => canNavigateBack(), [location.key]);
+  if (!standalone || !canGoBack) return null;
+  return (
+    <Button
+      aria-label={t('nav.back')}
+      className="bt-topbar__back"
+      data-testid="standalone-back"
+      icon="arrow-left"
+      iconOnly
+      onClick={() => navigate(-1)}
+      size="sm"
+      variant="quiet"
+    />
+  );
+}
+
 export function OriginShell() {
   const { t, locale } = useI18n();
   const { user } = useAuth();
   useDiscardUnknownCreateIntent();
+  // Binds the endpoint keystore to this account and resumes a session the user
+  // asked this device to keep — the reload / second-tab / post-deploy-reload
+  // path. Mounted here because this shell is the one thing every authenticated
+  // vault surface renders inside.
+  useEndpointVaultSession();
   const privacy = useResolvedPrivacyModeState();
   // The cleartext vault directory feeds the shield chip. It is small, changes
   // only when the user creates/renames/deletes a vault (each of which
@@ -629,7 +711,7 @@ export function OriginShell() {
   const vaultStates = useQueries({
     queries: (vaultsQuery.data ?? []).map((vault) => ({
       queryKey: vaultEndpointStateQueryKey(vault.id),
-      queryFn: () => endpointVaultKeystore.stateFor(vault.id),
+      queryFn: () => readVaultEndpointState(vault.id),
       staleTime: 5_000,
     })),
   });
@@ -658,8 +740,34 @@ export function OriginShell() {
       }),
     [vaultStates, vaultsQuery.data],
   );
-  const location = useLocation();
-  const { pathname } = location;
+  // The way OUT of "keep unlocked on this device", built from the states the
+  // shield chip already read — no extra query, no extra request.
+  const endpointStates = useMemo(() => vaultStates.map((state) => state.data), [vaultStates]);
+  const endpointLock = useEndpointVaultLock(endpointStates);
+  // Portfolios per vault for the chip's popover — the same cached roster the
+  // switcher and the workspace read (same key, same store seam), asked for only
+  // while the account owns a vault at all.
+  const portfolioStore = usePortfolioStore();
+  const vaultedRoster = useQuery({
+    queryKey: ['portfolios'],
+    queryFn: ({ signal }) => portfolioStore.listPortfolios(signal),
+    staleTime: 60_000,
+    enabled: (vaultsQuery.data?.length ?? 0) > 0,
+  });
+  // While the roster is still loading, or failed to load, the popover simply
+  // omits the count — a decorative figure never earns a spinner or a banner in
+  // the header, and it never paints a stale or made-up number either.
+  const rosterSettled = !vaultedRoster.isPending && !vaultedRoster.isError;
+  const vaultPortfolioCounts = useMemo(() => {
+    if (!rosterSettled || vaultedRoster.data === undefined) return undefined;
+    const counts = new Map<string, number>();
+    for (const portfolio of vaultedRoster.data.portfolios) {
+      if (portfolio.vaultId == null) continue;
+      counts.set(portfolio.vaultId, (counts.get(portfolio.vaultId) ?? 0) + 1);
+    }
+    return counts;
+  }, [rosterSettled, vaultedRoster.data]);
+  const { pathname } = useLocation();
   const [paletteOpen, setPaletteOpen] = useState(false);
   // The rail is display:none at this width, so anything that lives only inside
   // it has to be rendered elsewhere (see the topbar's AccountMenu).
@@ -829,13 +937,14 @@ export function OriginShell() {
           {compactShell ? null : (
             <>
               <div className="bt-rail__rule" />
-              <AccountMenu collapsed={collapsed} />
+              <AccountMenu collapsed={collapsed} vaultLock={endpointLock} />
             </>
           )}
         </aside>
 
         <div className="bt-main">
           <header className="bt-topbar">
+            <StandaloneBack />
             <span className="bt-topbar__brand-slot bt-hide-above-md">
               <RailBrand />
             </span>
@@ -867,7 +976,11 @@ export function OriginShell() {
             <div className="bt-topbar__actions">
               {vaultSyncRows.length > 0 && vaultSyncRows.length === vaultsQuery.data?.length ? (
                 <Suspense fallback={null}>
-                  <VaultSyncChip vaults={vaultSyncRows} />
+                  <VaultSyncChip
+                    lock={endpointLock}
+                    portfolioCounts={vaultPortfolioCounts}
+                    vaults={vaultSyncRows}
+                  />
                 </Suspense>
               ) : privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
                 <Suspense fallback={null}>
@@ -880,7 +993,9 @@ export function OriginShell() {
                   Settings, Discreet mode and Logout — is display:none, which left
                   a phone with no way to reach any of them, not even to sign out.
                   The account menu moves here instead so it stays persistent. */}
-              {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
+              {compactShell ? (
+                <AccountMenu collapsed={false} placement="topbar" vaultLock={endpointLock} />
+              ) : null}
             </div>
             {/* The wrapped second row — last in the DOM because it is last on
                 screen. See `portfolioSwitcher` above. */}
@@ -956,8 +1071,10 @@ export function OriginShell() {
       </nav>
 
       {/* Non-modal floating AI panel: mounted at the shell root so it overlays
-          the canvas without the page losing interactivity (see AskDock). */}
-      <AskDock />
+          the canvas without the page losing interactivity (see AskDock). It is
+          an AI surface, so with no local provider configured it is not mounted
+          at all (§6.18) — not even from a persisted "open" state. */}
+      <AskDockMount />
 
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>

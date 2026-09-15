@@ -924,6 +924,38 @@ salvage_branch(){ # $1=issue
   return 0
 }
 
+# A resumed PR may already carry a canonical approval for the head it is sitting
+# on. That happens whenever the merger consumed or lost the queue entry without
+# retiring the issue (#1900: a stale `exhausted` CI-fix record ate the entry
+# silently), the master acked the cycle, and the scheduler handed the same
+# autopilot issue straight back. Paying a reviewer to re-approve an UNCHANGED
+# head buys nothing — #1900 spent 186 reviewer invocations and $434 doing
+# exactly that on one PR — so re-emit the merge-queue entry the queue is missing
+# and finish the assignment. Only a CHANGED head is new work and earns a review.
+# The approval is read from the same canonical source the merger validates
+# against (contracts.sh mf_latest_approval_for_head over the durable PR comment
+# thread), so worker and merger can never disagree about what is approved.
+# Idempotency key: the merge-queue record $QUEUE/<enqueued_at>-pr<pr>.json —
+# enqueue_merge is a no-op returning 0 when an entry for this PR already carries
+# this exact approved_head/kind/comment id, so repeated resumes converge on one
+# entry instead of stacking duplicates.
+resume_reenqueue_if_approved(){ # $1=issue $2=pr; 0 = re-enqueued, 1 = a review is owed
+  local n=$1 pr=$2
+  pr_snapshot "$pr" || {
+    log "resume: cannot read PR #$pr head/comments — falling through to a fresh review"
+    return 1
+  }
+  mf_latest_approval_for_head "$PR_SNAPSHOT_COMMENTS" "$PR_SNAPSHOT_HEAD" || return 1
+  log "resume: PR #$pr head ${PR_SNAPSHOT_HEAD:0:12} already carries a canonical $MF_APPROVAL_KIND approval — re-enqueueing without a review"
+  enqueue_merge "$pr" "$n" "$PR_SNAPSHOT_HEAD" "$MF_APPROVAL_KIND" "$MF_APPROVAL_ID" || {
+    # Only reachable when a queue entry for this PR already exists carrying a
+    # DIFFERENT approval; the merger's own head check will resolve that record.
+    log "resume: merge-queue re-emit refused for PR #$pr (a conflicting entry is already queued) — falling through to a fresh review"
+    return 1
+  }
+  return 0
+}
+
 # ---- one full assignment cycle — mirrors run.sh's issue cycle -1:1 where possible
 run_cycle(){ # $1=issue $2=relocated
   local n=$1 reloc=$2 pr
@@ -949,6 +981,20 @@ run_cycle(){ # $1=issue $2=relocated
   ( cd "$REPO_DIR" \
     && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
     && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "pre-cycle sync failed (non-fatal)"
+  # Prime dependencies OUTSIDE the billed model session: when the lockfile moved,
+  # the writer/fixer otherwise discovers a broken node_modules inside its own run
+  # and installs on model time. Warm case is seconds; failure is non-fatal.
+  #
+  # Hard-bounded: this runs BEFORE the role loop, so it is outside every
+  # heartbeat-refreshing cc() call. An unreachable registry (the 2026-08-19 DNS
+  # wedge class, where lookups burned 5 s timeouts and never resolved) would
+  # otherwise hang here indefinitely with a FRESH heartbeat — the worker looks
+  # alive, the stall detector never fires, and the issue is never worked.
+  # Timing out and letting the writer install is strictly better than that.
+  ( cd "$REPO_DIR" \
+    && timeout "${MF_PNPM_PRIME_TIMEOUT:-600}" pnpm install --frozen-lockfile --prefer-offline \
+       >>"$LOG" 2>&1 ) \
+    || log "pre-cycle pnpm prime failed or timed out after ${MF_PNPM_PRIME_TIMEOUT:-600}s (non-fatal — the writer will install)"
 
   # Requeued/head-invalidated work may already have a valid PR.  Resume it
   # directly instead of asking a writer to recreate it.
@@ -960,7 +1006,17 @@ run_cycle(){ # $1=issue $2=relocated
   case "$DISCOVER_STATUS" in
     unique)
       pr=$DISCOVER_PR
-      log "resuming linked PR #$pr (${DISCOVER_BRANCH:-unknown branch})";;
+      log "resuming linked PR #$pr (${DISCOVER_BRANCH:-unknown branch})"
+      # Durable triage state outranks the short-circuit: it resumes an exact
+      # checker/escalation stage, and re-enqueueing would skip the stage the
+      # state file exists to replay. Everything else: an unchanged, already
+      # approved head goes straight back to the merge queue (#1900).
+      if [ ! -f "$(triage_state_file "$n" "$pr")" ] \
+        && resume_reenqueue_if_approved "$n" "$pr"; then
+        gh issue edit "$n" --remove-label "mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
+        wstatus done "$n" "$pr"; hb_stop; return 0
+      fi
+      ;;
     ambiguous)
       mark_human "$n" "multiple open PRs linked to issue ($DISCOVER_PR)"
       gh issue edit "$n" --remove-label "mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
@@ -1069,7 +1125,7 @@ mkdir -p "$ASSIGN" "$STATUS" "$QUEUE" "$LOGS" "$TRIAGE"
 [ -f "$PROMPTS/writer.md" ] || { notify "FATAL: factory prompts missing in $PROMPTS (worker $WORKER_ID)"; exit 1; }
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
+git config user.name "Christian Wiesinger"; git config user.email "chris.dev.at@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 if [ -f "$AF" ]; then

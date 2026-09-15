@@ -230,7 +230,11 @@ describe('VaultSyncChip', () => {
     const popover = screen.getByRole('dialog', { name: 'Encrypted vault sync' });
     expect(within(popover).getByText('Locked (4)')).toBeInTheDocument();
     expect(popover.textContent).not.toContain('{{');
-    expect(screen.getAllByRole('link', { name: 'Unlock' })).toHaveLength(1);
+    // #4: unlock is the one affordance that happens HERE — a real button that
+    // opens the device-password dialog — while the settings-sized steps below
+    // keep their deep links.
+    expect(screen.queryByRole('link', { name: 'Unlock' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Unlock' })).toHaveLength(1);
     expect(screen.getAllByRole('link', { name: 'Reset this device' })).toHaveLength(2);
     expect(screen.getAllByRole('link', { name: 'Open' })).toHaveLength(2);
     expect(screen.getAllByRole('link', { name: 'Enter words' })).toHaveLength(1);

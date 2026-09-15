@@ -2,6 +2,7 @@ import type { ExpenseDirection } from '@bettertrack/contracts';
 import { EXPENSE_AMOUNT_MAX } from '@bettertrack/contracts';
 
 import { parseDay, parseDecimal, type CsvRecord, type ParsedCsv } from '../csv';
+import { parseEnglishAmount, type AmountNotation } from './amount';
 
 /**
  * The bank-statement mapper contract (PROJECTPLAN.md §13.5 V5-P9, issue 2/3). A
@@ -95,12 +96,18 @@ export function firstNonEmpty(...values: string[]): string {
  * per-line error. Centralized so every mapper enforces the same guards: an
  * unparseable/zero amount, an out-of-range magnitude (the `numeric(20,2)`
  * column), a bad currency or an empty description each cost only their one line.
+ *
+ * Every mapper must declare its amount `notation`: an English export read with
+ * the German parser books `1,200` as 1.2 (see {@link parseEnglishAmount}), so
+ * the choice is required rather than defaulted — a new bank has to state it.
  */
 export function buildExpenseRow(input: {
   line: number;
   raw: string;
   dateRaw: string;
   amountRaw: string;
+  /** The notation the bank writes its amounts in — never guessed per row. */
+  notation: AmountNotation;
   /** Blank → EUR (the AT/DE bank exports are EUR unless a currency column says otherwise). */
   currencyRaw: string;
   description: string;
@@ -115,7 +122,10 @@ export function buildExpenseRow(input: {
   const date = parseDay(input.dateRaw);
   if (!date) return fail(`Unparseable date "${input.dateRaw}".`);
 
-  const amount = parseDecimal(input.amountRaw);
+  const amount =
+    input.notation === 'english'
+      ? parseEnglishAmount(input.amountRaw)
+      : parseDecimal(input.amountRaw);
   if (amount === null) return fail(`Unparseable amount "${input.amountRaw}".`);
   if (amount === 0) return fail('Row amount is zero.');
   if (Math.abs(amount) >= EXPENSE_AMOUNT_MAX) {

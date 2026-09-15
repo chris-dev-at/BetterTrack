@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
@@ -15,6 +15,7 @@ vi.mock('../../../lib/notificationsApi', () => ({
 import type { Notification, NotificationListResponse } from '@bettertrack/contracts';
 
 import { I18nProvider } from '../../../i18n';
+import { setDiscreetMode } from '../../../lib/format';
 import {
   archiveNotification,
   deleteNotification,
@@ -68,6 +69,8 @@ beforeEach(() => {
   vi.mocked(deleteNotification).mockResolvedValue(undefined);
   vi.mocked(deleteNotifications).mockResolvedValue(undefined);
 });
+
+afterEach(() => setDiscreetMode(false));
 
 describe('NotificationLogPanel', () => {
   test('renders the full notification list with read/unread distinction', async () => {
@@ -126,6 +129,36 @@ describe('NotificationLogPanel', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('Legacy title')).toBeInTheDocument();
     expect(screen.getByText('Legacy body')).toBeInTheDocument();
+  });
+
+  test('masks the amounts inside inbox copy under discreet mode (§6.16)', async () => {
+    // The full inbox renders the same descriptors as the bell and must reach
+    // the same conclusion: marked amounts masked, everything else legible.
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [
+        notification({
+          id: '00000000-0000-0000-0000-00000000000a',
+          type: 'alert.triggered',
+          title: 'Price alert triggered',
+          body: 'AAPL rose above 150 USD.',
+          payload: {
+            eventKey: 'alert.triggered:a1',
+            message: {
+              key: 'alertTriggeredPriceAbove',
+              params: { symbol: 'AAPL', threshold: 150, currency: 'USD' },
+              money: { threshold: 'currency' },
+            },
+          },
+        }),
+      ],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    setDiscreetMode(true);
+    renderPanel();
+
+    expect(await screen.findByText('AAPL rose above ••• USD.')).toBeInTheDocument();
+    expect(screen.queryByText(/150/)).not.toBeInTheDocument();
   });
 
   test('shows an empty state when there are no notifications', async () => {

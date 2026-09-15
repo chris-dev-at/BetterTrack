@@ -39,17 +39,25 @@ function tsOffset(offset: number): string {
   return `${dayOffset(offset)}T00:00:00.000Z`;
 }
 
-/** A `CachedResult<Quote>` for a stubbed spot quote in `currency`. */
-function cachedQuote(price: number, opts: { currency?: string } = {}) {
+/**
+ * A `CachedResult<Quote>` for a stubbed spot quote in `currency`. `stale`/`asOf`
+ * model the §5.3 serve-stale state; they default to a fresh copy, which is what
+ * every case except the spot-staleness bound below wants.
+ */
+function cachedQuote(
+  price: number,
+  opts: { currency?: string; stale?: boolean; asOf?: number } = {},
+) {
+  const asOf = opts.asOf ?? Date.now();
   return {
     value: {
       price,
       currency: opts.currency ?? 'EUR',
       prevClose: null,
-      asOf: new Date().toISOString(),
+      asOf: new Date(asOf).toISOString(),
     },
-    stale: false,
-    asOf: Date.now(),
+    stale: opts.stale ?? false,
+    asOf,
   };
 }
 
@@ -439,5 +447,90 @@ describe('backtest preview in the user base (V3-P10d)', () => {
       .set(...XRW)
       .send(body);
     expect(eurAgain.body.stats.totalReturnPct).toBeCloseTo(0, 6);
+  });
+});
+
+/**
+ * The spot-FX staleness bound, seen from the surface it protects (§5.3, #1589).
+ *
+ * §5.3 mandates serve-stale, so a stale rate inside the currency layer's bound
+ * must still price the overview. Past the bound the rate stops being a price —
+ * and the failure mode that must NOT ship is the quiet one: dropping the quote
+ * would still return 200 with the foreign position present but unvalued, i.e. a
+ * total that is silently short. The boundary refuses instead.
+ */
+describe('spot FX staleness bound at the portfolio boundary (§5.3)', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+
+  /**
+   * An EUR-base user holding a USD asset (2 shares @ $100), so the overview has
+   * to cross USD→EUR at the *spot* rate. `fxAgeHours` ages the cached EURUSD=X
+   * copy the currency layer bounds; `sell` closes the position out again.
+   */
+  async function usdHoldingHarness(opts: { fxAgeHours: number; sell?: boolean }) {
+    const { h, agent } = await harnessWith({
+      quote: (ref) =>
+        ref.providerRef === 'EURUSD=X'
+          ? cachedQuote(1.25, {
+              currency: 'USD',
+              stale: true,
+              asOf: Date.now() - opts.fxAgeHours * HOUR_MS,
+            })
+          : cachedQuote(100, { currency: 'USD' }),
+    });
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'USD', exchange: 'NASDAQ' });
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 2, price: 100, executedAt: tsOffset(-2) })
+      .expect(201);
+    if (opts.sell) {
+      await agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send({
+          assetId: asset.id,
+          side: 'sell',
+          quantity: 2,
+          price: 100,
+          executedAt: tsOffset(-1),
+        })
+        .expect(201);
+    }
+    return { agent, pid, asset };
+  }
+
+  it('values the holding off a stale-but-in-bound spot rate (serve-stale is preserved)', async () => {
+    const { agent, pid } = await usdHoldingHarness({ fxAgeHours: 24 });
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(res.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
+    // $200 at 1.25 USD per EUR = 160 €. A stale mark alone must not degrade it.
+    expect(res.body.holdings).toHaveLength(1);
+    expect(res.body.holdings[0].marketValueEur).toBeCloseTo(160, 6);
+    expect(res.body.totals.marketValueEur).toBeCloseTo(160, 6);
+  });
+
+  it('past the bound it 422s (HOLDING_FX_UNAVAILABLE) — never a total that quietly omits the USD position', async () => {
+    const { agent, pid } = await usdHoldingHarness({ fxAgeHours: 5 * 24 });
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('HOLDING_FX_UNAVAILABLE');
+    expect(res.body.error.message).toMatch(/USD/);
+    // The regression this pins: a 200 whose holdings row is present but null-
+    // valued, so `totals` silently understates the portfolio.
+    expect(res.body.holdings).toBeUndefined();
+  });
+
+  it('a fully-closed foreign position never needs the rate, so the overview still renders', async () => {
+    const { agent, pid } = await usdHoldingHarness({ fxAgeHours: 5 * 24, sell: true });
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(res.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.holdings[0].quantity).toBe(0);
   });
 });

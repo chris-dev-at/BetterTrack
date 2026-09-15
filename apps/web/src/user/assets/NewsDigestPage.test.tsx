@@ -102,10 +102,45 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     expect(symbols).toEqual(['AAPL', 'MSFT']);
   });
 
+  test('says a capped digest is partial rather than rendering it as complete', async () => {
+    vi.mocked(getNewsDigest).mockResolvedValue({ ...AVAILABLE, truncated: true });
+    renderPage();
+    expect(
+      await screen.findByText(
+        'Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('says a capped digest is partial even when it produced no groups (regression)', async () => {
+    // The cap selects from the raw book, before the news-capability filter, so a
+    // capped selection can come back with nothing to show. The empty state is an
+    // affirmative claim about the WHOLE book ("News appears here once there are
+    // headlines for the assets you hold or watch") — it may not stand alone
+    // while most of the book was never looked up.
+    vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [], truncated: true });
+    renderPage();
+    expect(
+      await screen.findByText(
+        'Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No recent news')).toBeInTheDocument();
+  });
+
+  test('stays silent about truncation for a digest that covered the whole book', async () => {
+    vi.mocked(getNewsDigest).mockResolvedValue(AVAILABLE);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Apple ships a thing')).toBeInTheDocument());
+    expect(screen.queryByText(/Partial digest/)).not.toBeInTheDocument();
+  });
+
   test('shows a graceful empty state when there is no news', async () => {
     vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [] });
     renderPage();
     expect(await screen.findByText('No recent news')).toBeInTheDocument();
+    // A genuinely quiet book covered in full stays free of the partial line.
+    expect(screen.queryByText(/Partial digest/)).not.toBeInTheDocument();
   });
 
   test('shows a graceful error state when the request fails', async () => {
@@ -124,11 +159,20 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     expect(getNewsDigest).toHaveBeenCalledTimes(2);
   });
 
-  test('renders no news UI when the capability is unconfigured (regression)', async () => {
+  test('says the arc is unconfigured, never "no headlines yet" (regression)', async () => {
     vi.mocked(getNewsDigest).mockResolvedValue({ available: false, groups: [] });
     renderPage();
-    // The unconfigured shape resolves to the empty state — never any headlines.
-    expect(await screen.findByText('No recent news')).toBeInTheDocument();
+    // Reachable by direct URL only (the nav + palette entries are gone): it has
+    // to name the deploy-level kill-switch rather than pass it off as a quiet
+    // news day.
+    expect(await screen.findByText('News is switched off here')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Market intelligence is not configured for this installation, so no headlines are collected.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No recent news')).not.toBeInTheDocument();
+    // …and never any headlines.
     expect(screen.queryByText('Held')).not.toBeInTheDocument();
     expect(screen.queryByText('Watched')).not.toBeInTheDocument();
   });

@@ -60,9 +60,17 @@ export interface ImportRowRecord {
   /**
    * Provenance for {@link ImportRowRecord.assetId} (#964): null when the
    * pipeline matched the instrument exactly, `'user'` when a person pinned it
-   * in the wizard. Never a model — no AI path mints an asset id.
+   * in the wizard — or confirmed the row's KIND. Never a model.
    */
   resolvedBy: ImportRowResolvedBy | null;
+  /**
+   * True while this row's KIND is still an open question (§16 2026-08-29): the
+   * fields above are what staging parsed (with `amountEur` SIGNED as the file
+   * wrote it) and `kind` is null because the classifier would not name one.
+   * The wire flag is `error` — that vocabulary is frozen — so this is the only
+   * thing that tells a confirmable row from an unreadable one.
+   */
+  kindUndecided: boolean;
 }
 
 export interface CreateImportBatchInput {
@@ -98,6 +106,8 @@ export interface StageImportRowInput {
   contentHash: string | null;
   candidates: ImportRowCandidate[] | null;
   ruleTagIds: string[] | null;
+  /** See {@link ImportRowRecord.kindUndecided}. Omitted ⇒ decided, as before. */
+  kindUndecided?: boolean;
 }
 
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
@@ -132,6 +142,7 @@ function toRowRecord(
     candidates: row.candidates ?? null,
     ruleTagIds: row.ruleTagIds ?? null,
     resolvedBy: row.resolvedBy ?? null,
+    kindUndecided: row.kindUndecided,
   };
 }
 
@@ -194,6 +205,7 @@ export function createImportRepository(db: Database) {
             contentHash: r.contentHash,
             candidates: r.candidates,
             ruleTagIds: r.ruleTagIds,
+            kindUndecided: r.kindUndecided ?? false,
           }));
           await tx.insert(importRows).values(values);
         }
@@ -213,29 +225,33 @@ export function createImportRepository(db: Database) {
 
     listRows,
 
-    /** Mark rows with their apply outcome (called row-by-row during apply). */
-    async setRowResults(
-      updates: Array<{
-        id: string;
-        result: NonNullable<ImportRowRecord['result']>;
-        resultMessage: string | null;
-        /** A fresh apply-time duplicate also flips the stored preview flag. */
-        flag?: ImportRowRecord['flag'];
-      }>,
-    ): Promise<void> {
-      if (updates.length === 0) return;
-      await db.transaction(async (tx) => {
-        for (const u of updates) {
-          await tx
-            .update(importRows)
-            .set({
-              result: u.result,
-              resultMessage: u.resultMessage,
-              ...(u.flag ? { flag: u.flag } : {}),
-            })
-            .where(eq(importRows.id, u.id));
-        }
-      });
+    /**
+     * Mark ONE row with its apply outcome, as soon as that row settles.
+     *
+     * ONE STATEMENT PER ROW, DELIBERATELY. The previous shape took the whole
+     * list and wrote it in a single transaction after the apply loop had
+     * finished, which meant the durable record of what booked did not exist
+     * while the booking was happening: anything that threw between the first
+     * movement and that flush left real money in the ledger, the batch
+     * `applied`, every row result `null` and every retry a 409. Each row's
+     * outcome is therefore committed on its own, immediately, so an interrupted
+     * apply can still say precisely which rows landed.
+     */
+    async setRowResult(update: {
+      id: string;
+      result: NonNullable<ImportRowRecord['result']>;
+      resultMessage: string | null;
+      /** A fresh apply-time duplicate also flips the stored preview flag. */
+      flag?: ImportRowRecord['flag'];
+    }): Promise<void> {
+      await db
+        .update(importRows)
+        .set({
+          result: update.result,
+          resultMessage: update.resultMessage,
+          ...(update.flag ? { flag: update.flag } : {}),
+        })
+        .where(eq(importRows.id, update.id));
     },
 
     /**
@@ -281,6 +297,102 @@ export function createImportRepository(db: Database) {
         .where(
           and(
             eq(importRows.id, update.id),
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(importBatches)
+                .where(
+                  and(
+                    eq(importBatches.id, importRows.batchId),
+                    eq(importBatches.status, 'pending'),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning({ id: importRows.id });
+      return rows.length > 0;
+    },
+
+    /**
+     * RE-STAGE ONE ROW around the kind a person confirmed (§16 2026-08-29 gap
+     * (b)) — every column the derivation produced, in one statement.
+     *
+     * It is a full row rewrite rather than a `kind` stamp because a kind is not
+     * a label on the row: it decides which columns survive (a cash movement
+     * carries no instrument identity, a trade carries no `amount_eur`), which
+     * magnitudes are stored, whether an asset was resolved, what the content
+     * hash is, and which cash-rule tags apply. Writing less would leave the row
+     * describing a shape it no longer has.
+     *
+     * `kind_undecided` flips to FALSE in the same statement, which is what
+     * makes confirmation ONE-SHOT: the parsed identity a cash derivation
+     * discards cannot be re-derived from, so a second confirmation would be
+     * deriving from an already-shaped row. The service refuses it, and this
+     * write is where the refusal becomes a fact rather than a check.
+     *
+     * CONDITIONAL ON THE BATCH STILL BEING PENDING, for the reason
+     * {@link setRowResolution} spells out in full: the service awaits several
+     * reads between its own `pending` check and this write, `applyBatch` can
+     * claim the batch in that gap, and an unconditional write would leave a row
+     * the preview calls importable on a batch that has already finished. Check
+     * and write are one statement, so there is no interval to lose.
+     *
+     * Returns whether the row was written; false means the claim won and the
+     * caller owes the client a 409.
+     */
+    async confirmRowKind(update: {
+      id: string;
+      kind: NonNullable<ImportRowRecord['kind']>;
+      flag: ImportRowRecord['flag'];
+      message: string | null;
+      executedAt: Date;
+      isin: string | null;
+      symbol: string | null;
+      name: string | null;
+      quantity: number | null;
+      price: number | null;
+      fee: number | null;
+      amountEur: number | null;
+      currency: string;
+      note: string | null;
+      assetId: string | null;
+      contentHash: string;
+      candidates: ImportRowCandidate[] | null;
+      ruleTagIds: string[] | null;
+      resolvedBy: ImportRowResolvedBy;
+    }): Promise<boolean> {
+      const rows = await db
+        .update(importRows)
+        .set({
+          kind: update.kind,
+          flag: update.flag,
+          message: update.message,
+          executedAt: update.executedAt,
+          isin: update.isin,
+          symbol: update.symbol,
+          name: update.name,
+          quantity: update.quantity === null ? null : String(update.quantity),
+          price: update.price === null ? null : String(update.price),
+          fee: update.fee === null ? null : String(update.fee),
+          amountEur: update.amountEur === null ? null : String(update.amountEur),
+          currency: update.currency,
+          note: update.note,
+          assetId: update.assetId,
+          contentHash: update.contentHash,
+          candidates: update.candidates,
+          ruleTagIds: update.ruleTagIds,
+          resolvedBy: update.resolvedBy,
+          kindUndecided: false,
+        })
+        .where(
+          and(
+            eq(importRows.id, update.id),
+            // Belt and braces with the service's own check: only a row whose
+            // kind is genuinely open may be written by this path, so a race
+            // between two confirmations of the same row resolves to one winner
+            // in the database rather than in whichever request read first.
+            eq(importRows.kindUndecided, true),
             exists(
               db
                 .select({ one: sql`1` })

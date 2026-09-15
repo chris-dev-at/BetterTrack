@@ -6,8 +6,9 @@ import { ProfileIconSvg, defaultProfileIconIdFor, isProfileIconId } from './prof
 /**
  * The visual anchor for a person across every social surface (friend rows,
  * requests, chat header + list, public profiles, shared-with-me groups, the
- * audience picker's friend multi-select). Renders one of the curated bundled
- * SVGs (§13.5 V5-P0c) — file uploads are deliberately deferred, so `iconId` is
+ * audience picker's friend multi-select, the OAuth account chooser). Renders one
+ * of the curated bundled
+ * SVGs (§13.5 V5-P0 (c)) — file uploads are deliberately deferred, so `iconId` is
  * the ONLY visual identity a user carries here. A user without a stored choice
  * (`iconId` is `null` or `undefined`) renders a deterministic id/username-derived
  * default from the same curated set, so no surface renders empty.

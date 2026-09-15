@@ -24,6 +24,37 @@ import type {
  * importing a concrete provider. Adding gold later is "register symbols or a
  * new provider file — nothing else changes".
  */
+/**
+ * The upstream call families a provider is asked for. This is the *breaker
+ * scope* (§13.5 V5-P1c): the market-data service keeps one circuit breaker per
+ * provider AND capability, so repeated `fundamentals` failures on symbols the
+ * upstream has no module for can never fail-fast `quote` for every asset — "with
+ * the primary mocked dead, quotes keep flowing" is about quotes. It is also what
+ * the failover chain routes on (see `historyBasis`).
+ *
+ * Not to be confused with {@link providerCapabilities}, which reports which
+ * OPTIONAL market-intelligence families a provider implements.
+ */
+export type ProviderCapability =
+  | 'search'
+  | 'quote'
+  | 'history'
+  | 'meta'
+  | 'dividends'
+  | 'earnings'
+  | 'news'
+  | 'splits'
+  | 'fundamentals';
+
+/**
+ * Price basis of a provider's {@link AssetProvider.getHistory} series (money,
+ * §13.5 V5-P1c): `adjusted` is a dividend/split-adjusted total-return series,
+ * `unadjusted` the raw traded close. The two are NOT interchangeable — a
+ * backtest or a portfolio history that silently switches basis mid-series
+ * reports a different return for the same holding.
+ */
+export type HistoryBasis = 'adjusted' | 'unadjusted';
+
 export interface AssetProvider {
   /** Stable id used as the routing key and as the first cache-key segment. */
   readonly id: string;
@@ -47,13 +78,27 @@ export interface AssetProvider {
    */
   canServe?(ref: AssetRef): boolean;
 
+  /**
+   * The price basis this provider's {@link getHistory} returns (money gate,
+   * §13.5 V5-P1c). The failover chain lets a *secondary* serve `history` for
+   * another provider's asset ONLY when it declares the same basis as that
+   * asset's own provider: the series is cached under the asset's primary key and
+   * handed to backtests/portfolio history as one continuous series, so a
+   * secondary with a different basis would silently swap adjusted for raw
+   * mid-flight. An undeclared basis is *unknown*, never "equal" — such a provider
+   * is skipped for history and the read degrades to the primary's stale copy
+   * (§5.3) instead of changing the meaning of the numbers. Quote/meta failover is
+   * unaffected: a spot price has no adjustment basis.
+   */
+  readonly historyBasis?: HistoryBasis;
+
   /** Symbol/name lookup across this provider's universe (§6.2). */
   search(query: string): Promise<AssetSearchResult[]>;
 
   /** Live-ish quote: price, currency, prevClose, dayChangePct, asOf (§5.1). */
   getQuote(ref: AssetRef): Promise<Quote>;
 
-  /** Adjusted-close price series for a range/interval (§5.1, §5.3). */
+  /** Price series for a range/interval, on the declared {@link historyBasis} (§5.1, §5.3). */
   getHistory(ref: AssetRef, range: HistoryRange, interval: HistoryInterval): Promise<PricePoint[]>;
 
   /** Descriptive metadata: name, symbol, exchange, currency, type (§5.1). */

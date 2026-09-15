@@ -281,7 +281,11 @@ describe('paranoid table classification completeness', () => {
      * captured" and stay green.
      */
     it('pins every member so adding another is a deliberate review', () => {
-      expect([...PARANOID_PURGE_ONLY_TABLE_NAMES]).toEqual(['api_key_request_log', 'usage_events']);
+      expect([...PARANOID_PURGE_ONLY_TABLE_NAMES]).toEqual([
+        'api_key_request_log',
+        'usage_activations',
+        'usage_events',
+      ]);
     });
   });
 });

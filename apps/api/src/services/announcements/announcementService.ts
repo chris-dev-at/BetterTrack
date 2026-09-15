@@ -57,7 +57,7 @@ export interface AnnouncementServiceActor {
 
 export interface AnnouncementServiceDeps {
   repo: AnnouncementRepository;
-  users: Pick<UserRepository, 'list'>;
+  users: Pick<UserRepository, 'listRecipientsAfter'>;
   notifications: Pick<NotificationRepository, 'insert'>;
   /** Admin audit trail; every mutation lands one row. */
   audit: AuditService;
@@ -119,9 +119,15 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
 
   /**
    * Actually deliver the announcement to every existing user: shared fan-out
-   * with the per-announcement event key. Stamps `published_at` (or refreshes
-   * it on a re-publish). Idempotent by construction — the per-user unique
-   * (user_id, payload->>'eventKey') index collapses a re-run to zero inserts.
+   * with the per-announcement event key. Idempotent by construction — the
+   * per-user unique (user_id, payload->>'eventKey') index collapses a re-run to
+   * zero inserts.
+   *
+   * `published_at` is stamped ONLY after a fan-out that reached every recipient
+   * (#1723). A partial run — one recipient's insert threw — leaves it NULL,
+   * which is what makes the publish resumable: `publishing` below re-fires for
+   * an active-but-never-published row, and the eventKey dedupe means the retry
+   * inserts exactly the rows that are still missing.
    */
   async function publish(row: AnnouncementRow): Promise<void> {
     const eventKey = announcementEventKey(row.id);
@@ -139,7 +145,20 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       // `account.notice` to /settings/notifications by default; a payload with
       // `announcementId` lets a future landing surface deep-link precisely).
       payload: { notice: 'announcement', announcementId: row.id },
+      logger,
     });
+    if (result.failed > 0) {
+      logger?.warn(
+        {
+          announcementId: row.id,
+          users: result.users,
+          inserted: result.inserted,
+          failed: result.failed,
+        },
+        'announcement publish incomplete — retry the publish to deliver the missing rows',
+      );
+      return;
+    }
     await repo.update(row.id, { publishedAt: now() });
     logger?.info(
       { announcementId: row.id, users: result.users, inserted: result.inserted },
@@ -225,7 +244,13 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       const updated = await repo.update(id, patch);
       if (!updated) throw announcementNotFound();
 
-      const publishing = input.active === true && before.active === false;
+      // Re-fires for an announcement that is already active but was never fully
+      // published (#1723): a fan-out interrupted midway leaves `publishedAt`
+      // NULL, so re-sending the same `{active:true}` PATCH resumes it. Without
+      // the second clause the first partial publish was permanently stuck —
+      // the false→true edge could never happen again.
+      const publishing =
+        input.active === true && (before.active === false || before.publishedAt === null);
       const unpublishing = input.active === false && before.active === true;
 
       await audit.record({

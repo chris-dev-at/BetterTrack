@@ -207,10 +207,39 @@ function refineFeedbackStatusDetails(
   }
 }
 
-/** Available inbox orderings; category priority is the owner-defined default. */
-export const FEEDBACK_SORTS = ['category', 'newest'] as const;
+/**
+ * Available inbox orderings; category priority is the owner-defined default.
+ *
+ * `aging` (#1406 W3) orders by the aging clock — longest since anything last
+ * happened to the submission, first. It is the ordering the helpdesk's "oldest
+ * untouched" reading needs, and it is deliberately keyed on
+ * `lastStatusChangeAt` rather than `createdAt`: a submission that was answered
+ * yesterday is not aging just because it was filed a month ago. Appended, never
+ * inserted — this enum is a wire value.
+ */
+export const FEEDBACK_SORTS = ['category', 'newest', 'aging'] as const;
 export const feedbackSortSchema = z.enum(FEEDBACK_SORTS);
 export type FeedbackSort = z.infer<typeof feedbackSortSchema>;
+
+/**
+ * Free-text inbox search bound. Short on purpose: this is an operator's "find
+ * the ticket about dividends" box, not a query language, and an unbounded
+ * pattern is an unbounded `ILIKE` scan.
+ */
+export const FEEDBACK_SEARCH_MAX_LENGTH = 120;
+
+/**
+ * Support-thread authors are explicit because admins and submitters use
+ * separate auth rails.
+ *
+ * Declared here rather than beside the thread schemas below because
+ * {@link adminFeedbackSubmissionSchema} references it for `lastAuthorSide`, and
+ * a `const` used above its own declaration is a temporal-dead-zone crash at
+ * import time, not a type error.
+ */
+export const FEEDBACK_MESSAGE_AUTHOR_SIDES = ['submitter', 'admin'] as const;
+export const feedbackMessageAuthorSideSchema = z.enum(FEEDBACK_MESSAGE_AUTHOR_SIDES);
+export type FeedbackMessageAuthorSide = z.infer<typeof feedbackMessageAuthorSideSchema>;
 
 /** One owner-visible submission, including the authenticated submitter. */
 export const adminFeedbackSubmissionSchema = z
@@ -234,6 +263,25 @@ export const adminFeedbackSubmissionSchema = z
         email: z.string().email(),
       })
       .strict(),
+    /**
+     * Thread state, so the inbox can rank without opening every row (#1341,
+     * #1406 W3). All three are derived from `feedback_messages` and the shared
+     * `adminLastReadAt` marker — no message BODY is projected into a list.
+     *
+     * `unreadCount` counts submitter-authored messages newer than that marker.
+     * The marker is one shared admin-side stamp by schema, so "unread" is
+     * per-INSTALL, not per-operator: with a second admin, A opening a thread
+     * clears it for B too. That is a property of the storage model the W3 UI
+     * inherits and cannot fix; it is a non-event on a single-owner install.
+     */
+    unreadCount: z.number().int().nonnegative(),
+    messageCount: z.number().int().nonnegative(),
+    lastMessageAt: z.string().datetime().nullable(),
+    /**
+     * Who spoke last — the inbox's "waiting on me" tell. Null when nobody has
+     * replied yet, which reads as "the submission itself is the last word".
+     */
+    lastAuthorSide: feedbackMessageAuthorSideSchema.nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -263,11 +311,6 @@ export const myFeedbackResponseSchema = z
   .object({ submissions: z.array(myFeedbackSubmissionSchema) })
   .strict();
 export type MyFeedbackResponse = z.infer<typeof myFeedbackResponseSchema>;
-
-/** Support-thread authors are explicit because admins and submitters use separate auth rails. */
-export const FEEDBACK_MESSAGE_AUTHOR_SIDES = ['submitter', 'admin'] as const;
-export const feedbackMessageAuthorSideSchema = z.enum(FEEDBACK_MESSAGE_AUTHOR_SIDES);
-export type FeedbackMessageAuthorSide = z.infer<typeof feedbackMessageAuthorSideSchema>;
 
 /** Keep feedback replies aligned with chat's bounded, text-only message body. */
 export const FEEDBACK_THREAD_MESSAGE_MAX_LENGTH = 4000;
@@ -356,6 +399,32 @@ export const adminFeedbackListQuerySchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
+    /** Lifecycle filter (#1406 W3). Absent means every status. */
+    status: feedbackStatusSchema.optional(),
+    /**
+     * Exact `shippedVersion` match (#1406 W3) — "what did I close out in
+     * 5.2.0". Exact rather than prefix: a version tag is an identifier the
+     * operator typed on the way in, and a prefix match would fold 5.2.0 and
+     * 5.2.10 together.
+     */
+    version: z.string().trim().min(1).max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).optional(),
+    /**
+     * Free-text search over subject, message and the submitter's username and
+     * email. Trimmed and bounded; the repository escapes `LIKE` metacharacters
+     * so a literal `%` searches for a percent sign instead of matching the
+     * whole queue.
+     */
+    q: z.string().trim().min(1).max(FEEDBACK_SEARCH_MAX_LENGTH).optional(),
+    /**
+     * Tri-state on purpose: absent is "don't filter on unread", which is not
+     * the same request as `unread=false` ("only threads I have already read").
+     * `.optional()` sits outside the transform so an omitted key stays
+     * `undefined` instead of collapsing to `false`.
+     */
+    unread: z
+      .enum(['true', 'false'])
+      .transform((value) => value === 'true')
+      .optional(),
     sort: feedbackSortSchema.default('category'),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),

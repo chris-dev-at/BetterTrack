@@ -39,6 +39,7 @@ import {
 } from '../../lib/socialApi';
 import { ApiError } from '../../lib/apiClient';
 import { listMirrorInvites } from '../../lib/mirrorApi';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { setViewportWidth } from '../../test/viewport';
 import { FriendsPage } from './FriendsPage';
 
@@ -367,6 +368,55 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(listFriends).toHaveBeenCalledTimes(2));
   });
 
+  test('removing a friend drops them from the circles on the same page visit', async () => {
+    // `socialService.removeFriend` runs `groups.removeMutualMemberships` inside
+    // the unfriend transaction, so a circle card still listing the ex-friend —
+    // with a Remove button and a memberCount including them — is an owner
+    // surface claiming a reach the server no longer grants.
+    vi.mocked(listFriends)
+      .mockResolvedValueOnce({
+        friends: [{ user: { id: 'u9', username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+      })
+      .mockResolvedValue(EMPTY_FRIENDS);
+    vi.mocked(listGroups)
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Family',
+            memberCount: 1,
+            members: [{ id: 'u9', username: 'bob', profileIcon: null }],
+            shareCount: 0,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        groups: [{ id: 'g1', name: 'Family', memberCount: 0, members: [], shareCount: 0 }],
+      });
+    vi.mocked(removeFriend).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    // The circle, open, shows bob as a live member.
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    expect(screen.getByText('1 member')).toBeInTheDocument();
+    const circle = screen.getByText('Family').closest('li') as HTMLElement;
+    expect(within(circle).getByText('bob')).toBeInTheDocument();
+
+    // Unfriend him from the friend overview beside it (Remove lives there, on
+    // expand — the circle's own member row carries a Remove of its own).
+    await user.click(screen.getByRole('button', { name: 'bob' }));
+    const friendCard = screen.getByRole('button', { name: 'bob' }).closest('li') as HTMLElement;
+    await user.click(within(friendCard).getByRole('button', { name: 'Remove' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove friend?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+
+    expect(removeFriend).toHaveBeenCalledWith('u9');
+    await waitFor(() => expect(listGroups).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('0 members')).toBeInTheDocument());
+    expect(screen.queryByText('bob')).not.toBeInTheDocument();
+  });
+
   test('a friend card exposes a chat entry point that routes to the future chat surface', async () => {
     vi.mocked(listFriends).mockResolvedValue({
       friends: [{ user: { id: 'u5', username: 'erin' }, createdAt: '2026-01-01T00:00:00.000Z' }],
@@ -401,6 +451,7 @@ describe('FriendsPage', () => {
       name: 'Family',
       memberCount: 0,
       members: [],
+      shareCount: 0,
     });
     const user = userEvent.setup();
     const { container } = renderPage();
@@ -494,6 +545,71 @@ describe('FriendsPage', () => {
     // The idea appears as a read-only deep link into the shared-idea view.
     const link = screen.getByRole('link', { name: /momentum basket/i });
     expect(link).toHaveAttribute('href', `/people/shared/ideas/${SHARED_IDEA_ID}`);
+  });
+
+  // ── Group-portfolio invites wear the other party's face (§13.5 V5-P0 (c)) ──
+  // An invite is exactly the case the viewer's own graph cannot resolve: the
+  // inviter is not yet a co-member and need not be a friend, so the icon comes
+  // off the payload or nowhere.
+
+  const INVITE = {
+    id: '11111111-1111-4111-8111-111111111111',
+    chainId: '22222222-2222-4222-8222-222222222222',
+    chainName: 'Family portfolio',
+    fromUsername: 'alice',
+    toUsername: 'bob',
+    direction: 'incoming' as const,
+    createdAt: '2026-05-01T10:00:00.000Z',
+    profileIcon: 'fox' as string | null,
+  };
+
+  /** The curated icon a row actually painted (inert `data-icon-id`). */
+  function rowIcon(row: HTMLElement): string | undefined {
+    return (
+      row.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id') ?? undefined
+    );
+  }
+
+  test('renders the inviter\u2019s and the invitee\u2019s curated icon on the invite rows', async () => {
+    vi.mocked(listMirrorInvites).mockResolvedValue({
+      incoming: [INVITE],
+      outgoing: [
+        {
+          ...INVITE,
+          id: '33333333-3333-4333-8333-333333333333',
+          direction: 'outgoing' as const,
+          profileIcon: 'crown',
+        },
+      ],
+    });
+    renderPage();
+
+    const incoming = (await screen.findByText(/alice invited you to/i)).closest('li')!;
+    expect(rowIcon(incoming)).toBe('fox');
+    const outgoing = screen.getByText(/bob — invited to/i).closest('li')!;
+    expect(rowIcon(outgoing)).toBe('crown');
+  });
+
+  test('an invite without a usable icon degrades to the deterministic avatar', async () => {
+    vi.mocked(listMirrorInvites).mockResolvedValue({
+      // The inviter's account is gone (no username, no icon) …
+      incoming: [{ ...INVITE, fromUsername: null, profileIcon: null }],
+      // … and this one carries an id retired from the curated picker.
+      outgoing: [
+        {
+          ...INVITE,
+          id: '33333333-3333-4333-8333-333333333333',
+          direction: 'outgoing' as const,
+          profileIcon: 'unicorn-that-never-shipped',
+        },
+      ],
+    });
+    renderPage();
+
+    const incoming = (await screen.findByText(/Unknown invited you to/i)).closest('li')!;
+    expect(rowIcon(incoming)).toBe(defaultProfileIconIdFor('Unknown'));
+    const outgoing = screen.getByText(/bob — invited to/i).closest('li')!;
+    expect(rowIcon(outgoing)).toBe(defaultProfileIconIdFor('bob'));
   });
 
   // The aggregated "Followed items" collection was removed from Social (#532):

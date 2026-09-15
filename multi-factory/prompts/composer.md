@@ -43,6 +43,12 @@ Do, in order:
    bug-fix/hardening work that is actionable now.
 3. Create up to {{BATCH}} new issues — only work that is actionable RIGHT NOW or actionable once another issue IN THIS BATCH closes (declare that with depends-on). Before creating each candidate, confirm it is not a duplicate with a TARGETED search — `gh issue list --state all --search "<keywords>"` per candidate — never a full listing. Each issue:
 
+   - SIZING (owner 2026-08-29): prefer FEWER, LARGER, coherent issues — one
+     singular step a single agent run can finish, never a spray of sibling
+     micro-nits. When several open residuals touch the same module, compose ONE
+     consolidated package that absorbs them (name the absorbed issue numbers in
+     Context) instead of adding more siblings. A batch smaller than {{BATCH}} is
+     always acceptable; padding the batch is not.
    - Title: `"[<phase-id>] <verb> <thing>"`, using the phase identifier exactly as
      the current milestone digest gives it (for example `V5-P14`) — one coherent
      work package a single agent run can finish. A brief-authorized maintenance
@@ -53,8 +59,8 @@ Do, in order:
      - `diff:easy` — trivial/mechanical: docs, config/CI, copy tweaks, Coming-Soon placeholders, tiny isolated CRUD.
      - `diff:normal` — standard well-scoped feature work: plain UI pages, simple endpoints, templates, e2e specs.
      - `diff:intermediate` — cross-cutting or stateful: auth/sessions/PIN/rate-limits, admin/registration modes, DB schema/migrations, BullMQ jobs, realtime gateway, import/export, sharing-privacy boundaries.
-     - `diff:hard` — complex engine/architecture work: domain core (allocation/backtest/holdings), provider/caching/request-coalescing core, local search-index core, deployment-topology config.
-     - `diff:max` — keystone/critical-path work where a subtle bug poisons everything downstream, and plan-deviation design decisions.
+     - `diff:hard` — complex engine/architecture work: the money-math domain core, i.e. anything touching `apps/api/src/domain/**` (allocation, backtest, shims) or `packages/domain/src/**` (tax, holdings, cashLedger, seriesStats, settingsScope, vaultVectors); provider/caching/request-coalescing core; local search-index core; deployment-topology config.
+     - `diff:max` — keystone/critical-path work where a subtle bug poisons everything downstream, and plan-deviation design decisions. Any `touches:` claim matching either domain glob above is `diff:hard` at minimum, never lower.
      - Unsure → the HIGHER difficulty.
    - **The body MUST END with a machine-readable mf-meta block** (HTML comment, exactly this shape):
 

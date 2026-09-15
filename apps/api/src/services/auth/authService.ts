@@ -28,6 +28,7 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, tooManyRequests, unauthorized } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import { coerceProfileIcon } from '../../http/serializers';
 import type { Logger } from '../../logger';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
@@ -39,6 +40,7 @@ import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
 import {
+  absoluteDeadlineOf,
   authenticationMethodOf,
   isPersistent,
   mfaAssuranceOf,
@@ -337,6 +339,14 @@ export interface AuthService {
    * already gone.
    */
   getSessionInfo(sessionId: string): Promise<SessionInfoResponse | null>;
+  /**
+   * The instant a session is capped at regardless of its persistence window —
+   * an admin session's absolute 6–24 h lifetime (§13.5 V5-P13c) — or null when
+   * it carries no such cap (every user session) or is already gone. The cookie
+   * writer reads it so an admin's `Max-Age` follows the admin clock while a user
+   * cookie is derived from nothing at all and stays byte-identical.
+   */
+  getSessionAbsoluteDeadline(sessionId: string): Promise<number | null>;
   /**
    * Upgrade the caller's CURRENT session to persistent — the OAuth-login "stay
    * signed in — your PIN protects this" choice (V4-P2b, §399 §A). PIN-gated:
@@ -679,6 +689,35 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   const clearPasswordFailures = (userId: string) => clearPasswordThrottle(redis, userId);
 
   /**
+   * The absolute cap a freshly minted session carries (§13.5 V5-P13c). An ADMIN
+   * session is capped at the configured 6–24 h admin lifetime measured from
+   * `createdAt` — the same number {@link AuthService.resolveSession} enforces on
+   * read, handed to the session store so the Redis TTL, the cookie `Max-Age`,
+   * the device list and the reported `expiresAt` all stop claiming the 30-day
+   * user window for a session the server refuses after ≤24 h. A user session
+   * carries no cap and stays on the §6.1 persistence rules alone.
+   *
+   * Returns an options object so call sites can spread it into `sessions.create`
+   * without branching. Enforcement stays on the read path: this is bookkeeping,
+   * never the guarantee.
+   *
+   * The two `sessions.create` sites OUTSIDE this service take no cap because
+   * neither can reach an admin role: `googleAuthService.signInUser` runs
+   * `assertNotAdmin` on the line above its mint (a Google sign-in presents no
+   * second factor, §16), and `passkeyService`'s login verify refuses any
+   * `role !== 'user'` credential — audited `role_not_user` — for the same reason
+   * (#400). Should either ever be opened to admins, it must stamp the cap here
+   * too, or its cookie would claim the 30-day user window over a session the
+   * server refuses after ≤24 h.
+   */
+  const absoluteLifetimeOptions = async (
+    role: UserRow['role'],
+  ): Promise<{ absoluteLifetimeMs?: number }> =>
+    role === 'admin'
+      ? { absoluteLifetimeMs: (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000 }
+      : {};
+
+  /**
    * Mint a fresh EPHEMERAL session for an OAuth PIN quick re-auth (§399 §B). A
    * Custom-Tab browser must never silently retain a persistent web session, so —
    * exactly like a PIN-less OAuth login — the session is always ephemeral; the
@@ -689,9 +728,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
   ): Promise<{ sessionId: string; user: UserRow }> {
-    const sessionId = await sessions.create(user.id, user.securityGeneration, false, {
-      method: 'pin',
-    });
+    const sessionId = await sessions.create(
+      user.id,
+      user.securityGeneration,
+      false,
+      { method: 'pin' },
+      await absoluteLifetimeOptions(user.role),
+    );
     const now = new Date();
     await userRepo.setLastLogin(user.id, now);
     await audit.record({
@@ -799,9 +842,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (currentSessionId) {
         await destroySessionAndInvalidate(currentSessionId);
       }
-      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
-        method: 'password',
-      });
+      const sessionId = await sessions.create(
+        user.id,
+        user.securityGeneration,
+        persistent,
+        { method: 'password' },
+        await absoluteLifetimeOptions(user.role),
+      );
 
       const now = new Date();
       await userRepo.setLastLogin(user.id, now);
@@ -922,15 +969,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
-      const sessionId = await sessions.create(userId, state.securityGeneration, persistent, {
-        method:
-          authenticationMethodOf({ authenticationMethod: state.authenticationMethod }) ??
-          // Legacy pending states carried no provenance marker. They are
-          // short-lived, so preserve their pre-deploy password-session behavior
-          // across a rolling deploy instead of minting an unusable session.
-          'password',
-        mfaAssurance: { method: mfaMethod, verifiedAt: Date.now() },
-      });
+      const sessionId = await sessions.create(
+        userId,
+        state.securityGeneration,
+        persistent,
+        {
+          method:
+            authenticationMethodOf({ authenticationMethod: state.authenticationMethod }) ??
+            // Legacy pending states carried no provenance marker. They are
+            // short-lived, so preserve their pre-deploy password-session behavior
+            // across a rolling deploy instead of minting an unusable session.
+            'password',
+          mfaAssurance: { method: mfaMethod, verifiedAt: Date.now() },
+        },
+        await absoluteLifetimeOptions(user.role),
+      );
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -1010,10 +1063,29 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // so no cost to user requests), so a runtime change applies immediately.
       if (user.role === 'admin') {
         const lifetimeMs = (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000;
-        if (Date.now() - data.createdAt >= lifetimeMs) {
+        // Validate before comparing, exactly as the generation check above does,
+        // and fail CLOSED: an absent or non-numeric `createdAt` makes
+        // `Date.now() - createdAt` NaN, and `NaN >= lifetimeMs` is false — which
+        // would admit the session PERMANENTLY exempt from the absolute lifetime
+        // that §6.12 makes the whole admin security guarantee.
+        if (
+          !Number.isSafeInteger(data.createdAt) ||
+          data.createdAt <= 0 ||
+          Date.now() - data.createdAt >= lifetimeMs
+        ) {
           await destroySessionBestEffort(sessionId);
           await invalidateSession(data.userId, sessionId);
           return null;
+        }
+        // The session survives the window — keep the cap STORED on the record in
+        // step with the live policy (§13.5 V5-P13c). The stored value is what the
+        // Redis TTL, the cookie, the device list and `GET /auth/session` derive
+        // from; without this re-stamp a runtime change (or a session minted
+        // before the cap shipped) would leave those four claiming a window the
+        // enforcement above no longer honours. A write only when it actually
+        // differs, so the ordinary admin request stays a pure read.
+        if (data.absoluteLifetimeMs !== lifetimeMs) {
+          await sessions.setAbsoluteLifetime(sessionId, lifetimeMs);
         }
       }
       // Session manager bookkeeping (V3-P11a): stamp last-seen + capture the
@@ -1166,9 +1238,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id, user.securityGeneration, true, {
-        method: 'registration',
-      });
+      const sessionId = await sessions.create(
+        user.id,
+        user.securityGeneration,
+        true,
+        { method: 'registration' },
+        await absoluteLifetimeOptions(user.role),
+      );
       return { user, sessionId, persistent: true };
     },
 
@@ -1286,9 +1362,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         return { status: 'two_factor_required', challenge };
       }
 
-      const sessionId = await sessions.create(user.id, securityGeneration, true, {
-        method: 'password_reset',
-      });
+      const sessionId = await sessions.create(
+        user.id,
+        securityGeneration,
+        true,
+        { method: 'password_reset' },
+        await absoluteLifetimeOptions(user.role),
+      );
       const updated = await userRepo.findById(user.id);
       return {
         status: 'authenticated',
@@ -1467,9 +1547,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // A fresh account never has a PIN, so no persistent branch is lost. This
       // is the authoritative enforcement; the SPA only asks.
       const persistent = !(input.oauthRegistration ?? false);
-      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
-        method: 'registration',
-      });
+      const sessionId = await sessions.create(
+        user.id,
+        user.securityGeneration,
+        persistent,
+        { method: 'registration' },
+        await absoluteLifetimeOptions(user.role),
+      );
       return { status: 'authenticated', user, sessionId, persistent };
     },
 
@@ -1671,9 +1755,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
       return {
         deviceId,
-        // The client's whole record: never a token or scope (avatar is always null
-        // — the app has no avatar system yet; the chooser renders initials).
-        record: { userId: user.id, username: user.username, avatarUrl: null },
+        // The client's whole record: never a token or scope. The avatar is the
+        // user's curated profile icon (§13.5 V5-P0 (c)) — re-validated against the
+        // finite allow-list here, so a stale or hand-edited row degrades to `null`
+        // (the chooser's lettered tile) instead of reaching the renderer.
+        record: {
+          userId: user.id,
+          username: user.username,
+          profileIcon: coerceProfileIcon(user.profileIcon),
+        },
       };
     },
 
@@ -1788,6 +1878,11 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       return updated ?? { ...user, pinLockIdleMinutes: minutes };
     },
 
+    async getSessionAbsoluteDeadline(sessionId) {
+      const session = await sessions.get(sessionId);
+      return session ? absoluteDeadlineOf(session) : null;
+    },
+
     async getSessionInfo(sessionId) {
       const session = await sessions.get(sessionId);
       if (!session) return null;
@@ -1798,7 +1893,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         // Persistent → the fixed 30-day window from the last login / PIN verify
         // (§6.1). Ephemeral → the hard cap from creation, an upper bound only —
         // reporting the flat 30-day window here would overstate an ephemeral
-        // session's lifetime by ~60× (V4-P2b, §399 §A).
+        // session's lifetime by ~60× (V4-P2b, §399 §A). An ADMIN session is
+        // capped again by its absolute 6–24 h lifetime, which is the earlier of
+        // the two and therefore what lands here (§13.5 V5-P13c) — the same ~60×
+        // overstatement, on the session kind that exists to avoid it.
         expiresAt: new Date(sessions.expiresAtFor(session)).toISOString(),
       };
     },

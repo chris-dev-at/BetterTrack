@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { apiKeyRequestLog, portfolios, type ApiKeyRequestLogRow } from '../schema';
@@ -111,11 +111,24 @@ export function createApiKeyRequestLogRepository(db: Database, lockDb: Database)
         .limit(limit);
     },
 
-    /** Prune log rows older than `cutoff`; returns the number deleted. */
-    async deleteOlderThan(cutoff: Date): Promise<number> {
+    /**
+     * Delete at most `limit` oldest rows before `cutoff`; returns how many went.
+     * The scheduled retention sweep repeats this bounded statement until it
+     * returns fewer than `limit`, avoiding one unbounded full-table delete —
+     * this is the highest-volume operational table in the app (one row per
+     * bearer request), so an unbounded DELETE here is a long lock-holding
+     * transaction that may never converge.
+     */
+    async deleteOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: apiKeyRequestLog.id })
+        .from(apiKeyRequestLog)
+        .where(lt(apiKeyRequestLog.createdAt, cutoff))
+        .orderBy(asc(apiKeyRequestLog.createdAt), asc(apiKeyRequestLog.id))
+        .limit(limit);
       const deleted = await db
         .delete(apiKeyRequestLog)
-        .where(lt(apiKeyRequestLog.createdAt, cutoff))
+        .where(inArray(apiKeyRequestLog.id, candidates))
         .returning({ id: apiKeyRequestLog.id });
       return deleted.length;
     },

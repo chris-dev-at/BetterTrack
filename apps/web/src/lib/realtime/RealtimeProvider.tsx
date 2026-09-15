@@ -15,19 +15,21 @@ import {
   PRESENCE_HEARTBEAT_MS,
   REALTIME_CLIENT_EVENTS,
   REALTIME_SERVER_EVENTS,
+  realtimeFeatureDisabledSchema,
   realtimeLiveWatchAckSchema,
   realtimePortfolioChangedSchema,
   realtimeQuoteUpdatedSchema,
   type LiveRate,
   type LiveWindow,
   type PresenceSurface,
+  type RealtimeFeatureDisabled,
   type RealtimeLiveFrame,
   type RealtimeRoom,
 } from '@bettertrack/contracts';
 
 import { matchesWorkboardQuotesForAsset } from '../assetApi';
 
-import { createRealtimeSocket } from './socket';
+import { createRealtimeSocket, realtimeReconnectDelayMs } from './socket';
 
 /** The server pushes a consumer can subscribe to (contract event names). */
 export type RealtimeServerEvent =
@@ -45,9 +47,31 @@ export interface LiveWatchResult {
   coverageFrom: string | null;
 }
 
+/** A realtime feature an admin kill switch can shed on an established socket. */
+export type RealtimeSheddableFeature = RealtimeFeatureDisabled['feature'];
+
+/**
+ * Which features the server has told THIS connection it is shedding
+ * (`feature.disabled`, §13.5 V5-P2 arc (c)). `liveMode` leaves the socket up and
+ * only releases its live watches; `realtime` is the last frame before a
+ * server-initiated close.
+ */
+export type RealtimeDisabledFeatures = Readonly<Record<RealtimeSheddableFeature, boolean>>;
+
+const NO_DISABLED_FEATURES: RealtimeDisabledFeatures = { realtime: false, liveMode: false };
+
 export interface RealtimeContextValue {
   /** True while the socket is connected — pushes are flowing. */
   connected: boolean;
+  /**
+   * Which features the server explicitly shed on this connection. A shed is NOT
+   * a network drop: the socket can stay up while its live watches are released,
+   * so consumers must fall back to their polls and SAY the data is delayed
+   * instead of presenting the last push as current (§13.5 V5-P2 arc (c)).
+   * Cleared on every fresh connect — the next handshake/ack is the authority on
+   * whether the switch is back on.
+   */
+  featureDisabled: RealtimeDisabledFeatures;
   /**
    * Subscribe to a server push. Returns the unsubscribe. Handlers registered
    * while disconnected simply wait — they fire once pushes resume.
@@ -88,6 +112,7 @@ export interface RealtimeContextValue {
  */
 const NOOP_CONTEXT: RealtimeContextValue = {
   connected: false,
+  featureDisabled: NO_DISABLED_FEATURES,
   on: () => () => {},
   joinRoom: () => () => {},
   watchLive: () => Promise.resolve(null),
@@ -132,6 +157,8 @@ const roomKey = (room: RealtimeRoom): string => `${room.kind}:${room.id}`;
 export function RealtimeProvider({ enabled, children }: { enabled: boolean; children: ReactNode }) {
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
+  const [featureDisabled, setFeatureDisabled] =
+    useState<RealtimeDisabledFeatures>(NO_DISABLED_FEATURES);
   const socketRef = useRef<Socket | null>(null);
   const handlersRef = useRef(new Map<string, Set<(payload: unknown) => void>>());
   const roomsRef = useRef(new Map<string, { room: RealtimeRoom; count: number }>());
@@ -141,17 +168,51 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
     const socket = createRealtimeSocket();
     socketRef.current = socket;
 
+    // Manual reconnect ladder for the cases Socket.IO treats as terminal (see
+    // `realtimeReconnectDelayMs`): at most ONE pending attempt at a time, so a
+    // gateway that refuses every handshake costs one attempt per rung, settling
+    // at one per minute per tab.
+    let attempt = 0;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let torndown = false;
+    const clearRetry = () => {
+      if (retry === undefined) return;
+      clearTimeout(retry);
+      retry = undefined;
+    };
+    const scheduleReconnect = () => {
+      // `active` is Socket.IO's own "I will reconnect" flag: while it holds, the
+      // manager's ladder owns the retry and we must stay out of it. We only take
+      // over once it has given up — otherwise the tab is down for good.
+      if (torndown || retry !== undefined || socket.active || socket.connected) return;
+      const delay = realtimeReconnectDelayMs(attempt);
+      attempt += 1;
+      retry = setTimeout(() => {
+        retry = undefined;
+        if (torndown || socket.active || socket.connected) return;
+        socket.connect();
+      }, delay);
+    };
+
     const onConnect = () => {
+      attempt = 0;
+      clearRetry();
       setConnected(true);
+      // A fresh handshake supersedes whatever this connection was told to shed —
+      // the next watch ack is the authority on whether the switch is back on.
+      setFeatureDisabled(NO_DISABLED_FEATURES);
       // Room membership does not survive a reconnect — re-join everything a
       // mounted consumer still references.
       for (const { room } of roomsRef.current.values()) {
         socket.emit(REALTIME_CLIENT_EVENTS.roomJoin, { room });
       }
     };
-    const onDisconnect = () => setConnected(false);
+    const onDisconnect = () => {
+      setConnected(false);
+      scheduleReconnect();
+    };
     // Silent by design: the poll fallback carries the app while we retry.
-    const onConnectError = () => {};
+    const onConnectError = () => scheduleReconnect();
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
@@ -168,7 +229,10 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
     });
 
     return () => {
+      torndown = true;
+      clearRetry();
       setConnected(false);
+      setFeatureDisabled(NO_DISABLED_FEATURES);
       socketRef.current = null;
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
@@ -267,15 +331,43 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
       void queryClient.invalidateQueries({ queryKey: ['portfolio', parsed.data.portfolioId] });
       void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
     });
+    // A kill switch shedding established work (§13.5 V5-P2 arc (c)). The socket
+    // may well stay up, so nothing else would ever tell a consumer its pushes
+    // stopped — record it and let them degrade honestly.
+    const offFeature = on(REALTIME_SERVER_EVENTS.featureDisabled, (payload) => {
+      const parsed = realtimeFeatureDisabledSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const { feature } = parsed.data;
+      setFeatureDisabled((prev) => (prev[feature] ? prev : { ...prev, [feature]: true }));
+    });
     return () => {
       offQuote();
       offPortfolio();
+      offFeature();
     };
   }, [on, queryClient]);
 
   const value = useMemo<RealtimeContextValue>(
-    () => ({ connected, on, joinRoom, watchLive, unwatchLive, presenceEnter, presenceLeave }),
-    [connected, on, joinRoom, watchLive, unwatchLive, presenceEnter, presenceLeave],
+    () => ({
+      connected,
+      featureDisabled,
+      on,
+      joinRoom,
+      watchLive,
+      unwatchLive,
+      presenceEnter,
+      presenceLeave,
+    }),
+    [
+      connected,
+      featureDisabled,
+      on,
+      joinRoom,
+      watchLive,
+      unwatchLive,
+      presenceEnter,
+      presenceLeave,
+    ],
   );
 
   return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;

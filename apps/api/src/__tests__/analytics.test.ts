@@ -2,6 +2,8 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { ANALYTICS_MAX_RANGE_DAYS } from '@bettertrack/contracts';
+
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import { createStubMarketData } from '../testing/marketDataStubs';
@@ -263,6 +265,43 @@ describe('analytics — filtered series, stats & contributions', () => {
       `/api/v1/analytics/portfolios/${pid}/series?inflation=flat&inflationRate=-150`,
     );
     expect(belowBound.status).toBe(400);
+  });
+
+  it('rejects a requested window longer than the maximum range (#1643)', async () => {
+    // The window used to be unbounded: any `from`/`to` the ISO pattern matched
+    // was accepted, so one request's work was entirely caller-chosen.
+    const absurd = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=0001-01-01&to=9999-12-31`,
+    );
+    expect(absurd.status).toBe(400);
+    expect(absurd.body.error.code).toBe('VALIDATION_ERROR');
+
+    // An open-ended `from` is measured against today, so it cannot escape the
+    // bound by omitting `to`.
+    const openEnded = await agent.get(`/api/v1/analytics/portfolios/${pid}/series?from=0001-01-01`);
+    expect(openEnded.status).toBe(400);
+
+    // Exactly at the bound is still a legal request…
+    const atBound = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=${dayOffset(-ANALYTICS_MAX_RANGE_DAYS)}&to=${dayOffset(0)}`,
+    );
+    expect(atBound.status).toBe(200);
+    // …and one day past it is not.
+    const overBound = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=${dayOffset(-ANALYTICS_MAX_RANGE_DAYS - 1)}&to=${dayOffset(0)}`,
+    );
+    expect(overBound.status).toBe(400);
+  });
+
+  it('leaves the SPA windows untouched: no `from` is inception, presets are bounded', async () => {
+    // The `max` preset sends no `from` at all — the window starts at the first
+    // day the portfolio held value, which the DATA bounds, not the caller.
+    const max = await agent.get(`/api/v1/analytics/portfolios/${pid}/series`);
+    expect(max.status).toBe(200);
+    const oneYear = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=${dayOffset(-365)}&to=${dayOffset(0)}`,
+    );
+    expect(oneYear.status).toBe(200);
   });
 
   it('404s a portfolio the caller does not own', async () => {
@@ -535,5 +574,77 @@ describe('analytics — bearer scope', () => {
       .get(`/api/v1/analytics/portfolios/${pid}/series`)
       .set('Authorization', `Bearer ${wrongToken}`);
     expect(forbidden.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The flow-neutral return factor (#1759)
+//
+// `primary.stats.cagrPct` annualises the VALUE curve, which every purchase
+// lifts — so a saver's own deposits read back as performance, and the Forecast
+// compounded that rate forward on top of the deposits themselves. The response
+// therefore also carries `twr`: the portfolio's time-weighted return over the
+// same window, reused from the §6.9 overview curve.
+// ---------------------------------------------------------------------------
+
+describe('analytics — time-weighted return (#1759)', () => {
+  let harness: TestHarness;
+  let agent: ReturnType<typeof request.agent>;
+  let pid: string;
+
+  beforeEach(async () => {
+    harness = await createTestApp({ marketData: stubMarket() });
+    const user = await harness.seedUser();
+    agent = await loginAgent(harness.app, user.email, user.password);
+    pid = await defaultPortfolioId(agent);
+  });
+
+  it('does not read a saver’s own contributions back as return', async () => {
+    // BBB is worth exactly 200 every day of the window, so NOTHING this
+    // portfolio does can earn a return: the value curve triples (1000 → 3000)
+    // purely because the user kept buying.
+    const bbb = (await seedAsset(harness, { symbol: 'BBB', providerRef: 'BBB', type: 'etf' })).id;
+    await buyAt(agent, pid, bbb, 5, 200, -6);
+    await buyAt(agent, pid, bbb, 5, 200, -4);
+    await buyAt(agent, pid, bbb, 5, 200, -2);
+
+    const res = await agent.get(`/api/v1/analytics/portfolios/${pid}/series`);
+    expect(res.status).toBe(200);
+    expect(res.body.primary.points[0].value).toBeCloseTo(1000, 6);
+    expect(res.body.primary.points.at(-1).value).toBeCloseTo(3000, 6);
+
+    // The value curve calls that +200 % over six days — an annualised figure in
+    // the millions of percent, which is what the Forecast used to sample.
+    expect(res.body.primary.stats.totalReturnPct).toBeCloseTo(200, 6);
+    expect(res.body.primary.stats.cagrPct).toBeGreaterThan(1000);
+
+    // The time-weighted return says what actually happened: nothing.
+    expect(res.body.twr.totalReturnPct).toBeCloseTo(0, 6);
+    expect(res.body.twr.cagrPct).toBeCloseTo(0, 6);
+  });
+
+  it('matches the value curve exactly for a portfolio with no contributions', async () => {
+    // One buy, then only market movement: 100 → 106. With no flows inside the
+    // window the two statistics are the same number — the no-flows case must
+    // not regress.
+    const aaa = (await seedAsset(harness, { symbol: 'AAA', providerRef: 'AAA' })).id;
+    await buyAt(agent, pid, aaa, 10, 100, -6);
+
+    const res = await agent.get(`/api/v1/analytics/portfolios/${pid}/series`);
+    expect(res.status).toBe(200);
+    expect(res.body.primary.stats.totalReturnPct).toBeCloseTo(6, 6);
+    expect(res.body.twr.totalReturnPct).toBeCloseTo(res.body.primary.stats.totalReturnPct, 6);
+    expect(res.body.twr.cagrPct).toBeCloseTo(res.body.primary.stats.cagrPct, 6);
+  });
+
+  it('is null for a portfolio with no history to measure', async () => {
+    const created = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Empty' });
+    expect(created.status).toBe(201);
+    const res = await agent.get(`/api/v1/analytics/portfolios/${created.body.portfolio.id}/series`);
+    expect(res.status).toBe(200);
+    expect(res.body.twr).toBeNull();
   });
 });

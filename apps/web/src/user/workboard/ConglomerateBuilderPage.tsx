@@ -189,6 +189,8 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   nameRef.current = name;
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   // Persistence bookkeeping: the id (null until the first save creates the draft)
   // and what the server currently holds, so autosave only writes real diffs.
@@ -225,8 +227,23 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 
       const payloadKey = JSON.stringify(payload);
       if (payloadKey !== savedPositionsKeyRef.current) {
-        await replaceConglomeratePositions(id, payload);
+        // The server may DEMOTE inside this very request: an active basket whose
+        // new weights no longer sum to 100 — or whose nested child was emptied —
+        // is relabelled `draft` rather than left claiming a status it no longer
+        // earns (#1840). The autosave is the one screen the user is looking at
+        // while that happens, so take the status off the write's own response
+        // instead of leaving the badge and the Activate button describing the
+        // basket as it was before the save (#1877).
+        const saved = await replaceConglomeratePositions(id, payload);
         savedPositionsKeyRef.current = payloadKey;
+        // The write's response IS the detail, so seed the cache with it rather
+        // than spending a refetch per autosave.
+        queryClient.setQueryData(['conglomerate', id], saved);
+        if (saved.status !== statusRef.current) {
+          setStatus(saved.status);
+          // The list renders the same badge; wake it only when it moved.
+          void queryClient.invalidateQueries({ queryKey: ['conglomerates'] });
+        }
       }
     },
     [queryClient, defaultName],
@@ -310,9 +327,11 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
     [t],
   );
 
-  // AI draft (V5-P12): prefill the Builder with the resolved lines. It replaces
-  // the current positions with the draft; the user then reviews the weights,
-  // edits, and explicitly saves/activates — nothing auto-commits.
+  // AI draft (V5-P12, §6.5): this runs ONLY after the user confirmed the draft
+  // inside `NlBuilderPanel` — a returned basket sits in that panel until then, so
+  // the autosave below never sees an unconfirmed draft. Applying replaces the
+  // current positions (the panel names what that costs before the confirmation);
+  // from here on it is an ordinary edit the Builder autosaves like any other.
   const handleApplyDraft = useCallback((drafted: BuilderPosition[]) => {
     setNotice(null);
     setPositions(drafted);
@@ -341,12 +360,15 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const handleNormalize = useCallback(() => {
     const result = normalize(positionsRef.current);
     if (!result.ok) {
-      setNotice(result.error);
+      setNotice(t(result.reason.key, result.reason.params));
       return;
     }
     setNotice(null);
     setPositions(result.positions);
-  }, []);
+    // `t` is rebuilt per locale (I18nProvider) and `setLocale` does not remount
+    // the tree — without it here the notice would stay in the locale that was
+    // active when the page mounted.
+  }, [t]);
 
   // ── Activate ──
 
@@ -408,6 +430,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
           onApplyDraft={handleApplyDraft}
           ownId={ownId}
           positions={positions}
+          basketName={name.trim() || defaultName}
         />
         <PositionsPanel
           positions={positions}
@@ -530,6 +553,7 @@ function AddAssetsPanel({
   onApplyDraft,
   ownId,
   positions,
+  basketName,
 }: {
   notice: string | null;
   onSelect: (item: SearchResultItem) => void;
@@ -537,6 +561,7 @@ function AddAssetsPanel({
   onApplyDraft: (positions: BuilderPosition[]) => void;
   ownId: string | null;
   positions: BuilderPosition[];
+  basketName: string;
 }) {
   const t = useT();
   return (
@@ -550,7 +575,11 @@ function AddAssetsPanel({
       <p className="text-xs bt-muted">{t('workboard.builder.addAssetsHint')}</p>
       {notice ? <Alert tone="error">{notice}</Alert> : null}
       <AssetSearchBox onSelect={onSelect} placeholder={t('workboard.builder.searchPlaceholder')} />
-      <NlBuilderPanel onApply={onApplyDraft} />
+      <NlBuilderPanel
+        onApply={onApplyDraft}
+        targetName={basketName}
+        targetPositionCount={positions.length}
+      />
       <NestConglomeratePanel onSelect={onSelectConglomerate} ownId={ownId} positions={positions} />
     </section>
   );

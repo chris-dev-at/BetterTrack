@@ -14,7 +14,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../AuthContext', () => ({ useOptionalAuth: mocks.useOptionalAuth }));
-vi.mock('../../lib/vaultApi', () => ({
+vi.mock('../../lib/vaultApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/vaultApi')>()),
   VAULTS_QUERY_KEY: ['vaults', 'configs'],
   listVaults: mocks.listVaults,
 }));
@@ -39,6 +40,8 @@ import {
 
 const VAULT_ID = '018f0000-0000-7000-8000-000000000701';
 const ACCOUNT_ID = '018f0000-0000-7000-8000-000000000702';
+const VAULT_ID_B = '018f0000-0000-7000-8000-000000000703';
+const FOREIGN_VAULT_ID = '018f0000-0000-7000-8000-000000000704';
 
 const PLAIN: PortfolioSummary = {
   id: 'p-plain',
@@ -50,6 +53,7 @@ const PLAIN: PortfolioSummary = {
   archivedAt: null,
 };
 const VAULTED: PortfolioSummary = { ...PLAIN, id: 'p-vaulted', vaultId: VAULT_ID };
+const VAULTED_B: PortfolioSummary = { ...PLAIN, id: 'p-vaulted-b', vaultId: VAULT_ID_B };
 
 function Probe({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const { unlocked } = useVaultedPortfolioStores(portfolios);
@@ -57,17 +61,30 @@ function Probe({ portfolios }: { portfolios: PortfolioSummary[] }) {
 }
 
 function renderProbe(portfolios: PortfolioSummary[]) {
+  return renderProbeWithClient(portfolios).view;
+}
+
+/** Same tree, with the cache handed back so a test can look inside it. */
+function renderProbeWithClient(portfolios: PortfolioSummary[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <Probe portfolios={portfolios} />
     </QueryClientProvider>,
   );
+  return { view, client };
 }
 
 function batchFor(portfolioId: string) {
   return {
     unlocked: new Map([[portfolioId, { portfolioId, vaultId: VAULT_ID } as never]]),
+    dispose: vi.fn(),
+  };
+}
+
+function batchOf(...portfolioIds: readonly string[]) {
+  return {
+    unlocked: new Map(portfolioIds.map((id) => [id, { portfolioId: id } as never])),
     dispose: vi.fn(),
   };
 }
@@ -137,6 +154,55 @@ describe('useVaultedPortfolioStores', () => {
     expect(batch.dispose).toHaveBeenCalled();
   });
 
+  it('sweeps the DERIVED plaintext out of the query cache when the session ends', async () => {
+    // Disposing the batch releases the decrypted DOCUMENTS. Every figure
+    // already derived from them has been copied into React Query — the
+    // portfolio response, its history, Home's `readTotals` — and those entries
+    // outlive the lock by `gcTime`, servable to the next mount while the vault
+    // itself is correctly closed. The account-level v1 stack always swept on
+    // its lock; the per-portfolio model had no equivalent.
+    const batch = batchFor(VAULTED.id);
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batch);
+    let endSession = () => {};
+    mocks.sessionEndSubscription.mockImplementation((listener: () => void) => {
+      endSession = listener;
+      return () => {};
+    });
+
+    const { client } = renderProbeWithClient([PLAIN, VAULTED]);
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+
+    // Exactly the shapes this lane's two keyspaces produce, plus one entry that
+    // must SURVIVE: the sweep has to be precise, not merely thorough.
+    const holdings = { holdings: [{ symbol: 'MSFT', quantity: 5 }] };
+    client.setQueryData(['portfolio', VAULTED.id, { vaultAccess: 'vault-access-1' }], holdings);
+    client.setQueryData(['portfolio', VAULTED.id, 'vaulted-unlocked', 'vault-access-1'], {
+      totals: { totalValueEur: 4147.19 },
+      snapshotId: 's1',
+    });
+    client.setQueryData(['vaults', 'configs'], [{ id: VAULT_ID, name: 'Private Holdings' }]);
+
+    act(() => endSession());
+
+    expect(
+      client.getQueryData(['portfolio', VAULTED.id, { vaultAccess: 'vault-access-1' }]),
+    ).toBeUndefined();
+    expect(
+      client.getQueryData(['portfolio', VAULTED.id, 'vaulted-unlocked', 'vault-access-1']),
+    ).toBeUndefined();
+    // Nothing anywhere in the cache still holds a decrypted figure.
+    const surviving = client
+      .getQueryCache()
+      .getAll()
+      .map((query) => JSON.stringify(query.state.data ?? null));
+    expect(surviving.filter((data) => data.includes('MSFT') || data.includes('4147.19'))).toEqual(
+      [],
+    );
+    // The vault DIRECTORY is cleartext by design (§21 Q4) and is what the
+    // locked stub routes by — sweeping it would blank the manager on every lock.
+    expect(client.getQueryData(['vaults', 'configs'])).toBeDefined();
+  });
+
   /**
    * The edge the keystore had to grow (`subscribeToVaultOpened`). The roster
    * does not change when a user unlocks a vault, so without this the batch
@@ -148,8 +214,8 @@ describe('useVaultedPortfolioStores', () => {
       unlocked: new Map(),
       dispose: vi.fn(),
     });
-    let vaultOpened = () => {};
-    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
       vaultOpened = listener;
       return () => {};
     });
@@ -160,22 +226,22 @@ describe('useVaultedPortfolioStores', () => {
 
     mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
     await act(async () => {
-      vaultOpened();
+      vaultOpened(VAULT_ID);
     });
 
     await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
   });
 
   it('ignores the vault-opened edge raised by its own in-flight resolution', async () => {
-    let vaultOpened = () => {};
-    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
       vaultOpened = listener;
       return () => {};
     });
     // The resolver opens the vault, which fires the edge from INSIDE the
     // resolution. Reacting to it would restart the resolution forever.
     mocks.resolveVaultedPortfolioStores.mockImplementation(async () => {
-      vaultOpened();
+      vaultOpened(VAULT_ID);
       return batchFor(VAULTED.id);
     });
 
@@ -352,8 +418,8 @@ describe('useVaultedPortfolioStores', () => {
    * genuinely new, and dropping it left the portfolio a stub until a reload.
    */
   it('re-resolves an unlock that lands while the first resolution is still running', async () => {
-    let vaultOpened = () => {};
-    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
       vaultOpened = listener;
       return () => {};
     });
@@ -361,7 +427,7 @@ describe('useVaultedPortfolioStores', () => {
     // Resolution #1 finds the vault LOCKED (empty batch). The user unlocks
     // while it is still running, i.e. strictly inside `entry.resolving`.
     mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
-      vaultOpened();
+      vaultOpened(VAULT_ID);
       return locked;
     });
     mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
@@ -371,5 +437,70 @@ describe('useVaultedPortfolioStores', () => {
     await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
     expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(2);
     expect(locked.dispose).toHaveBeenCalled();
+  });
+
+  /**
+   * THE SECOND VAULT'S EDGE (#1533).
+   *
+   * Judging a mid-resolution edge by the RUN's outcome — "opened nothing and
+   * still saw one" — could only ever describe one vault. The re-run that opens
+   * the first vault publishes a non-empty batch, so a second vault unlocked
+   * inside that window looked exactly like the re-run's own open and was
+   * dropped: its portfolios stayed stubs until the next remount. The vault id
+   * on the edge is what tells the two apart.
+   */
+  it('renders both vaults when a second one is unlocked during the re-run window', async () => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
+      vaultOpened = listener;
+      return () => {};
+    });
+    mocks.listVaults.mockImplementation(async () => [
+      { id: VAULT_ID, keyFingerprint: 'TESTVECTOR000000' },
+      { id: VAULT_ID_B, keyFingerprint: 'TESTVECTOR000001' },
+    ]);
+    const locked = emptyBatch();
+    // #1: both vaults locked; the user unlocks A while documents are in flight.
+    mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
+      vaultOpened(VAULT_ID);
+      return locked;
+    });
+    // #2: the re-run opens A — and the user unlocks B while IT is in flight.
+    mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
+      vaultOpened(VAULT_ID_B);
+      return batchOf(VAULTED.id);
+    });
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchOf(VAULTED.id, VAULTED_B.id));
+
+    renderProbe([PLAIN, VAULTED, VAULTED_B]);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted,p-vaulted-b'),
+    );
+    expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * The other half of the id: an open this roster has no portfolio in cannot
+   * change this snapshot, so it must not cost a resolution — decrypting the
+   * same document set again for a vault nobody here reads.
+   */
+  it('ignores a vault-opened edge for a vault outside its roster', async () => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
+      vaultOpened = listener;
+      return () => {};
+    });
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+
+    renderProbe([PLAIN, VAULTED]);
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+
+    await act(async () => {
+      vaultOpened(FOREIGN_VAULT_ID);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(1);
   });
 });

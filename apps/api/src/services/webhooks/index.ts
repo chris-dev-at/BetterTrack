@@ -12,7 +12,9 @@ export {
 } from './webhookService';
 export {
   createWebhookDispatcher,
-  createFetchWebhookTransport,
+  createPinnedWebhookTransport,
+  isPermanentWebhookStatus,
+  WEBHOOK_PERMANENT_RESPONSE_STATUSES,
   type WebhookDispatcher,
   type WebhookDispatcherDeps,
   type WebhookDeliveryJob,
@@ -34,5 +36,6 @@ export {
   signWebhookPayload,
   verifyWebhookSignature,
   buildWebhookPayload,
-  type SignableEvent,
+  type WebhookDeliverableEvent,
+  type VerifyWebhookSignatureOptions,
 } from './webhookSigner';

@@ -335,6 +335,7 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
 
   function registry(disconnect = vi.fn(async () => undefined)): DriveConnectionRegistry {
     return {
+      prepare: vi.fn(async () => undefined),
       connect: vi.fn(async () => ({ status: 'ok' as const, connection: z })),
       authorize: vi.fn(async (connection) => ({ status: 'ok' as const, connection })),
       authorization: vi.fn(() => 'connected' as const),
@@ -445,7 +446,13 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     const user = userEvent.setup();
     renderPanel('/settings/connections', { driveRegistry: cancelled }, 'paranoid');
 
+    // No Drive identity exists yet, so the first gesture is what starts the GIS
+    // preload; the popup opens from the click that follows it (#1518/#1519 F1).
     await user.click(await screen.findByRole('button', { name: 'Connect a Drive account' }));
+    expect(
+      await screen.findByText('Google sign-in is ready — click again to connect.'),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Connect a Drive account' }));
 
     expect(
       await screen.findByText('Sign in to Google and allow access to connect an account.'),
@@ -453,6 +460,83 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     expect(
       screen.queryByText('The Drive connection could not be changed.'),
     ).not.toBeInTheDocument();
+  });
+
+  test('prepares GIS for a registered identity before its sign-in gesture can fire', async () => {
+    // #1518: the registry mints one client per identity, so the popup guarantee
+    // holds only if THAT client was prepared — the section keeps the button
+    // unavailable until it is.
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    let finishPreparation!: () => void;
+    const prepared = registry();
+    vi.mocked(prepared.authorization).mockReturnValue('token-expired');
+    vi.mocked(prepared.prepare).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPreparation = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: prepared }, 'paranoid');
+
+    await waitFor(() => expect(prepared.prepare).toHaveBeenCalledOnce());
+    // Both gestures the section owns — the identity's sign-in and "add another"
+    // — stay unavailable until the client behind them can open a popup.
+    for (const button of await screen.findAllByRole('button', {
+      name: 'Preparing Google sign-in…',
+    })) {
+      expect(button).toBeDisabled();
+    }
+    expect(prepared.authorize).not.toHaveBeenCalled();
+
+    finishPreparation();
+
+    const signIn = await screen.findByRole('button', {
+      name: 'Sign in to Google (y@example.test) to sync',
+    });
+    await user.click(signIn);
+    expect(prepared.authorize).toHaveBeenCalledWith(y);
+  });
+
+  test('retries a failed preparation from the button instead of doing nothing', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const flaky = registry();
+    vi.mocked(flaky.authorization).mockReturnValue('token-expired');
+    vi.mocked(flaky.prepare)
+      .mockRejectedValueOnce(new Error('script load failed'))
+      .mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: flaky }, 'paranoid');
+
+    const retries = await screen.findAllByRole('button', { name: 'Retry Google sign-in' });
+    expect(
+      screen.getByText(
+        'Google sign-in could not be prepared. Check your connection and try again.',
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(retries[0]!);
+
+    await waitFor(() => expect(flaky.prepare).toHaveBeenCalledTimes(2));
+    await user.click(
+      await screen.findByRole('button', { name: 'Sign in to Google (y@example.test) to sync' }),
+    );
+    expect(flaky.authorize).toHaveBeenCalledWith(y);
+  });
+
+  test('never contacts Google merely because Connections was opened', async () => {
+    // Same rule as the vault Drive card: an account with no Drive identity at
+    // all pays no GIS load until it asks for one.
+    vi.mocked(listDriveConnections).mockResolvedValue([]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const idle = registry();
+    renderPanel('/settings/connections', { driveRegistry: idle }, 'paranoid');
+
+    expect(await screen.findByRole('button', { name: 'Connect a Drive account' })).toBeEnabled();
+    await waitFor(() => expect(listDriveConnections).toHaveBeenCalled());
+    expect(idle.prepare).not.toHaveBeenCalled();
   });
 
   test('a new-model vault owner sees the group although the retired privacy column says normal', async () => {
@@ -553,6 +637,85 @@ describe('ConnectionsPanel — paranoid Google Drive storage', () => {
     expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
   });
 
+  // Configured × normal account × {pending, error, success}: Drive storage
+  // belongs to a paranoid vault, so on a deployment that HAS
+  // BT_GOOGLE_DRIVE_CLIENT_ID an ordinary account must never see the titled
+  // group — the state the title used to render in before the privacy mode was
+  // known, permanently so on a failed read (#1859).
+  test('a configured deployment shows a normal account no Drive group while the read is pending', async () => {
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () => new Promise<ParanoidMediaStateResponse>(() => undefined),
+    );
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+  });
+
+  test('a configured deployment shows a normal account no Drive group when the read fails', async () => {
+    let rejectRequest!: (reason?: unknown) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((_resolve, reject) => {
+          rejectRequest = reject;
+        }),
+    );
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      rejectRequest(new Error('offline'));
+    });
+
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+    expect(screen.queryByText(/storage status could not be loaded/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  test('a configured deployment shows a normal account no Drive group once the read resolves', async () => {
+    let resolveRequest!: (value: ParanoidMediaStateResponse) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveRequest(NORMAL_MEDIA);
+    });
+
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+  });
+
+  test('a paranoid vault still gets the titled skeleton while its storage read is pending', async () => {
+    let resolveRequest!: (value: ParanoidMediaStateResponse) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
+    expect(await screen.findByText('Google Drive vault storage')).toBeInTheDocument();
+    await act(async () => {
+      resolveRequest(SERVER_MEDIA);
+    });
+    expect(screen.getByText('Google Drive vault storage')).toBeInTheDocument();
+  });
+
   test('suppresses Drive status errors without a runtime client id', async () => {
     let rejectRequest!: (reason?: unknown) => void;
     vi.mocked(getParanoidMediaState).mockImplementation(
@@ -634,11 +797,21 @@ describe('ConnectionsPanel — paranoid Google Drive storage', () => {
 
     finishPreparation();
 
+    // The click that only started the preload now says so instead of leaving
+    // the button looking like a dead control (#1519 F1).
+    expect(
+      await screen.findByText('Google sign-in is ready — click again to continue.'),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Connect Drive' })).toBeEnabled(),
     );
     await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
     expect(drive.connect).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Google sign-in is ready — click again to continue.'),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   test('preloads GIS for an existing Drive vault before its sign-in gesture', async () => {

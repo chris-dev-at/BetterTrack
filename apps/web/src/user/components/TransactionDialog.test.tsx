@@ -10,6 +10,7 @@ vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/assetApi');
 import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
 
+import { I18nProvider, localizedMessage, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
@@ -18,7 +19,9 @@ import {
   DERIVED_QUANTITY_DECIMALS,
   deriveQuantityFromAmount,
   formatDerivedQuantity,
+  makeRow,
   TransactionDialog,
+  validateRow,
   type TransactionDialogAsset,
 } from './TransactionDialog';
 
@@ -244,6 +247,173 @@ describe('TransactionDialog — amount entry mode', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/amount must be greater than 0/i);
     expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
+  });
+
+  // --- V5-P14 (#1745): validateRow's messages come from the catalog ---------
+
+  /**
+   * Render inside a real {@link I18nProvider} so the dialog resolves copy in the
+   * given language — the default context is EN-only, which cannot tell a
+   * catalogued string from a hardcoded English literal.
+   */
+  function renderLocalized(locale: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <I18nProvider initialLocale={locale}>
+            <TransactionDialog
+              portfolioId="p1"
+              onClose={vi.fn()}
+              onSubmitted={vi.fn()}
+              asset={BTC}
+              today="2026-07-02"
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  /** Catalog copy for `key`, with `{{symbol}}` resolved to the rendered asset. */
+  const copy = (locale: string, key: string) =>
+    localizedMessage(locale, key).replace('{{symbol}}', BTC.symbol);
+
+  /** The row error the dialog must paint: `SYMBOL: <catalogued message>`. */
+  const rowError = (locale: string, messageKey: string) =>
+    copy(locale, 'portfolio.transaction.rowErrors.withSymbol').replace(
+      '{{message}}',
+      localizedMessage(locale, messageKey),
+    );
+
+  test.each(['en', 'de'])(
+    '%s: the reachable validateRow rejections render from the catalog, not English literals',
+    async (locale) => {
+      vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+      const user = userEvent.setup();
+      renderLocalized(locale);
+
+      const submit = () =>
+        user.click(
+          screen.getByRole('button', { name: copy(locale, 'portfolio.transaction.recordBuy') }),
+        );
+      const price = () => screen.getByLabelText(copy(locale, 'portfolio.transaction.priceAria'));
+      const amount = () =>
+        screen.getByLabelText(copy(locale, 'portfolio.transaction.amountInvestedAria'));
+
+      // Quantity mode: nothing entered.
+      await submit();
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        rowError(locale, 'portfolio.transaction.rowErrors.quantityRequired'),
+      );
+
+      await user.click(
+        screen.getByRole('button', { name: copy(locale, 'portfolio.transaction.byAmount') }),
+      );
+
+      // Amount mode: a zero price would divide by zero.
+      await user.type(amount(), '1000');
+      await user.type(price(), '0');
+      await submit();
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        rowError(locale, 'portfolio.transaction.rowErrors.priceRequired'),
+      );
+
+      // Amount mode: a blank amount.
+      await user.clear(price());
+      await user.type(price(), '54000');
+      await user.clear(amount());
+      await submit();
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        rowError(locale, 'portfolio.transaction.rowErrors.amountRequired'),
+      );
+
+      // Amount mode: 0.0001 / 1_000_000 rounds to 0 at 8 decimals — underivable.
+      await user.clear(price());
+      await user.type(price(), '1000000');
+      await user.type(amount(), '0.0001');
+      await submit();
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        rowError(locale, 'portfolio.transaction.rowErrors.derivedQuantity'),
+      );
+
+      expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
+    },
+  );
+
+  test('the German row errors are German, not the EN fallback', async () => {
+    const user = userEvent.setup();
+    renderLocalized('de');
+    await user.click(
+      screen.getByRole('button', { name: copy('de', 'portfolio.transaction.recordBuy') }),
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('BTC: Die Anzahl muss größer als 0 sein.');
+    expect(alert).not.toHaveTextContent(/quantity must be greater than 0/i);
+  });
+
+  describe('validateRow (all seven rejections, EN + DE)', () => {
+    /** The runtime translator's contract: catalog lookup + `{{var}}` interpolation. */
+    const translator =
+      (locale: string): TranslateFn =>
+      (key, vars) =>
+        Object.entries(vars ?? {}).reduce(
+          (text, [name, value]) => text.split(`{{${name}}}`).join(String(value)),
+          localizedMessage(locale, key),
+        );
+
+    const row = (seed: Parameters<typeof makeRow>[3]) =>
+      makeRow('probe', BTC, '2026-07-02', { quantity: '1', price: '1', ...seed });
+
+    // The `min="0"` / `type="date"` inputs make the last three unreachable in
+    // the DOM, which is precisely why they went unlocalized until #1745.
+    const cases: Array<[string, Parameters<typeof makeRow>[3], string]> = [
+      [
+        'amount mode, zero price',
+        { entryMode: 'amount', amount: '100', price: '0' },
+        'portfolio.transaction.rowErrors.priceRequired',
+      ],
+      [
+        'amount mode, blank amount',
+        { entryMode: 'amount', amount: '', price: '10' },
+        'portfolio.transaction.rowErrors.amountRequired',
+      ],
+      [
+        'amount mode, underivable quantity',
+        { entryMode: 'amount', amount: '0.0001', price: '1000000' },
+        'portfolio.transaction.rowErrors.derivedQuantity',
+      ],
+      [
+        'quantity mode, blank quantity',
+        { quantity: '' },
+        'portfolio.transaction.rowErrors.quantityRequired',
+      ],
+      [
+        'quantity mode, negative price',
+        { price: '-1' },
+        'portfolio.transaction.rowErrors.priceNegative',
+      ],
+      ['negative fee', { fee: '-1' }, 'portfolio.customInvestment.feeInvalid'],
+      ['malformed date', { date: '02.07.2026' }, 'portfolio.cash.invalidDate'],
+    ];
+
+    test.each(cases)('%s resolves from the catalog in EN and DE', (_name, seed, messageKey) => {
+      const messages = ['en', 'de'].map((locale) => {
+        const result = validateRow(row(seed), translator(locale));
+        expect(result.input).toBeUndefined();
+        expect(result.error).toBe(rowError(locale, messageKey));
+        // A key that resolves to nothing comes back as the dot-path itself.
+        expect(result.error).not.toContain(messageKey);
+        return result.error;
+      });
+      expect(messages[0]).not.toBe(messages[1]);
+    });
+
+    test('a valid row still parses, so the translator did not swallow the happy path', () => {
+      const result = validateRow(row({ quantity: '2', price: '10', fee: '1' }), translator('de'));
+      expect(result.error).toBeUndefined();
+      expect(result.input).toMatchObject({ quantity: 2, price: 10, fee: 1 });
+    });
   });
 
   test('sell in amount mode derives quantity sold and labels the field "Amount received"', async () => {

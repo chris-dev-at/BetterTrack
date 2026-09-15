@@ -2,7 +2,11 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 
 import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
+import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
+
+/** Mutating API calls need this header or the CSRF guard 403s them. */
+const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 
 /**
  * Flip the same discreet setting through the compact surface available at the
@@ -105,4 +109,94 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   await expect(user.page.locator('body')).toContainText('€', { timeout: 15_000 });
   await expect(user.page.locator('body')).toContainText(SEEDED);
   await expect(user.page.locator('body')).not.toContainText('•••');
+});
+
+/**
+ * V5-P13 arc (a), second route set (#1757). The sweep above proves ONE surface;
+ * §6.16 claims every surface, and the bell — which renders on every
+ * authenticated route — used to print alert thresholds straight from the
+ * server payload with the toggle on.
+ *
+ * A custom asset with a value point pins a deterministic 500 EUR quote, so the
+ * asset detail page paints a real absolute amount, and a `price_above 100`
+ * alert below it is guaranteed to fire on the next evaluator tick (the same
+ * ≤90s expect-poll `alerts.spec.ts` uses — never a bare sleep). That fire lands
+ * an inbox row whose body carries an amount the server composed into a
+ * sentence, which is exactly the class of leak the seam cannot catch.
+ */
+test('discreet mode masks the asset detail page and the notification bell', async ({ browser }) => {
+  test.setTimeout(300_000);
+
+  const apiRequest = await newAdminRequestContext(newRequestContext);
+  const user = await provisionUser(browser, apiRequest, 'discreetbell');
+  await apiRequest.dispose();
+
+  const page = user.page;
+  const api = user.context.request;
+  const symbol = `E2E Discreet ${Date.now().toString(36)}`;
+
+  const createRes = await api.post(`${API_BASE_URL}/api/v1/custom-assets`, {
+    headers: CSRF_HEADERS,
+    data: { name: symbol, category: 'commodity', currency: 'EUR' },
+  });
+  expect(createRes.ok(), await createRes.text()).toBeTruthy();
+  const assetId = ((await createRes.json()) as { asset: { id: string } }).asset.id;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const pointsRes = await api.put(`${API_BASE_URL}/api/v1/custom-assets/${assetId}/value-points`, {
+    headers: CSRF_HEADERS,
+    data: { points: [{ date: today, value: 500 }] },
+  });
+  expect(pointsRes.ok(), await pointsRes.text()).toBeTruthy();
+
+  const alertRes = await api.post(`${API_BASE_URL}/api/v1/alerts`, {
+    headers: CSRF_HEADERS,
+    data: { assetId, kind: 'price_above', threshold: 100, repeat: false },
+  });
+  expect(alertRes.ok(), await alertRes.text()).toBeTruthy();
+
+  // ── Asset detail, discreet OFF: the pinned quote renders as real money.
+  const DETAIL = `/assets/${assetId}`;
+  await page.goto(DETAIL);
+  await expect(page.locator('body')).toContainText('€', { timeout: 15_000 });
+  await expect(page.locator('body')).toContainText(/500/);
+
+  // ── The bell, discreet OFF: the fired alert names its threshold.
+  await expect(async () => {
+    await page.reload();
+    await expect(page.getByRole('button', { name: /Notifications \(\d+ unread\)/ })).toBeVisible({
+      timeout: 5_000,
+    });
+  }).toPass({ timeout: 120_000, intervals: [3_000, 3_000, 5_000] });
+
+  await page.getByRole('button', { name: /Notifications/ }).click();
+  const bell = page.getByRole('group', { name: 'Notifications' });
+  await expect(bell).toContainText(`${symbol} rose above 100 EUR.`, { timeout: 10_000 });
+  await page.keyboard.press('Escape');
+
+  // ── Toggle ON, then sweep both routes.
+  await flipDiscreetMode(page, true);
+
+  await page.goto(DETAIL);
+  await expect(page.locator('body')).not.toContainText('€', { timeout: 15_000 });
+  await expect(page.locator('body')).not.toContainText(/\b500\b/);
+  await expect(page.locator('body')).toContainText('•••');
+
+  await page.getByRole('button', { name: /Notifications/ }).click();
+  const maskedBell = page.getByRole('group', { name: 'Notifications' });
+  // The amount is gone; the asset, the denomination and the sentence remain.
+  await expect(maskedBell).toContainText(`${symbol} rose above ••• EUR.`, { timeout: 10_000 });
+  await expect(maskedBell).not.toContainText('100 EUR');
+
+  // The bell is in the shell, so the same masked row must hold on another
+  // route — this is the "every authenticated route" half of the claim.
+  await page.keyboard.press('Escape');
+  await page.goto('/portfolio/cash/accounts');
+  await expect(page.locator('body')).not.toContainText('€', { timeout: 15_000 });
+  await page.getByRole('button', { name: /Notifications/ }).click();
+  await expect(page.getByRole('group', { name: 'Notifications' })).toContainText(
+    `${symbol} rose above ••• EUR.`,
+  );
+
+  await user.context.close();
 });

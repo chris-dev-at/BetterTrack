@@ -10,10 +10,12 @@ import {
 import type { Time } from 'lightweight-charts';
 
 import type {
+  DividendProjectionBasis,
   Holding,
   PortfolioHistoryRange,
   PortfolioTotals,
   Transaction,
+  PortfolioHistoryResponse,
 } from '@bettertrack/contracts';
 
 import { dismissRecategorization, getRecategorizationStatus } from '../../lib/portfolioApi';
@@ -23,20 +25,24 @@ import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
 } from '../../lib/marketIntelApi';
-import { useT } from '../../i18n';
+import { type TranslateFn, useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
+import { useDeployCapability } from '../../lib/featureFlags';
 import { assetTypeLabels } from './assetTypeLabels';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
+import { upcomingDividendDate } from '../../lib/dividendDates';
 import {
+  displayZoneDay,
   EM_DASH,
   formatDate,
   formatMoney,
   formatPercent,
   formatQuantity,
   formatSignedPercent,
+  formatUnitPrice,
 } from '../../lib/format';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
@@ -48,8 +54,14 @@ import { AsyncReadState } from '../components/AsyncReadState';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
-import { usePortfolioStore } from './PortfolioStoreProvider';
+import { isVaultedPortfolio, portfolioDisplayName } from './lockedPortfolio';
+import {
+  usePortfolioStore,
+  usePortfolioStoreCapabilities,
+  usePortfolioStoreScope,
+} from './PortfolioStoreProvider';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { useUnlockedPortfolioNames } from '../vault/useUnlockedPortfolioNames';
 import { usePhoneShell } from '../hooks/useCompactShell';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
@@ -187,6 +199,8 @@ function TotalsHeader({
   onWithdraw: () => void;
 }) {
   const t = useT();
+  // Cash moves are writes; see PageHeader for why they leave rather than grey out.
+  const { writes } = usePortfolioStoreCapabilities();
   const investedPct =
     totals.totalValueEur > 0
       ? Math.min(100, Math.max(0, (totals.marketValueEur / totals.totalValueEur) * 100))
@@ -232,14 +246,16 @@ function TotalsHeader({
         />
         <Stat
           delta={
-            <span className="flex gap-2">
-              <button className="bt-link" onClick={onDeposit} type="button">
-                {t('portfolio.overview.depositButton')}
-              </button>
-              <button className="bt-link" onClick={onWithdraw} type="button">
-                {t('portfolio.overview.withdrawButton')}
-              </button>
-            </span>
+            writes ? (
+              <span className="flex gap-2">
+                <button className="bt-link" onClick={onDeposit} type="button">
+                  {t('portfolio.overview.depositButton')}
+                </button>
+                <button className="bt-link" onClick={onWithdraw} type="button">
+                  {t('portfolio.overview.withdrawButton')}
+                </button>
+              </span>
+            ) : undefined
           }
           label={t('portfolio.overview.field.cash')}
           value={<MoneyText amount={totals.cashEur} />}
@@ -783,6 +799,7 @@ function HoldingCard({
   deletingId,
 }: HoldingRowProps) {
   const t = useT();
+  const { writes } = usePortfolioStoreCapabilities();
   const { asset } = holding;
   const dialogAsset: TransactionDialogAsset = {
     id: asset.id,
@@ -870,28 +887,30 @@ function HoldingCard({
         <div className="mt-4 border-t pt-4" style={{ borderColor: 'var(--bt-border)' }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
-            <div className="flex flex-wrap gap-2">
-              {asset.isCustom ? (
-                <Button
-                  onClick={() =>
-                    onEditValuePoints({
-                      id: asset.id,
-                      symbol: asset.symbol,
-                      name: asset.name,
-                      currency: asset.currency,
-                      category: asset.category ?? 'other',
-                      smoothing: asset.smoothing ?? false,
-                    })
-                  }
-                  size="sm"
-                >
-                  {t('portfolio.overview.holdings.editValuePoints')}
+            {writes ? (
+              <div className="flex flex-wrap gap-2">
+                {asset.isCustom ? (
+                  <Button
+                    onClick={() =>
+                      onEditValuePoints({
+                        id: asset.id,
+                        symbol: asset.symbol,
+                        name: asset.name,
+                        currency: asset.currency,
+                        category: asset.category ?? 'other',
+                        smoothing: asset.smoothing ?? false,
+                      })
+                    }
+                    size="sm"
+                  >
+                    {t('portfolio.overview.holdings.editValuePoints')}
+                  </Button>
+                ) : null}
+                <Button onClick={() => onRecord(dialogAsset)} size="sm">
+                  {t('portfolio.overview.recordButton')}
                 </Button>
-              ) : null}
-              <Button onClick={() => onRecord(dialogAsset)} size="sm">
-                {t('portfolio.overview.recordButton')}
-              </Button>
-            </div>
+              </div>
+            ) : null}
           </div>
           {holding.realizedPnl !== 0 ? (
             <p className="bt-meta mt-3">
@@ -933,6 +952,7 @@ function HoldingRow({
   deletingId,
 }: HoldingRowProps) {
   const t = useT();
+  const { writes } = usePortfolioStoreCapabilities();
   const { asset } = h;
   const dialogAsset: TransactionDialogAsset = {
     id: asset.id,
@@ -1010,30 +1030,32 @@ function HoldingRow({
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
-                <div className="flex gap-2">
-                  {asset.isCustom ? (
-                    <Button
-                      onClick={() =>
-                        onEditValuePoints({
-                          id: asset.id,
-                          symbol: asset.symbol,
-                          name: asset.name,
-                          currency: asset.currency,
-                          // Custom holdings always carry a category (V3-P2);
-                          // fall back defensively so the editor seeds cleanly.
-                          category: asset.category ?? 'other',
-                          smoothing: asset.smoothing ?? false,
-                        })
-                      }
-                      size="sm"
-                    >
-                      {t('portfolio.overview.holdings.editValuePoints')}
+                {writes ? (
+                  <div className="flex gap-2">
+                    {asset.isCustom ? (
+                      <Button
+                        onClick={() =>
+                          onEditValuePoints({
+                            id: asset.id,
+                            symbol: asset.symbol,
+                            name: asset.name,
+                            currency: asset.currency,
+                            // Custom holdings always carry a category (V3-P2);
+                            // fall back defensively so the editor seeds cleanly.
+                            category: asset.category ?? 'other',
+                            smoothing: asset.smoothing ?? false,
+                          })
+                        }
+                        size="sm"
+                      >
+                        {t('portfolio.overview.holdings.editValuePoints')}
+                      </Button>
+                    ) : null}
+                    <Button onClick={() => onRecord(dialogAsset)} size="sm">
+                      {t('portfolio.overview.recordButton')}
                     </Button>
-                  ) : null}
-                  <Button onClick={() => onRecord(dialogAsset)} size="sm">
-                    {t('portfolio.overview.recordButton')}
-                  </Button>
-                </div>
+                  </div>
+                ) : null}
               </div>
 
               {h.realizedPnl !== 0 ? (
@@ -1109,6 +1131,11 @@ function TransactionRow({
   deleting: boolean;
 }) {
   const t = useT();
+  // Editing and deleting a transaction are writes. They are unreachable today
+  // only because the store that refuses writes also refuses the row READ that
+  // renders this table — luck, not a guard, and #1532's document-source seam
+  // is about to make those rows render.
+  const { writes } = usePortfolioStoreCapabilities();
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -1136,7 +1163,7 @@ function TransactionRow({
         {txn.note ?? EM_DASH}
       </td>
       <td className="is-num">
-        {confirming ? (
+        {!writes ? null : confirming ? (
           <span className="inline-flex items-center gap-1">
             <span className="bt-muted">{t('portfolio.overview.transaction.deleteConfirm')}</span>
             <button
@@ -1199,6 +1226,9 @@ function TransactionCard({
   deleting: boolean;
 }) {
   const t = useT();
+  // Same guard as TransactionRow: a store that cannot write offers no edit or
+  // delete, whatever renders the rows.
+  const { writes } = usePortfolioStoreCapabilities();
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -1241,7 +1271,7 @@ function TransactionCard({
         </div>
       </dl>
       <div className="bt-phone-card__actions">
-        {confirming ? (
+        {!writes ? null : confirming ? (
           <>
             <span className="bt-muted self-center">
               {t('portfolio.overview.transaction.deleteConfirm')}
@@ -1361,95 +1391,183 @@ function RecategorizeBanner() {
 
 /**
  * Projected dividend income (monthly/yearly EUR) + the upcoming ex/pay calendar
- * across held + watchlist assets. Both read the same `MARKET_INTEL_ENABLED`
- * gate: gate off (or nothing to show) ⇒ the whole block renders NOTHING, so the
- * portfolio page is byte-identical when unconfigured (anti-bloat "invisible when
- * unconfigured"). Compact: one income line with a monthly/yearly toggle and a
+ * across held + watchlist assets.
+ *
+ * Two different absences (#1681). The deployment's `MARKET_INTEL_ENABLED`
+ * capability decides whether this block exists at all: off ⇒ NOTHING renders,
+ * so the portfolio page is byte-identical when unconfigured (§6.3 "blocks
+ * simply disappear"). With it on, the two reads stand on their own feet: the
+ * projection answers all-or-nothing (#1616 — one unresolvable holding makes the
+ * whole total `available: false`), and that must not take a calendar that
+ * computed perfectly down with it. So an unresolved projection renders the
+ * calendar plus a short reason, and an empty calendar still renders the
+ * projection. Only when neither has anything to say does the block stay hidden
+ * (anti-bloat). Compact: one income line with a monthly/yearly toggle and a
  * calendar truncated to three rows with an expand toggle.
  */
+/**
+ * The one line naming what a projected dividend total is made of. Null when the
+ * projection carries no basis (nothing contributed), because then there is
+ * nothing to caveat.
+ */
+function dividendBasisNote(basis: DividendProjectionBasis | null, t: TranslateFn): string | null {
+  switch (basis) {
+    case 'trailing-12m':
+      return t('portfolio.dividends.basis.trailing12m');
+    case 'forward-annualized':
+      return t('portfolio.dividends.basis.forwardAnnualized');
+    case 'mixed':
+      return t('portfolio.dividends.basis.mixed');
+    default:
+      return null;
+  }
+}
+
 function DividendIntelSection() {
   const t = useT();
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
   const [showAll, setShowAll] = useState(false);
+  const marketIntel = useDeployCapability('marketIntel');
 
   const projection = useQuery({
     queryKey: PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
     queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
   const calendar = useQuery({
     queryKey: PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
     queryFn: ({ signal }) => getPortfolioDividendCalendar(signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
 
-  // Invisible when unconfigured: nothing rendered until we know the gate is on.
-  if (!projection.data?.available) return null;
+  // Invisible when unconfigured: no heading, no empty state, no explanation.
+  if (!marketIntel) return null;
 
   const proj = projection.data;
   const entries = calendar.data?.available ? calendar.data.entries : [];
-  const hasProjection = proj.holdings.length > 0;
-  // Nothing at all to surface → stay hidden (anti-bloat).
+  const hasProjection = proj?.available === true && proj.holdings.length > 0;
+  // A definite "could not compute" — distinct from a read still in flight or
+  // failed, which says nothing about this portfolio and draws nothing.
+  const projectionUnresolved = proj?.available === false;
+  // …and distinct again from "the book is past the per-request fan-out budget"
+  // (§5.3): the projection refuses BEFORE spending provider budget, so it is
+  // unavailable for a reason that has nothing to do with an unresolvable
+  // holding and must not borrow that copy.
+  const projectionTruncated = proj?.truncated === true;
+  // The calendar, unlike the projection, still publishes what it covered — so it
+  // says on one line that it covered only part of the book.
+  const calendarTruncated = calendar.data?.available === true && calendar.data.truncated === true;
+  // Nothing at all to surface → stay hidden (anti-bloat). An unresolved
+  // projection is only worth explaining beside a calendar that did resolve.
   if (!hasProjection && entries.length === 0) return null;
 
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
-  const total = view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
+  // One "today" for the whole list so every row is labelled against the same
+  // day boundary the API used when it built and ordered the calendar.
+  const calendarToday = displayZoneDay();
+  const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
+  const basisNote = hasProjection ? dividendBasisNote(proj.basis, t) : null;
 
   return (
     <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.dividends.title')}</h2>
-        <Seg
-          ariaLabel={t('portfolio.dividends.viewGroupLabel')}
-          onChange={setView}
-          options={[
-            { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
-            { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
-          ]}
-          value={view}
-        />
+        {/* The period toggle switches a projected total; without one it would
+            control nothing, so a calendar-only block does not carry it. */}
+        {hasProjection ? (
+          <Seg
+            ariaLabel={t('portfolio.dividends.viewGroupLabel')}
+            onChange={setView}
+            options={[
+              { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
+              { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
+            ]}
+            value={view}
+          />
+        ) : null}
       </div>
 
       {hasProjection ? (
-        <p className="flex items-baseline gap-2">
-          <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
-            {formatMoney(total, 'EUR')}
-          </span>
-          <span className="bt-meta">
-            {view === 'monthly'
-              ? t('portfolio.dividends.perMonth')
-              : t('portfolio.dividends.perYear')}
-          </span>
-        </p>
+        <>
+          <p className="flex items-baseline gap-2">
+            <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
+              {/* The projection declares its own denomination (the caller's base,
+                  §5.4) — rendering a hard 'EUR' beside a base-denominated net
+                  worth labelled a currency the arithmetic never used. */}
+              {formatMoney(total, proj?.currency)}
+            </span>
+            <span className="bt-meta">
+              {view === 'monthly'
+                ? t('portfolio.dividends.perMonth')
+                : t('portfolio.dividends.perYear')}
+            </span>
+          </p>
+          {/* …and what that number is MADE of. A `trailing-12m` estimate is the
+              last twelve months' realized payouts, so a special dividend is in
+              it and the figure reads well above true forward income for a year;
+              a book can also legitimately mix the two bases. The contract has
+              carried the basis since #1741 and no surface rendered it (#1790). */}
+          {basisNote ? <p className="bt-meta">{basisNote}</p> : null}
+        </>
+      ) : projectionTruncated ? (
+        <p className="bt-meta">{t('portfolio.dividends.projectionTruncated')}</p>
+      ) : projectionUnresolved ? (
+        <p className="bt-meta">{t('portfolio.dividends.projectionUnresolved')}</p>
       ) : null}
 
       {entries.length > 0 ? (
         <div className="flex flex-col gap-1.5" style={{ marginTop: 12 }}>
           <h3 className="bt-label">{t('portfolio.dividends.calendarTitle')}</h3>
+          {calendarTruncated ? (
+            <p className="bt-meta">{t('portfolio.dividends.calendarTruncated')}</p>
+          ) : null}
           <ul className="bt-band flex flex-col">
-            {visibleEntries.map((entry) => (
-              <li
-                key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
-                className="flex items-center justify-between gap-3 py-2 text-sm"
-              >
-                <Link
-                  className="bt-row-title"
-                  style={{ textDecoration: 'none' }}
-                  title={entry.name}
-                  to={`/assets/${entry.assetId}`}
+            {visibleEntries.map((entry) => {
+              // The date this event is still upcoming on — the earliest of its
+              // ex/pay dates that has not passed, which is also the date the API
+              // ordered the list on. An event already gone ex but not yet paid
+              // shows its PAY date: printing the ex-date behind us under
+              // "upcoming" was #1758, and "ex —" for a pay-only row was #1681.
+              const upcoming = upcomingDividendDate(entry, calendarToday);
+              const isEx = upcoming?.isEx ?? false;
+              const date = upcoming?.iso ?? null;
+              return (
+                <li
+                  key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
+                  className="flex items-center justify-between gap-3 py-2 text-sm"
                 >
-                  {entry.symbol}
-                </Link>
-                <span className="bt-meta flex items-center gap-2">
-                  {entry.amount != null ? (
-                    <span className="bt-soft bt-num">
-                      {formatMoney(entry.amount, entry.currency ?? undefined)}
-                    </span>
-                  ) : null}
-                  <span>{t('portfolio.dividends.exOn', { date: formatDate(entry.exDate) })}</span>
-                </span>
-              </li>
-            ))}
+                  <Link
+                    className="bt-row-title"
+                    style={{ textDecoration: 'none' }}
+                    title={entry.name}
+                    to={`/assets/${entry.assetId}`}
+                  >
+                    {entry.symbol}
+                  </Link>
+                  <span className="bt-meta flex items-center gap-2">
+                    {/* A per-SHARE distribution, not a total: the unit-price
+                        rule (§7.1 rule 4) is what keeps a sub-cent monthly-ETF
+                        payout from printing as 0,00 — the Home widget already
+                        renders this exact field that way, and the two surfaces
+                        must not disagree about the same number. */}
+                    {entry.amount != null ? (
+                      <span className="bt-soft bt-num">
+                        {formatUnitPrice(entry.amount, entry.currency ?? undefined)}
+                      </span>
+                    ) : null}
+                    {date !== null ? (
+                      <span>
+                        {t(isEx ? 'portfolio.dividends.exOn' : 'portfolio.dividends.payOn', {
+                          date: formatDate(date),
+                        })}
+                      </span>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
           {entries.length > 3 ? (
             <button
@@ -1478,6 +1596,43 @@ function DividendIntelSection() {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 /**
+ * The chart's summary line (#1669): the window's time-weighted return — the
+ * last point of the served `performance` curve, since inception on MAX and
+ * the window's own on a range slice — beside the money-weighted (Modified
+ * Dietz) return the server computes over the same window. The two answer
+ * different questions ("how did the strategy do" vs "how did my money do"),
+ * and only the second follows the value curve when deposits dominate, which
+ * is why MAX carries a one-line explainer. The chart itself stays the TWR
+ * curve. A missing money-weighted figure (no capital in the window, or a twin
+ * that does not compute it) renders as the em dash, never as 0.
+ */
+function ReturnSummaryLine({
+  history,
+  range,
+}: {
+  history: PortfolioHistoryResponse;
+  range: PriceRange;
+}) {
+  const t = useT();
+  const last = history.performance[history.performance.length - 1];
+  if (last === undefined) return null;
+  return (
+    <div className="bt-meta" style={{ marginBottom: 8 }}>
+      <p>
+        {t('portfolio.overview.chart.summaryTimeWeighted', {
+          pct: formatSignedPercent(last.pct),
+        })}
+        {' · '}
+        {t('portfolio.overview.chart.summaryMoneyWeighted', {
+          pct: formatSignedPercent(history.moneyWeightedPct ?? null),
+        })}
+      </p>
+      {range === 'Max' ? <p>{t('portfolio.overview.chart.summaryMaxExplainer')}</p> : null}
+    </div>
+  );
+}
+
+/**
  * Portfolio overview (PROJECTPLAN.md §6.9; Origin recomposition per
  * docs/redesign/REAL_APP_REDESIGN_PROMPT.md): one continuous working canvas —
  * net-worth hero + ruled stat strip, the value-over-time chart integrated into
@@ -1489,6 +1644,11 @@ export function PortfolioPage() {
   const t = useT();
   const queryClient = useQueryClient();
   const store = usePortfolioStore();
+  // What the store under this subtree can serve, and which cache keyspace its
+  // answers belong in (see PortfolioStoreProvider). Both are the account-level
+  // defaults everywhere except inside an unlocked vault portfolio.
+  const capabilities = usePortfolioStoreCapabilities();
+  const storeScope = usePortfolioStoreScope();
   const [range, setRange] = useState<PriceRange>('1M');
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
   // Remembered per device for this surface (board #68 item 4) — the default is
@@ -1514,8 +1674,13 @@ export function PortfolioPage() {
   const [searchParams] = useSearchParams();
 
   // Global create actions land on the overview because this is the surface
-  // that owns the transaction dialog.
-  useCreateIntent(CREATE_INTENT.trade, () => setTxnDialog({ kind: 'create' }));
+  // that owns the transaction dialog — unless the store below cannot write, in
+  // which case the palette/shell entry must not open a dialog that can only
+  // refuse (failure map #7). The intent is still consumed, so the query flag
+  // does not stay in the URL waiting to fire on the next portfolio.
+  useCreateIntent(CREATE_INTENT.trade, () => {
+    if (capabilities.writes) setTxnDialog({ kind: 'create' });
+  });
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
@@ -1535,15 +1700,31 @@ export function PortfolioPage() {
   const recentSourceFilter =
     recentSourceSelection?.portfolioId === portfolioId ? recentSourceSelection.source : 'all';
 
+  // The decrypted names of whatever this device holds open, so a vaulted
+  // portfolio is named by what it IS rather than by the vault it sits in
+  // (failure map #6). Empty for every normal account — the roster carries no
+  // vaulted row, so the hook resolves nothing and imports nothing.
+  const unlockedNames = useUnlockedPortfolioNames(
+    useMemo(() => portfoliosQuery.data?.portfolios ?? [], [portfoliosQuery.data]),
+  );
+  const displayName =
+    portfolio == null
+      ? null
+      : portfolioDisplayName(
+          portfolio,
+          t('vault.lockedStub.fallbackAlias'),
+          unlockedNames.get(portfolio.id),
+        );
+
   const portfolioQuery = useQuery({
-    queryKey: ['portfolio', portfolioId],
+    queryKey: ['portfolio', portfolioId, ...storeScope],
     queryFn: ({ signal }) => store.getPortfolio(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
 
   const historyQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
+    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range), ...storeScope],
     queryFn: ({ signal }) =>
       store.getPortfolioHistory(portfolioId!, toHistoryRange(range), false, signal),
     enabled: portfolioId !== null,
@@ -1561,6 +1742,7 @@ export function PortfolioPage() {
       'recent',
       'executedAt',
       recentSourceFilter,
+      ...storeScope,
     ],
     queryFn: ({ signal }) =>
       store.listTransactions(
@@ -1591,7 +1773,7 @@ export function PortfolioPage() {
   );
   const holdingTransactionQueries = useQueries({
     queries: expandedAssetIds.map((assetId) => ({
-      queryKey: ['portfolio', portfolioId, 'transactions', 'asset', assetId],
+      queryKey: ['portfolio', portfolioId, 'transactions', 'asset', assetId, ...storeScope],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         store.listTransactions(
           portfolioId!,
@@ -1606,7 +1788,7 @@ export function PortfolioPage() {
   // Active cash sources (V3-P3): fed to the cash + transaction dialogs so their
   // source picker appears once a second source exists (defaulting to Main).
   const cashSourcesQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'cash-sources', false],
+    queryKey: ['portfolio', portfolioId, 'cash-sources', false, ...storeScope],
     queryFn: ({ signal }) => store.listCashSources(portfolioId!, false, signal),
     enabled: portfolioId !== null,
     staleTime: 30_000,
@@ -1700,13 +1882,30 @@ export function PortfolioPage() {
     portfolioQuery.isError ||
     !portfolioQuery.data
   ) {
+    // A VAULTED portfolio never gets told to refresh the page. The unlock
+    // session is memory-only, so a reload is the one action that turns a
+    // transient read failure into a locked stub and a second password prompt
+    // (failure map #1/#3). Retry re-runs the read in place instead, which is
+    // what the copy offers.
+    const vaulted = isVaultedPortfolio(portfolio);
     return (
       <div className="flex flex-col gap-4">
         <PageHeader
           onRecord={() => setTxnDialog({ kind: 'create' })}
           onNewCustom={() => setCustomOpen(true)}
         />
-        <Alert tone="error">{t('portfolio.overview.loadError')}</Alert>
+        <Alert tone="error">
+          {vaulted ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t('portfolio.overview.vaultedLoadError')}</span>
+              <Button onClick={() => void portfolioQuery.refetch()} size="sm">
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : (
+            t('portfolio.overview.loadError')
+          )}
+        </Alert>
         {renderDialogs()}
       </div>
     );
@@ -1740,7 +1939,11 @@ export function PortfolioPage() {
                   asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
                   defaultPayFromCash={portfolio?.defaultPayFromCash ?? false}
                   cashSources={cashSources}
-                  portfolioName={portfolio?.name}
+                  // NEVER `portfolio.name`: a vaulted row's name column holds
+                  // E4's content-free sentinel, which this dialog printed as its
+                  // subtitle (failure map #6). One seam decides what a portfolio
+                  // is called, everywhere.
+                  portfolioName={displayName ?? undefined}
                   availableCashEur={cashSources.find((s) => s.isMain)?.balanceEur}
                   heldQuantity={heldQuantity}
                   onClose={() => setTxnDialog(null)}
@@ -1788,15 +1991,23 @@ export function PortfolioPage() {
       />
 
       {/* Both supporting reads are classified separately: whichever of them is a
-          recoverable outage keeps its Retry, and that Retry re-runs only it. */}
-      <AsyncReadState
-        loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
-        reads={[
-          { error: transactionsQuery.error, refetch: () => transactionsQuery.refetch() },
-          { error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() },
-        ]}
-        errorLabel={t('portfolio.overview.detailsLoadError')}
-      />
+          recoverable outage keeps its Retry, and that Retry re-runs only it.
+          A store that refuses these rows BY DESIGN states nothing here at all:
+          the refusal is not an outage and not news, and announcing it painted a
+          permanent "This information isn't available." over the net-worth
+          headline of a portfolio that was rendering perfectly (failure map #7).
+          The places that would otherwise show an empty list — the recent ledger,
+          the expanded holding rows — keep saying so where the rows would be. */}
+      {capabilities.rowReads ? (
+        <AsyncReadState
+          loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
+          reads={[
+            { error: transactionsQuery.error, refetch: () => transactionsQuery.refetch() },
+            { error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() },
+          ]}
+          errorLabel={t('portfolio.overview.detailsLoadError')}
+        />
+      ) : null}
 
       <NormalModeOnly>
         {/* This migration flag exists only on server-side custom-asset rows.
@@ -1828,12 +2039,18 @@ export function PortfolioPage() {
           description={t('portfolio.overview.emptyState.description')}
           cta={
             <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setTxnDialog({ kind: 'create' })} variant="primary">
-                {t('portfolio.overview.emptyState.recordButton')}
-              </Button>
-              <Button onClick={() => setCustomOpen(true)}>
-                {t('portfolio.overview.emptyState.newCustomButton')}
-              </Button>
+              {/* The two writes leave when the store has none; the Assets link
+                  stays because browsing the catalog works either way. */}
+              {capabilities.writes ? (
+                <>
+                  <Button onClick={() => setTxnDialog({ kind: 'create' })} variant="primary">
+                    {t('portfolio.overview.emptyState.recordButton')}
+                  </Button>
+                  <Button onClick={() => setCustomOpen(true)}>
+                    {t('portfolio.overview.emptyState.newCustomButton')}
+                  </Button>
+                </>
+              ) : null}
               <Link className="bt-btn bt-btn--quiet" to="/assets/search">
                 {t('portfolio.overview.emptyState.searchLink')}
               </Link>
@@ -1878,6 +2095,9 @@ export function PortfolioPage() {
                 </Link>
               </div>
             </div>
+            {historyQuery.data ? (
+              <ReturnSummaryLine history={historyQuery.data} range={range} />
+            ) : null}
             {perfMode ? (
               <p className="bt-meta" style={{ marginBottom: 8 }}>
                 {t('portfolio.overview.chart.perfHint')}
@@ -1983,15 +2203,22 @@ export function PortfolioPage() {
  */
 function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCustom: () => void }) {
   const t = useT();
+  // A store that cannot write is not offered write actions. Hidden rather than
+  // disabled: a disabled "+ Transaction" invites a hover, a tooltip and a
+  // theory, and the honest answer here is that this surface has no writes at
+  // all — not that this one is temporarily out of reach (failure map #7).
+  const { writes } = usePortfolioStoreCapabilities();
   return (
     <PageHead
       actions={
-        <>
-          <Button onClick={onNewCustom}>{t('portfolio.overview.newCustomButton')}</Button>
-          <Button onClick={onRecord} variant="primary">
-            {t('portfolio.overview.recordButton')}
-          </Button>
-        </>
+        writes ? (
+          <>
+            <Button onClick={onNewCustom}>{t('portfolio.overview.newCustomButton')}</Button>
+            <Button onClick={onRecord} variant="primary">
+              {t('portfolio.overview.recordButton')}
+            </Button>
+          </>
+        ) : null
       }
       title={t('portfolio.overview.title')}
     />

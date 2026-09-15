@@ -29,6 +29,7 @@ import {
   setCashBalanceResponseSchema,
   SOURCE_TAG_STANDING_ORDER,
   standingOrderListResponseSchema,
+  standingOrderQuoteRefusal,
   standingOrderSchema,
   taxSettingsResponseSchema,
   transactionInputSchema,
@@ -119,9 +120,10 @@ import type {
   VaultAtomicMutation,
   VaultDocumentReconcileContext,
   VaultDocumentReconcileResult,
+  VaultMutationContext,
   VaultMutationEntityDelta,
-  VaultSyncEngine,
-  VaultSyncState,
+  VaultSyncCandidate,
+  VaultSyncStatus,
 } from './sync';
 
 /** The server stores transaction prices as numeric(20,6) (schema.ts). */
@@ -335,8 +337,55 @@ export interface VaultPortfolioStore {
   discardAllData(): Promise<void>;
 }
 
+/**
+ * Everything this store reads from the thing behind it, and nothing more
+ * (#1532).
+ *
+ * The projections below were written against `VaultSyncEngine`, but they only
+ * ever touch three of its members: the active document (`state`), the
+ * provenance stamp a written row carries (`deviceId`), and the CAS write path
+ * (`mutate`). `start`/`reconnect` belong to an account-wide sync coordinator
+ * and answer nothing a projection asks.
+ *
+ * Narrowing the parameter to those three is what lets a per-portfolio E6
+ * resolution — one authenticated document, no sync coordinator, no write path —
+ * back the SAME ~4000 lines of projection code instead of a second copy of it
+ * (#1531 follow-up). `VaultSyncEngine` still satisfies this structurally, so
+ * every account-level caller is unchanged. A source that cannot write says so
+ * from `mutate`, at the real write boundary, rather than by re-listing which
+ * operations are writes.
+ */
+export interface VaultPortfolioDocumentState {
+  status: VaultSyncStatus;
+  /**
+   * The authenticated document, or `null` when this source currently holds
+   * none. Deliberately narrower than `VaultSyncCandidate`: a resolution owns a
+   * decrypted document, not a data home and a re-encryptable envelope, and
+   * fabricating those two just to satisfy a type would be a lie in a structure
+   * whose whole job is provenance.
+   */
+  active: {
+    readonly document: VaultDocument;
+    /**
+     * The envelope identity a standing-order commit pins its expected candidate
+     * against. Optional because only a source that can actually write carries
+     * one; `assertStandingOrderCandidate` fails closed without it rather than
+     * skipping the check.
+     */
+    readonly header?: VaultSyncCandidate['header'];
+  } | null;
+}
+
+export interface VaultPortfolioDocumentSource {
+  readonly deviceId: string;
+  readonly state: VaultPortfolioDocumentState;
+  mutate(
+    mutator: (context: VaultMutationContext) => VaultDocument,
+  ): Promise<VaultPortfolioDocumentState>;
+}
+
 interface StoreContext {
-  engine: VaultSyncEngine;
+  engine: VaultPortfolioDocumentSource;
   now: () => string;
   newId: () => string;
   resolveMarketAsset: (assetId: string, signal?: AbortSignal) => Promise<AssetSummary | null>;
@@ -352,11 +401,12 @@ interface EffectivePortfolioTaxSettings {
 
 /**
  * PortfolioStore for paranoid accounts. The only mutable dependency is the
- * authenticated sync engine: reads use its in-memory active document and every
- * write goes through `mutate`, which persists the next encrypted CAS version.
+ * authenticated document source: reads use its in-memory active document and
+ * every write goes through `mutate`, which persists the next encrypted CAS
+ * version.
  */
 export function createVaultPortfolioStore(
-  engine: VaultSyncEngine,
+  engine: VaultPortfolioDocumentSource,
   options: VaultPortfolioStoreOptions = {},
 ): VaultPortfolioStore {
   const context: StoreContext = {
@@ -1071,7 +1121,7 @@ export function createVaultPortfolioStore(
 /** Public name used by the architecture note. */
 export const vaultPortfolioStore = createVaultPortfolioStore;
 
-function requireDocument(engine: VaultSyncEngine): VaultDocument {
+function requireDocument(engine: VaultPortfolioDocumentSource): VaultDocument {
   const state = engine.state;
   if (state.status === 'locked') {
     throw storeError('VAULT_LOCKED', 'The vault must be unlocked before portfolio data is read.');
@@ -1916,17 +1966,20 @@ async function materializeStandingOrderOccurrence(
       const assetId = stringField(order.data, 'assetId');
       const asset = resolveTransactionAsset(document, assetId);
       const orderCurrency = stringField(order.data, 'currency');
-      if (input.quoteCurrency !== orderCurrency || asset.currency !== orderCurrency) {
+      // One shared rule with the server engine (#1712): currency agreement
+      // across quote, order and asset, plus a finite, positive price below the
+      // transaction ceiling. A missing price/currency is simply not bookable.
+      const price = input.price ?? Number.NaN;
+      const refusal = standingOrderQuoteRefusal({
+        price,
+        quoteCurrency: input.quoteCurrency ?? '',
+        orderCurrency,
+        assetCurrency: asset.currency,
+      });
+      if (refusal !== null) {
         throw storeError(
           'VAULT_DATA_INVALID',
-          'The standing-order quote currency does not match the local asset snapshot.',
-        );
-      }
-      const price = input.price;
-      if (price == null || !Number.isFinite(price) || price <= 0) {
-        throw storeError(
-          'VAULT_DATA_INVALID',
-          'A positive current quote is required for a buy standing order.',
+          `A standing-order buy needs a bookable quote (${refusal}).`,
         );
       }
       ledgerEntity = entityRecord(
@@ -2073,19 +2126,21 @@ function assertStandingOrderOccurrenceInput(input: VaultStandingOrderOccurrenceI
 }
 
 function assertStandingOrderCandidate(
-  engine: VaultSyncEngine,
+  engine: VaultPortfolioDocumentSource,
   document: VaultDocument,
   currentVersion: number | undefined,
   expected: VaultStandingOrderOccurrenceInput['expectedCandidate'],
 ): void {
   const active = engine.state.active;
+  const header = active?.header;
   if (
     active === null ||
+    header === undefined ||
     active.document !== document ||
     (currentVersion !== undefined && currentVersion !== expected.vaultVersion) ||
-    active.header.vaultVersion !== expected.vaultVersion ||
-    active.header.keyId !== expected.vaultKeyId ||
-    active.header.writeId !== expected.writeId
+    header.vaultVersion !== expected.vaultVersion ||
+    header.keyId !== expected.vaultKeyId ||
+    header.writeId !== expected.writeId
   ) {
     throw storeError(
       'VAULT_OPERATION_ABORTED',
@@ -2106,14 +2161,40 @@ function requireLiveStandingOrder(document: VaultDocument, orderId: string): Vau
   return order;
 }
 
+/**
+ * Whether this portfolio's schedules are suspended because it is archived —
+ * the twin of the server's `listActive` filter and its in-lock recheck, which
+ * both exclude an archived portfolio from every booking (#1712). A portfolio
+ * that is not in the document is not "archived" here; the callers that need it
+ * to exist raise their own not-found.
+ */
+export function isStandingOrderPortfolioArchived(
+  document: VaultDocument,
+  portfolioId: string,
+): boolean {
+  const portfolio = findLiveEntity(document, 'portfolio', portfolioId);
+  return portfolio !== undefined && nullableStringField(portfolio.data, 'archivedAt') !== null;
+}
+
 function assertStandingOrderDefinition(
   document: VaultDocument,
   order: VaultEntity,
   input: VaultStandingOrderOccurrenceInput,
 ): void {
-  const portfolio = requirePortfolio(document, stringField(order.data, 'portfolioId'));
+  const portfolioId = stringField(order.data, 'portfolioId');
+  const portfolio = requirePortfolio(document, portfolioId);
   if (stringField(order.data, 'userId') !== stringField(portfolio.data, 'userId')) {
     throw storeError('VAULT_DATA_INVALID', 'The standing order and portfolio owners do not match.');
+  }
+  // The last-resort guard for an archive that commits (here: on another device)
+  // between the scan's decision and this write. The server refuses the same
+  // booking under its portfolio lock; archive is a suspension, not a pause, so
+  // no row may be written and no watermark advanced while it holds.
+  if (isStandingOrderPortfolioArchived(document, portfolioId)) {
+    throw storeError(
+      'VAULT_OPERATION_UNAVAILABLE',
+      'A standing order on an archived portfolio cannot be booked.',
+    );
   }
   const isBuy = stringField(order.data, 'kind') === 'buy-asset';
   const assetId = nullableStringField(order.data, 'assetId');
@@ -2138,12 +2219,19 @@ function assertStandingOrderDefinition(
   if (
     isBuy &&
     assetId !== null &&
-    Date.parse(input.recordedAt) !== Date.parse(input.executedAt) &&
-    resolveTransactionAsset(document, assetId).isCustom
+    // Judged only when the snapshot is present: a booking whose asset row is
+    // gone is the replay path's business, not this rule's.
+    findLiveEntity(document, 'customAsset', assetId) != null &&
+    resolveTransactionAsset(document, assetId).isCustom &&
+    Date.parse(input.recordedAt) !== localValuationStamp(document, assetId, input.executedAt)
   ) {
+    // A local asset prices from the owner's newest value point, so THAT day is
+    // the booking's market stamp — the local twin of a provider `asOf` (#1793).
+    // Recording the scan instant instead let a months-old valuation pass for a
+    // fresh price on the one field that says when a buy was priced.
     throw storeError(
       'VAULT_DATA_INVALID',
-      'A local-asset standing order must record the scan timestamp.',
+      'A local-asset standing order must record its valuation day.',
     );
   }
   const lastRunAt = nullableStringField(order.data, 'lastRunAt');
@@ -2204,8 +2292,52 @@ function assertStandingOrderDue(
   }
 }
 
-function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
+/**
+ * The market stamp a local-asset booking must carry: UTC midnight of the newest
+ * value point behind its price, clamped at the scan instant (a valuation dated
+ * ahead of the scan is a stamp, never a licence to post into the future). With
+ * no value point at all there is nothing to date the price by, so the scan
+ * instant stands — that booking cannot be priced from the document anyway.
+ */
+function localValuationStamp(document: VaultDocument, assetId: string, executedAt: string): number {
+  const executedAtMs = Date.parse(executedAt);
+  const latest = valuePointsFromDocument(document, assetId)
+    .map((point) => point.date)
+    .sort()
+    .at(-1);
+  if (latest === undefined) return executedAtMs;
+  const valuationMs = Date.parse(`${latest}T00:00:00.000Z`);
+  return Number.isFinite(valuationMs) ? Math.min(valuationMs, executedAtMs) : executedAtMs;
+}
+
+/**
+ * Which ledger row one booking of this order writes — the twin of the server's
+ * `standingOrderService.bookRow` branch. A buy books a `transaction` and
+ * NOTHING else (its `cashMovements` are explicitly empty upstream); only the
+ * cash kinds move the ledger. Exported so the surfaces that reason about what a
+ * booking does to net worth — the Forecast projection (#1892) — can assert
+ * against this rule instead of restating it.
+ */
+export function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
   return stringField(order.data, 'kind') === 'buy-asset' ? 'transaction' : 'cashMovement';
+}
+
+/**
+ * Every period this order already holds a durable claim for — the twin of the
+ * server's `listClaimedPeriodKeys`. The run ledger, not the `lastPeriodKey`
+ * watermark, is the authoritative claim state (a watermark can lag a booked
+ * run), so catch-up reporting subtracts these before calling a period dropped.
+ */
+export function claimedStandingOrderPeriodKeys(
+  document: VaultDocument,
+  orderId: string,
+): Set<string> {
+  const claimed = new Set<string>();
+  for (const run of liveEntities(document, 'standingOrderRun')) {
+    if (stringField(run.data, 'standingOrderId') !== orderId) continue;
+    claimed.add(stringField(run.data, 'periodKey'));
+  }
+  return claimed;
 }
 
 export function existingStandingOrderOccurrence(
@@ -2474,7 +2606,7 @@ function findLiveEntity(
 }
 
 function requireCommittedMutationEntity(
-  state: VaultSyncState,
+  state: VaultPortfolioDocumentState,
   kind: VaultEntityKind,
   id: string,
   expected: VaultEntity | null,
@@ -3564,6 +3696,26 @@ function assertUniqueCashSourceName(
   }
 }
 
+/**
+ * `nextRunDate` for display, degrading to "nothing scheduled" for a schedule the
+ * math refuses — a non-calendar watermark, a monthly row without its anchor. The
+ * server's DTO does exactly the same (#1793): a document that cannot say when it
+ * runs next must not take the whole list down, and must never print a fabricated
+ * day. What is owed is still reported by the scan.
+ */
+function nextRunDateForDisplay(
+  schedule: Parameters<typeof nextStandingOrderRunDate>[0],
+  today: string,
+  lastPeriodKey: string | null,
+  active: boolean,
+): string | null {
+  try {
+    return nextStandingOrderRunDate(schedule, today, lastPeriodKey, active);
+  } catch {
+    return null;
+  }
+}
+
 function standingOrderFromEntity(
   document: VaultDocument,
   entity: VaultEntity,
@@ -3580,11 +3732,16 @@ function standingOrderFromEntity(
   const status = stringField(entity.data, 'status');
   const lastPeriodKey = nullableStringField(entity.data, 'lastPeriodKey');
   const today = calendarDayInTimezone(new Date(now), 'Europe/Vienna');
+  const portfolioId = stringField(entity.data, 'portfolioId');
+  // Archive suspends the schedule exactly as it does server-side, so the DTO
+  // carries it and `nextRunDate` is computed from the same predicate the API
+  // uses (`status === 'active' && !suspendedByArchive`, #1712).
+  const suspendedByArchive = isStandingOrderPortfolioArchived(document, portfolioId);
   return parseVaultData(
     () =>
       standingOrderSchema.parse({
         id: entity.id,
-        portfolioId: stringField(entity.data, 'portfolioId'),
+        portfolioId,
         kind,
         assetId,
         assetSymbol: asset?.symbol ?? null,
@@ -3597,9 +3754,10 @@ function standingOrderFromEntity(
         startDate,
         endDate,
         status,
+        suspendedByArchive,
         lastRunAt: nullableStringField(entity.data, 'lastRunAt'),
         lastPeriodKey,
-        nextRunDate: nextStandingOrderRunDate(
+        nextRunDate: nextRunDateForDisplay(
           {
             cadence: cadence === 'daily' ? 'daily' : 'monthly',
             anchorDay,
@@ -3608,7 +3766,7 @@ function standingOrderFromEntity(
           },
           today,
           lastPeriodKey,
-          status === 'active',
+          status === 'active' && !suspendedByArchive,
         ),
         createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
         updatedAt: stringField(entity.data, 'updatedAt', entity.editedAt),

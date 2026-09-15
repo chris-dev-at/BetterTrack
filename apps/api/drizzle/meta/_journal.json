@@ -736,6 +736,76 @@
       "when": 1787971639103,
       "tag": "0104_admin_user_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1788065008781,
+      "tag": "0105_living_tax_year_correction_fanout",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1788326977145,
+      "tag": "0106_import_row_kind_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1788362767548,
+      "tag": "0107_fk_index_parity",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1788362802771,
+      "tag": "0108_schema_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1788400000000,
+      "tag": "0109_usage_activation_marker",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1788460000000,
+      "tag": "0110_search_catalog_bounds",
+      "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1788480000000,
+      "tag": "0111_item_comments_thread_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1788560000000,
+      "tag": "0112_asset_catalog_write_watermark",
+      "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1788640000000,
+      "tag": "0113_users_privacy_mode_restricted_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1788720000000,
+      "tag": "0114_search_catalog_accent_fold",
+      "breakpoints": true
     }
   ]
 }

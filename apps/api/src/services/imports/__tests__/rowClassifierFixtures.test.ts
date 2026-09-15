@@ -115,11 +115,13 @@ const EXPECTED: Record<string, readonly ExpectedRow[]> = {
     ['withdrawal', true],
     ['withdrawal', false],
     ['deposit', true],
+    ['deposit', true], // the thousands-grouped `2,400.00` Income row
   ],
   'revolut.csv': [
     ['withdrawal', true],
     ['withdrawal', true],
     ['deposit', false], // TOPUP is a canonical hint token
+    ['deposit', false], // the thousands-grouped `2,400.00` TOPUP row
   ],
 };
 

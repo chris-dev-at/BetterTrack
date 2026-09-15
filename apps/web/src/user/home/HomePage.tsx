@@ -7,6 +7,7 @@ import { useAuth } from '../AuthContext';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
 import { portfolioDisplayName } from '../portfolio/lockedPortfolio';
+import { useUnlockedPortfolioNames } from '../vault/useUnlockedPortfolioNames';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
@@ -27,7 +28,6 @@ import {
   type ResolvedScope,
 } from './homeData';
 import { useHomeBoard } from './homeSync';
-import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
 import { widgetDefinition } from './widgets';
 
@@ -134,9 +134,22 @@ function HomeBoard() {
    */
   // Paranoid accounts keep a device-local board (owner decision, §16): the
   // layout names portfolio ids and tickers, which is the inference that mode is
-  // bought to prevent. Fails closed — only a mode that has RESOLVED to normal
-  // enables the sync.
-  const { privacyMode } = usePrivacyMode();
+  // bought to prevent. The gate above is what enforces that, not this line:
+  // `ResolvedPrivacyModeContext` reads `'normal'` until the account gate
+  // publishes otherwise, and the same default sends `HomePage` down this branch
+  // — so a board reached here syncs, and a paranoid one is never reached.
+  //
+  // Read from the account gate's published context, never from a query of our
+  // own. `usePrivacyMode()` here opened a SECOND `getParanoidMediaState`
+  // request under the account-UNSCOPED `['vault','media']` key — unshared with
+  // the gate's `['vault','media', userId]` entry, never seeded and never
+  // invalidated by a mode change, and refetched on every window focus. Its
+  // `privacyMode` is null on any error or 429, so a rate-limited duplicate of
+  // the one read every signed-in user already makes silently demoted the board
+  // to device-local with nothing on screen to say so. Reaching this component
+  // IS the proof the mode resolved: `HomePage` above renders `PortfolioPage`
+  // for a paranoid account.
+  const privacyMode = useResolvedPrivacyMode();
   const { config, update } = useHomeBoard(user?.id, { sync: privacyMode === 'normal' });
   const [editing, setEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -152,6 +165,11 @@ function HomeBoard() {
 
   const portfoliosQuery = usePortfoliosQuery();
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
+  // Resolved over the WHOLE roster, once, and passed down: the resolution
+  // registry is keyed by roster, so asking again with a widget's FILTERED
+  // `availablePortfolios` would open the same vaults a second time and
+  // materialize the same plaintext twice (see `useVaultedPortfolioStores`).
+  const unlockedNames = useUnlockedPortfolioNames(portfolios);
 
   const disarm = useCallback(() => setArmedId(null), []);
 
@@ -274,14 +292,24 @@ function HomeBoard() {
     if (scope.mode === 'single') {
       return {
         label: scope.single
-          ? portfolioDisplayName(scope.single, t('vault.lockedStub.fallbackAlias'))
+          ? portfolioDisplayName(
+              scope.single,
+              t('vault.lockedStub.fallbackAlias'),
+              unlockedNames.get(scope.single.id),
+            )
           : '',
         detail: null,
       };
     }
     if (scope.mode !== 'subset') return null;
     const names = scope.portfolios
-      .map((portfolio) => portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias')))
+      .map((portfolio) =>
+        portfolioDisplayName(
+          portfolio,
+          t('vault.lockedStub.fallbackAlias'),
+          unlockedNames.get(portfolio.id),
+        ),
+      )
       .join(', ');
     return {
       label: t('home.builder.scopeCount', { count: scope.portfolios.length }),
@@ -377,6 +405,7 @@ function HomeBoard() {
                 placeBefore={target(index)}
                 portfolios={availablePortfolios}
                 scopeTag={scopeTag(scope)}
+                unlockedNames={unlockedNames}
                 widget={widget}
               >
                 <Component

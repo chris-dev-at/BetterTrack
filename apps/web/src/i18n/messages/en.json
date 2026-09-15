@@ -24,7 +24,8 @@
       "heading": "Admin sign in",
       "notAdmin": "This is a user account, not an administrator — please sign in through the main app.",
       "invalidCredentials": "Invalid email/username or password.",
-      "genericError": "Unable to sign in. Please try again."
+      "genericError": "Unable to sign in. Please try again.",
+      "sessionExpired": "Your admin session expired. Please sign in again."
     },
     "adminForcedPassword": {
       "info": "Set a new password before continuing to the admin console."
@@ -242,6 +243,16 @@
     }
   },
   "common": {
+    "assetType": {
+      "stock": "Stock",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Commodity",
+      "crypto": "Crypto",
+      "custom": "Custom",
+      "other": "Other"
+    },
     "save": "Save",
     "done": "Done",
     "cancel": "Cancel",
@@ -322,8 +333,8 @@
       "selectedOne": "1 selected",
       "selectedOther": "{{count}} selected",
       "scopeDescription": {
-        "portfolio:read": "View your portfolios, holdings, transactions and cash balances",
-        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash",
+        "portfolio:read": "View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them",
+        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash, and change the account's tax regime for every future sell and dividend",
         "workboard:read": "View your watchlist, conglomerates and backtests",
         "workboard:write": "Create and edit your watchlist and conglomerates",
         "market:read": "Search assets and read market data",
@@ -333,13 +344,13 @@
         "notifications:write": "Mark your notifications as read and change your notification settings",
         "chat:read": "Read your messages",
         "chat:write": "Send messages on your behalf",
-        "account:security": "Manage your account security: sign-in sessions, two-factor, password change and app PIN",
+        "account:security": "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault",
         "alerts:read": "View your price alerts",
         "alerts:write": "Create, edit, re-arm and delete your price alerts",
         "cash:read": "View your cash tags, budgets, rules, summaries and trends",
         "cash:write": "Create and edit your cash tags, budgets and rules",
         "mirrorchain:read": "View your group portfolios, members, activity and invitations",
-        "mirrorchain:write": "Accept or decline group invitations and leave group portfolios",
+        "mirrorchain:write": "Join or leave group portfolios and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio",
         "vault:sync": "Synchronize your client-encrypted vault across your devices",
         "feedback:write": "Send feedback, feature requests and bug reports on your behalf",
         "feedback:read": "View your feedback submissions and their status"
@@ -347,7 +358,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Read your portfolios, holdings and cash balances, or create and edit portfolios, transactions, custom assets and cash movements."
+          "description": "Read your portfolios, holdings, cash balances and the dividend, earnings and news feeds derived from them, or create and edit portfolios, transactions, custom assets and cash movements and change the account's tax regime for every future sell and dividend."
         },
         "workboard": {
           "label": "Workbench",
@@ -379,7 +390,7 @@
         },
         "mirrorchain": {
           "label": "Group portfolios",
-          "description": "View your group portfolios, members, activity and invitations, or accept and decline invitations and leave group portfolios."
+          "description": "View your group portfolios, members, activity and invitations, or join and leave them and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio."
         },
         "vaultSync": {
           "label": "Vault sync",
@@ -387,7 +398,7 @@
         },
         "accountSecurity": {
           "label": "Account security",
-          "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
+          "description": "Manage sign-in sessions, two-factor authentication, password, the app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault."
         },
         "feedback": {
           "label": "Feedback",
@@ -424,7 +435,8 @@
     "expandRail": "Expand navigation",
     "collapseRail": "Collapse navigation",
     "expandSection": "Expand {{section}}",
-    "collapseSection": "Collapse {{section}}"
+    "collapseSection": "Collapse {{section}}",
+    "back": "Back"
   },
   "askdock": {
     "pin": "Keep open",
@@ -513,6 +525,8 @@
         "preparing": "Preparing Google sign-in…",
         "retryPreparation": "Retry Google sign-in",
         "preparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+        "readyToConnect": "Google sign-in is ready — click again to connect.",
+        "readyToContinue": "Google sign-in is ready — click again to continue.",
         "unlockRequired": "Unlock your encrypted vault to change its storage.",
         "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
         "passphraseLabel": "Vault passphrase",
@@ -552,10 +566,6 @@
         "stayConnected": "Stays connected — syncs automatically."
       },
       "slots": {
-        "drive": {
-          "name": "Google Drive backup",
-          "purpose": "Keep an encrypted, off-site backup of your account on your own Drive."
-        },
         "bankCash": {
           "name": "Bank & broker cash sync",
           "purpose": "Keep your cash balances in step with your bank and broker accounts."
@@ -633,6 +643,9 @@
         },
         "budgetExceeded": {
           "label": "Budget alerts"
+        },
+        "commentCreated": {
+          "label": "Comments on things you share"
         },
         "standingOrderSkipped": {
           "label": "Standing order problems"
@@ -843,6 +856,22 @@
         "loggingOut": "Logging out…",
         "logOutAllOthers": "Log out all other devices"
       },
+      "trustedDevices": {
+        "title": "Trusted devices",
+        "description": "Remembered devices can use your PIN to sign in. Revoke any you no longer use.",
+        "loadError": {
+          "title": "Couldn't load your trusted devices"
+        },
+        "empty": "No trusted devices",
+        "device": "Trusted device",
+        "timestamps": "Added {{createdAt}} · last active {{lastSeenAt}} · expires {{expiresAt}}",
+        "revoke": "Revoke",
+        "revokeError": "Couldn't revoke that trusted device. Please try again.",
+        "revokeAll": "Revoke all trusted devices",
+        "confirmRevokeAll": "Revoke all trusted devices? They’ll no longer be available for PIN sign-in.",
+        "revoking": "Revoking…",
+        "revokeAllError": "Couldn't revoke your trusted devices. Please try again."
+      },
       "pin": {
         "genericError": "Could not update your PIN. Please try again.",
         "pinLabel": "PIN",
@@ -1024,7 +1053,19 @@
           "empty": "No deliveries recorded yet.",
           "loadError": "Couldn't load deliveries.",
           "success": "Delivered",
-          "failed": "Failed"
+          "failed": "Failed",
+          "showDetail": "Why?",
+          "hideDetail": "Hide",
+          "attempts": "Attempts: {{count}}",
+          "reason": {
+            "http": "The receiver rejected the delivery with HTTP {{status}}.",
+            "refused": "The destination was blocked — it resolves to a network range webhooks may not reach.",
+            "unresolved": "The destination host could not be resolved.",
+            "timeout": "The receiver did not respond in time.",
+            "secret": "The signing secret could not be read, so nothing was sent.",
+            "unsubscribed": "This event type was removed from the webhook before the delivery was sent.",
+            "network": "The connection to the receiver failed."
+          }
         },
         "secretModal": {
           "title": "Your webhook signing secret",
@@ -1048,6 +1089,7 @@
           "chatMessage": "New chat message",
           "dividendEvent": "Upcoming dividend",
           "budgetExceeded": "Budget exceeded",
+          "commentCreated": "Comment on a shared item",
           "standingOrderSkipped": "Standing order period not booked",
           "mirrorInvite": "Group portfolio invite",
           "mirrorMemberJoined": "Group portfolio member joined",
@@ -1347,8 +1389,11 @@
       "readyUntil": "Your export is ready to download until {{date}}.",
       "readyNoToken": "Your export is ready, but download access is not kept across page reloads. After this export expires, request a new one.",
       "download": "Download export",
-      "downloadFailed": "Could not download your export. The one-time link may have expired or already been used.",
+      "downloadFailed": "Could not download your export. You can try the download again — an interrupted transfer does not use up your link, and it stays valid until the export expires.",
       "expired": "Your last export has expired. Request a new one to download your data.",
+      "failed": "Your last export could not be built. Please request a new one — your daily allowance was not used.",
+      "stalled": "Your last export never finished being prepared. Request a new one — your daily allowance was not used.",
+      "failedTooLarge": "Your account holds more data than a single export archive can carry, so nothing was built and your daily allowance was not used. Ask your administrator to raise the export limit.",
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",
       "rateLimited": "You can request a data export once per day. Please try again later.",
@@ -1453,6 +1498,14 @@
       "uncoveredNudge": "For accurate history, register the original buy instead.",
       "uncoveredBlocked": "Acknowledge selling more than you hold to continue.",
       "uncoveredEntryPriceInvalid": "Enter a valid buy-in price, or count the shares as 0 %.",
+      "rowErrors": {
+        "withSymbol": "{{symbol}}: {{message}}",
+        "priceRequired": "Price must be greater than 0.",
+        "amountRequired": "Amount must be greater than 0.",
+        "quantityRequired": "Quantity must be greater than 0.",
+        "priceNegative": "Price must be 0 or more.",
+        "derivedQuantity": "Could not derive a valid quantity from that price and amount."
+      },
       "tax": {
         "title": "Tax on this sale (optional)",
         "description": "Manual tax mode is on. Enter the tax for this sell, or leave it blank to record none.",
@@ -1480,6 +1533,7 @@
       "newCustomButton": "+ Custom investment",
       "recordButton": "+ Transaction",
       "loadError": "Could not load your portfolio. Please refresh the page.",
+      "vaultedLoadError": "This portfolio could not be read from its vault just now. The vault stays open on this device — try again.",
       "detailsLoadError": "Some portfolio details couldn't be loaded. Please try again.",
       "emptyState": {
         "title": "Your portfolio is empty",
@@ -1579,7 +1633,10 @@
         "perfHint": "Deposits and withdrawals are neutralized (time-weighted return) — the curve only moves when your holdings move.",
         "loadError": "Portfolio history couldn't be loaded. Please try again.",
         "ariaLabelPerformance": "Portfolio performance over time",
-        "ariaLabelValue": "Portfolio value over time"
+        "ariaLabelValue": "Portfolio value over time",
+        "summaryTimeWeighted": "Time-weighted {{pct}}",
+        "summaryMoneyWeighted": "Money-weighted {{pct}}",
+        "summaryMaxExplainer": "Time-weighted is the return of your holdings with deposits and withdrawals neutralized; money-weighted is what your money actually earned, so early losses on small amounts weigh less."
       }
     },
     "analytics": {
@@ -2080,10 +2137,19 @@
       },
       "perMonth": "projected / month",
       "perYear": "projected / year",
+      "projectionUnresolved": "We couldn't work out a projected total for this portfolio just now — part of the data it needs didn't come back. The dates below are unaffected.",
+      "projectionTruncated": "You hold more assets than we project in one pass, so no total is shown. The dates below are unaffected.",
       "calendarTitle": "Upcoming ex-dividend dates",
+      "calendarTruncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
       "exOn": "ex {{date}}",
+      "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
-      "showLess": "Show less"
+      "showLess": "Show less",
+      "basis": {
+        "trailing12m": "Based on the last 12 months of payouts, so any special dividend is still counted in.",
+        "forwardAnnualized": "Based on the latest regular payout, annualised.",
+        "mixed": "Mixed basis: some holdings from the last 12 months of payouts (special dividends counted in), the rest from the annualised regular payout."
+      }
     },
     "import": {
       "title": "Broker CSV import",
@@ -2092,6 +2158,7 @@
       "fileLabel": "CSV export",
       "brokerLabel": "Broker",
       "brokerAuto": "Detect automatically",
+      "aiBudgetNote": "If no broker recognises the file, the local assistant helps name its columns and read unclear rows — it draws on the same daily AI budget as the rest of the app ({{remaining}} of {{cap}} left today).",
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
@@ -2151,6 +2218,7 @@
       },
       "startOver": "Import another file",
       "resolveFailed": "That row couldn't be pinned to the asset. Please try again.",
+      "confirmFailed": "That row's kind couldn't be confirmed. Please try again.",
       "pinnedByYou": "Pinned by you",
       "unknownTag": "Deleted tag",
       "step": {
@@ -2221,7 +2289,17 @@
         "unresolvedTitleOne": "{{count}} row without a matched instrument",
         "unresolvedTitleOther": "{{count}} rows without a matched instrument",
         "skippedTitleOne": "{{count}} row we can't import without you",
-        "skippedTitleOther": "{{count}} rows we can't import without you"
+        "skippedTitleOther": "{{count}} rows we can't import without you",
+        "undecidedTitleOne": "{{count}} row we can import once you say what it is",
+        "undecidedTitleOther": "{{count}} rows we can import once you say what they are",
+        "undecidedBody": "We read these rows completely — the file just never says whether they are money in, money out or a trade, and we don't guess about money. Tell us what a row is and it joins the import; the amount and the date stay exactly as the file wrote them.",
+        "undecidedBadge": "Your call",
+        "kindLabel": "What is this row?",
+        "kindPlaceholder": "Choose…",
+        "confirmCta": "Confirm",
+        "bulkTitle": "All the same kind?",
+        "bulkCtaOne": "Confirm {{count}} row as {{kind}}",
+        "bulkCtaOther": "Confirm {{count}} rows as {{kind}}"
       }
     },
     "tabs": {
@@ -2342,6 +2420,7 @@
       },
       "earnings": {
         "heading": "Upcoming earnings",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
         "held": "Held",
         "watched": "Watch",
         "heldTitle": "You hold this asset",
@@ -2427,6 +2506,7 @@
       },
       "rangeAriaLabel": "Select backtest range",
       "benchmarkAriaLabel": "Choose a benchmark",
+      "benchmarkUnresolvedShare": "{{pct}} without assets — this column is the rest",
       "modeAriaLabel": "Select late-listing mode",
       "rebalanceAriaLabel": "Select rebalance frequency",
       "noPositions": "Add positions to preview a backtest",
@@ -2576,6 +2656,7 @@
       "viewStored": "As built",
       "viewResolved": "Resolved",
       "resolvedHint": "Effective asset weights after resolving nested blueprints.",
+      "unresolvedShare": "{{pct}} of this blueprint is a nested blueprint that holds no assets. The weights, the allocation chart and the backtest below cover only the rest of it — and the calculator leaves that share of a budget unallocated.",
       "resolvedLoadError": "The resolved view could not be loaded.",
       "deleteInUseError": "This blueprint is a constituent of {{parents}} — remove it there first."
     },
@@ -2609,7 +2690,14 @@
         "capReached": "You've reached today's AI limit. It resets tomorrow.",
         "error": "Couldn't draft a basket from that. Try rephrasing.",
         "applied": "Prefilled {{count}} positions — review the weights and save.",
-        "unresolved": "No catalog match for these — add them manually:"
+        "unresolved": "No catalog match for these — add them manually:",
+        "reviewTitle": "Review the AI draft",
+        "reviewDraft": "Draft ready: {{count}} positions. Nothing changes until you apply it.",
+        "replaceWarning": "Applying replaces all {{count}} positions in “{{name}}”.",
+        "apply": "Apply draft",
+        "discard": "Discard draft",
+        "nothingSavedYet": "Nothing has been saved yet — discarding leaves your blueprint unchanged.",
+        "notAdvice": "AI-generated and informational only — not financial advice."
       },
       "positionsHeading": "Positions",
       "autoBalance": "Auto-balance",
@@ -2645,7 +2733,9 @@
         "duplicateConglomerate": "That blueprint is already a constituent.",
         "selfNest": "A blueprint cannot contain itself.",
         "nestingCycle": "This nesting would create a cycle — a blueprint cannot contain itself, directly or through another blueprint.",
-        "nestingTooDeep": "Blueprints can be nested at most {{max}} levels deep."
+        "nestingTooDeep": "Blueprints can be nested at most {{max}} levels deep.",
+        "normalizeLockedFull": "Locked weights already total 100 % or more — unlock a position to normalize.",
+        "normalizeNoUnlocked": "There are no unlocked positions to normalize."
       }
     },
     "ideas": {
@@ -2705,9 +2795,9 @@
       "error": "The comparison could not be computed. Please try again.",
       "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
       "chartAriaLabel": "Blueprint comparison chart",
-      "legendAriaLabel": "Compared blueprints",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
+      "unresolvedShare": "{{pct}} without assets",
       "grid": {
         "ariaLabel": "Blueprint comparison statistics",
         "metric": "Metric"
@@ -2731,13 +2821,19 @@
       "horizonHint": "Between 1 and 30 years.",
       "factorsLegend": "Factors",
       "factor": {
-        "return": "Average return",
+        "return": "Average return (excluding deposits)",
         "standingOrders": "Standing orders",
         "dividends": "Projected dividends"
       },
+      "ordersUnconvertible": "Your standing orders are recorded in {{orderCurrency}}, but this projection is in {{baseCurrency}}. We don't convert between currencies here, so this factor stays out of the projection.",
+      "dividendsUnresolved": "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.",
+      "dividendsTruncated": "You hold more assets than we project in one pass, so this factor stays out of the projection.",
+      "dividendsInReturn": "Your average return already contains the dividends your holdings paid, so counting them here would count the same money twice. Switch the return factor off to project the income on its own.",
+      "ordersUnpricedOne": "We have no current price for {{assets}}, so we can't say what its recurring buy adds. This factor stays out of the projection until it can be priced.",
+      "ordersUnpricedOther": "We have no current price for {{assets}}, so we can't say what their recurring buys add. This factor stays out of the projection until they can be priced.",
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
-      "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",
+      "returnPctHint": "Sampled from your history as a time-weighted return, so money you paid in doesn't count as growth and the dividends you were paid are already inside it; edit to explore. Between -100% and 100%.",
       "returnPctClamped": "The return rate is limited to -100% to 100%. The nearest value is used for this projection.",
       "window": {
         "1Y": "1Y",
@@ -2760,12 +2856,18 @@
         "returnLabel": "Return (%)",
         "returnPlaceholder": "Base",
         "remove": "Remove"
+      },
+      "dividendsBasis": {
+        "trailing12m": "Dividends come from the last 12 months of payouts, so any special dividend is still counted in.",
+        "forwardAnnualized": "Dividends come from the latest regular payout, annualised.",
+        "mixed": "Dividends mix two bases: part from the last 12 months of payouts (special dividends counted in), part from the annualised regular payout."
       }
     },
     "calculators": {
       "title": "Calculators",
       "description": "Standalone tools, each pre-fillable from your portfolio.",
-      "prefillUnavailable": "Add or open a portfolio to enable prefill. The calculators still run with the fields you type."
+      "prefillUnavailable": "Add or open a portfolio to enable prefill. The calculators still run with the fields you type.",
+      "ratePctClamped": "Rates are limited to -100% to 100%. The nearest value is used for this calculation."
     },
     "compound": {
       "title": "Compound interest",
@@ -2775,21 +2877,30 @@
       "ratePct": "Annual return (%)",
       "years": "Years",
       "compoundingPerYear": "Compounding steps per year",
-      "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily.",
+      "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily. The annual return is an effective rate, so more steps spread your contributions — they don't raise the yield.",
       "finalBalance": "Final balance",
       "totalContributions": "Total contributions",
       "totalInterest": "Total interest"
     },
     "savings": {
       "title": "Savings plan",
-      "summary": "What monthly contribution reaches your target.",
+      "summary": "What monthly contribution reaches your target — or how long it takes.",
+      "solve": {
+        "label": "Solve for",
+        "contribution": "Contribution",
+        "years": "Years"
+      },
       "target": "Target (€)",
       "principal": "Starting principal (€)",
       "ratePct": "Annual return (%)",
       "years": "Years",
+      "monthlyContributionInput": "Monthly contribution (€)",
       "compoundingPerYear": "Compounding steps per year",
-      "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily.",
+      "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily. The annual return is an effective rate, so more steps spread your contributions — they don't raise the yield.",
       "monthlyContribution": "Required monthly contribution",
+      "yearsNeeded": "Years needed",
+      "yearsValue": "≈ {{years}} years",
+      "notReachable": "Not reachable with these inputs.",
       "feasible": "Reachable"
     },
     "dividend": {
@@ -2805,9 +2916,15 @@
     },
     "withdrawal": {
       "title": "Withdrawal plan",
-      "summary": "How long a balance lasts at a given monthly draw.",
+      "summary": "How long a balance lasts, or what you can safely take each month.",
+      "solve": {
+        "label": "Solve for",
+        "horizon": "Horizon",
+        "rate": "Safe withdrawal"
+      },
       "balance": "Starting balance (€)",
       "monthlyWithdrawal": "Monthly withdrawal (€)",
+      "horizonYears": "Payout horizon (years)",
       "annualReturnPct": "Expected annual return (%)",
       "horizonLabel": "Depletion horizon",
       "statusLabel": "Status",
@@ -2815,7 +2932,8 @@
       "statusDepletes": "Depletes",
       "sustainable": "Never depletes at this rate.",
       "notComputable": "Not computable with these inputs.",
-      "monthsValue": "≈ {{months}} months (≈ {{years}} years)"
+      "monthsValue": "≈ {{months}} months (≈ {{years}} years)",
+      "rateLabel": "Sustainable monthly withdrawal"
     },
     "standingOrders": {
       "title": "Standing orders",
@@ -2851,6 +2969,8 @@
         "notBookedQuoteUnavailable": "Not booked — quote unavailable — oldest missed booking due since {{date}}",
         "notBookedInsufficientCash": "Not booked — insufficient cash — oldest missed booking due since {{date}}",
         "notBookedFailed": "Not booked — booking error — oldest missed booking due since {{date}}",
+        "droppedPeriods": "{{count}} missed period(s) skipped, up to {{date}} — only the newest one is caught up, the rest are not booked",
+        "bookedStalePrice": "Booked at your own valuation from {{date}} — no newer value point exists",
         "pause": "Pause",
         "pausing": "Pausing…",
         "resume": "Resume",
@@ -2911,10 +3031,12 @@
         "title": "Dividends",
         "forwardYield": "Forward yield",
         "trailing": "TTM per share",
+        "trailingForward": "Annualised per share",
         "nextExDate": "Next ex-date",
         "nextPayDate": "Next pay date",
         "history": "Payout history",
-        "historyAriaLabel": "Dividend payout history"
+        "historyAriaLabel": "Dividend payout history",
+        "historyRange": "{{from}} – {{to}}"
       },
       "earnings": {
         "title": "Earnings",
@@ -2923,7 +3045,8 @@
         "estimated": "Estimated",
         "confirmed": "Confirmed",
         "epsEstimate": "Est. EPS {{value}}",
-        "epsActual": "EPS {{value}}"
+        "epsActual": "EPS {{value}}",
+        "periodEnded": "Period ended {{date}}"
       },
       "splits": {
         "title": "Stock splits",
@@ -2952,6 +3075,8 @@
       "waiting": "Waiting for live prices…",
       "fallbackNote": "Live updates every 60 s while the stream reconnects.",
       "chartAriaLabel": "Live price chart for {{symbol}}",
+      "unavailable": "Live unavailable — showing delayed data",
+      "unavailableHint": "The server paused live updates. The chart refreshes every 60 s instead.",
       "marketClosed": "Market closed",
       "marketClosedHint": "Showing the most recent session. Live updates resume when the market reopens."
     },
@@ -2975,7 +3100,10 @@
       "showLess": "Show less",
       "loadError": "Could not load the news digest. Please try again.",
       "emptyTitle": "No recent news",
-      "emptyDescription": "News appears here once there are headlines for the assets you hold or watch."
+      "emptyDescription": "News appears here once there are headlines for the assets you hold or watch.",
+      "unavailableTitle": "News is switched off here",
+      "unavailableDescription": "Market intelligence is not configured for this installation, so no headlines are collected.",
+      "truncated": "Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here."
     },
     "comingSoon": {
       "overview": {
@@ -3097,6 +3225,10 @@
     "friendsSelect": "Select friends",
     "allFriendsConfirm": "This shares a read-only view with everyone you are friends with.",
     "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This may let more people see this item.",
+    "audienceGroupNamed": {
+      "one": "group “{{name}}” ({{count}} member)",
+      "other": "group “{{name}}” ({{count}} members)"
+    },
     "audienceWidenAcknowledge": "I understand this change widens access.",
     "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
     "publicAcknowledge": "I understand that anyone with the link can see this.",
@@ -3118,14 +3250,20 @@
       "specific_friends": "Specific friends",
       "all_friends": "All friends",
       "public_link": "Public link",
-      "group": "Friend group"
+      "group": "Friend group",
+      "groupEmpty": "{{name}} · reaches nobody",
+      "groupDeleted": "Friend group deleted · reaches nobody"
     },
     "friendsSearchPlaceholder": "Search friends",
     "friendsSelectedCount": "{{count}} selected",
     "friendsNoMatch": "No friends match “{{query}}”.",
     "share": "Share…",
     "groupsNone": "You have no groups yet. Create one on the Friends page to share with a circle.",
-    "groupMemberCount": "{{count}} members",
+    "groupMemberCount": {
+      "one": "{{count}} member",
+      "other": "{{count}} members"
+    },
+    "groupsAtLimit": "This is all {{count}} of your groups — the maximum. Manage them on the People page.",
     "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
   },
   "watchlists": {
@@ -3210,6 +3348,8 @@
       "error": "Could not load your items. Please refresh the page.",
       "portfolioMetadataLoading": "Checking group-portfolio privacy…",
       "portfolioMetadataError": "Could not verify this portfolio's group-sharing notice. Try again before sharing it.",
+      "comments": "Comments",
+      "commentsTitle": "Comments on {{name}}",
       "publicProfileLink": "Manage your public profile"
     },
     "alertSharing": {
@@ -3317,8 +3457,10 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "actionAdd": "Share it with them too",
           "confirmWiden": "I understand this widens access to {{username}}.",
           "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
+          "confirmGroupDetach": "I understand this keeps the current members of {{group}} and adds {{username}}, but the item stops following that group — later changes to {{group}} no longer change who can see it.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }
@@ -3434,7 +3576,10 @@
       "cloneError": "Couldn't clone this idea."
     },
     "comments": {
-      "count": "{{count}} comments",
+      "count": {
+        "one": "{{count}} comment",
+        "other": "{{count}} comments"
+      },
       "empty": "No comments yet.",
       "loadError": "Couldn't load the comments. Please try again.",
       "placeholder": "Add a comment…",
@@ -3442,6 +3587,9 @@
       "posting": "Posting…",
       "delete": "Delete",
       "postError": "Couldn’t post your comment.",
+      "deleteError": "Couldn’t delete that comment.",
+      "reactionError": "Couldn’t save your reaction.",
+      "loadOlder": "Load older comments",
       "itemReactionsLabel": "React to this item",
       "commentReactionsLabel": "React to this comment"
     },
@@ -3456,7 +3604,10 @@
       "loadError": "Could not load your groups. Please try again.",
       "emptyTitle": "No groups yet",
       "emptyDescription": "Create a group to share with a specific circle of friends.",
-      "memberCount": "{{count}} members",
+      "memberCount": {
+        "one": "{{count}} member",
+        "other": "{{count}} members"
+      },
       "nameLabel": "Group name",
       "renameAction": "Rename",
       "membersHeading": "Members",
@@ -3464,10 +3615,16 @@
       "addMemberHeading": "Add a friend",
       "addMemberNone": "All your friends are already in this group.",
       "add": "Add",
+      "limitReached": "You've reached the maximum of {{count}} groups. Delete one to create another.",
+      "memberLimitReached": "This group is full — a group can hold at most {{count}} members.",
       "mutateError": "Could not update the group. Please try again.",
       "delete": "Delete group",
       "deleteTitle": "Delete “{{name}}”",
-      "deleteWarning": "Anything shared with this group will no longer be visible to its members. This cannot be undone.",
+      "deleteWarning": {
+        "none": "Nothing is shared with this group right now, so deleting it changes nothing for your friends. This cannot be undone.",
+        "one": "1 shared item points at this group and will no longer be visible to its members. This cannot be undone.",
+        "other": "{{count}} shared items point at this group and will no longer be visible to its members. This cannot be undone."
+      },
       "deleting": "Deleting…",
       "deleteError": "Could not delete the group. Please try again."
     }
@@ -3710,9 +3867,11 @@
       "deleteAction": "Delete empty vault",
       "deleteReferenced": "This vault still contains a portfolio. Move every portfolio out before deleting it.",
       "deleteError": "The vault could not be deleted. Nothing changed.",
+      "deferredFold": "Why some actions aren’t available yet",
       "deferred": {
         "rotate": "Rotating the recovery words isn’t available yet: it needs a verified round trip on every storage this vault uses. Until then this vault and its words stay exactly as they are.",
         "startFresh": "Starting fresh isn’t available yet: discarding a vault’s encrypted copies needs the same verified storage round trip. To remove a vault today, move its portfolios out and delete it.",
+        "changeMedia": "Changing where a vault is stored isn’t available yet: this build can only store a vault on the BetterTrack server, so there is nothing to change it to. Your vault and everything in it stay exactly as they are.",
         "scanQr": "Scanning a transfer QR isn’t available yet. Enter the 12 words on this device instead.",
         "restore": "Choosing an older encrypted copy isn’t available yet. Every copy is kept — none is discarded — and this vault’s current copy stays usable."
       },
@@ -3756,6 +3915,10 @@
         "rotate": "Rotation replaces the recovery words after every selected copy passes a verified round trip.",
         "start-fresh": "Starting fresh permanently discards this vault’s encrypted contents. Other vaults and account data stay unchanged.",
         "unknownAction": "This link asks for a vault step that does not exist. Nothing was changed — continue with this vault’s current step below.",
+        "withdrawnAction": "This link asks for a vault step this device has moved past. Nothing was changed — continue with this vault’s current step below.",
+        "lockedOut": "Too many wrong device passwords. This device accepts the password again at {{time}}; nothing was changed. Wait, or reset the words stored on this device — your encrypted copies on server and Drive stay untouched.",
+        "checkingState": "Checking what this vault needs on this device…",
+        "stateError": "This device’s state for this vault could not be read, so no step is offered yet.",
         "devicePassword": "Device password",
         "newDevicePassword": "New device password",
         "words": "12 recovery words",
@@ -3812,7 +3975,28 @@
       "badge": "Locked",
       "body": "Unlock only its vault to view balances, activity, and tools.",
       "countOne": "1 locked portfolio",
-      "count": "{{count}} locked portfolios"
+      "count": "{{count}} locked portfolios",
+      "opening": "Vault unlocked — opening this portfolio…",
+      "openFailedTitle": "The vault is unlocked, but this portfolio could not be opened.",
+      "openFailedBody": "Nothing was changed. Retry, or open the vault manager to check this vault’s storage.",
+      "openFailedDetail": "Technical detail",
+      "wordsNeededBody": "This device does not hold the vault’s recovery words yet. Enter the 12 words once — they are stored here, protected by your device password.",
+      "enterWords": "Enter recovery words",
+      "lockedOutBody": "Too many wrong device passwords. This device accepts the password again at {{time}}.",
+      "manage": "Vault manager"
+    },
+    "providePhrase": {
+      "title": "Enter the recovery words",
+      "titleNamed": "Enter the recovery words for “{{name}}”",
+      "body": "Type the 12 words for this vault and choose the device password that protects them here. The portfolio opens right after — you stay on this page.",
+      "words": "12 recovery words",
+      "devicePassword": "Device password",
+      "devicePasswordHint": "If this device already has a vault password, type that one.",
+      "action": "Store words and open",
+      "working": "Verifying…",
+      "wrongWords": "Those words do not open this vault. Check them against your copy.",
+      "wrongPassword": "That device password is not right. Nothing was changed — try again.",
+      "error": "The words could not be stored. Nothing was changed — try again."
     },
     "unlockedPortfolio": {
       "badge": "Unlocked",
@@ -3849,6 +4033,7 @@
         "code": "Authenticator code",
         "recoveryCode": "Recovery code"
       },
+      "preconditionBlocked": "Needed",
       "precondition": {
         "mirrorchain": "Leave or dissolve this portfolio’s active group before moving it.",
         "mirrorchainFix": "Open group settings",
@@ -3863,15 +4048,19 @@
       "moveIn": {
         "title": "Move portfolio into a vault",
         "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares. Those shares are not restored if you move it out later.",
+        "driveOnlyRetention": "This vault keeps its encrypted documents in Google Drive only. A short-lived encrypted staging copy stays on the BetterTrack server for up to {{minutes}} minutes from when the copies are staged — the move itself uses part of that window — so a Drive write that never landed can still be recovered, and it expires by itself. BetterTrack never reads it and never serves it as vault storage.",
         "action": "Move into vault",
         "working": "Moving portfolio into the vault…",
         "done": "The portfolio is encrypted in the vault and locked on the server.",
-        "error": "The portfolio was not moved. Its server data is unchanged."
+        "error": "The portfolio was not moved. Its server data is unchanged.",
+        "captureInFlight": "The portfolio was not moved, and trying again will not help. This vault still holds an unfinished move of {{portfolios}}. Finish or cancel that move first, then move this portfolio in. Its server data is unchanged.",
+        "captureInFlightUnnamed": "The portfolio was not moved, and trying again will not help. This vault still holds another portfolio’s unfinished move. Finish or cancel that move first, then move this portfolio in. Its server data is unchanged."
       },
       "moveOut": {
         "title": "Move portfolio out of the vault",
         "unlockRequired": "Unlock this vault on this device before moving the portfolio out.",
         "warning": "Moving this portfolio out makes it server-readable again. BetterTrack restores its decrypted money data under the same portfolio ID; previous shares stay revoked.",
+        "driveOnlyRetention": "This vault keeps its encrypted documents in Google Drive only. Its remaining documents stay on the BetterTrack server as a short-lived encrypted staging copy for up to {{minutes}} minutes from when the copies are staged, so a Drive write that never landed can still be recovered, and it expires by itself. BetterTrack never reads it and never serves it as vault storage.",
         "confirm": "I understand that this portfolio becomes server-readable again.",
         "action": "Restore as a normal portfolio",
         "working": "Restoring the portfolio…",
@@ -3921,7 +4110,7 @@
         "advanced": "Advanced",
         "driveOnly": {
           "title": "Google Drive only",
-          "body": "Nothing on BetterTrack servers — not even encrypted."
+          "body": "Nothing is kept on BetterTrack servers — not even encrypted. This setup writes to Drive only; later, moving a portfolio into or out of this vault does leave its encrypted staging copy on the server, so a Drive write that never landed can still be recovered. That copy expires by itself after up to {{minutes}} minutes and is never served as vault storage."
         }
       },
       "passphraseDistinct": "Create a new vault passphrase. It must be different from your BetterTrack login password and never goes to the server.",
@@ -3951,6 +4140,7 @@
       },
       "errors": {
         "drivePreparation": "Google Drive could not be prepared. Check your connection and try again. Your account has not changed.",
+        "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so it cannot be used as vault storage here. Your connection is fine — choose BetterTrack encrypted storage, or ask the person running this deployment to configure Drive. Your account has not changed.",
         "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
         "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
@@ -3985,6 +4175,7 @@
       "preparingDrive": "Preparing Google sign-in…",
       "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
       "retryDrivePreparation": "Retry Google sign-in",
+      "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so this device cannot read the encrypted Drive copy. Your connection is fine — ask the person running this deployment to configure Drive.",
       "action": "Unlock vault",
       "unlocking": "Unlocking…",
       "stuck": {
@@ -4011,6 +4202,13 @@
         "custody": "This browser could not securely keep the vault unlocked. Unlock without device storage or try another browser.",
         "unavailable": "The encrypted vault is unavailable right now. Check the selected storage connection and retry."
       }
+    },
+    "unlockDialog": {
+      "title": "Unlock this vault",
+      "titleNamed": "Unlock “{{name}}”",
+      "body": "Type the device password for this vault. It opens right here — you stay on this page.",
+      "wrongPassword": "That device password is not right. Nothing was changed — try again.",
+      "forgot": "Forgot the device password?"
     },
     "sync": {
       "synced": "Encrypted vault synced",
@@ -4042,7 +4240,13 @@
       "preparingDrive": "Preparing Google sign-in…",
       "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
       "retryDrivePreparation": "Retry Google sign-in",
+      "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so synchronization cannot reach your Drive copy. Ask the person running this deployment to configure Drive.",
       "restore": "Storage and restore options",
+      "manage": "Manage vaults",
+      "lockAll": "Lock vaults",
+      "portfoliosOne": "1 portfolio",
+      "portfolios": "{{count}} portfolios",
+      "portfoliosNone": "No portfolios yet",
       "drive": {
         "signIn": "Sign in to Google to sync"
       },
@@ -4379,7 +4583,6 @@
       "ai": "AI",
       "users": "Users",
       "invites": "Invites",
-      "feedback": "Feedback",
       "settings": "Settings",
       "accountDefaults": "Account defaults",
       "announcements": "Announcements",
@@ -4395,7 +4598,10 @@
         "securityApi": "Security & API"
       },
       "registration": "Registration",
-      "testAccounts": "Test accounts"
+      "testAccounts": "Test accounts",
+      "opsHealth": "Health & queues",
+      "providers": "Providers",
+      "marketData": "Market data"
     },
     "settings": {
       "title": "Settings",
@@ -4577,6 +4783,7 @@
         "followAlertFired": "follow.alert.fired",
         "dividendEvent": "dividend.event",
         "budgetExceeded": "budget.exceeded",
+        "commentCreated": "comment.created",
         "standingOrderSkipped": "standing_order.skipped",
         "mirrorInvite": "mirror.invite",
         "mirrorMemberJoined": "mirror.member_joined",
@@ -4646,7 +4853,8 @@
         "revoked": "Revoked",
         "tierAria": "Tier for {{name}}",
         "defaultTier": "Default",
-        "viewAudit": "View audit"
+        "viewAudit": "View audit",
+        "showRevoked": "Show revoked keys"
       },
       "audit": {
         "title": "Request log — {{name}}",
@@ -4819,6 +5027,7 @@
         "change": "Change email",
         "enabledNotice": "Email codes enabled.",
         "disabledNotice": "Email codes disabled.",
+        "disableError": "Couldn't turn off email codes. Please try again.",
         "turnOff": "Turn off",
         "turningOff": "Turning off…"
       },
@@ -4894,6 +5103,9 @@
       "actionError": "Could not update the problem.",
       "empty": "No problems — nothing to see here.",
       "openCount": "{{count}} open",
+      "shownCount": "{{shown}} of {{total}} shown",
+      "loadMore": "Load more",
+      "regressed": "Came back",
       "filters": {
         "kind": "Kind",
         "status": "Status",
@@ -4912,29 +5124,23 @@
       "firstSeen": "First seen",
       "lastSeen": "Last seen",
       "fingerprint": "Fingerprint",
+      "route": "Route",
+      "httpStatus": "HTTP status",
+      "requestId": "Request ID",
+      "stack": "Stack",
       "context": "Context",
+      "dropped": "{{count}} captures were dropped by the rate cap in the current window — this list is incomplete.",
       "resolve": "Resolve",
       "reopen": "Reopen"
     },
     "feedback": {
-      "title": "Feedback",
-      "subtitle": "Feature ideas, bugs, help requests, improvements, and other submissions.",
-      "refresh": "Refresh",
-      "loading": "Loading feedback…",
-      "loadError": "Could not load feedback.",
-      "actionError": "Could not update the feedback status.",
-      "empty": "No feedback yet.",
       "archive": "Archive",
       "unarchive": "Unarchive",
       "archived": "Archived",
-      "filters": {
-        "category": "Category",
-        "sort": "Sort",
-        "all": "All categories"
-      },
       "sort": {
         "category": "Priority: features first",
-        "newest": "Newest first"
+        "newest": "Newest first",
+        "aging": "Longest untouched first"
       },
       "category": {
         "feature": "Feature idea",
@@ -4951,12 +5157,8 @@
         "declined": "Declined",
         "shipped": "Shipped"
       },
-      "statusControl": "Status for feedback from {{user}}",
       "deletedByUser": "Deleted by user",
       "fields": {
-        "status": "Status",
-        "message": "Message",
-        "submittedBy": "Submitted by",
         "createdAt": "Submitted at"
       },
       "diagnostics": {
@@ -4967,12 +5169,6 @@
         "device": "Device",
         "locale": "Locale",
         "screen": "Screen"
-      },
-      "pagination": {
-        "navigation": "Feedback pages",
-        "summary": "Page {{page}} of {{pages}} · {{total}} total",
-        "previous": "Previous",
-        "next": "Next"
       }
     },
     "featureFlags": {
@@ -5012,7 +5208,7 @@
         },
         "ai": {
           "name": "AI",
-          "description": "AI insights and assistant (reserved — not yet built)."
+          "description": "AI portfolio insights and the natural-language Blueprint builder (local provider)."
         }
       }
     },
@@ -5178,8 +5374,90 @@
     "support": {
       "title": "Support",
       "subtitle": "Where user reports land and get answered.",
-      "comingSoon": "The helpdesk console — threads, internal notes, tags and saved views — arrives with W3.",
-      "openInbox": "Open the feedback inbox"
+      "refresh": "Refresh",
+      "stats": {
+        "needsReply": "Waiting on you",
+        "counting": "…",
+        "unavailable": "unavailable"
+      },
+      "keyboardHint": "j / k to move · Enter to open · Esc to close",
+      "filters": {
+        "search": "Search",
+        "searchPlaceholder": "Subject, message or submitter",
+        "status": "Status",
+        "allStatuses": "Any status",
+        "category": "Category",
+        "allCategories": "Any category",
+        "unread": "Unread",
+        "unreadOption": {
+          "all": "Read and unread",
+          "unread": "Unread only",
+          "read": "Read only"
+        },
+        "sort": "Sort",
+        "version": "Shipped version",
+        "versionPlaceholder": "e.g. 5.2.0",
+        "queue": "Queue",
+        "queueActive": "Active",
+        "queueArchived": "Archived",
+        "reset": "Clear filters"
+      },
+      "inbox": {
+        "label": "Support submissions",
+        "loading": "Loading the inbox…",
+        "empty": "Nothing has been submitted yet.",
+        "emptyFiltered": "No submission matches these filters.",
+        "emptyArchived": "Nothing has been archived.",
+        "noSubject": "(no subject)",
+        "unread": "Unread reply",
+        "noReplies": "no replies yet",
+        "lastWordYou": "you replied last",
+        "lastWordSubmitter": "they replied last",
+        "pagination": {
+          "navigation": "Inbox pages",
+          "range": "Page {{page}} of {{pages}} · {{total}} total",
+          "previous": "Previous",
+          "next": "Next"
+        }
+      },
+      "thread": {
+        "none": "Select a submission to read and answer it.",
+        "loading": "Loading the submission…",
+        "gone": "This submission no longer exists.",
+        "backToInbox": "Back to the inbox",
+        "opened": "opened {{age}} ago",
+        "lastChange": "status changed {{age}} ago",
+        "copyAsIssue": "Copy as issue",
+        "copied": "Copied",
+        "archiveError": "Could not change the archive state.",
+        "deletedByUserNote": "The submitter deleted this from their side. It is kept here for the record, and a reply would arrive somewhere they can no longer read.",
+        "statusLabel": "Set status",
+        "applyStatus": "Apply",
+        "statusError": "Could not update the status.",
+        "declinedReason": "Reason for declining",
+        "shippedVersion": "Shipped in version",
+        "submitterWillSee": "This is what the submitter will see.",
+        "reasonRequired": "Declining needs a reason before it can be saved.",
+        "versionRequired": "Shipping needs a version before it can be saved.",
+        "currentlyShown": "Shown to the submitter right now: {{text}}",
+        "messagesLoading": "Loading the conversation…",
+        "noReplies": "No replies yet.",
+        "authorYou": "You",
+        "olderTruncated": "Older messages are not shown here yet.",
+        "replyLabel": "Reply to {{user}}",
+        "replyPlaceholder": "Write a reply…",
+        "replyCount": "{{count}} / {{max}}",
+        "sendReply": "Send reply",
+        "replyError": "Could not send the reply.",
+        "submitter": "Submitter",
+        "account": "Account",
+        "openTickets": "Open",
+        "totalTickets": "Submissions",
+        "openInPeople": "Open in People →",
+        "history": "Their other submissions",
+        "historyEmpty": "This is their only submission.",
+        "diagnosticsNote": "Only these keys are ever shown. Anything else the client sent is dropped."
+      }
     },
     "registration": {
       "title": "Registration",
@@ -5446,6 +5724,135 @@
         "cleanupValue": "Expiry deletes it on the job runner — the same idempotent cleanup whether it fires once or five times — and writes an audit row."
       },
       "why": "There is no staging estate: production is the only estate, and the invite gate makes real smoke testing a token dance. That is what this is for."
+    },
+    "ops": {
+      "refresh": "Refresh",
+      "live": {
+        "label": "Live refresh",
+        "off": "Off",
+        "seconds": "{{seconds}} s",
+        "every": "Refreshing every {{seconds}} s",
+        "manualOnly": "Manual refresh only",
+        "pausedHidden": "Paused — this tab is in the background",
+        "updatedAt": "read at {{time}}"
+      },
+      "health": {
+        "title": "Health & queues",
+        "subtitle": "What the API depends on, what is queued, and what has failed for good."
+      },
+      "system": {
+        "title": "System",
+        "components": "Dependencies",
+        "build": "Deployed build",
+        "versionDetail": "The commit this API process was built from.",
+        "versionUnavailable": "The deploy marker could not be read."
+      },
+      "queues": {
+        "title": "Queues",
+        "queue": "Queue",
+        "waiting": "Waiting",
+        "active": "Active",
+        "delayed": "Delayed",
+        "failed": "Failed",
+        "paused": "Paused",
+        "heartbeat": "Worker heartbeat",
+        "heartbeatBudget": "expected every {{seconds}} s",
+        "idleHidden": "{{count}} idle queues are not listed.",
+        "allIdle": "Every queue is idle.",
+        "unavailable": "This API process holds no queue registry, so it cannot see the queues. This is not the same as the queues being empty."
+      },
+      "schedules": {
+        "title": "Scheduled work",
+        "subtitle": "Cadence, last run and what the sweep reported. Times come from the scheduler itself.",
+        "job": "Job",
+        "cadence": "Cadence",
+        "lastRun": "Last run",
+        "duration": "Took",
+        "next": "Next",
+        "every": "every {{age}}",
+        "in": "in {{age}}",
+        "overdue": "overdue by {{age}}",
+        "neverRun": "never run",
+        "empty": "No repeatable schedules are registered.",
+        "milliseconds": "{{ms}} ms"
+      },
+      "failures": {
+        "title": "Permanent failures",
+        "subtitle": "{{total}} retained. Newest first.",
+        "when": "When",
+        "queue": "Queue",
+        "reason": "Reason",
+        "attempts": "Attempts",
+        "empty": "No job has failed permanently.",
+        "readOnlyNote": "Read-only. Job payloads are never shown, and there is no retry or discard: what is safe to re-run differs per job, so one shared button could not be.",
+        "malformed": "{{count}} retained entries could not be read and are not listed."
+      },
+      "providers": {
+        "title": "Providers",
+        "subtitle": "Circuit breakers per capability, call outcomes and how much the cache absorbs.",
+        "capability": "Capability",
+        "breaker": "Breaker",
+        "failures": "Failures",
+        "lastError": "Last error",
+        "retryAt": "Retry from",
+        "callsSummary": "{{success}} served · {{error}} errored · {{shortCircuited}} short-circuited",
+        "noCapabilityCalls": "Nothing has called this provider yet, so it has no breakers to report.",
+        "sampledSince": "counting since {{time}}",
+        "processLocalNote": "These counters belong to the API process answering this request and reset when it restarts; the worker counts its own separately. There is no upstream quota figure — the provider is keyless, so no authoritative quota exists to show."
+      },
+      "cache": {
+        "hitRate": "Cache hit rate",
+        "hitDetail": "Served from the fresh copy.",
+        "staleRate": "Served stale",
+        "staleDetail": "Last-known-good, refreshed in the background.",
+        "lookups": "Cache lookups",
+        "negative": "Negative hits"
+      }
+    },
+    "marketData": {
+      "title": "Market data",
+      "subtitle": "An inspector for instrument, FX and import-mapping integrity. Not built yet.",
+      "comingSoonShort": "Planned — the inspector itself is a later package.",
+      "notShipped": "This tab is where the financial-data inspector will live. Nothing here reads an instrument, enqueues a job or touches a price.",
+      "plannedTitle": "What it will do, and what it will never do",
+      "plannedDescription": "The guardrails below are already decided and are not open for reinterpretation.",
+      "rows": {
+        "inspector": "Inspector",
+        "inspectorValue": "Provider mapping, latest and as-of values, history coverage and gaps, cache and breaker state, and recent job outcomes for one instrument or FX pair.",
+        "detection": "Detection",
+        "detectionValue": "Stale quotes, FX gaps and outliers, surfaced as findings rather than fixes.",
+        "imports": "Imports",
+        "importsValue": "Unresolved import mappings grouped by importer and error code — aggregates only, never a raw broker file.",
+        "writes": "The only writes",
+        "writesValue": "A guarded, audited enqueue of the existing per-symbol backfill and cache refresh. Both jobs are already idempotent; that is what makes the button safe.",
+        "never": "Never",
+        "neverValue": "No direct price-row edits, no blind duplicate merges, and no per-user data — only affected-user counts."
+      },
+      "why": "Editing a price by hand would put money math behind a browser session, and merging duplicates without provenance, a dry run and a rollback is a change nobody can undo. Both need a domain answer first, so this package ships the reading and stops there."
+    },
+    "audit": {
+      "title": "Audit log",
+      "subtitle": "Every administrative and security-relevant action.",
+      "loading": "Loading audit log…",
+      "empty": "No audit entries yet.",
+      "loadError": "Could not load the audit log.",
+      "loadMoreError": "Could not load more audit entries.",
+      "loadMore": "Load more",
+      "loadingMore": "Loading…",
+      "actorSystem": "system",
+      "columns": {
+        "when": "When",
+        "action": "Action",
+        "actor": "Actor",
+        "target": "Target",
+        "ip": "IP",
+        "details": "Details"
+      }
+    },
+    "pagination": {
+      "range": "{{first}}–{{last}} of {{total}}",
+      "previous": "Previous",
+      "next": "Next"
     }
   },
   "create": {
@@ -5623,6 +6030,8 @@
         "title": "News",
         "description": "Headlines on the assets you hold",
         "empty": "No headlines for your holdings right now.",
+        "emptyPartial": "No headlines in the part of your assets we could look up.",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass.",
         "unavailable": "News is not available."
       },
       "attention": {
@@ -5688,6 +6097,8 @@
         "title": "Dividends",
         "description": "Upcoming ex- and pay dates",
         "empty": "No dividends coming up.",
+        "emptyPartial": "No dividends coming up in the part of your assets we could look up.",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass.",
         "unavailable": "Dividend data is not available.",
         "exDate": "Ex-date",
         "payDate": "Pay date"
@@ -6087,6 +6498,10 @@
       "title": "{{symbol}} ex-dividend {{date}}",
       "body": "{{symbol}} goes ex-dividend on {{date}} ({{amount}} {{currency}} per share)."
     },
+    "commentCreated": {
+      "title": "New comment",
+      "body": "{{actor}} commented on “{{item}}”."
+    },
     "budgetExceeded": {
       "title": "Budget exceeded: {{category}}",
       "body": "You spent {{spent}} {{currency}} on {{category}} this month — over your {{target}} {{currency}} budget."
@@ -6239,6 +6654,7 @@
     "leavesPopup": "Opens as its own page",
     "signIn": "Sign-in",
     "sessions": "Sessions",
+    "trustedDevices": "Trusted devices",
     "notificationLog": "Notification log",
     "profile": "Public profile",
     "authorizedApps": "Authorized apps",
@@ -6291,6 +6707,15 @@
     "discreet": {
       "title": "Discreet mode",
       "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "Install BetterTrack",
+      "body": "Add it to this device to open it in its own window.",
+      "iosBody": "Tap Share, then “Add to Home Screen”.",
+      "action": "Install",
+      "dismiss": "Dismiss"
     }
   },
   "parked": {
@@ -6462,6 +6887,7 @@
     "ask": {
       "title": "Ask BetterTrack",
       "body": "Questions over your own portfolios with explicit scope, linked answers and reviewable proposals — no unsolicited chat bubbles. AI insights and the natural-language Blueprint builder are live today; the full workspace lands here.",
+      "bodyUnavailable": "Questions over your own portfolios with explicit scope, linked answers and reviewable proposals — no unsolicited chat bubbles. This workspace lands here once it is built.",
       "p1": "You choose exactly which portfolios the answer may read",
       "p2": "Every figure links back to records and assumptions",
       "p3": "Scenario answers open as Workbench drafts",
@@ -6494,15 +6920,6 @@
     "keys": {
       "navigate": "Navigate",
       "open": "Open"
-    },
-    "assetType": {
-      "stock": "Stock",
-      "etf": "ETF",
-      "index": "Index",
-      "fx": "FX",
-      "commodity": "Commodity",
-      "crypto": "Crypto",
-      "other": "Other"
     }
   },
   "firstrun": {

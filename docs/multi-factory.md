@@ -28,17 +28,139 @@ already-CLEAN PR behind them is not starved. Queue files are never reordered or
 rewritten, and at most one merge lands per tick, so the oldest genuinely
 mergeable record always wins.
 
+**The merge lane outranks the composer.** A successful composer run blocks the
+whole tick for ~45 min, which freezes merging as well as scheduling. So
+`composer_step` returns early — logging `composer deferred: merge queue
+non-empty` — whenever any `<epoch>-prNN.json` record is waiting. Owner briefs
+are exempt in **both** their states: an already-claimed one
+(`.composer-request-active.json`, reconciled above the mode gate) and a fresh
+`control/composer-request.json` that has not been claimed yet — the claim
+happens _below_ this guard, so the guard has to test the file, not just the
+loaded flag. Consequence worth knowing: a permanently stuck queue record stops
+ordinary composition, which is intended (drain the lane, then compose), but it
+never blocks a brief you write yourself.
+
+**Composer outcome model.** The composer is the priciest role in the fleet, so
+every run is classified exactly once and only one classification retries:
+
+| Outcome            | When                                                                  | What follows                                                                                                                                                                                                                                                                                                                                             |
+| ------------------ | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `created`          | the run created ≥ 1 repository issue — schedulable **or** quarantined | books the ordinary `MF_COMPOSER_COOLDOWN` (default 900 s); resets the idle backoff; NEVER retried                                                                                                                                                                                                                                                        |
+| `idle`             | zero issues created and a valid empty result (`NONE`)                 | feeds the idle backoff: doubles up to `MF_COMPOSER_BACKOFF_MAX` (default 14400 s) while the open-issue set, mode and phase are unchanged                                                                                                                                                                                                                 |
+| `protocol-failure` | zero issues created and malformed output / a transport failure        | `MF_COMPOSER_PROTOCOL_ATTEMPTS` (default 2) corrective attempts, **one per tick**, each gated by `MF_COMPOSER_PROTOCOL_COOLDOWN` (defaults to `MF_COMPOSER_COOLDOWN`); the cooldown doubles per failure up to `MF_COMPOSER_PROTOCOL_BACKOFF_MAX` (defaults to `MF_COMPOSER_BACKOFF_MAX`), which is what bounds it once the corrective attempts are spent |
+
+The `created` row is the one that costs money. A run whose issues were all
+quarantined as not-schedulable used to be booked as a protocol failure, and the
+corrective retry then started a second composer **31 s later, inside the same
+tick** — two ~20-minute `claude-opus-5 (xhigh)` runs for one batch (live log,
+2026-08-30). Replaying a run that already filed issues can only produce
+duplicates, so quarantined-but-created ends the sequence. The corrective attempt
+number lives in `state/control/.composer-protocol-attempt` so the bound survives
+a restart, and any `created`/`idle` outcome clears it. Because that run filed
+real issues that `state/control/composer-quarantine` then hides from
+`runnable_issues` until a human reconciles them, and because nothing will retry
+it, the `created`-with-quarantine outcome raises an owner **notification**, not
+just an `events.log` line — the same treatment its fence-reconcile twin gets.
+
+Be precise about what `MF_COMPOSER_PROTOCOL_ATTEMPTS` bounds: the number of
+invocations that carry the `PROTOCOL CORRECTION RETRY` preamble, and the point
+at which a claimed owner brief is blocked for review. It does **not** bound how
+often ordinary composition re-runs after a malformed result — the attempt number
+saturates at the configured maximum and from there the doubling protocol backoff
+is the only bound (up to `MF_COMPOSER_PROTOCOL_BACKOFF_MAX`, 4 h by default).
+`0` is legal and means "no corrective attempt": no invocation ever carries the
+correction preamble, and a claimed brief is blocked on its first protocol
+failure. Only an empty or non-numeric setting falls back to the default 2.
+
+**Composer cost caps.** `COMPOSER_BATCH` (default **5**) is the issues-per-run
+target; raise it in `compose.yml` when a deliberately big batch is wanted (the
+owner's 2026-07-16 "big batches" note is honoured by keeping it configurable,
+not by defaulting high). `MF_COMPOSER_MAX_TURNS` (default **60**) and
+`MF_COMPOSER_TIMEOUT` (default **1800** s) bound every composer run on the
+claude and claudex branches of `mf_cc`, the way `MF_SOL_COMPOSER_MAX_TURNS` /
+`MF_SOL_COMPOSER_TIMEOUT` (40 / 1200) bound a Sol composer — Sol keeps its own
+tighter numbers where both apply. Out-of-range values fall back to the defaults,
+never to an unbounded run. All three are set explicitly for the master service
+in `compose.yml`.
+
+The turn cap and the outcome model compose in one place worth knowing about: a
+composer run killed by `--max-turns` (or the timeout) **after** it has already
+called `create-issue.sh` at least once is a `created` run — issues filed,
+manifest never finished, quarantined, no retry. That is deliberate (replaying it
+would only duplicate the issues it already filed), and it is the reason that
+branch notifies: the signal that 60 turns is short for the configured
+`COMPOSER_BATCH` is a recurring "issues […] quarantined … owner reconciliation
+needed" notification. If that appears repeatedly, raise `MF_COMPOSER_MAX_TURNS`
+or lower `COMPOSER_BATCH` rather than leaving runs to strand issues.
+
+**Review-requeue budget.** An approval that keeps invalidating used to send the
+same issue back through review forever (#1232 burned 140 reviewer runs).
+`requeue_for_review` now counts requeues per issue in
+`state/control/requeue-count/<issue>` and parks the issue with a human once the
+count passes `MF_REQUEUE_MAX` (default 3, set to `3` for the master service in
+`compose.yml`). The counter is keyed by **issue**, so it survives the new PR and
+new head that a requeue produces, and it is deliberately never cleared — the
+budget is a lifetime bound on re-entering review, not a per-cycle allowance.
+An in-budget requeue leaves the PR's merge-refusal counter alone; the
+over-budget park retires the PR for good and therefore clears both that counter
+and the CI-fix state along with the queue record.
+
+> **Re-arming a parked issue.** Because the counter is never cleared
+> automatically, fixing the issue and removing `needs-human` is not enough — the
+> very next requeue parks it again immediately. Delete the counter too:
+>
+> ```bash
+> rm -f multi-factory/state/control/requeue-count/<issue>
+> rm -f multi-factory/state/ci-fix/issue-<issue>-pr<pr>.json   # same-head "exhausted" park keeps this on purpose
+> mv multi-factory/state/triage/issue-<issue>-pr<pr>.json multi-factory/state/triage/archive/   # if present
+> ```
+
+**The CI-fix `exhausted` record is head-scoped, and no queue entry is ever
+dropped silently.** `state/ci-fix/issue-<n>-pr<pr>.json` records how much of the
+one-CI-fix budget a PR has spent, together with the `source_head` it was spent
+on. `exhausted` retires that PR — but only for **that head**. When the merger
+meets an `exhausted` record it now reads the PR's current head first: a record
+naming a different head (or no head) is stale by construction, so the _record_
+is deleted and the freshly approved head starts again at `invocations 0/2`,
+while the queue entry stays put; an unreadable head keeps the entry and retries
+next tick. Only a record whose `source_head` **is** the current head is
+terminal, and then it logs `merger: CI-fix budget exhausted for PR #N on head
+…` and parks the issue `needs-human` before unlinking. That ordering is the
+whole rule: in #1900 a record written for a head ten days earlier short-circuited
+on every later head and unlinked the queue entry with no log, no park and no
+requeue — the scheduler saw a still-`autopilot` issue with nothing queued,
+re-dispatched it, and the worker re-reviewed an already-approved head 186 times
+for $434.64 of review on one PR. Every `rm -f` of a merge-queue record in the
+merger is therefore preceded by a `log` naming the PR and the reason, and
+`test.sh` guards that structurally — a new drop site without a log fails the
+suite.
+
+**Resume short-circuit (an approved head is never re-reviewed).** When a worker
+resumes an issue that already has a linked PR, it reads the PR's head and the
+canonical approval for it from the durable comment thread (the same
+`contracts.sh` helper the merger validates against). If the approval already
+covers the current head, the worker re-emits the merge-queue entry itself and
+finishes the assignment — no reviewer runs. Only a **changed** head is new work.
+Re-emitting is idempotent (`enqueue_merge` is a no-op when an entry for that PR
+already carries the same approved head, kind and comment id), so repeated
+resumes converge on one entry. Two things deliberately keep their old
+behaviour: durable triage state (`state/triage/issue-<n>-pr<pr>.json`) outranks
+the short-circuit, because it replays an exact checker/escalation stage that a
+blind re-enqueue would skip; and an unreadable PR falls through to a normal
+review rather than enqueueing on a guess. Together with the rule above this is
+belt-and-braces — a merger stall can no longer bill a single reviewer run.
+
 ## Difficulty routing & model providers (mflib.sh)
 
 Issues are classified by **difficulty**, not by model — exactly one label:
 
-| Label               | Color       | Meant for                                                            |
-| ------------------- | ----------- | -------------------------------------------------------------------- |
-| `diff:easy`         | blue        | trivial/mechanical: docs, config/CI, placeholders, tiny CRUD         |
-| `diff:normal`       | light green | standard well-scoped features: plain UI pages, simple endpoints, e2e |
-| `diff:intermediate` | dark green  | cross-cutting/stateful: auth/PIN, schema/migrations, jobs, realtime  |
-| `diff:hard`         | purple      | complex engine/architecture: domain core, provider/caching, search   |
-| `diff:max`          | red         | keystone/critical path + plan-deviation design decisions             |
+| Label               | Color       | Meant for                                                                                                                |
+| ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `diff:easy`         | blue        | trivial/mechanical: docs, config/CI, placeholders, tiny CRUD                                                             |
+| `diff:normal`       | light green | standard well-scoped features: plain UI pages, simple endpoints, e2e                                                     |
+| `diff:intermediate` | dark green  | cross-cutting/stateful: auth/PIN, schema/migrations, jobs, realtime                                                      |
+| `diff:hard`         | purple      | complex engine/architecture: domain core (`apps/api/src/domain/**` + `packages/domain/src/**`), provider/caching, search |
+| `diff:max`          | red         | keystone/critical path + plan-deviation design decisions                                                                 |
 
 The owner maps each difficulty to a **provider + model + effort** in the
 dashboard's **Models** tab, persisted to `state/control/models.json` and read
@@ -48,7 +170,11 @@ max); reviews never run below `roles.reviewFloor` (default intermediate).
 Legacy `tier:*` labels still resolve (sonnet→easy, opus→intermediate,
 fable→max); unlabeled issues run as intermediate.
 
-Four subscription providers (per-provider effort semantics):
+Three subscription providers (per-provider effort semantics), plus one API-key
+provider (`opencode`, below). The Google **Antigravity (`agy`) / gemini**
+provider was removed in #1623: it was wired end-to-end but had never run a
+single production role, so it was pure weight in `mflib.sh`, `autorun.sh`,
+`compose.yml`, the provider registry and the dashboard.
 
 - **claude** — claude CLI, auth via `CLAUDE_CODE_OAUTH_TOKEN` (factory/.env);
   effort = `--effort low|medium|high|xhigh|max`.
@@ -63,12 +189,29 @@ Four subscription providers (per-provider effort semantics):
   `model_reasoning_effort low|medium|high|xhigh|max|ultra` where supported by
   the selected model; models e.g. `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`
   (free-text for new ones).
-- **gemini** — Google **Antigravity CLI (`agy`)**, auth from the host's
-  `~/.gemini` Google login; the reasoning level is part of the model name,
-  e.g. `Gemini 3.1 Pro (High)`, `Gemini 3.5 Flash (Low)` (`agy models` lists
-  what the subscription offers — the dashboard shows them as suggestions).
+- **opencode** — the opencode CLI (Bun binary, installed by
+  `multi-factory/opencode-install.sh`). **Not a subscription**: it authenticates
+  with an API key held in `auth/<service>/opencode/share/opencode/auth.json`, and
+  the three XDG vars are pointed at the single `MF_OPENCODE_HOME` mount so the
+  whole opencode footprint stays in one bind mount. Routes are declared in the
+  read-only `opencode-factory.json` (models are `provider/model`, e.g.
+  `openrouter/stealth/ox-alpha`), which also carries opencode's permission
+  policy (`webfetch` denied; `curl`/`wget`/`env`/`printenv` and the cloud CLIs
+  denied at the bash layer). `opencode run` exits 0 even on failure, so
+  `mflib.sh` classifies the `--format json` event stream rather than the exit
+  code. **Read the data-exposure warning at the top of `mflib.sh` before routing
+  any difficulty here** — an opencode role sees the checkout and can reach a
+  third-party model provider. It is wired up but has never run a production
+  role.
 
-Auth for codex/ClaudeX/agy is synced by `autorun.sh` from the host into gitignored
+Usage-limit naps are bounded: a ClaudeX/Codex run that keeps hitting the
+provider's usage limit sleeps `LIMIT_SLEEP` and retries at most
+`MF_LIMIT_NAPS_MAX` times (default 8, set explicitly for every service in
+`compose.yml`) before the role run fails and hands the issue to the normal
+retry/triage path. Without the cap a quota-dead provider napped forever and the
+worker looked alive while doing nothing.
+
+Auth for codex/ClaudeX/opencode is synced by `autorun.sh` from the host into gitignored
 **per-container** copies under `multi-factory/auth/<service>/` (bind-mounted
 over the container HOME, rw so token refreshes persist; a copy is only
 overwritten when the host file is newer). **Nothing under `auth/` or `state/`
@@ -83,7 +226,7 @@ that same service while it is stopped, so it exercises the factory image,
 isolated auth/CCR mounts, direct gateway, and Claude Code route rather than a
 host-only CLI shortcut.
 Claude capacity gating (`wait_for_capacity`) only blocks startup while some
-difficulty actually routes to claude — a claudex/codex/gemini-only config starts fine
+difficulty actually routes to claude — a claudex/codex-only config starts fine
 during a claude outage. Non-Claude subscription runs retain `cost_usd: 0` as the
 billing field and record token counts plus `api_equivalent_usd` when pricing is
 known. Dashboard money totals, model/role/issue breakdowns, and daily charts use
@@ -117,7 +260,14 @@ closed (checked via direct REST reads — never the lagging search index). It ma
 be **assigned** only when none of its claims overlaps any in-flight claim
 (assigned issues + PRs still in the merge queue). Claims are compared by
 stripping everything from the first `*` and testing string-prefix both ways.
-No/unparseable meta ⇒ the issue claims `**` and simply runs alone. Assignment:
+No/unparseable meta ⇒ the issue claims `**`, which conflicts with **everything**
+and silently serialized the whole fleet behind it. The scheduler therefore does
+not run it: it labels the issue **`mf:bad-meta`**, logs `scheduler: issue #N has
+empty mf-meta touches — labeled mf:bad-meta, skipped`, and moves on;
+`runnable_issues` drops `mf:bad-meta` issues on every later tick, so the label
+is the durable record. Fix the issue body's `mf-meta` block and remove the label
+to let it back in. (The label is re-applied once per idle worker within the tick
+that detects it — harmless, and it stops after that tick.) Assignment:
 lowest runnable issue → lowest idle worker, mirrored on GitHub with
 `in-progress` + `mf:worker-N` labels (the `state/` dir is the source of truth).
 
@@ -143,6 +293,15 @@ work up instead of it evaporating in the worker's clone volume (the manual
 salvage-from-volume drill after `needs-human`). The normal happy path — where the
 writer opened its own PR — is a no-op (a PR already exists).
 
+**Dependency priming.** Before each cycle the worker runs
+`pnpm install --frozen-lockfile --prefer-offline` outside the billed model
+session, so a moved lockfile does not make the writer install on model time. It
+is bounded by `MF_PNPM_PRIME_TIMEOUT` (default 600 s) and is non-fatal either
+way — the writer installs if it failed. The timeout is not optional: this runs
+before the role loop, outside every heartbeat-refreshing `cc()` call, so an
+unreachable registry would otherwise hang with a _fresh_ heartbeat, which the
+stall detector cannot see (the 2026-08-19 DNS-wedge failure class).
+
 ## The protocol dir (`multi-factory/state/`, bind-mounted at `/work/mfstate`)
 
 - `assignments/worker-N.json` — master-written (atomic tmp+mv), removed on ack
@@ -152,8 +311,12 @@ writer opened its own PR — is a no-op (a PR already exists).
   killed-mid-run recovery: authoritative GH re-check → salvage approved PR to
   the queue, or reset labels + assignment for rescheduling)
 - `merge-queue/<epoch>-prNN.json` — FIFO-preferring, consumed by the merger only
+  (the dir also holds the merger's own dotfile counters, `.mergefail-prNN` and
+  `.apprfail-prNN`; only `<epoch>-prNN.json` records are queue entries)
 - `control/mode` — `run` | `run-out` | `close-down` (owner/dashboard-written)
 - `control/phase` — `running` | `draining` | `drained` (master-written)
+- `control/requeue-count/<issue>` — the per-issue review-requeue budget
+  (`MF_REQUEUE_MAX`); never cleared, so it bounds an issue's lifetime
 - `logs/events.log` — every container's factory event lines (`[master]`/`[wN]`)
 
 ## Modes & the control dashboard
@@ -182,9 +345,47 @@ available at `/legacy` (and `/legacy/`) against the same live control APIs.
 ./multi-factory/autorun.sh --stop   # stop containers (resumable)
 ./multi-factory/autorun.sh --down   # remove containers (state/ + volumes persist)
 ./multi-factory/test.sh             # offline scheduler+provider+protocol+control tests
+./multi-factory/autorun.sh --self-test  # the same suite, as a deploy gate
 node multi-factory/control/server.mjs   # dashboard on 127.0.0.1:8790
 docker compose -p bettertrack-multifactory pause|unpause   # freeze/thaw (cc() survives)
 ```
+
+`test.sh` runs entirely offline against stubs — **no containers, no Docker, no
+network** — so it is the right check while the daemon is down or restarting. It
+chains `protocol-test.sh`, `claudex-test.sh` and the control-plane Node tests,
+and it owns its whole environment: every `MF_*`/`CC_*`/`COMPOSER_*` variable the
+live fleet exports is unset at the top before the fixtures are written (an
+inherited `MF_MODELS_FILE` alone reddened 42 checks when the suite was first run
+inside a container).
+
+**The suite runs on every deploy.** `autorun.sh` calls it before building and
+starting the fleet, writes the output to `state/logs/test-<UTC timestamp>.log`
+and prints the summary line. A red suite is loud but **non-fatal** on the start
+path — a guard regression must never be able to keep the fleet down. Use
+`autorun.sh --self-test` to run only the suite (exit code follows the result),
+and `MF_SKIP_SELF_TEST=1` to skip it on a start; `claudex-test.sh` drives
+`autorun.sh` itself, so that variable is also what stops the suite re-entering
+itself.
+
+**Standing fleet shape: `WORKERS=2`** (the value in `state/control/workers`, or
+2 when that file is absent). `compose.yml` defines exactly `master`, `worker-1`
+and `worker-2`; `autorun.sh` only generates `compose.extra.yml` for worker 3+
+when `WORKERS > 2`, and that file is generated, gitignored, and never committed.
+
+**Relaunching a script change without rebuilding the image.** Every `*.sh`,
+prompt and `opencode-factory.json` is bind-mounted read-only into the
+containers, so editing one and recreating the containers is enough — an image
+rebuild is only needed when `factory/Dockerfile` changes (a pinned CLI version):
+
+```bash
+cd multi-factory && docker compose -p bettertrack-multifactory \
+  -f compose.yml -f compose.dnsfix.yml up -d --force-recreate --no-build
+```
+
+(`autorun.sh` always runs `dc build` first; the image layer is cached, so it is
+also fine — just slower.) Note that the containers keep the file **the deploy
+worktree** holds, not the one in your checkout: after merging a factory change,
+update the deploy worktree too or the fleet keeps running the old script.
 
 Optional clean-runtime overlays are supported without editing the committed
 Compose file:
@@ -192,6 +393,19 @@ Compose file:
 ```bash
 MF_COMPOSE_OVERRIDE=/absolute/path/runtime.yml ./multi-factory/autorun.sh
 ```
+
+`compose.dnsfix.yml` is a committed, **temporary** overlay from the 2026-08-19
+Docker Desktop DNS wedge: it pins every service to the default bridge and sets
+explicit resolvers, because the user-defined bridge black-holed port 53 and the
+containers inherited `8.8.8.8` first — the factory then ran for hours with no
+outbound DNS while looking like a GitHub outage. Apply it with
+`-f compose.yml -f compose.dnsfix.yml`. **Caveat:** it carries stanzas for
+`master`, `worker-1` and `worker-2` only. The worker-3/worker-4 stanzas were
+removed with the `WORKERS=2` downscale, because an overlay-only service that has
+no counterpart in `compose.yml`/`compose.extra.yml` has no image and Compose
+refuses the whole project. If the fleet ever scales past 2, re-add the same
+`network_mode` + `dns` block per worker. Retire the file once a Mac reboot
+clears the NAT state — and verify DNS from inside a container first.
 
 Exactly one additional Compose file is accepted and is retained for build, up,
 dry-run, login, logs, stop, down, fresh, and generated worker 3/4 operations.

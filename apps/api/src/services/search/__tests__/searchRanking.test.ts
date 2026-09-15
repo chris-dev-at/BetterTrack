@@ -1,9 +1,11 @@
+import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import * as schema from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
+import { COMMON_SYMBOLS_SEED, seedAssetCatalog } from '../catalogSeed';
 import { SEARCH_RESULT_LIMIT } from '../searchService';
 
 /**
@@ -102,7 +104,7 @@ describe('assetRepository.searchCatalog ranking', () => {
     const { userId } = await seedFixture(h);
     const repo = createAssetRepository(h.db);
 
-    const matches = await repo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT);
+    const { matches } = await repo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT);
     expect(matches.map((m) => m.symbol)).toEqual(expected);
   });
 
@@ -113,13 +115,13 @@ describe('assetRepository.searchCatalog ranking', () => {
 
     // Name tier first (MOT.DE, then the caller's custom asset), then the
     // BAYR/BAYR.F symbols that only survive via trigram similarity (~0.36/0.31).
-    const mine = await repo.searchCatalog(userId, 'bayrische', SEARCH_RESULT_LIMIT);
+    const { matches: mine } = await repo.searchCatalog(userId, 'bayrische', SEARCH_RESULT_LIMIT);
     expect(mine.map((m) => m.symbol)).toEqual(['MOT.DE', 'HOUSE', 'BAYR', 'BAYR.F']);
     expect(mine.find((m) => m.symbol === 'HOUSE')?.ownerId).toBe(userId);
     expect(mine.find((m) => m.symbol === 'MOT.DE')?.ownerId).toBeNull();
 
     // The other user sees their own custom asset instead — never someone else's.
-    const theirs = await repo.searchCatalog(otherId, 'bayrische', SEARCH_RESULT_LIMIT);
+    const { matches: theirs } = await repo.searchCatalog(otherId, 'bayrische', SEARCH_RESULT_LIMIT);
     expect(theirs.map((m) => m.symbol)).toEqual(['MOT.DE', 'SECRET', 'BAYR', 'BAYR.F']);
   });
 
@@ -160,8 +162,32 @@ describe('assetRepository.searchCatalog ranking', () => {
     ]);
     const repo = createAssetRepository(h.db);
 
-    const matches = await repo.searchCatalog(user.id, 'V', SEARCH_RESULT_LIMIT);
+    const { matches } = await repo.searchCatalog(user.id, 'V', SEARCH_RESULT_LIMIT);
     expect(matches.map((m) => m.symbol)).toEqual(['V', 'VOD.L']);
+  });
+
+  it('resolves a misspelling from the seeded catalog with no trigram index (§6.2, #1709)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser({ email: 'fuzzy@s.test', username: 'fuzzy' });
+    const repo = createAssetRepository(h.db);
+
+    const bayer = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === 'BAYN.DE');
+    expect(bayer).toBeDefined();
+    await seedAssetCatalog(repo, [bayer!]);
+
+    // The composite `assets_symbol_name_trgm_gin` was dead weight — `gin_trgm_ops`
+    // answers `%`/`<%`/`<->`, none of which this query uses — and 0110 dropped it.
+    const indexes = await h.db.execute(
+      sql`select indexname from pg_indexes where tablename = 'assets'`,
+    );
+    const named = ((indexes as { rows?: { indexname: string }[] }).rows ??
+      (indexes as unknown as { indexname: string }[])) as { indexname: string }[];
+    expect(named.map((r) => r.indexname)).not.toContain('assets_symbol_name_trgm_gin');
+
+    // What §6.2 actually promises still holds: the pg_trgm EXTENSION's
+    // `similarity()` resolves the owner's "bayr" where a provider would 404.
+    const { matches } = await repo.searchCatalog(user.id, 'bayr', SEARCH_RESULT_LIMIT);
+    expect(matches.map((m) => m.providerRef)).toEqual(['BAYN.DE']);
   });
 
   it('honors the row limit', async () => {
@@ -169,7 +195,7 @@ describe('assetRepository.searchCatalog ranking', () => {
     const { userId } = await seedFixture(h);
     const repo = createAssetRepository(h.db);
 
-    const matches = await repo.searchCatalog(userId, 'bayr', 2);
+    const { matches } = await repo.searchCatalog(userId, 'bayr', 2);
     expect(matches.map((m) => m.symbol)).toEqual(['BAYR', 'BAYR.F']);
   });
 });

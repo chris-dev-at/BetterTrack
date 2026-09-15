@@ -1,0 +1,742 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+
+import ts from 'typescript';
+
+/**
+ * Source-derived overlay inventory for the mobile overflow gate (#1663).
+ *
+ * The gate asserts SET EQUALITY between the overlays it discovers in source and
+ * the scenario/exclusion tables in `mobile-overflow.spec.ts`. That makes the
+ * discovery step the load-bearing half: an overlay the discovery misses is
+ * absent from BOTH sides of that equality, so the assertion still passes and the
+ * overlay is simply never measured — a silent green instead of a loud red.
+ *
+ * Discovery therefore never matches literal JSX identifiers. It resolves the
+ * imports of every candidate component back to the files that OWN the overlay
+ * primitives, so `import { ODialog as Sheet }` and a primitive renamed or newly
+ * added inside a registered primitive source are both found. A primitive that
+ * appears somewhere the resolver does not look fails the registry check below
+ * with a named error instead of quietly discovering nothing.
+ */
+
+/** Product components scanned for overlay usage. */
+export const USER_OVERLAY_SOURCE_ROOT = 'apps/web/src/user';
+
+/**
+ * The admin console's product components (#1891).
+ *
+ * The route half of the gate has always honoured "every user AND admin surface"
+ * (`ADMIN_CORE_ROUTES` + `assertCompleteAdminRouteInventory`); the overlay half
+ * looked only at the two roots around this one, so every console overlay — the
+ * palette, the navigation drawer, and `admin/components/Modal.tsx` at fifteen
+ * call sites — was unmeasured, and a new one could not fail CI. Scanned exactly
+ * like the user root: a component here that renders an overlay is a surface in
+ * its own right, and the gate's set-equality assertion names it until it is
+ * given a measured scenario or a justified exclusion.
+ *
+ * Deliberately NOT scanned by {@link overlayPrimitiveRegistryProblems}: that
+ * check reads "a portal-rendering component in this tree is shared overlay
+ * INFRASTRUCTURE", which is true of `apps/web/src/ui` and false here — the
+ * console mixes its shell, its primitives and its pages in one tree, so the
+ * palette would be reported as an unregistered primitive rather than measured as
+ * the surface it is. A genuinely shared console primitive is registered in
+ * {@link ADMIN_OVERLAY_PRIMITIVE_SOURCES}; an unregistered one is still
+ * discovered — as a surface of its own — so it cannot go missing silently.
+ */
+export const ADMIN_OVERLAY_SOURCE_ROOT = 'apps/web/src/admin';
+
+/**
+ * The shared UI layer. Everything here is infrastructure, so a portal-rendering
+ * component that appears in this tree without being registered below is a new
+ * overlay primitive whose consumers would go undiscovered — that is a named
+ * failure, not a silent one.
+ */
+export const SHARED_UI_SOURCE_ROOT = 'apps/web/src/ui';
+
+/**
+ * Overlay infrastructure: files whose exported components ARE the shared
+ * overlay primitives rather than product content that opens one. Their own JSX
+ * is never a measured surface; every consumer that renders one of their exports
+ * is discovered instead, under whatever local name it imports it as.
+ *
+ * A NEW primitive inside one of these files needs no edit here — it is derived
+ * from the source. A new primitive file under {@link SHARED_UI_SOURCE_ROOT}
+ * must be added here; a new portal-rendering component under
+ * {@link USER_OVERLAY_SOURCE_ROOT} is already discovered as a surface in its own
+ * right, and only belongs here if it is genuinely shared infrastructure.
+ */
+export const OVERLAY_PRIMITIVE_SOURCES = [
+  'apps/web/src/user/components/Dialog.tsx',
+  'apps/web/src/ui/origin/components.tsx',
+] as const;
+
+/**
+ * The primitives whose disappearance from every registered source must fail
+ * loudly. `ODialog`/`Drawer` live outside the user tree, so before #1663 the
+ * gate discovered their consumers only by matching those two literal tag names;
+ * this asserts the relationship instead of assuming it.
+ */
+export const REQUIRED_OVERLAY_PRIMITIVES = ['Dialog', 'ODialog', 'Drawer'] as const;
+
+/**
+ * The console's own overlay infrastructure (#1891). `admin/components/Modal.tsx`
+ * is the `Dialog` of the admin world — one dependency-free portal shell behind
+ * every console dialog — so it is registered here rather than measured as a
+ * surface: what has to be opened at 390px is the fifteen CALL SITES' content,
+ * not the empty shell.
+ */
+export const ADMIN_OVERLAY_PRIMITIVE_SOURCES = ['apps/web/src/admin/components/Modal.tsx'] as const;
+
+/** {@link REQUIRED_OVERLAY_PRIMITIVES} for the console's own primitives. */
+export const ADMIN_REQUIRED_OVERLAY_PRIMITIVES = ['Modal'] as const;
+
+/**
+ * Popover class the shell-owned menus are painted with.
+ *
+ * Deliberately a whole-token match rather than a substring: a file whose only
+ * popover markup is a BEM child (`bt-popover__body`) paints part of a popover
+ * some OTHER component owns and opens, so it is not a surface of its own — and
+ * `bt-popover-ish` look-alikes are not popovers at all. The owner always carries
+ * the bare token, so the surface is still discovered, just at the right file.
+ */
+const POPOVER_CLASS_TOKEN = /(^|[^\w-])bt-popover([^\w-]|$)/;
+
+/** The name a default export is published under, in export-map terms. */
+const DEFAULT_EXPORT_NAME = 'default';
+
+/** Reads a repo-relative source file, or returns undefined if it does not exist. */
+export type SourceReader = (relativePath: string) => string | undefined;
+
+/**
+ * Lists the source files (excluding tests) under a repo-relative directory.
+ *
+ * `.ts` as well as `.tsx`: a primitive can be a JSX-free `createPortal` wrapper,
+ * and the registry check below is the half that has to fail loudly when one
+ * appears unregistered — it cannot do that for a file it never lists.
+ */
+export type SourceLister = (relativeDirectory: string) => string[];
+
+/** Whether a listed path is a non-test TypeScript source. */
+function isScannableSource(path: string): boolean {
+  if (path.endsWith('.test.ts') || path.endsWith('.test.tsx')) return false;
+  return path.endsWith('.ts') || path.endsWith('.tsx');
+}
+
+export interface OverlayDetection {
+  reader: SourceReader;
+  list: SourceLister;
+  primitiveSources: ReadonlySet<string>;
+  userRoot: string;
+  uiRoot: string;
+  adminRoot: string;
+  requiredPrimitives: readonly string[];
+}
+
+const diskReader: SourceReader = (relativePath) => {
+  try {
+    return readFileSync(resolve(process.cwd(), relativePath), 'utf8');
+  } catch {
+    return undefined;
+  }
+};
+
+const diskLister: SourceLister = (relativeDirectory) =>
+  readdirSync(resolve(process.cwd(), relativeDirectory), { withFileTypes: true }).flatMap(
+    (entry) => {
+      const path = `${relativeDirectory}/${entry.name}`;
+      if (entry.isDirectory()) return diskLister(path);
+      return entry.isFile() && isScannableSource(path) ? [path] : [];
+    },
+  );
+
+/** The real repo-backed detection context used by the gate. */
+export function repoOverlayDetection(): OverlayDetection {
+  return {
+    reader: diskReader,
+    list: diskLister,
+    // One primitive set, both worlds: resolution has to recognise an imported
+    // `Modal` wherever it is imported, and nothing outside the console imports
+    // the console's.
+    primitiveSources: new Set([...OVERLAY_PRIMITIVE_SOURCES, ...ADMIN_OVERLAY_PRIMITIVE_SOURCES]),
+    userRoot: USER_OVERLAY_SOURCE_ROOT,
+    uiRoot: SHARED_UI_SOURCE_ROOT,
+    adminRoot: ADMIN_OVERLAY_SOURCE_ROOT,
+    requiredPrimitives: [...REQUIRED_OVERLAY_PRIMITIVES, ...ADMIN_REQUIRED_OVERLAY_PRIMITIVES],
+  };
+}
+
+/**
+ * A detection context over in-memory sources, used by the spec's fixture proof
+ * that discovery survives aliasing and renamed primitives.
+ */
+export function virtualOverlayDetection(
+  files: Readonly<Record<string, string>>,
+  overrides: Partial<Omit<OverlayDetection, 'reader' | 'list'>> = {},
+): OverlayDetection {
+  const paths = Object.keys(files);
+  return {
+    reader: (relativePath) => files[relativePath],
+    list: (relativeDirectory) =>
+      paths.filter((path) => path.startsWith(`${relativeDirectory}/`) && isScannableSource(path)),
+    primitiveSources: new Set(OVERLAY_PRIMITIVE_SOURCES),
+    userRoot: USER_OVERLAY_SOURCE_ROOT,
+    uiRoot: SHARED_UI_SOURCE_ROOT,
+    adminRoot: ADMIN_OVERLAY_SOURCE_ROOT,
+    requiredPrimitives: REQUIRED_OVERLAY_PRIMITIVES,
+    ...overrides,
+  };
+}
+
+function parseSource(relativePath: string, reader: SourceReader): ts.SourceFile | undefined {
+  const text = reader(relativePath);
+  if (text === undefined) return undefined;
+  return ts.createSourceFile(
+    relativePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    // A plain `.ts` module must not be parsed as TSX: there, `<T>(x) => x` reads
+    // as JSX and silently truncates the declarations after it.
+    relativePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+}
+
+function isCreatePortalCall(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression.getText(sourceFile);
+  return callee === 'createPortal' || callee.endsWith('.createPortal');
+}
+
+function jsxAttributeText(
+  opening: ts.JsxOpeningLikeElement,
+  name: string,
+  sourceFile: ts.SourceFile,
+): string | undefined {
+  const attribute = opening.attributes.properties.find(
+    (property): property is ts.JsxAttribute =>
+      ts.isJsxAttribute(property) && property.name.getText(sourceFile) === name,
+  );
+  return attribute?.getText(sourceFile);
+}
+
+/**
+ * Whether a component builds an overlay itself: it portals, or it paints modal
+ * markup in place. `Drawer` is the reason the second half exists — it renders an
+ * `aria-modal` `role="dialog"` aside without a portal, so a portal-only
+ * definition of "primitive" would miss it and, with it, every consumer.
+ */
+function buildsOverlay(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+  let found = false;
+  const visit = (child: ts.Node) => {
+    if (found) return;
+    if (isCreatePortalCall(child, sourceFile)) {
+      found = true;
+      return;
+    }
+    const opening = ts.isJsxElement(child)
+      ? child.openingElement
+      : ts.isJsxSelfClosingElement(child)
+        ? child
+        : undefined;
+    if (opening) {
+      const modal = jsxAttributeText(opening, 'aria-modal', sourceFile);
+      const role = jsxAttributeText(opening, 'role', sourceFile);
+      if (modal?.includes('true') || role?.includes('"dialog"')) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  return (
+    ts.canHaveModifiers(node) &&
+    (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === kind)
+  );
+}
+
+/**
+ * The overlay primitives a file owns, under the names it PUBLISHES them as.
+ *
+ * Derived from the source, so a primitive that is renamed or added inside a
+ * registered source is picked up without editing any list. The published name
+ * is what matters, not the declared one: `export { Dialog as Modal }` is
+ * imported as `Modal`, and `export default function ODialog` is reachable only
+ * as `default` — recording the declared name in either case would leave the
+ * real consumers unrecognised.
+ */
+export function overlayPrimitiveExports(
+  relativePath: string,
+  detection: OverlayDetection,
+): string[] {
+  const sourceFile = parseSource(relativePath, detection.reader);
+  if (!sourceFile) return [];
+
+  const portalLocals = new Set<string>();
+  /** local declaration name → every name the module publishes it under. */
+  const publishedAs = new Map<string, Set<string>>();
+  const publish = (local: string, exported: string) => {
+    const names = publishedAs.get(local) ?? new Set<string>();
+    names.add(exported);
+    publishedAs.set(local, names);
+  };
+
+  for (const statement of sourceFile.statements) {
+    const exported = hasModifier(statement, ts.SyntaxKind.ExportKeyword);
+    const isDefault = hasModifier(statement, ts.SyntaxKind.DefaultKeyword);
+
+    if (ts.isFunctionDeclaration(statement)) {
+      // `export default function () {}` has no declared name; key it by the
+      // only name it is reachable under.
+      const local = statement.name?.text ?? (isDefault ? DEFAULT_EXPORT_NAME : undefined);
+      if (local === undefined) continue;
+      if (buildsOverlay(statement, sourceFile)) portalLocals.add(local);
+      if (exported) publish(local, isDefault ? DEFAULT_EXPORT_NAME : local);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+        if (buildsOverlay(declaration.initializer, sourceFile)) {
+          portalLocals.add(declaration.name.text);
+        }
+        if (exported) publish(declaration.name.text, declaration.name.text);
+      }
+    } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      // `export default Dialog` — the declaration itself is elsewhere in the
+      // file, so publish under the identifier it names.
+      if (ts.isIdentifier(statement.expression)) {
+        publish(statement.expression.text, DEFAULT_EXPORT_NAME);
+      } else if (buildsOverlay(statement.expression, sourceFile)) {
+        portalLocals.add(DEFAULT_EXPORT_NAME);
+        publish(DEFAULT_EXPORT_NAME, DEFAULT_EXPORT_NAME);
+      }
+    } else if (
+      ts.isExportDeclaration(statement) &&
+      !statement.moduleSpecifier &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause)
+    ) {
+      // `export { Dialog }` after the declaration counts the same as an inline
+      // `export function Dialog`; `export { Dialog as Modal }` publishes the
+      // same declaration under `Modal`.
+      for (const element of statement.exportClause.elements) {
+        if (element.isTypeOnly) continue;
+        publish((element.propertyName ?? element.name).text, element.name.text);
+      }
+    }
+  }
+
+  const published = new Set<string>();
+  for (const local of portalLocals) {
+    for (const name of publishedAs.get(local) ?? []) published.add(name);
+  }
+  return [...published].sort();
+}
+
+/**
+ * Resolve a relative import/export specifier to a repo-relative source path.
+ *
+ * Relative specifiers only — `apps/web` declares no path aliases, and a bare
+ * specifier is a package, not a primitive source. An unresolvable specifier
+ * yields no primitives, which is the one direction where this detector is
+ * NARROWER than the literal tag matching it replaced: consumers behind it go
+ * undiscovered instead of being matched by name. Two barrel forms therefore
+ * must not be introduced without teaching this resolver about them first —
+ * a path-aliased re-export (`export … from '@/ui/origin'`), and an
+ * import-then-export barrel (`import { ODialog } from './components';
+ * export { ODialog };`, which {@link primitiveExportsOf} does not follow
+ * because it only walks `export … from` chains). Every barrel in the tree
+ * today uses the supported `export … from` form.
+ */
+function resolveModule(
+  fromRelativePath: string,
+  specifier: string,
+  reader: SourceReader,
+): string | undefined {
+  if (!specifier.startsWith('.')) return undefined;
+  const base = join(dirname(fromRelativePath), specifier);
+  for (const candidate of [`${base}.tsx`, `${base}.ts`, `${base}/index.tsx`, `${base}/index.ts`]) {
+    if (reader(candidate) !== undefined) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * The overlay primitives a module exposes, following re-export barrels.
+ *
+ * Consumers import `ODialog` from `../../ui/origin` (a barrel), not from the
+ * file that defines it, so resolution has to walk `export { … } from './…'`
+ * chains — including renames — before it can say whether an imported name is a
+ * primitive.
+ *
+ * Results are MEMOISED rather than merely cycle-guarded: a module reached twice
+ * through a diamond of barrels must return the same export map both times, not
+ * an empty one on the second visit. Only the in-progress frames on `stack` — a
+ * genuine import cycle — resolve to nothing, and those are never cached.
+ */
+function primitiveExportsOf(
+  relativePath: string,
+  detection: OverlayDetection,
+  cache: Map<string, Map<string, string>> = new Map(),
+  stack: Set<string> = new Set(),
+): Map<string, string> {
+  const cached = cache.get(relativePath);
+  if (cached) return cached;
+  const exports = new Map<string, string>();
+  if (stack.has(relativePath)) return exports;
+  stack.add(relativePath);
+
+  if (detection.primitiveSources.has(relativePath)) {
+    for (const name of overlayPrimitiveExports(relativePath, detection)) {
+      exports.set(name, relativePath);
+    }
+    stack.delete(relativePath);
+    cache.set(relativePath, exports);
+    return exports;
+  }
+
+  const sourceFile = parseSource(relativePath, detection.reader);
+  if (!sourceFile) {
+    stack.delete(relativePath);
+    cache.set(relativePath, exports);
+    return exports;
+  }
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isExportDeclaration(statement) ||
+      statement.isTypeOnly ||
+      !statement.moduleSpecifier ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      continue;
+    }
+    const target = resolveModule(relativePath, statement.moduleSpecifier.text, detection.reader);
+    if (!target) continue;
+    const reachable = primitiveExportsOf(target, detection, cache, stack);
+    if (reachable.size === 0) continue;
+    const clause = statement.exportClause;
+    if (clause === undefined) {
+      for (const [name, source] of reachable) exports.set(name, source);
+    } else if (ts.isNamedExports(clause)) {
+      for (const element of clause.elements) {
+        if (element.isTypeOnly) continue;
+        const source = reachable.get((element.propertyName ?? element.name).text);
+        if (source) exports.set(element.name.text, source);
+      }
+    }
+  }
+  stack.delete(relativePath);
+  cache.set(relativePath, exports);
+  return exports;
+}
+
+interface OverlayBindings {
+  /** Local JSX names bound to an overlay primitive, including aliases. */
+  components: Set<string>;
+  /** `import * as x` namespaces whose primitive export names are the values. */
+  namespaces: Map<string, Set<string>>;
+}
+
+function overlayBindings(sourceFile: ts.SourceFile, detection: OverlayDetection): OverlayBindings {
+  const components = new Set<string>();
+  const namespaces = new Map<string, Set<string>>();
+  // One cache per file, so two imports that reach the same barrel resolve it
+  // once and both see the same export map.
+  const cache = new Map<string, Map<string, string>>();
+
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      !statement.importClause ||
+      statement.importClause.isTypeOnly
+    ) {
+      continue;
+    }
+    const target = resolveModule(
+      sourceFile.fileName,
+      statement.moduleSpecifier.text,
+      detection.reader,
+    );
+    if (!target) continue;
+    const reachable = primitiveExportsOf(target, detection, cache);
+    if (reachable.size === 0) continue;
+
+    // `import ODialog from './components'` — a default-exported primitive is
+    // published as `default` and bound under whatever name the consumer picks.
+    if (statement.importClause.name && reachable.has(DEFAULT_EXPORT_NAME)) {
+      components.add(statement.importClause.name.text);
+    }
+
+    const bindings = statement.importClause.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        if (element.isTypeOnly) continue;
+        if (reachable.has((element.propertyName ?? element.name).text)) {
+          components.add(element.name.text);
+        }
+      }
+    } else if (bindings && ts.isNamespaceImport(bindings)) {
+      namespaces.set(bindings.name.text, new Set(reachable.keys()));
+    }
+  }
+
+  return { components, namespaces };
+}
+
+/**
+ * One overlay a product component renders, at the JSX site that opens it.
+ *
+ * Identity is per SITE, not per file: a file that opens a second, unrelated
+ * overlay is a second surface to measure, and the file-level answer below
+ * cannot express that (#1834).
+ */
+export interface OverlaySite {
+  /** 1-based line of the opening element, for the "what to register" message. */
+  line: number;
+  /** What made it an overlay: the tag, or the markup it paints. */
+  description: string;
+}
+
+/**
+ * Every overlay a product component renders: a resolved overlay primitive
+ * (under any local name), an overlay it builds itself (a portal or in-place
+ * modal markup), or a `bt-popover` it paints — including one composed through a
+ * local class constant.
+ *
+ * Sites nested inside an already-counted overlay are NOT counted again: the
+ * panel markup a primitive wraps is that same overlay, not a second one. Two
+ * sites that open the SAME logical overlay from two branches of one render are
+ * still two sites — the detector reads syntax, not intent — which is why the
+ * classification entries in the gate declare how many sites they account for
+ * rather than being counted one-per-entry.
+ */
+export function overlaySites(relativePath: string, detection: OverlayDetection): OverlaySite[] {
+  const sourceFile = parseSource(relativePath, detection.reader);
+  if (!sourceFile) return [];
+  const bindings = overlayBindings(sourceFile, detection);
+
+  // A class constant is only a popover if it is USED as a className. AskDock
+  // keeps `.bt-popover` in a querySelector string, which paints nothing.
+  const popoverConstants = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      if (POPOVER_CLASS_TOKEN.test(declaration.initializer.getText(sourceFile))) {
+        popoverConstants.add(declaration.name.text);
+      }
+    }
+  }
+
+  const sites: OverlaySite[] = [];
+  const record = (node: ts.Node, description: string) => {
+    sites.push({
+      line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+      description,
+    });
+  };
+
+  const visit = (node: ts.Node) => {
+    // A component that portals or paints its own `aria-modal`/`role="dialog"`
+    // markup is an overlay even when it imports no primitive at all.
+    if (isCreatePortalCall(node, sourceFile)) {
+      record(node, 'createPortal(…)');
+      return;
+    }
+    const opening = ts.isJsxElement(node)
+      ? node.openingElement
+      : ts.isJsxSelfClosingElement(node)
+        ? node
+        : undefined;
+    if (opening) {
+      const tag = opening.tagName.getText(sourceFile);
+      const [namespace, member] = tag.split('.');
+      if (
+        bindings.components.has(tag) ||
+        (member !== undefined && (bindings.namespaces.get(namespace!)?.has(member) ?? false))
+      ) {
+        record(node, `<${tag}>`);
+        return;
+      }
+      const modal = jsxAttributeText(opening, 'aria-modal', sourceFile);
+      const role = jsxAttributeText(opening, 'role', sourceFile);
+      if (modal?.includes('true') || role?.includes('"dialog"')) {
+        record(node, `<${tag}> with its own aria-modal/role="dialog" markup`);
+        return;
+      }
+      const className = opening.attributes.properties.find(
+        (property): property is ts.JsxAttribute =>
+          ts.isJsxAttribute(property) && property.name.getText(sourceFile) === 'className',
+      );
+      if (className) {
+        const text = className.getText(sourceFile);
+        if (
+          POPOVER_CLASS_TOKEN.test(text) ||
+          [...popoverConstants].some((name) =>
+            new RegExp(`(^|[^\\w$])${name}([^\\w$]|$)`).test(text),
+          )
+        ) {
+          record(node, `<${tag}> painted as a bt-popover`);
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return sites;
+}
+
+/**
+ * Whether a product component renders an overlay at all — the file-level answer
+ * the set-equality half of the gate is built on.
+ */
+export function rendersOverlay(relativePath: string, detection: OverlayDetection): boolean {
+  return overlaySites(relativePath, detection).length > 0;
+}
+
+/**
+ * One entry of the gate's classification tables, reduced to what the count
+ * check needs: which sources it classifies, and how many of each source's
+ * overlay sites it accounts for.
+ */
+export interface OverlayClassification {
+  /** Scenario label or exclusion surface, quoted back in the failure. */
+  label: string;
+  sources: readonly string[];
+  /** Sites accounted for in EACH named source; one when unstated. */
+  overlays?: number;
+}
+
+/**
+ * Under-registered and over-claiming overlay files, as human-readable lines
+ * (#1834).
+ *
+ * The set-equality half of the gate matches FILES, so a second overlay added to
+ * an already-classified file satisfied it without ever being opened at 390px or
+ * given an exclusion — the same silent green the discovery step was rebuilt to
+ * remove. This counts instead, in the two directions that can hide one:
+ *
+ *  1. the entries naming a file must account for at least as many overlays as
+ *     it renders. Entries stay free to classify STATE variants of one overlay
+ *     ("edit variant" beside the measured create sheet), which is why the test
+ *     is "reaches the count" rather than "equals" it, and why an entry that
+ *     covers a whole family of dialogs says so with
+ *     {@link OverlayClassification.overlays};
+ *  2. no single entry may claim more overlays than the file still renders — a
+ *     family count left standing after a dialog is deleted would silently
+ *     absorb the next one added.
+ */
+export function overlayRegistrationProblems(
+  detection: OverlayDetection,
+  classifications: readonly OverlayClassification[],
+  /** Which discovered sources to count over; the user tree unless stated. */
+  sources: readonly string[] = overlaySurfaceSources(detection),
+): string[] {
+  const problems: string[] = [];
+
+  for (const source of sources) {
+    const entries = classifications.filter((entry) => entry.sources.includes(source));
+    if (entries.length === 0) continue; // The set-equality assertion owns this half.
+    const sites = overlaySites(source, detection);
+    const rendered = `${source} renders ${sites.length} overlay${
+      sites.length === 1 ? '' : 's'
+    } (${sites.map((site) => `line ${site.line}: ${site.description}`).join('; ')})`;
+
+    const accounted = entries.reduce((total, entry) => total + (entry.overlays ?? 1), 0);
+    if (accounted < sites.length) {
+      problems.push(
+        `${rendered} but ${entries.map((entry) => `"${entry.label}"`).join(', ')} account${
+          entries.length === 1 ? 's' : ''
+        } for ${accounted}; give the unclassified overlay its own scenario or exclusion, or raise \`overlays\` on an entry that genuinely covers it.`,
+      );
+    }
+
+    for (const entry of entries.filter((entry) => (entry.overlays ?? 1) > sites.length)) {
+      problems.push(
+        `${rendered} but "${entry.label}" claims to cover ${entry.overlays}; lower its \`overlays\` to what the file still renders.`,
+      );
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Every product component that renders an overlay. The gate requires each one
+ * to carry a measured scenario or a component-and-route exclusion.
+ */
+export function overlaySurfaceSources(detection: OverlayDetection): string[] {
+  return surfaceSourcesUnder(detection.userRoot, detection);
+}
+
+/**
+ * The same answer for the admin console (#1891). A separate function rather than
+ * a widened {@link overlaySurfaceSources}: the two worlds have separate
+ * scenario/exclusion tables and separate set-equality assertions, so merging
+ * them would let a user classification silently satisfy an admin overlay.
+ */
+export function adminOverlaySurfaceSources(detection: OverlayDetection): string[] {
+  return surfaceSourcesUnder(detection.adminRoot, detection);
+}
+
+function surfaceSourcesUnder(root: string, detection: OverlayDetection): string[] {
+  return detection
+    .list(root)
+    .filter(
+      (relativePath) =>
+        !detection.primitiveSources.has(relativePath) && rendersOverlay(relativePath, detection),
+    )
+    .sort();
+}
+
+/**
+ * Problems with the primitive registry itself, as human-readable lines. The
+ * gate asserts this is empty: a primitive that moved out of every registered
+ * source, or a new unregistered one in the shared UI layer, would otherwise
+ * shrink discovery to nothing while the equality assertion stayed green.
+ */
+export function overlayPrimitiveRegistryProblems(detection: OverlayDetection): string[] {
+  const problems: string[] = [];
+  const found = new Map<string, string>();
+
+  for (const source of detection.primitiveSources) {
+    const exported = overlayPrimitiveExports(source, detection);
+    if (exported.length === 0) {
+      problems.push(
+        `${source} is registered as overlay infrastructure but exports no overlay-building component; move the registration to the file that owns the primitive.`,
+      );
+      continue;
+    }
+    for (const name of exported) found.set(name, source);
+  }
+
+  for (const required of detection.requiredPrimitives) {
+    if (!found.has(required)) {
+      problems.push(
+        `The overlay primitive <${required}> was not found in any registered source (${[
+          ...detection.primitiveSources,
+        ].join(', ')}); register the file it moved to in OVERLAY_PRIMITIVE_SOURCES.`,
+      );
+    }
+  }
+
+  for (const path of detection.list(detection.uiRoot)) {
+    if (detection.primitiveSources.has(path)) continue;
+    const exported = overlayPrimitiveExports(path, detection);
+    if (exported.length > 0) {
+      problems.push(
+        `${path} exports the overlay primitive(s) ${exported
+          .map((name) => `<${name}>`)
+          .join(', ')}; register it in OVERLAY_PRIMITIVE_SOURCES so every consumer is discovered.`,
+      );
+    }
+  }
+
+  return problems;
+}

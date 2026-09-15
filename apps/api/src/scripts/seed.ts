@@ -49,7 +49,7 @@ export interface SeedDependencies {
   hasher: {
     hash(password: string): Promise<string>;
   };
-  seedCatalog(): Promise<{ created: number; existing: number }>;
+  seedCatalog(): Promise<{ created: number; existing: number; refreshed: number }>;
   seedOAuthClients(): Promise<
     Array<{ clientId: string; action: string; scopes: readonly string[] }>
   >;
@@ -182,10 +182,11 @@ export async function seedDatabase(
     }
   }
 
-  // Shipped common-symbols catalog (§6.2(c)) — idempotent, so re-seeding is safe.
+  // Shipped common-symbols catalog (§6.2(c)) — idempotent, so re-seeding is
+  // safe; an entry corrected since the last boot is refreshed in place (#1810).
   const catalogSeed = await dependencies.seedCatalog();
   output.info(
-    `Asset catalog seed: ${catalogSeed.created} created, ${catalogSeed.existing} already present.`,
+    `Asset catalog seed: ${catalogSeed.created} created, ${catalogSeed.existing} already present, ${catalogSeed.refreshed} refreshed.`,
   );
 
   // First-party OAuth clients (#395): idempotently upsert the known official

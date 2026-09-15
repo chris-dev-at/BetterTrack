@@ -112,7 +112,7 @@ const ASKED_KEY = 'bettertrack.oauthRememberAsked';
 function rememberJane() {
   localStorage.setItem(
     REMEMBERED_KEY,
-    JSON.stringify({ userId: USER_ID, username: 'jane', avatarUrl: null }),
+    JSON.stringify({ userId: USER_ID, username: 'jane', profileIcon: null }),
   );
 }
 
@@ -462,7 +462,7 @@ test('remember-me: ticking it binds the device and stores the local chooser reco
   vi.mocked(api.rememberDevice).mockResolvedValue({
     userId: USER_ID,
     username: 'jane',
-    avatarUrl: null,
+    profileIcon: null,
   });
   vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
 

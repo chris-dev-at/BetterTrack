@@ -19,6 +19,7 @@ export const ALL_BANK_MAPPERS: readonly BankStatementMapper[] = [
 ];
 
 export { ersteGeorgeMapper, raiffeisenElbaMapper, n26Mapper, revolutMapper };
+export { parseEnglishAmount, type AmountNotation } from './amount';
 export {
   createBankMapperRegistry,
   BANK_DETECT_THRESHOLD,

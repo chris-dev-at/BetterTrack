@@ -12,6 +12,7 @@ vi.mock('../../lib/chatApi', () => ({
 }));
 vi.mock('../../lib/socialApi', () => ({
   listFriends: vi.fn(),
+  listGroups: vi.fn(),
   getAudience: vi.fn(),
   setAudience: vi.fn(),
 }));
@@ -30,7 +31,7 @@ import {
   sendChatMessage,
 } from '../../lib/chatApi';
 import { ApiError } from '../../lib/apiClient';
-import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
+import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { listIdeas } from '../../lib/ideasApi';
@@ -74,6 +75,8 @@ beforeEach(() => {
   // jsdom has no scrollIntoView; the thread auto-scroll calls it.
   Element.prototype.scrollIntoView = vi.fn();
   vi.mocked(markConversationRead).mockResolvedValue(undefined);
+  // The quick-share shortcut resolves a `group` audience against this roster.
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
   // Attach-picker sources default to empty; individual tests override.
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [] });
@@ -375,7 +378,8 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
 
     renderAt('/social/chat/u2');
 
-    const share = await screen.findByRole('button', { name: 'Share it with just them' });
+    // Carol is carried, so the label says "too" rather than "just them".
+    const share = await screen.findByRole('button', { name: 'Share it with them too' });
     expect(share).toBeDisabled();
     await user.click(screen.getByRole('checkbox', { name: /this widens access to bob/i }));
     await user.click(share);
@@ -398,6 +402,11 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
       friendIds: [],
       groupId: 'g1',
       link: { active: false, createdAt: null },
+    });
+    // The circle exists but admits nobody, so it carries nobody into the write
+    // and the replacement warning is the literal truth: only Bob is left.
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [{ id: 'g1', name: 'Investors', memberCount: 0, members: [], shareCount: 1 }],
     });
     vi.mocked(setAudience).mockResolvedValue({
       state: {
@@ -436,6 +445,128 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
         confirmWiden: true,
       }),
     );
+  });
+
+  test('treats a recipient inside the shared group as already admitted', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'group',
+      friendIds: [],
+      groupId: 'g1',
+      link: { active: false, createdAt: null },
+    });
+    // Bob is in "Investors", so the server's `group` rung already admits him.
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Investors',
+          memberCount: 2,
+          members: [
+            { id: 'u2', username: 'bob', profileIcon: null },
+            { id: 'u9', username: 'carol', profileIcon: null },
+          ],
+          shareCount: 1,
+        },
+      ],
+    });
+
+    const { queryClient } = renderAt('/social/chat/u2');
+
+    await waitFor(() => expect(screen.getByText('Growth Portfolio')).toBeInTheDocument());
+    // Anchor on the roster having SETTLED, not merely been requested: while the
+    // read is in flight the shortcut is withheld anyway, so a call-time anchor
+    // would pass without ever reaching the `admitted` branch under test.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['social', 'groups'])?.status).toBe('success'),
+    );
+    expect(screen.queryByText(/bob can't see this/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /share it with (just )?them/i })).toBeNull();
+  });
+
+  test('widening off a group keeps its other members instead of dropping them', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'group',
+      friendIds: [],
+      groupId: 'g1',
+      link: { active: false, createdAt: null },
+    });
+    // Bob is NOT in the circle; carol is, and must keep her access.
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Investors',
+          memberCount: 1,
+          members: [{ id: 'u9', username: 'carol', profileIcon: null }],
+          shareCount: 1,
+        },
+      ],
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: 'p1',
+        audience: 'specific_friends',
+        friendIds: ['u9', 'u2'],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+
+    const share = await screen.findByRole('button', { name: 'Share it with them too' });
+    expect(share).toBeDisabled();
+    // Nobody loses access, but the item stops following the circle — and the
+    // confirmation has to say so, naming the group whose edits no longer count.
+    const confirm = screen.getByRole('checkbox', {
+      name: /keeps the current members of Investors and adds bob, but the item stops following that group/i,
+    });
+    expect(
+      screen.queryByRole('checkbox', {
+        name: /replaces the current friend-group audience with only bob/i,
+      }),
+    ).toBeNull();
+    await user.click(confirm);
+    await user.click(share);
+
+    await waitFor(() =>
+      expect(setAudience).toHaveBeenCalledWith('portfolio', 'p1', {
+        audience: 'specific_friends',
+        friendIds: ['u9', 'u2'],
+        confirmWiden: true,
+      }),
+    );
+  });
+
+  test('offers no shortcut while the shared group roster is unresolved', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'group',
+      friendIds: [],
+      groupId: 'g1',
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(listGroups).mockRejectedValue(new Error('groups unavailable'));
+
+    const { queryClient } = renderAt('/social/chat/u2');
+
+    // Settled-and-failed, not merely requested: the shortcut must stay absent
+    // once the roster read has finished without an answer.
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['social', 'groups'])?.status).toBe('error'),
+    );
+    expect(screen.queryByText(/bob can't see this/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /share it with (just )?them/i })).toBeNull();
   });
 
   test('shows no shortcut when the recipient can already see the item', async () => {

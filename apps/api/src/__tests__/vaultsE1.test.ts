@@ -23,6 +23,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { newId } from '../data/ids';
+import { createPortfolioVaultTransitionTransactionRepository } from '../data/repositories/portfolioVaultTransitionRepository';
 import { createVaultBlobRepository } from '../data/repositories/vaultBlobRepository';
 import { createVaultRepository } from '../data/repositories/vaultRepository';
 import type { Database } from '../data/db';
@@ -916,6 +917,121 @@ describe('E1 per-vault blind document CAS', () => {
       docKind: 'portfolio',
       portfolioId: portfolio.id,
     });
+  });
+
+  /**
+   * #1491 at the route a real recovery would take. The repository proves the
+   * rows survive the destructive commit; this proves the OWNER can still fetch
+   * their ciphertext through `GET /media/server-candidate/:candidateId`
+   * afterwards — that read is gated by `expectedDoc`, which changes meaning at
+   * the exact moment of the move-in (prospective capture → committed member),
+   * so it is the part that could silently regress and leave "recoverable" true
+   * only for someone with database access.
+   */
+  it('still serves the retained candidate to the owner after the move-in commits, and stops at the TTL (#1491)', async () => {
+    const user = await h.seedUser({
+      email: 'e1-retained-candidate@bt.test',
+      username: 'e1_retained_candidate',
+    });
+    const agent = await login(h.app, user);
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-retained-candidate-sub',
+        email: 'retained-candidate@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['drive'],
+      driveConnectionId: connection.id,
+    });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: connection.id,
+      })
+      .where(eq(vaults.id, vault.id));
+    const [portfolio] = await h.db
+      .insert(portfolios)
+      .values({ userId: user.id, name: 'Retained candidate portfolio' })
+      .returning();
+    if (!portfolio) throw new Error('portfolio insert failed');
+    await h.db.insert(portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId: user.id,
+      captureRevision: `${CAPTURE_REVISION}-retained`,
+      captureExpiresAt: CAPTURE_EXPIRES_AT,
+    });
+    const transitionId = newId();
+    const portfolioBlob = envelope({
+      vaultId: vault.id,
+      docId: portfolio.id,
+      docKind: 'portfolio',
+      docVersion: 1,
+      writeId: WRITE_IDS[2],
+    });
+    const staged = await agent
+      .put(`/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${portfolio.id}`)
+      .set(...XRW)
+      .set(...OCTET)
+      .send(portfolioBlob);
+    expect(staged.status, JSON.stringify(staged.body)).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+
+    // The destructive commit: the portfolio becomes a locked member and the
+    // server-readable copy is gone. Pre-#1491 this deleted the staged batch.
+    await h.db
+      .update(portfolios)
+      .set({ vaultId: vault.id, vaultAlias: 'Retained candidate' })
+      .where(eq(portfolios.id, portfolio.id));
+    await createPortfolioVaultTransitionTransactionRepository(h.db).completeMoveIn({
+      userId: user.id,
+      portfolioId: portfolio.id,
+      vaultId: vault.id,
+      docVersion: 1,
+      lifecycleGeneration: 1,
+      retiredCustomAssetIds: [],
+      completedAt: new Date(),
+    });
+
+    const recovered = await agent
+      .get(`/api/v1/vaults/${vault.id}/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
+    expect(Buffer.from(recovered.body).equals(portfolioBlob)).toBe(true);
+    expect(recovered.headers['x-bettertrack-vault-candidate-id']).toBe(candidateId);
+    // Ciphertext only, and never presented as the vault's storage: the vault
+    // still reports Drive as its only medium, with the rows as inactive.
+    const media = await agent.get(`/api/v1/vaults/${vault.id}/media`);
+    expect(media.status).toBe(200);
+    expect(media.body.media).toEqual(['drive']);
+    expect(media.body.server.disposition).toBe('inactive-candidates');
+
+    // The honest boundary at the route too: past `expires_at` the recovery is
+    // gone, with the same not-found the route gives an unknown candidate.
+    await h.db
+      .update(vaultServerCandidates)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(vaultServerCandidates.id, candidateId));
+    const expired = await agent.get(
+      `/api/v1/vaults/${vault.id}/media/server-candidate/${candidateId}`,
+    );
+    expect(expired.status).toBe(404);
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultServerCandidates)
+            .where(eq(vaultServerCandidates.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(0);
   });
 
   it('uses the registered doc-kind guard so a header address cannot borrow the 8MiB portfolio cap', async () => {
@@ -2303,6 +2419,171 @@ describe('E1 R3/R4 media transitions and purge', () => {
       .set(...XRW)
       .send({ stepUp: { password: user.password } });
     expect(deletedAfterPurge.status, JSON.stringify(deletedAfterPurge.body)).toBe(200);
+  });
+
+  /**
+   * #1530. An interrupted move-in of P wedged every OTHER portfolio out of the
+   * same vault: P's prospective admission nulls the vault's full-set proof, so
+   * Q's capture must re-earn it, and the readback Q's client can produce
+   * necessarily omits P's staged ciphertext — bytes it has no plaintext for.
+   *
+   * The refusal is deliberately UNCHANGED (fail-closed, nothing mutated); what
+   * changes is that this one shape now carries its own code and names P, so a
+   * client can say "finish or cancel that move" instead of retrying a readback
+   * that can never match. Everything else stays the undifferentiated
+   * VAULT_MEDIA_VERIFICATION_FAILED, and re-opening P's capture window (the
+   * documented recovery) clears the block for real.
+   *
+   * NOTE on level: #1530 asked for an "e2e" test and this is deliberately an
+   * HTTP integration test instead — the real router over real CAS state, not
+   * Playwright. The wedge is a server-side attestation semantic between two
+   * interleaved capture windows, and no UI consumes VAULT_MEDIA_CAPTURE_IN_FLIGHT
+   * yet (that copy is carried into the vault-UI batch), so a browser driver
+   * could not reach this shape today. The browser-level pass rides along when
+   * that batch adds the consumer.
+   */
+  it('names the interrupted move-in that blocks another capture, and refuses everything else the same way', async () => {
+    const user = await h.seedUser({
+      email: 'e1-interleaved-capture@bt.test',
+      username: 'e1_interleaved_capture',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent, name: 'Interleaved capture' });
+
+    for (const doc of [
+      { docId: vault.headerDocId, docKind: 'header' as const, writeId: WRITE_IDS[0] },
+      { docId: vault.commonDocId, docKind: 'common' as const, writeId: WRITE_IDS[1] },
+    ]) {
+      const written = await putDoc(
+        agent,
+        vault.id,
+        doc.docId,
+        envelope({ vaultId: vault.id, ...doc, docVersion: 1 }),
+        { create: true },
+      );
+      expect(written.status, JSON.stringify(written.body)).toBe(204);
+    }
+    await h.db
+      .update(vaults)
+      .set({ mediaAttestedAt: CAPTURE_ATTESTED_AT, mediaAttestedDriveConnectionId: null })
+      .where(eq(vaults.id, vault.id));
+
+    const inserted = await h.db
+      .insert(portfolios)
+      .values([
+        { userId: user.id, name: 'Interrupted move-in' },
+        { userId: user.id, name: 'Second capture' },
+      ])
+      .returning();
+    const [interrupted, second] = inserted;
+    if (!interrupted || !second) throw new Error('portfolio insert failed');
+    await h.db.insert(portfolioVaultTransitionStates).values([
+      {
+        portfolioId: interrupted.id,
+        userId: user.id,
+        captureRevision: `${CAPTURE_REVISION}-interrupted`,
+        captureExpiresAt: CAPTURE_EXPIRES_AT,
+      },
+      {
+        portfolioId: second.id,
+        userId: user.id,
+        captureRevision: `${CAPTURE_REVISION}-second`,
+        captureExpiresAt: CAPTURE_EXPIRES_AT,
+      },
+    ]);
+
+    // P stages its prospective document; its commit never lands.
+    const staged = await putDoc(
+      agent,
+      vault.id,
+      interrupted.id,
+      envelope({
+        vaultId: vault.id,
+        docId: interrupted.id,
+        docKind: 'portfolio',
+        docVersion: 1,
+        writeId: WRITE_IDS[2],
+      }),
+      { create: true },
+    );
+    expect(staged.status, JSON.stringify(staged.body)).toBe(204);
+    const [invalidated] = await h.db
+      .select({ mediaAttestedAt: vaults.mediaAttestedAt })
+      .from(vaults)
+      .where(eq(vaults.id, vault.id));
+    expect(invalidated?.mediaAttestedAt).toBeNull();
+
+    const refresh = (
+      docs: PerVaultMediaDocAttestation[],
+      mediaAttestedAt: string | null = null,
+    ): PerVaultMediaTransitionRequest => ({
+      transitionId: newId(),
+      expected: { media: ['server'], driveConnectionId: null, mediaAttestedAt },
+      next: { media: ['server'], driveConnectionId: null },
+      verification: { kind: 'server', docs },
+    });
+    const headerDoc = { docId: vault.headerDocId, docVersion: 1, writeId: WRITE_IDS[0] };
+    const commonDoc = { docId: vault.commonDocId, docVersion: 1, writeId: WRITE_IDS[1] };
+    const prospectiveDoc = { docId: interrupted.id, docVersion: 1, writeId: WRITE_IDS[2] };
+    // Everything the second capture's client can actually read back.
+    const readable = [headerDoc, commonDoc];
+    const patchMedia = (body: PerVaultMediaTransitionRequest) =>
+      agent
+        .patch(`/api/v1/vaults/${vault.id}/media`)
+        .set(...XRW)
+        .send(body);
+
+    const blocked = await patchMedia(refresh(readable));
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(412);
+    expect(blocked.body.error.code).toBe(PER_VAULT_ERROR_CODES.mediaCaptureInFlight);
+    expect(blocked.body.error.details).toEqual({ portfolioIds: [interrupted.id] });
+
+    // Every other mismatch keeps the old, undifferentiated refusal: naming the
+    // in-flight capture must not become a way to learn that a tampered or
+    // incomplete set was "nearly" accepted.
+    for (const [label, docs] of [
+      ['tampered writeId', [{ ...headerDoc, writeId: WRITE_IDS[3] }, commonDoc]],
+      ['stale docVersion', [{ ...headerDoc, docVersion: 2 }, commonDoc]],
+      ['omitted singleton', [headerDoc]],
+      [
+        'fabricated prospective attestation',
+        [headerDoc, commonDoc, { ...prospectiveDoc, writeId: WRITE_IDS[3] }],
+      ],
+      [
+        'unknown extra document',
+        [headerDoc, commonDoc, { docId: UNKNOWN_DOC_ID, docVersion: 1, writeId: WRITE_IDS[3] }],
+      ],
+    ] as const) {
+      const refused = await patchMedia(refresh([...docs]));
+      expect(refused.status, `${label}: ${JSON.stringify(refused.body)}`).toBe(412);
+      expect(refused.body.error.code, label).toBe(PER_VAULT_ERROR_CODES.mediaVerificationFailed);
+      expect(refused.body.error.details, label).toBeUndefined();
+    }
+
+    // The honest full set — including the prospective document — still commits.
+    const complete = await patchMedia(refresh([headerDoc, commonDoc, prospectiveDoc]));
+    expect(complete.status, JSON.stringify(complete.body)).toBe(200);
+    expect(complete.body.mediaAttestedAt).toEqual(expect.any(String));
+
+    // The documented way out: re-opening the interrupted capture's window drops
+    // its prospective row, after which the second capture's own readback is the
+    // exact roster again.
+    const reopened = await agent.get(`/api/v1/portfolios/${interrupted.id}/vault/revision`);
+    expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultBlobs)
+            .where(and(eq(vaultBlobs.vaultId, vault.id), eq(vaultBlobs.docId, interrupted.id)))
+        )[0]?.value,
+      ),
+    ).toBe(0);
+
+    const unblocked = await patchMedia(refresh(readable));
+    expect(unblocked.status, JSON.stringify(unblocked.body)).toBe(200);
+    expect(unblocked.body.mediaAttestedAt).toEqual(expect.any(String));
   });
 
   it('rotates the candidate receipt on re-stage so an old candidateId cannot satisfy transition', async () => {

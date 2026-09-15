@@ -79,15 +79,6 @@ export function createExpenseCategoryRepository(db: Database) {
       return rows.map(toCategory);
     },
 
-    /** Count the owner's categories — the seed-on-first-use gate. */
-    async countForOwner(userId: string): Promise<number> {
-      const rows = await db
-        .select({ id: expenseCategories.id })
-        .from(expenseCategories)
-        .where(eq(expenseCategories.userId, userId));
-      return rows.length;
-    },
-
     /** A single category scoped to its owner (§8): null when unknown or foreign. */
     async findByIdForOwner(userId: string, id: string): Promise<ExpenseCategoryRecord | null> {
       const [row] = await db
@@ -119,21 +110,6 @@ export function createExpenseCategoryRepository(db: Database) {
         .returning();
       if (!row) throw new Error('Expense category vanished after insert');
       return toCategory(row);
-    },
-
-    /**
-     * Seed the owner's default categories, race-safe. `ON CONFLICT DO NOTHING`
-     * against UNIQUE(user, name) makes a concurrent seed (two tabs opening the
-     * area at once) idempotent — never a duplicate, never a 500.
-     */
-    async insertDefaults(userId: string, entries: CreateExpenseCategoryInput[]): Promise<void> {
-      if (entries.length === 0) return;
-      await db
-        .insert(expenseCategories)
-        .values(
-          entries.map((e) => ({ userId, name: e.name, direction: e.direction, color: e.color })),
-        )
-        .onConflictDoNothing();
     },
 
     /** Update mutable fields, owner-scoped (§8). Null when the id is not the caller's. */
@@ -191,6 +167,13 @@ export interface ExpenseTransactionRecord {
   bookedOn: string;
   description: string;
   source: string;
+  /**
+   * Bank-import idempotency key (`UNIQUE(user, dedup_hash)`); NULL on manual
+   * rows. On the record because the owner's list read is what the paranoid
+   * capture drains, and enable hard-deletes the cleartext it otherwise only
+   * lives in.
+   */
+  dedupHash: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -268,6 +251,7 @@ function toTransaction(row: ExpenseTransactionRow): ExpenseTransactionRecord {
     bookedOn: row.bookedOn,
     description: row.description,
     source: row.source,
+    dedupHash: row.dedupHash ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

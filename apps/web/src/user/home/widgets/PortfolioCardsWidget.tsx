@@ -175,10 +175,17 @@ export function PortfolioCardsWidget({
             })}
           </p>
         ) : null}
-        {/* V5-P13b: the four money columns do not fit a 390px viewport, so the
-            table scrolls locally rather than dragging the whole board sideways
-            (`.bt-phone-scroll-table` widens it to its content under 480px). */}
-        <div className="bt-phone-scroll-table overflow-x-auto">
+        {/* The four money columns do not fit a 390px viewport, so the table
+            scrolls locally rather than dragging the whole board sideways.
+            Every other `.bt-table` in the SPA sits in a `.bt-table-wrap`, which
+            is where `overflow-x: auto` lives. Without it this table had nowhere
+            to scroll and no way to compress (`.bt-table th` is `nowrap` and the
+            100% width is a minimum under `table-layout: auto`), so a long
+            currency figure in a wide fallback font pushed the whole page
+            sideways at 360px. The modifier drops the wrap's own rules: the home
+            board is un-boxed quiet content, and this container is taken for its
+            overflow alone. */}
+        <div className="bt-table-wrap bt-table-wrap--bare">
           <table className="bt-table bt-home-ptable">
             <thead>
               <tr>
@@ -348,7 +355,7 @@ function LockedPortfolioTableRow({
       <td className="bt-row-title">{portfolioDisplayName(portfolio, fallback)}</td>
       <td colSpan={3}>
         {state.data ? (
-          <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+          <VaultStateAction inPlace state={state.data} vaultId={portfolio.vaultId} />
         ) : (
           <Button
             disabled={state.isPending}
@@ -383,7 +390,7 @@ function LockedPortfolioCard({
         <Badge>{t('vault.lockedStub.badge')}</Badge>
       </span>
       {state.data ? (
-        <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+        <VaultStateAction inPlace state={state.data} vaultId={portfolio.vaultId} />
       ) : (
         <Button
           disabled={state.isPending}

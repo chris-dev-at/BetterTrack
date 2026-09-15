@@ -5,9 +5,8 @@ import { useT } from '../../../i18n';
 import { usePrivacyMode } from '../../vault/usePrivacyMode';
 import { useOptionalVaultRuntime } from '../../vault/VaultRuntimeContext';
 import { Alert } from '../../components/ui';
-import { Button, SkeletonBlock, Switch } from '../../../ui/origin';
+import { SkeletonBlock, Switch } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
-import { VAULT_ENABLE_PARAM } from '../matchControlPanel';
 import { PanelGroup, PanelHead, Row } from './panelKit';
 
 export type Notice = { tone: 'error' | 'success' | 'info'; key: string } | null;
@@ -15,14 +14,10 @@ export type Notice = { tone: 'error' | 'success' | 'info'; key: string } | null;
 /**
  * Vault surfaces remain separate chunks. A normal-mode account opening Privacy
  * loads only the compact E7 transfer entry in addition to plain preferences;
- * the legacy account-vault wizard still arrives only with the setup gesture and
- * its management section only for an account that is already paranoid (#1089).
+ * the legacy account-vault management section arrives only for an account that
+ * is already paranoid (#1089). The enable wizard is no longer among them — see
+ * the ruling comment in the body.
  */
-const ParanoidEnableWizard = lazy(() =>
-  import('../../vault/ui/ParanoidEnableWizard').then((module) => ({
-    default: module.ParanoidEnableWizard,
-  })),
-);
 const PrivacyVaultSection = lazy(() =>
   import('./PrivacyVaultSection').then((module) => ({ default: module.PrivacyVaultSection })),
 );
@@ -39,33 +34,18 @@ const VaultTransferActions = lazy(() =>
  * Discreet mode is a plain account preference, so the panel must render for a
  * normal account with NO legacy vault runtime above it. The per-vault transfer
  * surface falls back to its endpoint-wide runtime; account-level surfaces stay
- * gated on the optional legacy runtime. `AccountModeRoot` mounts that runtime
- * for a paranoid account, and for a normal account only once the user asks for
- * the setup wizard (`?enable=1`), which is why the wizard's open/closed state
- * lives in the URL rather than in `useState`.
+ * gated on the optional legacy runtime, which `AccountModeRoot` mounts for an
+ * account that is ALREADY paranoid. A normal account has no account-level
+ * section here at all any more — see the ruling comment in the body.
  */
 export function PrivacyPanel() {
   const t = useT();
   const { user, toggleDiscreetMode } = useAuth();
   const privacy = usePrivacyMode(true, user?.id ?? null);
   const runtime = useOptionalVaultRuntime();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [notice, setNotice] = useState<Notice>(null);
   const discreet = user?.discreetMode === true;
-  const wizard = searchParams.get(VAULT_ENABLE_PARAM) === '1';
-
-  /** `replace`: the whole overlay session stays ONE history entry (R2). */
-  function setWizard(open: boolean) {
-    setSearchParams(
-      (params) => {
-        const next = new URLSearchParams(params);
-        if (open) next.set(VAULT_ENABLE_PARAM, '1');
-        else next.delete(VAULT_ENABLE_PARAM);
-        return next;
-      },
-      { replace: true },
-    );
-  }
 
   return (
     <div className="bt-cc-panel">
@@ -100,50 +80,27 @@ export function PrivacyPanel() {
         />
       </Suspense>
 
-      {privacy.privacyMode === 'normal' ? (
-        // `runtime == null` while the enable request is still pulling the vault
-        // chunk in: the entry row keeps its place until the providers exist,
-        // with its button held busy so the pending gesture is visible and a
-        // second click cannot re-request what is already on its way.
-        wizard && runtime != null ? (
-          <Suspense fallback={<SkeletonBlock height={180} />}>
-            <ParanoidEnableWizard
-              onCancel={() => setWizard(false)}
-              onEnabled={(receipt) => {
-                privacy.acceptEnabled(receipt);
-                // Drop the request now that it is spent: the account is
-                // paranoid from here, and a later disable inside the same
-                // overlay session would otherwise land back on `?enable=1`
-                // and re-open the setup wizard instead of the entry row.
-                setWizard(false);
-                setNotice({ tone: 'success', key: 'vault.enable.done' });
-                void privacy.refetch();
-              }}
-            />
-          </Suspense>
-        ) : (
-          <PanelGroup label={t('vault.settings.title')}>
-            {/*
-              The ONE paranoid entry point (owner ruling 2026-08-19, PROJECTPLAN
-              §16). The per-portfolio "vaults v2" surface that used to signpost
-              from here is gone, so this row owns the account-level V5-P13 setup
-              wizard again — it is the only way into paranoid mode and must not
-              be removed without replacing it.
-            */}
-            <Row hint={t('vault.settings.normalHint')} label={t('vault.settings.normal')}>
-              <Button
-                aria-busy={wizard}
-                disabled={wizard}
-                onClick={() => setWizard(true)}
-                size="sm"
-              >
-                {wizard ? t('common.loading') : t('vault.settings.enable')}
-              </Button>
-            </Row>
-          </PanelGroup>
-        )
-      ) : null}
+      {/*
+        NO ACCOUNT-LEVEL ENABLE ENTRY (Chief ruling, PROJECTPLAN §16
+        2026-08-30; supersedes the 2026-08-19 "ONE paranoid entry point" note
+        that stood here).
 
+        Two paranoid models were live on this one panel: the per-portfolio
+        vaults above, and — directly under them — a "PARANOID MODE · Set up"
+        row launching the account-level wizard whose first step still promises
+        the account-wide feature kill (sharing off, public profile off) that
+        the 2026-08-19 redefinition replaced with a per-portfolio kill. The
+        legacy medium was also the only reachable Drive path
+        (`PER_VAULT_DRIVE_PROVISIONING_AVAILABLE = false`), so a user following
+        the more prominent-looking entry ended up fighting the re-auth of a
+        superseded design.
+
+        CLIENT ENTRY POINT ONLY. `POST /vault/enable` stays alive per §19 and
+        every EXISTING account-level user keeps everything: the unlock gate,
+        the management section below, disable, restore. This removes the way to
+        newly opt IN from the UI — nothing else. Restoring it is one revert of
+        this block plus its `ParanoidEnableWizard` import.
+      */}
       {privacy.privacyMode === 'paranoid' && privacy.mediaState != null && runtime != null ? (
         <Suspense fallback={<SkeletonBlock height={240} />}>
           <PrivacyVaultSection

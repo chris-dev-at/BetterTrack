@@ -79,17 +79,33 @@ function monthlyOccurrence(year: number, month: number, anchorDay: number): stri
 }
 
 /**
+ * The monthly anchor, proven present. A monthly schedule without one has no
+ * occurrence to point at: reading it as `Math.min(undefined, 31)` yielded NaN
+ * and rendered the string `YYYY-MM-NaN` into `nextRunDate` (and, on the restore
+ * path, into a claimed period key). {@link assertSchedule} already refuses that
+ * row; this is the second lock on the same door, so no caller can reach the
+ * math around it.
+ */
+function requireAnchorDay(spec: ScheduleSpec): number {
+  if (spec.anchorDay === null) {
+    throw new RangeError('Standing-order cadence and anchorDay are inconsistent.');
+  }
+  return spec.anchorDay;
+}
+
+/**
  * The most recent occurrence on or before `today`, ignoring start/end bounds.
  * Daily → `today` itself; monthly → this month's clamped anchor if it has
  * already arrived, else last month's.
  */
 function mostRecentOnOrBefore(spec: ScheduleSpec, today: string): string {
   if (spec.cadence === 'daily') return today;
+  const anchorDay = requireAnchorDay(spec);
   const { year, month } = parseDay(today);
-  const thisMonth = monthlyOccurrence(year, month, spec.anchorDay!);
+  const thisMonth = monthlyOccurrence(year, month, anchorDay);
   if (thisMonth <= today) return thisMonth;
   const prev = prevMonth(year, month);
-  return monthlyOccurrence(prev.year, prev.month, spec.anchorDay!);
+  return monthlyOccurrence(prev.year, prev.month, anchorDay);
 }
 
 /**
@@ -105,10 +121,64 @@ function firstAfter(spec: ScheduleSpec, ref: string): string {
     const next = nextMonth(year, month);
     return formatDay(next.year, next.month, 1);
   }
-  const thisMonth = monthlyOccurrence(year, month, spec.anchorDay!);
+  const anchorDay = requireAnchorDay(spec);
+  const thisMonth = monthlyOccurrence(year, month, anchorDay);
   if (thisMonth > ref) return thisMonth;
   const next = nextMonth(year, month);
-  return monthlyOccurrence(next.year, next.month, spec.anchorDay!);
+  return monthlyOccurrence(next.year, next.month, anchorDay);
+}
+
+/**
+ * Whether `value` is a real ISO calendar day — the shape every comparison here
+ * assumes. `2026-02-30` sorts and formats like a day but is not one.
+ */
+function isCalendarDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const { year, month, day } = parseDay(value);
+  return (
+    Number.isInteger(year) &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    formatDay(year, month, day) === value
+  );
+}
+
+/**
+ * Refuse a schedule this math cannot honestly speak for — the twin of the vault
+ * engine's `assertSchedule`
+ * (`apps/web/src/user/vault/standingOrders/schedule.ts`), enforcing exactly what
+ * the create contract enforces on the way in: real calendar days (including any
+ * watermark day passed in `days`), an end date on or after the start, and an
+ * anchor present for `monthly` / absent for `daily`.
+ *
+ * It throws rather than guessing, because every alternative is worse for money:
+ * a `2026-02-30` watermark compared lexicographically decides which periods are
+ * owed, and a missing monthly anchor used to compute a `NaN` day. Callers that
+ * merely display (`toDto`) catch this and show "nothing scheduled"; the scan
+ * isolates it per order, so one corrupt row is reported instead of silently
+ * booking or silently dropping.
+ */
+export function assertSchedule(spec: ScheduleSpec, ...days: readonly (string | null)[]): void {
+  for (const day of [...days, spec.startDate, spec.endDate]) {
+    if (day !== null && !isCalendarDay(day)) {
+      throw new RangeError(`Standing-order schedule day ${day} is not a real ISO calendar day.`);
+    }
+  }
+  if (spec.endDate !== null && spec.endDate < spec.startDate) {
+    throw new RangeError('Standing-order endDate precedes startDate.');
+  }
+  if (
+    (spec.cadence === 'daily' && spec.anchorDay !== null) ||
+    (spec.cadence === 'monthly' &&
+      (spec.anchorDay === null ||
+        !Number.isInteger(spec.anchorDay) ||
+        spec.anchorDay < 1 ||
+        spec.anchorDay > 31))
+  ) {
+    throw new RangeError('Standing-order cadence and anchorDay are inconsistent.');
+  }
 }
 
 /**
@@ -121,6 +191,7 @@ function firstAfter(spec: ScheduleSpec, ref: string): string {
  * from re-firing.
  */
 export function dueOccurrence(spec: ScheduleSpec, today: string): string | null {
+  assertSchedule(spec, today);
   // Never look past the end date: cap the horizon there when today is beyond it.
   const horizon = spec.endDate !== null && spec.endDate < today ? spec.endDate : today;
   if (horizon < spec.startDate) return null;
@@ -142,6 +213,9 @@ export function nextRunDate(
   active: boolean,
 ): string | null {
   if (!active) return null;
+  // The watermark decides which occurrence is still owed, so it is held to the
+  // same calendar-day standard as the schedule itself.
+  assertSchedule(spec, today, lastPeriodKey);
   const due = dueOccurrence(spec, today);
   // A due occurrence not yet booked fires on the next run — surface it directly.
   if (due !== null && (lastPeriodKey === null || lastPeriodKey < due)) return due;
@@ -190,6 +264,7 @@ export function skippedPeriods(
   throughInclusive: string,
   cap = 400,
 ): string[] {
+  assertSchedule(spec, throughInclusive, afterExclusive);
   const lower = afterExclusive !== null && afterExclusive >= spec.startDate ? afterExclusive : null;
   let cursor = throughInclusive;
   const newestFirst: string[] = [];

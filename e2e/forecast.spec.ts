@@ -80,8 +80,8 @@ async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }
       json: {
         available: false,
         currency: 'EUR',
-        monthlyTotalEur: 0,
-        yearlyTotalEur: 0,
+        monthlyTotalBase: 0,
+        yearlyTotalBase: 0,
         holdings: [],
       },
     });

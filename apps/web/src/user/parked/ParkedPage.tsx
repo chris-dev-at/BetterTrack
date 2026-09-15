@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 
 import { useT } from '../../i18n';
+import { useAiCapability } from '../../lib/aiApi';
 import { Parked } from '../../ui/origin';
 
 /**
@@ -14,6 +15,13 @@ export interface ParkedSpec {
   key: string;
   pointCount: number;
   links?: ReadonlyArray<{ to: string; labelKey: string }>;
+  /**
+   * The page advertises shipped AI features (§6.18): with no local provider
+   * configured every AI surface disappears, so the body falls back to the
+   * `bodyUnavailable` copy and the links into those surfaces are dropped —
+   * the page never walks the user to a screen that renders nothing.
+   */
+  aiGated?: boolean;
 }
 
 export const PARKED_PAGES = {
@@ -100,23 +108,39 @@ export const PARKED_PAGES = {
       { to: '/portfolio/analysis', labelKey: 'parked.links.aiInsights' },
       { to: '/workbench/blueprints/new', labelKey: 'parked.links.nlBuilder' },
     ],
+    aiGated: true,
   },
 } satisfies Record<string, ParkedSpec>;
 
 export type ParkedPageKey = keyof typeof PARKED_PAGES;
 
 export function ParkedPage({ page }: { page: ParkedPageKey }) {
-  const t = useT();
   const spec: ParkedSpec = PARKED_PAGES[page];
+  // Only the AI-advertising page pays for the capability read; every other
+  // parked surface renders without it.
+  if (spec.aiGated) return <AiGatedParked spec={spec} />;
+  return <ParkedSurface spec={spec} aiAvailable />;
+}
+
+/** §6.18's single gate, applied to a page that talks about the AI features. */
+function AiGatedParked({ spec }: { spec: ParkedSpec }) {
+  const capability = useAiCapability();
+  return <ParkedSurface aiAvailable={capability.data?.available === true} spec={spec} />;
+}
+
+function ParkedSurface({ spec, aiAvailable }: { spec: ParkedSpec; aiAvailable: boolean }) {
+  const t = useT();
+  const hidden = Boolean(spec.aiGated) && !aiAvailable;
+  const links = hidden ? undefined : spec.links;
   const points = Array.from({ length: spec.pointCount }, (_, index) =>
     t(`parked.${spec.key}.p${index + 1}`),
   );
   return (
     <Parked
       actions={
-        spec.links?.length ? (
+        links?.length ? (
           <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8 }}>
-            {spec.links.map((link) => (
+            {links.map((link) => (
               <Link className="bt-btn bt-btn--sm" key={link.to} to={link.to}>
                 {t(link.labelKey)}
               </Link>
@@ -124,7 +148,7 @@ export function ParkedPage({ page }: { page: ParkedPageKey }) {
           </span>
         ) : undefined
       }
-      body={t(`parked.${spec.key}.body`)}
+      body={t(`parked.${spec.key}.${hidden ? 'bodyUnavailable' : 'body'}`)}
       flag={t('parked.flag')}
       foot={t('parked.foot')}
       points={points}

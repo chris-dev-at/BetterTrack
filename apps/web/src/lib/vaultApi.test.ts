@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createVaultDocument, writeVaultDocument } from './vaultApi';
+import {
+  createVaultDocument,
+  purgeVaultRetiredServer,
+  requestVaultRetiredPurgeChallenge,
+  writeVaultDocument,
+} from './vaultApi';
 
 /**
  * The E1 HTTP CAS wire mapping (#1528 F2). These pins exist because the whole
@@ -101,5 +106,102 @@ describe('createVaultDocument', () => {
     const headers = init.headers as Record<string, string>;
     expect(headers['If-None-Match']).toBe('*');
     expect(headers['If-Match']).toBeUndefined();
+  });
+});
+
+/**
+ * The per-vault half of the §16 (2026-07-28) retired-bytes ruling (#1520). The
+ * server surface shipped with E1; without these wrappers the product promised
+ * an explicit purge that no user action could reach, so what is pinned here is
+ * the wire: the per-VAULT paths (not the account-level `/vault/…` ones), the
+ * signed transcript travelling verbatim, and a response that must parse.
+ */
+const VERSION_SET_HASH = 'A'.repeat(43);
+const CHALLENGE = 'C'.repeat(64);
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+describe('per-vault retired-server purge', () => {
+  it('exchanges the retirement identity for a nonce on the per-vault challenge path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        vaultId: VAULT_ID,
+        generation: 3,
+        versionSetHash: VERSION_SET_HASH,
+        challenge: CHALLENGE,
+        expiresAt: '2026-08-29T12:00:00.000Z',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const challenge = await requestVaultRetiredPurgeChallenge(VAULT_ID, {
+      vaultId: VAULT_ID,
+      generation: 3,
+      versionSetHash: VERSION_SET_HASH,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`/vaults/${VAULT_ID}/media/retired/purge/challenge`);
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('include');
+    expect(JSON.parse(init.body as string)).toEqual({
+      vaultId: VAULT_ID,
+      generation: 3,
+      versionSetHash: VERSION_SET_HASH,
+    });
+    expect(challenge.challenge).toBe(CHALLENGE);
+  });
+
+  it('posts the signed proof to the per-vault purge path and parses the receipt', async () => {
+    const request = {
+      vaultId: VAULT_ID,
+      generation: 3,
+      versionSetHash: VERSION_SET_HASH,
+      observedDocs: [
+        { docId: DOC_ID, docVersion: 7, writeId: '018f6a3e-4444-7000-8000-00000000ffff' },
+      ],
+      challenge: CHALLENGE,
+      signature: 'S'.repeat(86),
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        purged: true,
+        vaultId: VAULT_ID,
+        generation: 3,
+        versionSetHash: VERSION_SET_HASH,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const receipt = await purgeVaultRetiredServer(VAULT_ID, request);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`/vaults/${VAULT_ID}/media/retired/purge`);
+    expect(url).not.toContain('/challenge');
+    expect(init.method).toBe('POST');
+    // The transcript the Ed25519 signature covers must reach the server byte
+    // for byte; a wrapper that reshaped it would fail verification server-side.
+    expect(JSON.parse(init.body as string)).toEqual(request);
+    expect(receipt.purged).toBe(true);
+  });
+
+  it('refuses a receipt that does not match the published contract', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ purged: false })));
+
+    await expect(
+      purgeVaultRetiredServer(VAULT_ID, {
+        vaultId: VAULT_ID,
+        generation: 3,
+        versionSetHash: VERSION_SET_HASH,
+        observedDocs: [],
+        challenge: CHALLENGE,
+        signature: 'S'.repeat(86),
+      }),
+    ).rejects.toThrow();
   });
 });

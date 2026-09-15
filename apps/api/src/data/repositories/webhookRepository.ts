@@ -1,4 +1,6 @@
-import { and, arrayContains, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, arrayContains, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+
+import type { WebhookDeliveryError } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import {
@@ -181,7 +183,12 @@ export interface RecordWebhookDeliveryInput {
   status: 'success' | 'failed';
   responseStatus: number | null;
   attempts: number;
-  error: string | null;
+  /**
+   * One of the closed set of logged reasons, never free text — the column is a
+   * user-readable log, so receiver- and socket-provided strings (an errno with
+   * its address and port, a certificate's altnames) may not reach it.
+   */
+  error: WebhookDeliveryError | null;
   createdAt?: Date;
 }
 
@@ -211,6 +218,41 @@ export function createWebhookDeliveryRepository(db: Database) {
       return rows.length > 0;
     },
 
+    /**
+     * Record a DELIVERED outcome, upserting on the delivery id. The failure
+     * path above is insert-only because its streak side-effect is not
+     * idempotent; a success has no such side-effect, and a delivery id is
+     * deterministic across replays — so a 200 that lands after an earlier
+     * attempt already wrote a `failed` row must flip that row to `success`
+     * instead of being dropped by the conflict. `attempts` keeps the highest
+     * count seen, so the flipped row still shows what the delivery cost.
+     */
+    async recordDelivered(
+      input: Omit<RecordWebhookDeliveryInput, 'status' | 'error'>,
+    ): Promise<void> {
+      await db
+        .insert(webhookDeliveries)
+        .values({
+          id: input.id,
+          subscriptionId: input.subscriptionId,
+          eventType: input.eventType,
+          status: 'success',
+          responseStatus: input.responseStatus,
+          attempts: input.attempts,
+          error: null,
+          ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+        })
+        .onConflictDoUpdate({
+          target: webhookDeliveries.id,
+          set: {
+            status: 'success',
+            responseStatus: input.responseStatus,
+            error: null,
+            attempts: sql`greatest(${webhookDeliveries.attempts}, ${input.attempts})`,
+          },
+        });
+    },
+
     /** The subscription's delivery log, newest first, capped at `limit`. */
     async listForSubscription(
       subscriptionId: string,
@@ -224,11 +266,22 @@ export function createWebhookDeliveryRepository(db: Database) {
         .limit(limit);
     },
 
-    /** Retention: delete deliveries older than `cutoff`; returns how many. */
-    async deleteOlderThan(cutoff: Date): Promise<number> {
+    /**
+     * Retention: delete at most `limit` oldest deliveries before `cutoff`;
+     * returns how many. The scheduled sweep repeats this bounded statement
+     * until it returns fewer than `limit`, avoiding one unbounded full-table
+     * delete over a log that grows with every event of every subscription.
+     */
+    async deleteOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: webhookDeliveries.id })
+        .from(webhookDeliveries)
+        .where(lt(webhookDeliveries.createdAt, cutoff))
+        .orderBy(asc(webhookDeliveries.createdAt), asc(webhookDeliveries.id))
+        .limit(limit);
       const rows = await db
         .delete(webhookDeliveries)
-        .where(lt(webhookDeliveries.createdAt, cutoff))
+        .where(inArray(webhookDeliveries.id, candidates))
         .returning({ id: webhookDeliveries.id });
       return rows.length;
     },

@@ -21,6 +21,29 @@ import { CUSTOM_ASSET_CATEGORIES, portfolioAssetSchema } from './portfolio';
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Hard upper bound on the window a caller may REQUEST from
+ * `GET /analytics/portfolios/:portfolioId/series` — 50 years (#1643).
+ *
+ * The endpoint used to accept any `from`/`to` the ISO pattern matched, so
+ * `from=0001-01-01&to=9999-12-31` was a legal request for a ~3.6-million-day
+ * window. This is a request-sanity guard, NOT a work bound: the reads behind
+ * the endpoint are sized by the portfolio's own history and post-filter into
+ * the window, so an absurd range costs no more to answer than a real one. What
+ * it buys is an honest refusal — the window is REJECTED (400) rather than
+ * silently clamped, so the response's echoed `from`/`to` always describe the
+ * window that was asked for, and a fat-fingered custom range is reported
+ * instead of quietly answering a different question. It is deliberately far
+ * above any real personal record — the SPA's `max` preset sends no `from` at
+ * all (inception → today, bounded by the data, not by the caller) and every
+ * other preset is a year or less.
+ *
+ * The check is cross-field, so — like `compareId`+`compareKind` and
+ * `inflationRate` — it lives in the service, keeping this a plain object schema
+ * for clean OpenAPI parameter extraction.
+ */
+export const ANALYTICS_MAX_RANGE_DAYS = 18_262;
+
+/**
  * Grouping key for the visibility filters: a market asset groups by its
  * {@link ASSET_TYPES} `type`, a custom asset by its {@link CUSTOM_ASSET_CATEGORIES}
  * `category` (V3-P2 — a custom "stock" folds under Stocks with market stocks).
@@ -155,6 +178,33 @@ export const analyticsSeriesSchema = z
 export type AnalyticsSeries = z.infer<typeof analyticsSeriesSchema>;
 
 /**
+ * The portfolio's **time-weighted** return over the resolved window (#1759) —
+ * the flow-neutral statistic, stated beside the value series' own stats.
+ *
+ * `primary.stats.cagrPct` annualises the VALUE curve, which rises with every
+ * contribution: a saver who buys monthly reads their own deposits back as
+ * performance (€10,000 → €48,000 with €30,000 contributed reads as ≈ 37 %/yr).
+ * This block annualises the §6.9 TWR curve instead, so it states a rate of
+ * return and nothing else. It is what the Forecast samples as its "average
+ * return" factor.
+ *
+ * Measured on the portfolio's own net-worth curve (holdings + cash), so —
+ * unlike `primary` — it does NOT respond to the per-asset visibility mask or
+ * the group filters; it is the whole portfolio's return over the same window
+ * the response echoes. Deflated whenever `inflation` is applied, exactly like
+ * `primary.stats`.
+ */
+export const analyticsTwrSchema = z
+  .object({
+    /** TWR over the window, percent (0 % at the window start). */
+    totalReturnPct: z.number(),
+    /** Annualised TWR (ACT/365.25); `null` when no calendar time elapsed. */
+    cagrPct: z.number().nullable(),
+  })
+  .strict();
+export type AnalyticsTwr = z.infer<typeof analyticsTwrSchema>;
+
+/**
  * One per-asset contribution row (§13.3). `value`/`cost`/`pnl`/`weight` are the
  * holdings-math facts for the visible set; `contributionPct` is the asset's
  * share of the period change of the filtered series — the visible rows'
@@ -237,6 +287,11 @@ export const analyticsSeriesResponseSchema = z
     primary: analyticsSeriesSchema,
     /** The compare overlay + its stats, or `null` when no compare target. */
     compare: analyticsSeriesSchema.nullable(),
+    /**
+     * The portfolio's time-weighted return over the same window (#1759), or
+     * `null` when it cannot be stated (no history in the window).
+     */
+    twr: analyticsTwrSchema.nullable(),
     /** Per-asset contribution rows for the visible set. */
     contributions: z.array(analyticsContributionRowSchema),
   })

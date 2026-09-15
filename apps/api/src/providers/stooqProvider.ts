@@ -31,7 +31,17 @@ import { mapToStooq, stooqCanServe, type StooqRef } from './stooqMapping';
  * Stooq serves EOD data: a quote has no meaningful intraday reference, so
  * `prevClose`/`dayChangePct` are null (an honest "no day move" rather than a
  * fabricated one), and history is daily closes regardless of the requested
- * interval — good enough to keep charts/backtests flowing during a Yahoo outage.
+ * interval.
+ *
+ * Those closes are RAW — Stooq's daily file is not dividend/split adjusted,
+ * while Yahoo's `getHistory` returns an adjusted total-return series. The two
+ * bases are not interchangeable and the chain caches history under the asset's
+ * primary key, so this provider declares `historyBasis: 'unadjusted'` and the
+ * failover chain therefore never substitutes it for an adjusted primary series
+ * (§13.5 V5-P1c): a Yahoo history outage degrades to the primary's stale copy
+ * (§5.3) rather than restating a backtest on a different basis. Quotes — the
+ * "quotes keep flowing" acceptance clause — are a spot price with no adjustment
+ * basis and keep failing over here.
  */
 
 const PROVIDER_ID = 'stooq';
@@ -139,6 +149,9 @@ export function createStooqProvider(deps: CreateStooqProviderDeps): AssetProvide
 
   return {
     id: PROVIDER_ID,
+    // Raw daily closes — see the file header: never a substitute for an adjusted
+    // primary series.
+    historyBasis: 'unadjusted',
     canServe: (ref) => stooqCanServe(ref.providerRef),
     search,
     getQuote,

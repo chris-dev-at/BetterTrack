@@ -1,8 +1,16 @@
 import { z } from 'zod';
 
 import { MAX_PASSWORD_LENGTH } from './auth';
+import { CASH_TAGS_PER_ITEM_MAX } from './cash';
+import {
+  IMPORT_ROW_CANDIDATE_LIMIT,
+  importRowCandidateSchema,
+  importRowResolvedBySchema,
+  importUnderstandingSchema,
+} from './imports';
 import {
   VAULT_CONTENT_CIPHER,
+  VAULT_ENTITY_ROW_SCHEMAS,
   VAULT_VERSION_MAX,
   VaultEnvelopeError,
   decodeVaultEnvelope,
@@ -146,6 +154,33 @@ export const vaultNameSchema = z.string().trim().min(1).max(VAULT_NAME_MAX);
 export const VAULT_ALIAS_MAX = 120;
 /** A locked stub's display label (`portfolios.vault_alias`), cleartext (§3). */
 export const vaultAliasSchema = z.string().trim().min(1).max(VAULT_ALIAS_MAX);
+
+/**
+ * The prefix of the content-free value E4 writes into the legacy NOT NULL
+ * `portfolios.name` column of a vaulted stub. The row still has to carry SOME
+ * name; this one carries no information about the portfolio beyond its id.
+ *
+ * It lives in the contract rather than in the repository that mints it because
+ * BOTH sides need it and they need the SAME one: the API writes it
+ * (`vaultedPortfolioStubName`) and the client must be able to recognise it as
+ * "not a name" so it can never reach a screen. A second literal on the client
+ * is exactly the drift that put `__vaulted_portfolio__:<uuid>` into a dialog
+ * subtitle once already (paranoid-UX failure map #6).
+ *
+ * Recognition is the point, not parsing: nothing may read the id back out of
+ * it. `portfolios.id` is the answer to that question.
+ */
+export const VAULTED_PORTFOLIO_STUB_NAME_PREFIX = '__vaulted_portfolio__:';
+
+/** The stub name E4 stores for a portfolio that moved into a vault. */
+export function vaultedPortfolioStubName(portfolioId: string): string {
+  return `${VAULTED_PORTFOLIO_STUB_NAME_PREFIX}${portfolioId}`;
+}
+
+/** True for the server placeholder above — i.e. "this string is not a name". */
+export function isVaultedPortfolioStubName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.startsWith(VAULTED_PORTFOLIO_STUB_NAME_PREFIX);
+}
 
 /**
  * The non-secret HKDF verification tag of a vault's content key (§4) — lets a
@@ -1225,6 +1260,18 @@ export function serializePerVaultRetiredServerPurgeTranscript(
  *    mint a NEW `writeId` for the bytes it wants to store. A replay of the same
  *    `writeId` with byte-identical content is not an error at all — it stays an
  *    idempotent 204.
+ *
+ * The media-transition surface answers `412` for two facts as well (#1530):
+ *  - `VAULT_MEDIA_VERIFICATION_FAILED` — the submitted full-set readback does
+ *    not describe what the server holds. Nothing about it says why.
+ *  - `VAULT_MEDIA_CAPTURE_IN_FLIGHT` — the readback is correct for every
+ *    document EXCEPT the prospective ones an interrupted portfolio move-in
+ *    left staged in this vault (usually another portfolio's, but a client that
+ *    omits the document it just staged itself lands here too). The refusal is
+ *    unchanged (fail-closed, no mutation); the code and its `portfolioIds`
+ *    detail name the portfolios whose move must be finished or cancelled
+ *    first, so a client can say that instead of retrying a readback that can
+ *    never match.
  */
 export const PER_VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
@@ -1241,6 +1288,7 @@ export const PER_VAULT_ERROR_CODES = {
   malformed: 'VAULT_MALFORMED',
   mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
   mediaVerificationFailed: 'VAULT_MEDIA_VERIFICATION_FAILED',
+  mediaCaptureInFlight: 'VAULT_MEDIA_CAPTURE_IN_FLIGHT',
   mediaPartialSet: 'VAULT_MEDIA_PARTIAL_SET',
   serverCandidateNotFound: 'VAULT_SERVER_CANDIDATE_NOT_FOUND',
   retirementConflict: 'VAULT_RETIRED_SERVER_CONFLICT',
@@ -1273,6 +1321,24 @@ export const PER_VAULT_DOC_WRITE_ERROR_CODES = [
 export const PER_VAULT_DOC_READ_ERROR_CODES = [
   PER_VAULT_ERROR_CODES.notFound,
   PER_VAULT_ERROR_CODES.mediaStateConflict,
+] as const;
+
+/**
+ * The refusal vocabulary of one media transition, published as `x-error-codes`
+ * so a client can tell the retry-after-a-fresh-readback refusals apart from
+ * `VAULT_MEDIA_CAPTURE_IN_FLIGHT`, which no readback of THIS client's documents
+ * can ever satisfy (#1453, #1530).
+ */
+export const PER_VAULT_MEDIA_TRANSITION_ERROR_CODES = [
+  PER_VAULT_ERROR_CODES.notFound,
+  PER_VAULT_ERROR_CODES.reservedMedium,
+  PER_VAULT_ERROR_CODES.driveBindingInvalid,
+  PER_VAULT_ERROR_CODES.mediaStateConflict,
+  PER_VAULT_ERROR_CODES.mediaPartialSet,
+  PER_VAULT_ERROR_CODES.mediaVerificationFailed,
+  PER_VAULT_ERROR_CODES.mediaCaptureInFlight,
+  PER_VAULT_ERROR_CODES.retirementConflict,
+  PER_VAULT_ERROR_CODES.deleteRetirementPending,
 ] as const;
 
 // ── Per-portfolio revision token + move-in / move-out bodies (§9, §10) ───────
@@ -1308,6 +1374,154 @@ export const portfolioVaultRevisionResponseSchema = z
   })
   .strict();
 export type PortfolioVaultRevisionResponse = z.infer<typeof portfolioVaultRevisionResponseSchema>;
+
+// ── Lossless capture reads (#1529 — lifting the two ruled move-capture refusals)
+
+/**
+ * `GET /portfolios/:id/vault/import-batches` — the lossless read path for a
+ * PLAIN portfolio's historical import batches and staging rows, so the §9
+ * client capture can carry them into the portfolio document instead of
+ * refusing (the #1528 fail-closed ruling, §16 2026-08-28). Owner-scoped;
+ * refused for a vaulted portfolio (its rows are purged, and the route is not a
+ * transition carve-out). Rows page by an opaque cursor; the batch list rides
+ * on every page so a client can prove the set did not move between pages —
+ * the revision digest covers both tables either way.
+ */
+export const PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_DEFAULT = 500;
+export const PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX = 1000;
+
+export const portfolioVaultImportCaptureQuerySchema = z
+  .object({
+    cursor: z.string().min(1).max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX).optional(),
+  })
+  .strict();
+export type PortfolioVaultImportCaptureQuery = z.infer<
+  typeof portfolioVaultImportCaptureQuerySchema
+>;
+
+/**
+ * The batch row as the SERVER holds it — the vault-document row shape, but
+ * with the document's tolerant `.catch(null)` on `understanding` replaced by
+ * the exact column contract. A value the server cannot serve exactly fails
+ * the response (500) instead of degrading silently: the capture must refuse
+ * what it cannot prove lossless.
+ */
+export const portfolioVaultImportBatchCaptureRowSchema =
+  VAULT_ENTITY_ROW_SCHEMAS.importBatch.extend({
+    understanding: importUnderstandingSchema.nullable(),
+  });
+export type PortfolioVaultImportBatchCaptureRow = z.infer<
+  typeof portfolioVaultImportBatchCaptureRowSchema
+>;
+
+/** The staging row as the server holds it — same exactness rule as the batch. */
+export const portfolioVaultImportRowCaptureRowSchema = VAULT_ENTITY_ROW_SCHEMAS.importRow.extend({
+  candidates: z.array(importRowCandidateSchema).max(IMPORT_ROW_CANDIDATE_LIMIT).nullable(),
+  ruleTagIds: z.array(z.string().uuid()).max(CASH_TAGS_PER_ITEM_MAX).nullable(),
+  resolvedBy: importRowResolvedBySchema.nullable(),
+  // #1629: the document tolerates an absent/malformed flag as `false`; the
+  // capture read serves the stored boolean exactly.
+  kindUndecided: z.boolean(),
+});
+export type PortfolioVaultImportRowCaptureRow = z.infer<
+  typeof portfolioVaultImportRowCaptureRowSchema
+>;
+
+export const portfolioVaultImportCaptureResponseSchema = z
+  .object({
+    /** Every batch keyed to the portfolio, ordered by (createdAt, id); complete on every page. */
+    batches: z.array(
+      z.object({ id: z.string().uuid(), data: portfolioVaultImportBatchCaptureRowSchema }).strict(),
+    ),
+    /** One page of staging rows, ordered by (batchId, rowIndex, id). */
+    rows: z.array(
+      z.object({ id: z.string().uuid(), data: portfolioVaultImportRowCaptureRowSchema }).strict(),
+    ),
+    /** Opaque; pass back as `cursor` until null. */
+    nextCursor: z.string().min(1).max(200).nullable(),
+  })
+  .strict();
+export type PortfolioVaultImportCaptureResponse = z.infer<
+  typeof portfolioVaultImportCaptureResponseSchema
+>;
+
+/**
+ * `GET /custom-assets/vault-snapshots?ids=` — the exact current state of the
+ * caller's OWN manual assets in vault-entity row shape (decimal strings,
+ * verbatim jsonb `meta`), the lossless seam both move directions need for
+ * owner-manual assets (#1529): move-in folds it into the common doc instead of
+ * the rounded public DTO; move-out feeds `resolveManualAssetSnapshots`, whose
+ * server-present entries E4 compares EXACTLY at restore.
+ *
+ * An id that is not one of the caller's manual assets — unknown, a catalog
+ * asset, another account's — is simply absent (no oracle). `searchText` is a
+ * generated column server-side and is emitted as the `symbol name` producer
+ * form the client's own snapshot rows use.
+ */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_MAX = 200;
+/** Ids a client sends per request (size, not security): keeps every response bounded. */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST = 20;
+/** Total value points one response may carry; beyond it the read refuses, typed. */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX = 20_000;
+/** Typed refusals of the snapshot read; the client maps both to the manual-asset move refusal. */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES = {
+  /** A stored row the vault-entity row contract cannot serve exactly (review F2). */
+  unservable: 'CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE',
+  /** The requested ids carry more value points than one response may hold. */
+  tooLarge: 'CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE',
+} as const;
+
+const UUID_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+
+/**
+ * `ids` is one comma-separated list of 1..200 UUIDs. Kept a plain regex
+ * string (no transform/pipe) so the OpenAPI generator documents it as-is;
+ * {@link parseCustomAssetVaultSnapshotIds} is the one splitter both the route
+ * and any client use.
+ */
+export const customAssetVaultSnapshotsQuerySchema = z
+  .object({
+    ids: z
+      .string()
+      .regex(
+        new RegExp(
+          `^${UUID_PATTERN}(?:,${UUID_PATTERN}){0,${CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_MAX - 1}}$`,
+        ),
+      ),
+  })
+  .strict();
+export type CustomAssetVaultSnapshotsQuery = z.infer<typeof customAssetVaultSnapshotsQuerySchema>;
+
+/** Split, lower-case, de-duplicate and sort the validated `ids` list. */
+export function parseCustomAssetVaultSnapshotIds(ids: string): string[] {
+  return [...new Set(ids.split(',').map((id) => id.toLowerCase()))].sort();
+}
+
+/** The request form of {@link parseCustomAssetVaultSnapshotIds}: the list a client sends. */
+export function serializeCustomAssetVaultSnapshotIds(ids: readonly string[]): string {
+  return [...new Set(ids.map((id) => id.toLowerCase()))].sort().join(',');
+}
+
+export const customAssetVaultSnapshotSchema = z
+  .object({
+    id: z.string().uuid(),
+    asset: VAULT_ENTITY_ROW_SCHEMAS.customAsset,
+    /** Every current value point, ascending by date, as vault value rows. */
+    values: z.array(VAULT_ENTITY_ROW_SCHEMAS.customAssetValue),
+  })
+  .strict();
+export type CustomAssetVaultSnapshot = z.infer<typeof customAssetVaultSnapshotSchema>;
+
+export const customAssetVaultSnapshotsResponseSchema = z
+  .object({
+    present: z.array(customAssetVaultSnapshotSchema),
+    absentIds: z.array(z.string().uuid()),
+  })
+  .strict();
+export type CustomAssetVaultSnapshotsResponse = z.infer<
+  typeof customAssetVaultSnapshotsResponseSchema
+>;
 
 /**
  * `POST /portfolios/:id/vault/move-in` (route is E4) — the destructive commit
@@ -1528,6 +1742,13 @@ export const PORTFOLIO_VAULT_TRANSITION_ERROR_CODES = {
   restoreSolvency: 'PORTFOLIO_VAULT_RESTORE_INSOLVENT',
   restoreProvenance: 'PORTFOLIO_VAULT_RESTORE_PROVENANCE_INVALID',
   possessionProofInvalid: 'PORTFOLIO_VAULT_POSSESSION_PROOF_INVALID',
+  /**
+   * #1529 (review F2): a stored staging row the strict capture contract
+   * cannot serve exactly. Typed and 409 on purpose — never the request
+   * validator's 400 — so the client refuses the move as "not losslessly
+   * capturable" instead of reporting its own request as invalid.
+   */
+  captureUnservable: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
 } as const;
 export type PortfolioVaultTransitionErrorCode =
   (typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES)[keyof typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES];

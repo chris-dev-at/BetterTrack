@@ -1,6 +1,11 @@
 import { afterEach, expect, test, vi } from 'vitest';
 
-import { downloadDataExport } from './userApi';
+import {
+  downloadDataExport,
+  listRememberedDevices,
+  revokeAllRememberedDevices,
+  revokeRememberedDevice,
+} from './userApi';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -56,4 +61,50 @@ test('exchanges an export token in a POST body and downloads the binary response
 
   vi.runOnlyPendingTimers();
   expect(revokeObjectURL).toHaveBeenCalledWith('blob:bettertrack-export');
+});
+
+test('lists and revokes trusted-device bindings through the live auth routes', async () => {
+  const devices = [
+    {
+      handle: 'safe-handle',
+      createdAt: '2026-07-01T08:00:00.000Z',
+      lastSeenAt: null,
+      expiresAt: '2026-08-01T08:00:00.000Z',
+    },
+  ];
+  const jsonResponse = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(jsonResponse({ devices }))
+    .mockResolvedValueOnce(jsonResponse({ ok: true }))
+    .mockResolvedValueOnce(jsonResponse({ ok: true }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(listRememberedDevices()).resolves.toEqual(devices);
+  await revokeRememberedDevice('safe/handle');
+  await revokeAllRememberedDevices();
+
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    '/api/v1/auth/remembered-devices',
+    expect.objectContaining({ method: 'GET', credentials: 'include' }),
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    2,
+    '/api/v1/auth/remembered-devices/safe%2Fhandle',
+    expect.objectContaining({
+      method: 'DELETE',
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      credentials: 'include',
+    }),
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    3,
+    '/api/v1/auth/remembered-devices',
+    expect.objectContaining({
+      method: 'DELETE',
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      credentials: 'include',
+    }),
+  );
 });

@@ -94,10 +94,59 @@ interface AlertFixture {
 // in each test's finally block.
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
+/**
+ * QUARANTINE, not deletion (PROJECTPLAN §16, 2026-08-30).
+ *
+ * Both arcs in this file drive the legacy ACCOUNT-LEVEL enable ceremony, and
+ * they reach it the only way a user ever could: Control Center → Privacy →
+ * "Set up". That entry point was retired client-side by the Chief ruling that
+ * closed the two-competing-paranoid-models finding (paranoid-UX failure map
+ * #9), so `openParanoidSetup` now has nothing to click — for these specs and
+ * for every user.
+ *
+ * WHY NOT REWORK THEM. There is no other entry: the wizard renders under
+ * `privacyMode === 'normal'` only, so it is unreachable for an existing
+ * paranoid account too, and `ParanoidEnableWizard` is referenced by nothing in
+ * the app. The only way to keep these green would be a test-only door back into
+ * a security ceremony no user can reach — a suite that is green about something
+ * that does not exist, which is worse than a loud skip.
+ *
+ * WHAT THIS COSTS, stated rather than hidden: `POST /vault/enable` keeps its
+ * service/route coverage, but the account-level ceremony loses its ONLY
+ * end-to-end coverage, and with it the product's only Drive-medium e2e
+ * ([PD9-A3]) — per-vault Drive is off at build level
+ * (`PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false`), which is exactly the
+ * finding that motivated the ruling. `e2e/paranoid-e10.spec.ts` carries the
+ * per-portfolio successors, including [E10-A11] for the #1354 ordering
+ * property and [E10-A5] for the honest Drive refusal.
+ *
+ * UN-SKIP when either the entry point returns, or §17/§19 retires the v1 stack
+ * and these arcs go with it. Do not weaken them in place.
+ *
+ * REGISTERED AS A WAIVER: "paranoid Drive-only round trip" is one of V5-P14's
+ * ten required scenarios, and with this arc quarantined AND [E10-A9] blocked it
+ * had no live test anywhere — which the nightly reported as green. Both dead
+ * entries are now the single `paranoid-drive-only-round-trip` waiver in
+ * `e2e/support/v5Gate.mjs`: waived against #1638, printed in the job summary as
+ * an explicit gap, and red the day either arc starts passing again.
+ *
+ * SO IS THE [PD9-A2] STEP PROOF. The nightly used to assert that the complete-DB
+ * cleartext probe below occurred exactly once — a step inside the quarantined
+ * arc, which therefore never occurs, so the assertion could only ever fail. It
+ * is the `pd9-cleartext-probe` entry in `V5_STEP_PROOFS`, waived against the
+ * same #1638 and graded by the same rule: a reported gap while this arc sleeps,
+ * red the moment the probe runs again.
+ */
+const V1_ENABLE_ENTRY_RETIRED =
+  'The account-level Paranoid enable entry was retired client-side (PROJECTPLAN §16, 2026-08-30). ' +
+  'This arc drives that ceremony through the Privacy panel’s "Set up" button, which no longer ' +
+  'exists for any account. See the note above this constant.';
+
 test.describe('PD9 paranoid-mode end-to-end gate', () => {
   test('normal account remains on the server store after opening the paranoid setup wizard with the Drive seam installed', async ({
     context,
   }, testInfo) => {
+    test.skip(true, V1_ENABLE_ENTRY_RETIRED);
     const diagnostics: string[] = [];
     const monitor = await installPd9Drive(context);
     const admin = await newAdminRequestContext(newRequestContext);
@@ -167,6 +216,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
   test('Drive-only enable → lock/reload → tamper fail-closed → verified media switch → disable', async ({
     context,
   }, testInfo) => {
+    test.skip(true, V1_ENABLE_ENTRY_RETIRED);
     test.skip(
       testInfo.project.name === 'mobile-chromium',
       'PD9 is the desktop cryptographic transition gate; phone layout has its own permanent suite.',
@@ -476,12 +526,17 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           .getByLabel('I want to rehydrate this unlocked vault and disable Paranoid mode.')
           .check();
         await page.getByRole('button', { name: 'Restore normal mode' }).click();
-        // Back-to-normal signal. PrivacyPanel renders the setup entry exclusively
-        // under `privacy.privacyMode === 'normal'`, so it appears only after the
-        // disable has actually flipped the account back.
-        await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeVisible({
+        // Back-to-normal signal. It used to be the setup entry appearing, which
+        // PrivacyPanel rendered exclusively under `privacyMode === 'normal'`;
+        // that entry is retired (see V1_ENABLE_ENTRY_RETIRED), so the signal is
+        // now the paranoid MANAGEMENT section going away — which the panel
+        // renders exclusively under `privacyMode === 'paranoid'`, i.e. the same
+        // flip observed from the other side. Asserted on a control the arc has
+        // just used, so a silently-missing section cannot pass it vacuously.
+        await expect(page.getByText('Disable Paranoid mode', { exact: true })).toHaveCount(0, {
           timeout: 30_000,
         });
+        await expect(page.getByRole('switch', { name: 'Discreet mode' })).toBeVisible();
 
         // Owner-audit decision: these five strict-document/operational kinds are
         // intentionally purge-only. The current-period budget marker is not
@@ -608,22 +663,25 @@ async function createMoneyFixture(owner: E2EUser, harness: Pd9Harness): Promise<
   // final scan instead of proving anything.
   const contentSentinel = `PD9-CONTENT-${randomUUID().replace(/-/g, '')}`;
 
-  // The categories READ stays on HTTP — it is the seed-on-first-use gate for
-  // the default set (and reads survive the island's retirement). The budget
-  // and transaction WRITES go through the harness: V5 cash fusion retired the
-  // island's HTTP writes (410 EXPENSE_AREA_RETIRED), but a pre-fusion account
-  // still carries these rows, and carrying them through enable → purge →
-  // disable → restore is precisely what PD9 gates.
-  const categories = await json<{ categories: Array<{ id: string; name: string }> }>(
-    await api.get(apiV1('/expenses/categories')),
-  );
-  const groceries = categories.categories.find((category) => category.name === 'Groceries');
-  expect(groceries, 'default Groceries category exists').toBeTruthy();
+  // The whole legacy expense fixture — category, budget, transaction — is
+  // seeded through the harness's repositories: V5 cash fusion retired the
+  // island's HTTP writes (410 EXPENSE_AREA_RETIRED) and `GET /expenses/
+  // categories` is a pure read (#1550), so nothing on the HTTP side produces
+  // these rows any more. A pre-fusion account still carries them, and carrying
+  // them through enable → purge → disable → restore is precisely what PD9
+  // gates.
   await harness.seedLegacyExpenseFixture({
     email: owner.email,
     bookedOn: today,
     description: `PD9 current-period groceries ${contentSentinel}`,
   });
+  // Reads DO survive the island's retirement: the seeded category must come
+  // back over HTTP, which is what the enable → restore arm later re-checks.
+  const categories = await json<{ categories: Array<{ id: string; name: string }> }>(
+    await api.get(apiV1('/expenses/categories')),
+  );
+  const groceries = categories.categories.find((category) => category.name === 'Groceries');
+  expect(groceries, 'seeded Groceries category is readable').toBeTruthy();
 
   return { portfolioId: portfolioId!, asset, contentSentinel };
 }

@@ -20,6 +20,7 @@ import * as schema from '../data/schema';
 import { cashMovementKindEnum } from '../data/schema';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { expectDbRefusal } from '../testing/dbRefusals';
 
 /**
  * The `fee` cash-movement kind (V5, §16 2026-07-30 — owner-signed deviation).
@@ -259,7 +260,7 @@ describe('cash `fee` kind (§16 2026-07-30)', () => {
       .where(eq(schema.portfolioCashSources.portfolioId, pid));
     expect(source).toBeTruthy();
 
-    await expect(
+    await expectDbRefusal(
       h.db.insert(schema.portfolioCashMovements).values({
         portfolioId: pid,
         sourceId: source!.id,
@@ -268,7 +269,8 @@ describe('cash `fee` kind (§16 2026-07-30)', () => {
         executedAt: new Date(tsOffset(-2)),
         note: 'a fee that pays you is not a fee',
       }),
-    ).rejects.toThrow(/portfolio_cash_movements_sign/);
+      /portfolio_cash_movements_sign/,
+    );
   });
 
   it('the Postgres CHECK refuses a fee linked to a transaction or a dividend', async () => {
@@ -309,7 +311,7 @@ describe('cash `fee` kind (§16 2026-07-30)', () => {
       })
       .returning();
 
-    await expect(
+    await expectDbRefusal(
       h.db.insert(schema.portfolioCashMovements).values({
         portfolioId: pid,
         sourceId: source!.id,
@@ -318,7 +320,8 @@ describe('cash `fee` kind (§16 2026-07-30)', () => {
         transactionId: txn!.id,
         executedAt: new Date(tsOffset(-2)),
       }),
-    ).rejects.toThrow(/portfolio_cash_movements_fee_standalone/);
+      /portfolio_cash_movements_fee_standalone/,
+    );
   });
 
   // --- Solvency, per source ------------------------------------------------

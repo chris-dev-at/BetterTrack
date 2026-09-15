@@ -12,20 +12,22 @@ import type {
 } from '@bettertrack/contracts';
 
 vi.mock('../../../lib/portfolioApi');
-vi.mock('../../../lib/cashApi', () => ({
-  CASH_TAGS_QUERY_KEY: ['cash', 'tags'],
-  cashBudgetsQueryKey: (portfolioId: string, month?: string) => [
-    'cash',
-    'budgets',
-    portfolioId,
-    month,
-  ],
-  listCashTags: vi.fn(),
-  listCashBudgets: vi.fn(),
-  createCashBudget: vi.fn(),
-  updateCashBudget: vi.fn(),
-  deleteCashBudget: vi.fn(),
-}));
+// Only the REQUESTS are doubled. The query keys come from the real module on
+// purpose: whether a create reaches the month query the page is holding is
+// decided by that key builder, so a hand-written stand-in would prove the
+// stand-in and hide #1370.
+vi.mock('../../../lib/cashApi', async (importActual) => {
+  const actual = await importActual<typeof import('../../../lib/cashApi')>();
+  return {
+    CASH_TAGS_QUERY_KEY: actual.CASH_TAGS_QUERY_KEY,
+    cashBudgetsQueryKey: actual.cashBudgetsQueryKey,
+    listCashTags: vi.fn(),
+    listCashBudgets: vi.fn(),
+    createCashBudget: vi.fn(),
+    updateCashBudget: vi.fn(),
+    deleteCashBudget: vi.fn(),
+  };
+});
 
 import { listPortfolios } from '../../../lib/portfolioApi';
 import {
@@ -221,6 +223,65 @@ describe('CashBudgetsPage', () => {
       amount: 150,
       currency: 'EUR',
     });
+  });
+
+  test('a created budget replaces the empty state without a reload (#1370)', async () => {
+    vi.mocked(createCashBudget).mockResolvedValue({
+      budget: { ...budget(), id: 'b-new' } as never,
+    });
+    vi.mocked(listCashBudgets)
+      .mockResolvedValueOnce(EMPTY_BUDGETS)
+      .mockResolvedValue({ period: '2026-07', budgets: [budget({ id: 'b-new' })] });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('No budgets yet')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'New budget' }));
+    const dialog = screen.getByRole('dialog', { name: 'New budget' });
+    await user.selectOptions(within(dialog).getByLabelText('Tag'), FOOD.id);
+    await user.type(within(dialog).getByLabelText('Monthly target'), '150');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    // The month query the page is holding refetched on its own: no navigation,
+    // no month change, no reload.
+    expect(await screen.findByText('Food')).toBeInTheDocument();
+    expect(screen.queryByText('No budgets yet')).not.toBeInTheDocument();
+  });
+
+  test('edit and delete refresh the month the page is standing on (#1370)', async () => {
+    vi.mocked(listCashBudgets)
+      .mockResolvedValueOnce({ period: '2026-07', budgets: [budget()] })
+      .mockResolvedValueOnce({ period: '2026-07', budgets: [budget({ amount: 200 })] })
+      .mockResolvedValue(EMPTY_BUDGETS);
+    vi.mocked(updateCashBudget).mockResolvedValue({
+      budget: {
+        id: 'b1',
+        portfolioId: 'p1',
+        tagId: FOOD.id,
+        period: '2026-07',
+        amount: 200,
+        currency: 'EUR',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Edit' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit budget' });
+    const amountInput = within(dialog).getByLabelText('Monthly target');
+    await user.clear(amountInput);
+    await user.type(amountInput, '200');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(listCashBudgets).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    expect(await screen.findByText('No budgets yet')).toBeInTheDocument();
   });
 
   test('edit retargets the amount only — tag and period are read-only', async () => {

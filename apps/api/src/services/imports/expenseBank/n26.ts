@@ -10,7 +10,9 @@ import {
 
 /**
  * N26 account-statement mapper (PROJECTPLAN.md §13.5 V5-P9). The N26 CSV export is
- * comma-separated English with ISO dates and plain (`-42.50`) decimals:
+ * comma-separated English with ISO dates and ENGLISH-notation (`-42.50`,
+ * `"2,400.00"`) decimals — parsed by `parseEnglishAmount` (`./amount`), never
+ * the German-notation framework helper, which would read `1,200` as 1.2:
  *
  *   Date,Payee,Account number,Transaction type,Payment reference,Amount (EUR),
  *     Amount (Foreign Currency),Type Foreign Currency,Exchange Rate
@@ -61,6 +63,8 @@ export const n26Mapper: BankStatementMapper = {
         raw: record.raw,
         dateRaw: cell(record, date),
         amountRaw: cell(record, amount),
+        // ENGLISH notation: `1,200` is 1200, not 1.2.
+        notation: 'english',
         // The N26 `Amount (EUR)` column is always EUR.
         currencyRaw: 'EUR',
         description: firstNonEmpty(

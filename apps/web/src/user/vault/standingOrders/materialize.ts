@@ -1,4 +1,5 @@
 import {
+  standingOrderQuoteRefusal,
   VAULT_ENTITY_ROW_SCHEMAS,
   type StandingOrderKind,
   type VaultEntity,
@@ -7,7 +8,9 @@ import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import { MarketDataSourceError, type MarketDataSource } from '../../../lib/marketDataSource';
 import {
+  claimedStandingOrderPeriodKeys,
   existingStandingOrderOccurrence,
+  isStandingOrderPortfolioArchived,
   VaultPortfolioStoreError,
   type VaultPortfolioStore,
 } from '../vaultPortfolioStore';
@@ -29,7 +32,12 @@ import {
 } from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
-import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
+import {
+  STANDING_ORDER_SCHEDULE_TZ,
+  calendarDayInTimezone,
+  dueStandingOrderOccurrence,
+  skippedStandingOrderPeriods,
+} from './schedule';
 
 /**
  * Client mirror of the server's automatic-buy quote age ceiling in
@@ -49,6 +57,31 @@ export interface MaterializedStandingOrder {
   dueDate: string;
   kind: StandingOrderKind;
   status: 'created' | 'existing';
+  /**
+   * The valuation day a local (custom) asset buy was priced from, present only
+   * when it is older than {@link STANDING_ORDER_MAX_QUOTE_AGE_MS} — the ceiling
+   * a market quote would have been deferred on. Local assets are exempt from
+   * that ceiling (an owner's value point is not an outage) but not from saying
+   * so, otherwise a months-old valuation books at a fresh-looking timestamp
+   * with nothing to distinguish it (#1793).
+   */
+  stalePriceAsOf?: string;
+}
+
+/**
+ * Periods the newest-only catch-up rule discarded for one order — the client
+ * half of the server's `standing_order.skipped` / `dropped` notice. They are
+ * never booked; they are reported so the vaulted user learns the same thing a
+ * non-vaulted one is told (#1793).
+ */
+export interface DroppedStandingOrderPeriods {
+  orderId: string;
+  /** Oldest → newest, bounded by {@link DROPPED_PERIOD_REPORT_CAP}. */
+  periods: string[];
+  /** The newest discarded period — the server's `periodKey` on that notice. */
+  newestPeriod: string;
+  /** `periods.length`, mirroring the server's `droppedCount`. */
+  droppedCount: number;
 }
 
 export interface DeferredStandingOrder {
@@ -66,7 +99,7 @@ export interface FailedStandingOrder {
 export interface SkippedStandingOrder {
   orderId: string;
   dueDate: string;
-  reason: 'deleted' | 'status-changed' | 'no-longer-due';
+  reason: 'deleted' | 'status-changed' | 'no-longer-due' | 'portfolio-archived';
 }
 
 export interface StandingOrderMaterializationResult {
@@ -75,7 +108,15 @@ export interface StandingOrderMaterializationResult {
   deferred: DeferredStandingOrder[];
   failed: FailedStandingOrder[];
   skipped: SkippedStandingOrder[];
+  dropped: DroppedStandingOrderPeriods[];
 }
+
+/**
+ * Upper bound on the discarded periods one order reports in a single scan,
+ * matching the server's `skippedPeriods` cap. The count is of the bounded
+ * window, so a decade-old daily order says "400 periods", never spins.
+ */
+export const DROPPED_PERIOD_REPORT_CAP = 400;
 
 /**
  * Invoke after unlock and on each application start. It performs no server-side
@@ -92,7 +133,7 @@ export async function materializeDueStandingOrders(
     const signal = options.signal;
     signal?.throwIfAborted();
     const now = (options.now ?? (() => new Date()))();
-    const timezone = options.timezone ?? 'Europe/Vienna';
+    const timezone = options.timezone ?? STANDING_ORDER_SCHEDULE_TZ;
     const today = calendarDayInTimezone(now, timezone);
     let snapshot = validatedStandingOrderSnapshot(sync);
     let validateOrderForScan = createStandingOrderScanValidator(snapshot.document);
@@ -116,6 +157,7 @@ export async function materializeDueStandingOrders(
       deferred: [],
       failed: [],
       skipped: [],
+      dropped: [],
     };
 
     for (const orderId of orderIds) {
@@ -138,6 +180,15 @@ export async function materializeDueStandingOrders(
        * expose that corruption, which is where the user sees it.
        */
       if (order.row.status !== 'active') continue;
+      /*
+       * Archive is a suspension, not a pause: the server's scan excludes an
+       * archived portfolio outright and its restore path deliberately
+       * tombstones the elapsed period, so booking here would both move money
+       * into a portfolio the user believes frozen and advance `lastPeriodKey`
+       * past that no-back-fill rule (#1712). Silent, like a paused order —
+       * nothing is owed while the suspension holds.
+       */
+      if (isStandingOrderPortfolioArchived(snapshot.document, order.row.portfolioId)) continue;
       let dueDate: string | null;
       try {
         dueDate = dueStandingOrderOccurrence(order.row, today);
@@ -150,6 +201,35 @@ export async function materializeDueStandingOrders(
         validateOrderForScan(order.entity);
       } catch (cause) {
         recordOrderFailure(result, orderId, dueDate, cause);
+        continue;
+      }
+
+      /*
+       * What the newest-only rule is about to discard, reported exactly where
+       * the server reports it: before the already-booked exit, so a catch-up
+       * that lands on an occurrence another device already booked still names
+       * the periods nobody will ever book (#1793). The run ledger — not the
+       * `lastPeriodKey` watermark, which a post-failure state can leave stale —
+       * decides what was really claimed.
+       */
+      try {
+        const claimed = claimedStandingOrderPeriodKeys(snapshot.document, order.entity.id);
+        const droppedPeriods = skippedStandingOrderPeriods(
+          order.row,
+          order.row.lastPeriodKey,
+          dueDate,
+          DROPPED_PERIOD_REPORT_CAP,
+        ).filter((periodKey) => !claimed.has(periodKey));
+        if (droppedPeriods.length > 0) {
+          result.dropped.push({
+            orderId: order.entity.id,
+            periods: droppedPeriods,
+            newestPeriod: droppedPeriods.at(-1)!,
+            droppedCount: droppedPeriods.length,
+          });
+        }
+      } catch (cause) {
+        recordOrderFailure(result, order.entity.id, dueDate, cause);
         continue;
       }
 
@@ -172,7 +252,12 @@ export async function materializeDueStandingOrders(
         continue;
       }
 
-      let quote: { price: number; currency: string; recordedAt: string } | null = null;
+      let quote: {
+        price: number;
+        currency: string;
+        recordedAt: string;
+        stalePriceAsOf?: string;
+      } | null = null;
       if (order.row.kind === 'buy-asset') {
         if (order.row.assetId === null) {
           recordOrderFailure(
@@ -197,7 +282,7 @@ export async function materializeDueStandingOrders(
             // commit snapshot rechecks asset identity/currency, while an edit to
             // the valuation itself intentionally takes effect on the next scan.
             const manual = localManualAssetMarket(snapshot.document, asset);
-            if (manual.quote === null) {
+            if (manual.quote === null || manual.asOf === null) {
               throw moneyFailure(
                 'MARKET_DATA_UNAVAILABLE',
                 `A standing-order valuation is unavailable for manual asset ${order.row.assetId}.`,
@@ -207,10 +292,26 @@ export async function materializeDueStandingOrders(
                 },
               );
             }
+            /*
+             * The owner's value-point day is this booking's market stamp, so it
+             * is what `lastRunAt` records — the same rule the server engine now
+             * applies (#1793). A local valuation is exempt from the quote-age
+             * ceiling (it is not an outage), but a valuation older than that
+             * ceiling is flagged on the booking instead of passing for fresh.
+             */
+            const valuationMs = Date.parse(`${manual.asOf}T00:00:00.000Z`);
+            if (!Number.isFinite(valuationMs)) {
+              throw moneyFailure(
+                'MARKET_DATA_INVALID',
+                `A standing-order valuation date is invalid for manual asset ${order.row.assetId}.`,
+              );
+            }
+            const stale = now.getTime() - valuationMs > STANDING_ORDER_MAX_QUOTE_AGE_MS;
             quote = {
               price: manual.quote.price,
               currency: asset.currency,
-              recordedAt: now.toISOString(),
+              recordedAt: new Date(Math.min(valuationMs, now.getTime())).toISOString(),
+              ...(stale ? { stalePriceAsOf: manual.asOf } : {}),
             };
           } else {
             const marketQuote = await market.quote(order.row.assetId, signal);
@@ -261,12 +362,20 @@ export async function materializeDueStandingOrders(
               recordedAt: new Date(Math.min(providerAsOfMs, now.getTime())).toISOString(),
             };
           }
-          if (
-            !Number.isFinite(quote.price) ||
-            quote.price <= 0 ||
-            quote.currency !== order.row.currency
-          ) {
-            throw moneyFailure('MARKET_DATA_INVALID', 'Standing-order quote is invalid.');
+          // The same rule the server engine applies before it claims a period
+          // (#1712): quote, order and asset currency must agree, and the price
+          // must be finite, positive and below the transaction ceiling.
+          const refusal = standingOrderQuoteRefusal({
+            price: quote.price,
+            quoteCurrency: quote.currency,
+            orderCurrency: order.row.currency,
+            assetCurrency: asset.currency,
+          });
+          if (refusal !== null) {
+            throw moneyFailure(
+              'MARKET_DATA_INVALID',
+              `Standing-order quote is invalid (${refusal}).`,
+            );
           }
         } catch (cause) {
           if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
@@ -312,6 +421,13 @@ export async function materializeDueStandingOrders(
         adoptSnapshot(commitSnapshot);
         continue;
       }
+      if (isStandingOrderPortfolioArchived(commitSnapshot.document, commitOrder.row.portfolioId)) {
+        // An archive that landed (from another device) while the quote was in
+        // flight — the twin of the server's in-lock recheck.
+        result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'portfolio-archived' });
+        adoptSnapshot(commitSnapshot);
+        continue;
+      }
       let commitDueDate: string | null;
       try {
         commitDueDate = dueStandingOrderOccurrence(commitOrder.row, today);
@@ -351,6 +467,7 @@ export async function materializeDueStandingOrders(
           dueDate,
           kind: order.row.kind,
           status: committed.status,
+          ...(quote?.stalePriceAsOf === undefined ? {} : { stalePriceAsOf: quote.stalePriceAsOf }),
         });
         refreshSnapshot();
       } catch (cause) {

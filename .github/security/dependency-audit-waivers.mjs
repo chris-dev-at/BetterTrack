@@ -5,13 +5,11 @@
  * reason. The audit verifier rejects unknown, expired, malformed, package
  * mismatched, and no-longer-needed waivers. See docs/SECURITY_CI_POLICY.md
  * before adding or renewing one.
+ *
+ * Empty is the goal state, and reaching it removed the only record of two
+ * hand-tracked supply-chain decisions (the drizzle 0.x-minor Dependabot fence
+ * and the `shell-quote` production pin). Both now live in
+ * docs/SECURITY_CI_POLICY.md, "tracked by hand" — read that before assuming an
+ * override or an ignore rule is stale.
  */
-export const dependencyAuditWaivers = {
-  // Direct runtime packages need a separately reviewed compatibility update.
-  'GHSA-gpj5-g38j-94v9': {
-    expires: '2026-09-04',
-    moduleName: 'drizzle-orm',
-    reason:
-      'Renewed 2026-08-14: the dedicated 0.38→0.45 upgrade (#1217) is needs-human-blocked — drizzle/meta snapshots end at 0022 while the journal runs to 0087, so the upgraded kit cannot no-op db:generate; awaiting the owner’s snapshot-baseline decision.',
-  },
-};
+export const dependencyAuditWaivers = {};

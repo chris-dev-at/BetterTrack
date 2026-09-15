@@ -124,6 +124,29 @@ describe('feedback contracts', () => {
     expect(adminFeedbackListQuerySchema.parse({ archived: 'false' }).archived).toBe(false);
   });
 
+  it('reads the W3 inbox filters, keeping unread tri-state', () => {
+    const parsed = adminFeedbackListQuerySchema.parse({
+      status: 'shipped',
+      version: '5.2.0',
+      q: '  dividends  ',
+      unread: 'true',
+    });
+    expect(parsed).toMatchObject({ status: 'shipped', version: '5.2.0', q: 'dividends' });
+    expect(parsed.unread).toBe(true);
+
+    // Absent is "do not filter on unread"; an explicit false is the narrower
+    // "only what I have already read". Collapsing the two would make the
+    // default inbox silently hide every unread thread.
+    expect(adminFeedbackListQuerySchema.parse({}).unread).toBeUndefined();
+    expect(adminFeedbackListQuerySchema.parse({ unread: 'false' }).unread).toBe(false);
+
+    // Filters are validated, never forwarded blindly to SQL.
+    expect(adminFeedbackListQuerySchema.safeParse({ status: 'not_a_status' }).success).toBe(false);
+    expect(adminFeedbackListQuerySchema.safeParse({ q: '' }).success).toBe(false);
+    expect(adminFeedbackListQuerySchema.safeParse({ tag: 'dividends' }).success).toBe(false);
+    expect(adminFeedbackListQuerySchema.safeParse({ sort: 'aging' }).success).toBe(true);
+  });
+
   it('validates admin rows and locks status transitions to the shipped lifecycle', () => {
     const response = adminFeedbackListResponseSchema.safeParse({
       submissions: [
@@ -144,6 +167,13 @@ describe('feedback contracts', () => {
             username: 'mobile-user',
             email: 'mobile@example.test',
           },
+          // Thread state (#1406 W3). Required, not optional: the inbox ranks on
+          // these, and an optional counter would let a row that simply forgot
+          // to project them read as "nothing is waiting".
+          unreadCount: 0,
+          messageCount: 0,
+          lastMessageAt: null,
+          lastAuthorSide: null,
           createdAt: '2026-08-18T08:00:00.000Z',
           updatedAt: '2026-08-18T08:00:00.000Z',
         },

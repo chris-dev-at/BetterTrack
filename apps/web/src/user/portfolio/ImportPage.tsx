@@ -5,12 +5,14 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import type {
   ApplyImportResponse,
   ImportPreviewResponse,
+  ImportRowKind,
   ImportRowResult,
 } from '@bettertrack/contracts';
 import { IMPORT_MAX_DISTINCT_INSTRUMENTS } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { useAiCapability } from '../../lib/aiApi';
 import { ApiError } from '../../lib/apiClient';
 import { CASH_TAGS_QUERY_KEY, listCashTags } from '../../lib/cashApi';
 import {
@@ -48,9 +50,11 @@ import { ImportUnderstandingPanel } from './import/ImportUnderstanding';
  *     any AI proposals shown as suggestions that were NOT used. Skipped
  *     entirely for a file a broker mapper claimed, which labels no columns.
  *  3. REVIEW — only the rows that need a person: unresolved instruments (with
- *     candidates and a search box that pin through the API) and rows that could
- *     not be read at all, listed with their reason. Skipped when there are
- *     none, so a clean file never asks a question it does not have.
+ *     candidates and a search box that pin through the API), rows whose KIND
+ *     nobody has decided (a statement with no booking-type column: one control
+ *     per row, plus a bulk sweep per kind), and rows that could not be read at
+ *     all, listed with their reason. Skipped when there are none, so a clean
+ *     file never asks a question it does not have.
  *  4. CONFIRM — the full staged table, the cash source, and the one button that
  *     writes. The result report replaces this step in place.
  *
@@ -67,10 +71,15 @@ import { ImportUnderstandingPanel } from './import/ImportUnderstanding';
  * ── WHAT THIS SURFACE MUST NEVER DO ──────────────────────────────────────────
  *
  * Recompute. Every count, flag, tag and resolved asset is read from the preview
- * payload, and the pin mutation REPLACES the whole preview with the server's
- * response rather than patching a row locally — because apply replays what
- * staging persisted, and a client that derived its own view of any of it could
- * show one thing and book another.
+ * payload, and BOTH row mutations — pinning an instrument, confirming a kind —
+ * REPLACE the whole preview with the server's response rather than patching a
+ * row locally, because apply replays what staging persisted and a client that
+ * derived its own view of any of it could show one thing and book another.
+ *
+ * The kind confirmation makes that sharper rather than softer: the request
+ * carries one enum member and no data at all, and the amount, direction, asset,
+ * duplicate verdict and tags that come back were all derived by the server from
+ * what it parsed. This page decides WHICH question to answer, never the answer.
  */
 
 const AUTO_BROKER = 'auto';
@@ -179,6 +188,12 @@ export function ImportPage() {
     () => new Map((cashTagsQuery.data?.tags ?? []).map((tag) => [tag.id, tag])),
     [cashTagsQuery.data],
   );
+
+  // The shared AI capability read every AI surface keys visibility off. It is
+  // NOT part of `referenceLoading`: the wizard works identically with or without
+  // an assistant, so a slow or failed capability read must never gate the upload
+  // step — it only decides whether the budget line below is shown.
+  const aiCapability = useAiCapability();
 
   const referenceLoading =
     portfoliosQuery.isLoading ||
@@ -291,6 +306,61 @@ export function ImportPage() {
     },
   });
 
+  /**
+   * Confirming what a row IS (§16 2026-08-29 gap (b)) — one row, or a whole
+   * sweep of them, through the SAME endpoint the pin uses.
+   *
+   * SEQUENTIAL, DELIBERATELY. Every PATCH returns the whole refreshed preview,
+   * so two in flight at once would race to be the last writer and the loser's
+   * view — one row out of date — would be the one left on screen. Running them
+   * in order also means the counts the user ends up looking at are the counts
+   * after every confirmation, which is the invariant this page is built on: the
+   * client renders what the server says and never recomputes it.
+   *
+   * A refusal STOPS the sweep rather than pressing on. The wizard only ever
+   * offers kinds the server already said each row accepts, so a rejection here
+   * means the world changed under it — the batch was applied, the session went
+   * — and every remaining row would fail the same way. The preview from the
+   * last row that DID land is kept, so the user sees exactly how far it got
+   * beside the reason it stopped.
+   */
+  const confirmMutation = useMutation({
+    mutationFn: async (input: { rowIds: string[]; kind: ImportRowKind }) => {
+      let latest: ImportPreviewResponse | null = null;
+      for (const rowId of input.rowIds) {
+        try {
+          latest = await resolveImportRow(preview!.batch.id, rowId, { kind: input.kind });
+        } catch (err) {
+          // Nothing landed at all: let the mutation fail, so the page keeps the
+          // preview it already had rather than replacing it with itself.
+          if (latest === null) throw err;
+          return { preview: latest, failure: err };
+        }
+      }
+      return { preview: latest!, failure: null as unknown };
+    },
+    onMutate: () => setError(null),
+    onSuccess: (data) => {
+      // The batch may have been discarded while this was in flight (B3).
+      if (discardedRef.current) return;
+      setPreview(data.preview);
+      if (data.failure) {
+        setError(
+          vaultedPortfolioErrorMessage(data.failure, t) ??
+            (data.failure instanceof ApiError
+              ? data.failure.message
+              : t('portfolio.import.confirmFailed')),
+        );
+      }
+    },
+    onError: (err) => {
+      setError(
+        vaultedPortfolioErrorMessage(err, t) ??
+          (err instanceof ApiError ? err.message : t('portfolio.import.confirmFailed')),
+      );
+    },
+  });
+
   const applyMutation = useMutation({
     mutationFn: () =>
       applyImportBatch(preview!.batch.id, {
@@ -352,6 +422,14 @@ export function ImportPage() {
   }, [steps, step]);
 
   const counts = preview?.batch.counts;
+  /**
+   * A per-row write is settling. BOTH row writes gate the same things, because
+   * both change which rows are importable AND whether the review step still
+   * exists: nothing may step forward onto a preview that is about to change,
+   * step back out of it, start a second write, or reach the button that books
+   * money, until the server has answered.
+   */
+  const rowWriteInFlight = resolveMutation.isPending || confirmMutation.isPending;
   const stepIndex = steps.indexOf(activeStep);
   const canGoBack = stepIndex > 0 && result === null;
 
@@ -417,6 +495,22 @@ export function ImportPage() {
                   : t('portfolio.import.uploadCta')}
               </Button>
             </div>
+            {/*
+              The generic staging path may spend the caller's SHARED per-user
+              daily AI budget — the same one insights and the NL builder draw on
+              (§6.18, one cap per user, not per feature). Disclosed here, BEFORE
+              the upload that would spend it, as one compact line rather than a
+              panel; when no assistant is configured (or the `ai` flag is off)
+              `available` is false and nothing about AI renders at all (#1857).
+            */}
+            {aiCapability.data?.available ? (
+              <p className="bt-meta" style={{ maxWidth: 640 }}>
+                {t('portfolio.import.aiBudgetNote', {
+                  remaining: aiCapability.data.remaining,
+                  cap: aiCapability.data.dailyCap,
+                })}
+              </p>
+            ) : null}
           </div>
         </section>
       ) : null}
@@ -441,7 +535,8 @@ export function ImportPage() {
         <section className="bt-section flex flex-col gap-3">
           <h2 className="bt-h3">{t('portfolio.import.review.title')}</h2>
           <ImportReviewPanel
-            busy={resolveMutation.isPending}
+            busy={rowWriteInFlight}
+            onConfirmKind={(rowIds, kind) => confirmMutation.mutate({ rowIds, kind })}
             onResolve={(rowId, assetId) => resolveMutation.mutate({ rowId, assetId })}
             rows={preview.rows}
             t={t}
@@ -523,18 +618,14 @@ export function ImportPage() {
                 <div className="flex gap-2">
                   <Button
                     disabled={
-                      discardMutation.isPending ||
-                      applyMutation.isPending ||
-                      resolveMutation.isPending
+                      discardMutation.isPending || applyMutation.isPending || rowWriteInFlight
                     }
                     onClick={() => discardMutation.mutate()}
                   >
                     {t('portfolio.import.discardCta')}
                   </Button>
                   <Button
-                    disabled={
-                      applyMutation.isPending || resolveMutation.isPending || counts.mapped === 0
-                    }
+                    disabled={applyMutation.isPending || rowWriteInFlight || counts.mapped === 0}
                     loading={applyMutation.isPending}
                     onClick={() => applyMutation.mutate()}
                     variant="primary"
@@ -590,7 +681,7 @@ export function ImportPage() {
         <div className="bt-pfw__foot">
           {canGoBack ? (
             <Button
-              disabled={resolveMutation.isPending}
+              disabled={rowWriteInFlight}
               onClick={() => setStep(steps[stepIndex - 1]!)}
               variant="quiet"
             >
@@ -601,7 +692,7 @@ export function ImportPage() {
           )}
           {activeStep !== 'confirm' ? (
             <Button
-              disabled={resolveMutation.isPending}
+              disabled={rowWriteInFlight}
               onClick={() => setStep(steps[stepIndex + 1] ?? 'confirm')}
               variant="primary"
             >

@@ -161,6 +161,7 @@ const RESP_FULL: AnalyticsSeriesResponse = {
     stats: stats(20, 12),
   },
   compare: null,
+  twr: { totalReturnPct: 15, cagrPct: 9 },
   // contributionPct values kept distinct from the stat figures asserted below,
   // so a per-asset row never collides with a total-return / CAGR readout.
   contributions: [contribRow(AAPL, 14), contribRow(MSFT, 11), contribRow(BTC, 2)],

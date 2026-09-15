@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { I18nProvider, useT } from '../i18n';
 import { NotFoundState } from '../ui';
@@ -12,7 +12,6 @@ import { AnnouncementsPage } from './pages/AnnouncementsPage';
 import { AuditPage } from './pages/AuditPage';
 import { EmailPage } from './pages/EmailPage';
 import { FeatureFlagsPage } from './pages/FeatureFlagsPage';
-import { FeedbackPage } from './pages/FeedbackPage';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { HealthPage } from './pages/HealthPage';
 import { InvitesPage } from './pages/InvitesPage';
@@ -21,7 +20,9 @@ import { MonitoringPage } from './pages/MonitoringPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { MarketDataPage } from './pages/MarketDataPage';
 import { ProblemsPage } from './pages/ProblemsPage';
+import { ProvidersPage } from './pages/ProvidersPage';
 import { RegistrationPage } from './pages/RegistrationPage';
 import { SupportPage } from './pages/SupportPage';
 import { TestAccountsPage } from './pages/TestAccountsPage';
@@ -77,13 +78,21 @@ function AdminShell() {
         {/* W6's home in the IA, holding a placeholder until the factory ships
             (#1406, Chief ruling 2026-08-29). */}
         <Route path="test-accounts" element={<TestAccountsPage />} />
-        <Route path="feedback" element={<FeedbackPage />} />
+        {/* The W1 inbox was replaced by the W3 split-pane helpdesk, which is
+            the Support workspace itself. The old URL is kept as a redirect —
+            "old URLs stay as redirects" (#1406 decision) — rather than left
+            pointing at a second, worse inbox. */}
+        <Route path="feedback" element={<Navigate replace to="/admin/support" />} />
         <Route path="oauth-apps" element={<OAuthAppsPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="email" element={<EmailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="problems" element={<ProblemsPage />} />
+        {/* W4 (#1406): the Operations workspace's two new tabs. Every pre-fold
+            path above stays exactly where it was, so bookmarks survive. */}
+        <Route path="providers" element={<ProvidersPage />} />
+        <Route path="market-data" element={<MarketDataPage />} />
         <Route path="monitoring" element={<MonitoringPage />} />
         <Route path="usage-analytics" element={<UsageAnalyticsPage />} />
         <Route path="settings" element={<SettingsPage />} />

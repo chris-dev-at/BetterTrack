@@ -118,6 +118,37 @@ export function topOverlayElement(exclude?: HTMLElement | null): HTMLElement | n
 }
 
 /**
+ * Does this pointer target belong to an overlay in a DIFFERENT LAYER than
+ * `container` — one `container` neither holds nor sits inside?
+ *
+ * The click-away half of the problem this module's header describes for Escape.
+ * A menu or popover dismisses itself on any `mousedown` its own element does not
+ * contain, and a dialog portalled to `<body>` is never contained — not even when
+ * the control that opened it lives in that very menu. The first click inside
+ * such a dialog therefore dismissed the menu, which UNMOUNTED the dialog with
+ * it: the vault unlock prompt opened from the shield chip or the portfolio
+ * switcher vanished the moment the user touched it.
+ *
+ * Containment answers the cases DOM nesting describes (a menu inside a dialog is
+ * INSIDE it, so clicking the menu must not dismiss the dialog — excluded here),
+ * and the registry answers the ones it does not (a portalled sibling). It is
+ * deliberately not "any click outside": a click on ordinary page content still
+ * dismisses, because ordinary page content is in no overlay at all.
+ */
+export function pointerInSeparateOverlay(
+  target: Node | null,
+  container: HTMLElement | null,
+): boolean {
+  if (target === null) return false;
+  return stack.some((entry) => {
+    const element = connectedElement(entry);
+    if (element === null || !element.contains(target)) return false;
+    if (container === null) return true;
+    return !element.contains(container) && !container.contains(element);
+  });
+}
+
+/**
  * Registers an open overlay for as long as `active` holds, and routes Escape to
  * it only while it is the innermost one. `elementRef` points at the overlay's
  * own container — the panel, popover or menu — and is what nesting is judged by.

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { adminListPageSchema, adminListQuerySchema } from './common';
+
 /**
  * Personal API keys (PROJECTPLAN.md §6.13, §14, V2-P12) — the "API access as a
  * product" surface. A user mints an opaque bearer token scoped to coarse
@@ -247,8 +249,29 @@ export const adminApiKeySchema = z
   .strict();
 export type AdminApiKey = z.infer<typeof adminApiKeySchema>;
 
+/**
+ * `GET /admin/api-keys` window (V5-P2, #1814).
+ *
+ * Revoked keys are excluded by default. Nothing prunes them, so on an instance
+ * where every user has minted (and rotated) personal keys they are the bulk of
+ * the table — and each row the console renders carries a tier `<select>`
+ * populated with every tier. The audit trail of a recently retired key is still
+ * reachable: `includeRevoked=true` puts them back in the list.
+ */
+export const adminApiKeyListQuerySchema = adminListQuerySchema
+  .extend({
+    // A query-string token, so an explicit enum rather than `z.coerce.boolean()`,
+    // which would read the literal "false" as true.
+    includeRevoked: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  })
+  .strict();
+export type AdminApiKeyListQuery = z.infer<typeof adminApiKeyListQuerySchema>;
+
 export const adminApiKeyListResponseSchema = z
-  .object({ keys: z.array(adminApiKeySchema) })
+  .object({ keys: z.array(adminApiKeySchema), page: adminListPageSchema })
   .strict();
 export type AdminApiKeyListResponse = z.infer<typeof adminApiKeyListResponseSchema>;
 

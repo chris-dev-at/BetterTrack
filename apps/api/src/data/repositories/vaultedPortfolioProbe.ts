@@ -1,3 +1,4 @@
+import { vaultedPortfolioStubName as contractVaultedPortfolioStubName } from '@bettertrack/contracts';
 import { and, count, eq, inArray, like, or } from 'drizzle-orm';
 
 import {
@@ -90,9 +91,16 @@ const countByIds = async (
  * The content-free value E4 writes into the legacy NOT NULL `name` column.
  * The UUID makes it unique per account without carrying the portfolio's true
  * name; clients render `vault_alias` for a locked stub instead.
+ *
+ * The literal itself moved into `@bettertrack/contracts`
+ * (`VAULTED_PORTFOLIO_STUB_NAME_PREFIX`) so the client can RECOGNISE what this
+ * writes without carrying a second copy of the prefix that is free to drift —
+ * a drifted copy is how the raw sentinel reached a dialog subtitle
+ * (paranoid-UX failure map #6). This wrapper stays as the API-side name every
+ * caller here already imports.
  */
 export function vaultedPortfolioStubName(portfolioId: string): string {
-  return `__vaulted_portfolio__:${portfolioId}`;
+  return contractVaultedPortfolioStubName(portfolioId);
 }
 
 async function probeLockedStub(scope: VaultedPortfolioProbeScope): Promise<number> {
@@ -576,6 +584,12 @@ export const VAULTED_PORTFOLIO_CLEARTEXT_REGISTRY: Readonly<
     scope: 'account',
     reason:
       'Usage telemetry is keyed by account and optional asset, not portfolio; quote-roster suppression is enforced by its dedicated account-any-vault policy.',
+  },
+  usage_activations: {
+    kind: 'not-probed',
+    scope: 'account',
+    reason:
+      'The activation marker carries an account id and a first-seen instant and nothing else — no portfolio column exists to scope a probe to, and it is only ever written from an admitted usage_events batch, so it inherits that table’s suppression.',
   },
 };
 

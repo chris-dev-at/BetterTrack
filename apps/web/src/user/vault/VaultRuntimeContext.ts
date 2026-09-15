@@ -43,6 +43,11 @@ export interface VaultRuntime {
   prepareDriveStorage(): Promise<void>;
   /** User-gesture GIS authorization used by the pre-enable media round trip. */
   authorizeDriveStorage(): Promise<DataHome>;
+  /**
+   * Hand back a Drive grant a surface took but never used (an abandoned enable
+   * wizard). Best effort and safe to call when nothing was granted.
+   */
+  releaseDriveStorage(): Promise<void>;
   reconnect(): Promise<VaultSyncState>;
   downloadRecoveryKit(): Promise<RecoveryKitDownload>;
   changePassphrase(currentPassphrase: string, nextPassphrase: string): Promise<void>;

@@ -211,6 +211,15 @@ describe('yahooProvider.search (§6.2)', () => {
               isYahooFinance: true,
             },
             { symbol: 'EURUSD=X', exchange: 'CCY', quoteType: 'CURRENCY', isYahooFinance: true },
+            // A EUR index on a venue the exchange table does not know: the
+            // currency is the house default, and the hit must say so (#1875).
+            {
+              symbol: '^IBEX',
+              longname: 'IBEX 35',
+              exchange: 'MCE',
+              quoteType: 'INDEX',
+              isYahooFinance: true,
+            },
             { isYahooFinance: false }, // non-Yahoo company hit — dropped
             { symbol: '', quoteType: 'EQUITY', isYahooFinance: true }, // dropped
           ],
@@ -228,6 +237,7 @@ describe('yahooProvider.search (§6.2)', () => {
         exchange: 'XETRA',
         type: 'stock',
         currency: 'EUR',
+        currencyGuessed: false,
       },
       {
         providerId: 'yahoo',
@@ -237,6 +247,17 @@ describe('yahooProvider.search (§6.2)', () => {
         exchange: 'CCY',
         type: 'fx',
         currency: 'USD',
+        currencyGuessed: false,
+      },
+      {
+        providerId: 'yahoo',
+        providerRef: '^IBEX',
+        symbol: '^IBEX',
+        name: 'IBEX 35',
+        exchange: 'MCE',
+        type: 'index',
+        currency: 'USD',
+        currencyGuessed: true,
       },
     ]);
   });

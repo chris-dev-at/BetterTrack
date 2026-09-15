@@ -95,6 +95,12 @@ export function createExpensesRouter(ctx: AppContext): Router {
    * paranoid vault still restores into them. The tables are dropped in a later
    * migration once both of those are re-pointed (see the phase-2 report).
    *
+   * The gate inspects the VERB only, so it is exact just as long as no read
+   * handler writes. It once was not: `GET /categories` seeded the starter
+   * category set for any owner who had none, re-opening the very divergence
+   * above (#1550). Every handler below the gate is now a pure read — keep it
+   * that way; a "harmless" seed-on-read is not harmless here.
+   *
    * 410 rather than 404 or 405: the resource genuinely existed and is genuinely
    * gone, and a client that sees it should stop retrying rather than treat it as
    * a transient miss or a wrong verb.
@@ -168,7 +174,8 @@ export function createExpensesRouter(ctx: AppContext): Router {
 
   // ── Categories ──
 
-  // GET /expenses/categories — the caller's categories (defaults seeded on first read).
+  // GET /expenses/categories — the caller's categories. A pure read: an owner
+  // with none gets an empty list, never a seeded starter set (#1550).
   router.get('/categories', async (req, res) => {
     const result = await ctx.expenses.listCategories(req.authUser!.id);
     res.json(result);

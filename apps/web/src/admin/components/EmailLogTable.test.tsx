@@ -1,12 +1,43 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, test, vi } from 'vitest';
+import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { EmailLogEntry, EmailLogListResponse } from '@bettertrack/contracts';
+import type { EmailLogEntry, EmailLogListResponse, MeResponse } from '@bettertrack/contracts';
 
+vi.mock('../../lib/adminApi');
+import * as api from '../../lib/adminApi';
 import { ApiError } from '../../lib/apiClient';
-import { I18nProvider, useI18n } from '../../i18n';
+import { I18nProvider, localizedMessage, useI18n } from '../../i18n';
+import { AuthProvider, useAuth } from '../AuthContext';
 import { EmailLogTable, type EmailLogLoader } from './EmailLogTable';
+
+const admin: MeResponse = {
+  id: 'admin-1',
+  email: 'admin@bettertrack.test',
+  username: 'rootadmin',
+  role: 'admin',
+  status: 'active',
+  mustChangePassword: false,
+  pinEnabled: false,
+  pinLockIdleMinutes: null,
+  baseCurrency: 'EUR',
+  locale: 'en',
+  lastLoginAt: '2026-06-01T08:00:00.000Z',
+  createdAt: '2026-01-01T00:00:00.000Z',
+};
+
+beforeEach(() => {
+  vi.mocked(api.getMe).mockResolvedValue(admin);
+  vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
+    setupRequired: false,
+    totpEnabled: true,
+    totpPending: false,
+    emailEnabled: false,
+    twoFactorEmail: null,
+    recoveryCodesRemaining: 8,
+  });
+  vi.mocked(api.getVersion).mockRejectedValue(new Error('no version marker in tests'));
+});
 
 const nextCursor = '00000000-0000-7000-8000-000000000099';
 
@@ -62,10 +93,23 @@ const copy = {
   },
 } as const;
 
+/**
+ * The table reads the admin session (it signs the console out when the V5-P13c
+ * window closes), so every render needs the provider — and `status` is exposed
+ * so a sign-out is observable.
+ */
+function AuthStatus() {
+  const { status } = useAuth();
+  return <span data-testid="status">{status}</span>;
+}
+
 function renderTable(locale: keyof typeof copy, load: EmailLogLoader, emptyLabel?: string) {
   return render(
     <I18nProvider initialLocale={locale}>
-      <EmailLogTable load={load} emptyLabel={emptyLabel} />
+      <AuthProvider>
+        <AuthStatus />
+        <EmailLogTable load={load} emptyLabel={emptyLabel} />
+      </AuthProvider>
     </I18nProvider>,
   );
 }
@@ -73,12 +117,12 @@ function renderTable(locale: keyof typeof copy, load: EmailLogLoader, emptyLabel
 function LocaleSwitchingTable({ load }: { load: EmailLogLoader }) {
   const { setLocale } = useI18n();
   return (
-    <>
+    <AuthProvider>
       <button type="button" onClick={() => setLocale('de')}>
         German
       </button>
       <EmailLogTable load={load} />
-    </>
+    </AuthProvider>
   );
 }
 
@@ -143,7 +187,7 @@ test.each(Object.entries(copy))(
   },
 );
 
-test('keeps an explicit empty label and an ApiError message', async () => {
+test('keeps an explicit empty label, and never renders the server envelope', async () => {
   const customEmpty = 'No messages for this person.';
   const { unmount } = renderTable(
     'en',
@@ -162,14 +206,58 @@ test('keeps an explicit empty label and an ApiError message', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Etwas ist schiefgelaufen.');
   fallback.unmount();
 
+  // #1814: this used to render `err.message` verbatim, so a DE operator whose
+  // mail service was down read an English sentence in an otherwise German
+  // console. API envelopes are authored by the server and are not locale-aware,
+  // so every displayable failure is catalog copy.
   const apiMessage = 'The mail service is unavailable.';
   renderTable(
     'de',
     vi.fn<EmailLogLoader>().mockRejectedValue(new ApiError(503, 'UNAVAILABLE', apiMessage)),
   );
 
-  expect(await screen.findByRole('alert')).toHaveTextContent(apiMessage);
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(localizedMessage('de', 'common.genericError'));
+  expect(alert).not.toHaveTextContent(apiMessage);
 });
+
+/** Mount the table only once the console is signed in, so the sign-out is the
+ *  table's and not a race with the provider's own bootstrap. */
+function SignedInTable({ load }: { load: EmailLogLoader }) {
+  const { status } = useAuth();
+  return (
+    <>
+      <span data-testid="status">{status}</span>
+      {status === 'authenticated' ? <EmailLogTable load={load} /> : null}
+    </>
+  );
+}
+
+test.each([
+  ['a 401', new ApiError(401, 'UNAUTHENTICATED', 'Unauthenticated.')],
+  // §6.12 makes every `/admin/*` route answer a domainless 404 to a caller that
+  // is no longer an admin — on a live console, the V5-P13c window closing.
+  ['a domainless 404', new ApiError(404, 'NOT_FOUND', 'Not found')],
+] as const)(
+  'signs the console out on %s instead of leaving the operator on a dead page',
+  async (_label, err) => {
+    const load = vi.fn<EmailLogLoader>().mockRejectedValue(err);
+    render(
+      <I18nProvider initialLocale="de">
+        <AuthProvider>
+          <SignedInTable load={load} />
+        </AuthProvider>
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('anonymous'));
+    // Not a banner on a console that can no longer read anything — and never
+    // the English envelope.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(err.message)).not.toBeInTheDocument();
+  },
+);
 
 test('keeps loaded pages when the locale changes', async () => {
   const user = userEvent.setup();

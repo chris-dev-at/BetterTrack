@@ -1353,6 +1353,199 @@
   background: var(--bt-gold-on);
 }
 
+/* ── One-of-N choices + acknowledgments ──────────────────────────────────────
+ *
+ * The house rule, stated twice before this and made reusable here: a set of
+ * options is HAIRLINE-RULED ROWS INSIDE ONE GROUP, never a card per option
+ * (`.bt-pfw__choices`, `.bt-cc-modes`). Selection is background + ink. There is
+ * no left-edge accent bar — the gold edge line belongs to the active main-rail
+ * item and nowhere else.
+ *
+ * The control is a native radio/checkbox tinted with `accent-color`, the same
+ * way `.bt-cc-mode__radio` does it: the gold arrives for free and the platform
+ * keeps arrow-key group navigation, the focus ring and the accessible name.
+ */
+.bt-choices {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.bt-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  min-width: 0;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-choice + .bt-choice {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-choice:hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-choice.is-selected {
+  background: var(--bt-selected);
+}
+
+.bt-choice.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The steered-away-from option: quieter, still readable, never hidden. */
+.bt-choice--muted:not(.is-selected) .bt-choice__name {
+  color: var(--bt-muted);
+  font-weight: 570;
+}
+
+/* `:not(.is-selected)` is load-bearing, not decoration. `.bt-choice:focus-within`
+   and `.bt-choice.is-selected` are both (0,2,0), and this rule is the later of
+   the two — so tabbing onto the CHECKED radio repainted its row as unselected
+   and the group briefly showed no selection at all. Excluding the selected row
+   hands it back; its own radio still draws the platform focus ring. */
+.bt-choice:not(.is-selected):focus-within {
+  background: var(--bt-surface-hover);
+}
+
+.bt-choice__control {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex: none;
+  margin-top: 2px;
+  accent-color: var(--bt-gold-graphic);
+}
+
+.bt-choice__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.bt-choice__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.bt-choice__name {
+  color: var(--bt-text-soft);
+  font-size: 13.5px;
+  font-weight: 590;
+}
+
+.bt-choice.is-selected .bt-choice__name {
+  color: var(--bt-text);
+}
+
+.bt-choice__desc {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.bt-choice__note {
+  color: var(--bt-faint);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* An acknowledgment stands alone rather than in a group, so it carries its own
+   border — but it is the same row, the same control and the same selected ink
+   as `.bt-choice`, so a ceremony reads as one surface. */
+.bt-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  min-width: 0;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-check:hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-check:focus-within {
+  background: var(--bt-surface-hover);
+}
+
+.bt-check.is-checked {
+  background: var(--bt-selected);
+  color: var(--bt-text);
+}
+
+.bt-check.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The consequence a ceremony must not let pass unread. */
+.bt-check--gold {
+  border-color: var(--bt-border-accent);
+  background: var(--bt-gold-soft);
+}
+
+.bt-check--gold.is-checked {
+  background: var(--bt-gold-soft);
+}
+
+/* `.bt-check:focus-within` is (0,2,0) and `.bt-check--gold` only (0,1,0), so
+   source order could never have saved it: tabbing to an UNTICKED gold consent
+   row dropped the gold wash that marks it as the consequence you must read. */
+.bt-check--gold:focus-within {
+  background: var(--bt-gold-soft);
+}
+
+.bt-check__control {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex: none;
+  margin-top: 2px;
+  accent-color: var(--bt-gold-graphic);
+}
+
+.bt-check__body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An action bar: quiet buttons sitting together as peers.
+ *
+ * `.bt-btn--quiet` is borderless by design — it is the app's least-weight
+ * control, right for a lone action against a busy surface. Line five of them up
+ * and that same absence reads as a sentence of grey words, which is precisely
+ * what the vault row was accused of. Inside a bar, they get a resting hairline
+ * so the eye counts controls instead of reading text. */
+.bt-action-bar .bt-btn--quiet {
+  border-color: var(--bt-border);
+}
+
+.bt-action-bar .bt-btn--quiet:hover {
+  border-color: var(--bt-border-strong);
+}
+
 /* Keyboard hint */
 .bt-kbd {
   display: inline-flex;
@@ -1804,6 +1997,25 @@
   box-shadow: var(--bt-shadow-menu);
   font-size: 13px;
   animation: bt-rise-sm var(--bt-t-panel) both;
+}
+
+/* Clear of the bottom bar, which owns the foot of the screen on a phone
+   (#1891). Every mutation result in the app lands in this one slot for four
+   seconds (`user/hooks/useMutationFeedback.tsx`), and at 22px it covered the
+   primary navigation destinations while its lower edge sat inside the
+   home-indicator zone.
+
+   Modelled on `.bt-install-prompt`, the sibling fixed bottom element that
+   already does this: same 760px band — exactly where `.bt-bottombar` becomes a
+   grid — the same 72px lift over its 46px rows plus padding, and the same
+   `env()` inset. The desktop position above is untouched: there is no bottom bar
+   there to clear. Declared AFTER the base rule on purpose: both selectors are
+   (0,1,0) and `@media` adds no specificity, so source order is what decides.
+   Measured as real geometry in `e2e/mobile-overflow.spec.ts`. */
+@media (max-width: 760px) {
+  .bt-toast {
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 /* ── States ──────────────────────────────────────────────────────────────── */
@@ -2292,6 +2504,37 @@
     min-height: 44px;
   }
 
+  /* Topbar menus anchor to the HEADER, not to their own trigger.
+
+     Each menu ships `right: 0; top: calc(100% + 6px)` as an inline style, which
+     resolves against the nearest positioned ancestor — normally the trigger's
+     own `.relative` wrapper. On a phone that wrapper is a ~44px button parked
+     mid-row, so a menu wider than the gap between it and the right gutter hangs
+     off the LEFT edge of the screen: the 320px notification popover sits 56px
+     in from the right, so it started at -16px on a 360px viewport (#1663).
+
+     Dropping the wrapper to `position: static` re-points those same inline
+     offsets at `.bt-topbar`, which is `position: sticky` and therefore already
+     a containing block. `right: 0` then means the header's right padding edge
+     (safe-area inset included) and `top: 100%` means below the whole wrapped
+     header rather than below one button — so the menu clears the portfolio
+     switcher's second row instead of covering it. Only the containing block
+     moves; the DOM, the stacking context and the desktop anchoring are
+     untouched. Measured by the overlay sweep in `e2e/mobile-overflow.spec.ts`. */
+  .bt-topbar__actions > .bt-menu-anchor {
+    position: static;
+  }
+
+  /* An absolute box resolves its offsets against the containing block's PADDING
+     box, so the re-anchored `right: 0` above lands on the header's outer edge —
+     flush to the screen, gutter and all. The inline offset cannot be overridden
+     without `!important`, so the gutter comes back as a margin instead: for a
+     definite width the used `left` absorbs it, moving the menu inboard by the
+     same 8px + safe-area inset `.bt-topbar` pads itself with. */
+  .bt-topbar__actions > .bt-menu-anchor > .bt-popover {
+    margin-right: calc(8px + env(safe-area-inset-right, 0px));
+  }
+
   /* The menus belong to the persistent header chrome too. Keep every link,
      button and field touchable after its popover opens; the element selector
      also gives this enough specificity to beat the switcher's later row rules. */
@@ -2306,6 +2549,24 @@
     display: inline-flex;
     align-items: center;
   }
+
+  /* The same floor for the menus the PAGE owns rather than the header (#1834).
+     The rule above stops at `.bt-topbar`, so an asset or widget menu kept
+     `.bt-menu-item`'s 32px row — and a page-local row that wears no shared
+     class at all kept whatever its utilities gave it. Keyed on the menu roles
+     every row already carries as well as the class, and scoped to Origin's own
+     popover so the Tailwind-only console keeps its density (§7.1, #1057).
+     Measured by the overlay sweep in `e2e/mobile-overflow.spec.ts`. */
+  .bt-menu-item,
+  .bt-popover :is([role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio']) {
+    min-height: 44px;
+  }
+
+  /* The command palette's row floor is deliberately NOT declared here (#1834):
+     its base row rule lives further down the file at the same specificity, so a
+     floor in this block would lose the cascade to it on source order alone and
+     render 38px. It sits in the palette section's own phone block — see
+     `R2: palette` — which origin.test.ts asserts by index, not by presence. */
 
   .bt-topbar .bt-rail__brand {
     justify-content: center;
@@ -2488,6 +2749,36 @@
 
 .bt-t-rule {
   border-top: 1px solid var(--bt-border);
+}
+
+/* The admin console's counterpart to the `.bt-btn--icon, .bt-iconbtn, .bt-tab`
+   floor in the phone block above (§13.5 V5-P13b). The console is
+   Tailwind-utility-only on purpose (`admin/components/tokens.ts`), so none of
+   the `.bt-*` language reaches it and that rule cannot either — its controls
+   carry Tailwind density utilities (`min-h-[30px]`, `min-h-[34px]`, `h-9 w-9`)
+   that are all below 44px on a touch screen.
+
+   Its own breakpoint, and deliberately NOT the 480px phone block: the console's
+   sidebar is `md:block` and its drawer `md:hidden`
+   (`admin/components/AdminLayout.tsx`), so below 768px the burger and the
+   drawer rows are the ONLY way to navigate the console — keyed to 480px, a
+   landscape phone at 700px kept a 36px burger while a portrait one at 390px got
+   a 44px one. 767.98px rather than 767px so the handoff is exact against
+   Tailwind's `min-width: 48rem` whatever the root font size, matching the
+   `759.98px`-style breakpoints already in this file.
+
+   Keyed on a single marker class that ONLY the console emits (`TAP_TARGET` in
+   tokens.ts), so this cannot reach an Origin surface, and the console imports
+   no design language from here — just a reach floor. It sits unlayered while
+   Tailwind's utilities live in its `utilities` layer, so it wins wherever it
+   applies; at 768px and up it does not exist and the console keeps its
+   deliberate desktop density. `e2e/mobile-overflow.spec.ts` measures the
+   rendered boxes, this declares the rule. */
+@media (max-width: 767.98px) {
+  .admin-tap-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* Visibility helpers. Origin.css loads after Tailwind, so Tailwind's display
@@ -4296,6 +4587,17 @@
   width: 100%;
 }
 
+/* The scroll container this table needs, without the rules that come with it.
+   `.bt-table-wrap` is the only scroll container the table styles offer (a
+   `.bt-table` carries none of its own), so the table has to sit in one — but
+   the wrap's `border-block` would box a home widget,
+   and the board is un-boxed quiet content by design (one focal point, no
+   frames). Declared AFTER `.bt-table-wrap` (equal specificity: source order
+   decides), so moving it above that rule would silently restore the border. */
+.bt-table-wrap--bare {
+  border-block: 0;
+}
+
 /* ── Board spacing while editing ────────────────────────────────────────────
    The owner explicitly allowed extra room here: the reading board stays tight,
    and the builder trades density for slots that are unmistakably BETWEEN widgets
@@ -5438,12 +5740,19 @@
   overflow-wrap: anywhere;
 }
 
-/* Disclosures stay the popup's way to fold a long block away. */
-.bt-cc-fold {
+/* Disclosures stay the popup's way to fold a long block away.
+ *
+ * `.bt-disclosure` is the same grammar promoted out of the Control Center for
+ * Origin's `<Disclosure>`, so a surface elsewhere in the app folds a block the
+ * way the popup does instead of hand-rolling `<summary className="bt-link">`.
+ * One rule set, two names — never a second look for the same gesture. */
+.bt-cc-fold,
+.bt-disclosure {
   border-bottom: 1px solid var(--bt-border);
 }
 
-.bt-cc-fold > summary {
+.bt-cc-fold > summary,
+.bt-disclosure > summary {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5455,28 +5764,54 @@
   list-style: none;
 }
 
-.bt-cc-fold > summary::-webkit-details-marker {
+.bt-cc-fold > summary::-webkit-details-marker,
+.bt-disclosure > summary::-webkit-details-marker {
   display: none;
 }
 
-.bt-cc-fold > summary::after {
+/* The marker is a SQUARE box with the glyph centred in it, and that is
+   load-bearing rather than cosmetic. `[open]` turns it a quarter-turn, and a
+   rotated box contributes its TRANSFORMED bounds to the scrollable overflow of
+   every ancestor. Left at the glyph's own metrics — ~5.3px of advance inside a
+   16.5px line box — the turn laid that tall box on its side and pushed ~6px past
+   the summary's right edge: an OPEN fold measured 6px of horizontal overflow
+   (summary, `<details>`, row group, whole panel) where the closed one measured
+   none, at every viewport. A square rotates into itself, so the open state now
+   measures exactly like the closed one.
+
+   1.2em rather than 1em: at 1em the rotated glyph still reached ~1px past the
+   box, and 1.2em is the first size at which the measurement is a clean zero from
+   320px to 600px. `flex: none` holds that size under pressure. The glyph's ink
+   sits ~4px further from the right edge than it did — the marker's BOX is now
+   what the edge aligns, not the glyph's advance. */
+.bt-cc-fold > summary::after,
+.bt-disclosure > summary::after {
   content: '▸';
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.2em;
+  height: 1.2em;
   margin-left: auto;
   color: var(--bt-faint);
   font-size: 11px;
+  line-height: 1;
   transition: transform var(--bt-t-fast);
 }
 
-.bt-cc-fold[open] > summary::after {
+.bt-cc-fold[open] > summary::after,
+.bt-disclosure[open] > summary::after {
   transform: rotate(90deg);
 }
 
-.bt-cc-fold__body {
+.bt-cc-fold__body,
+.bt-disclosure__body {
   padding: 2px 0 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bt-cc-fold > summary::after {
+  .bt-cc-fold > summary::after,
+  .bt-disclosure > summary::after {
     transition: none;
   }
 }
@@ -6916,6 +7251,20 @@
   }
 }
 
+/* The command palette is navigation, not decoration: on a phone its rows ARE
+   the destinations, and 38px sat below the floor every other destination row in
+   the shell already has (#1834). Declared HERE rather than in the phone chrome
+   block near the top of the file on purpose: `.bt-palette__row` above is the
+   same (0,1,0) specificity, so only source order decides the winner, and a
+   floor declared before it renders at 38px however phone-scoped it looks.
+   Measured as real geometry by the overlay sweep in
+   `e2e/mobile-overflow.spec.ts`; the order itself is guarded in origin.test.ts. */
+@media (max-width: 480px) {
+  .bt-palette__row {
+    min-height: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .bt-palette-overlay,
   .bt-palette {
@@ -7457,4 +7806,133 @@
 .bt-tag-toggle:focus-visible {
   outline: 2px solid var(--bt-gold-graphic);
   outline-offset: 2px;
+}
+
+/* ── Installable PWA (§7.1, V5-P13b) ───────────────────────────────────────
+   The install affordance and the standalone-window rules. Both exist because
+   an installed BetterTrack runs with NO browser chrome: no address bar, no
+   reload, and on iOS no back button either. */
+
+/* ANTI-BLOAT (owner, binding): `position: fixed` keeps the card out of the
+   document flow, so it occupies no primary layout on any surface and pushes
+   nothing down. Bottom-corner, one line of copy, one tap to dismiss. */
+.bt-install-prompt {
+  position: fixed;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 45;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--bt-border);
+  border-radius: 12px;
+  background: var(--bt-surface-strong);
+  box-shadow: var(--bt-shadow-menu);
+}
+
+/* The AskDock claims the same corner AND the same layer (`.bt-askdock`:
+   right/bottom 16px, z-index 45) and is rendered deeper in the tree, so it
+   paints over this card — dismiss button included. The dock is a panel the user
+   just opened on purpose; an install offer can wait, so the card steps aside
+   while a dock is on screen and comes back when it closes. `data-bt-askdock` is
+   only ever set while the panel is actually rendered, so the card is untouched
+   on the sign-in screen, where no shell (and therefore no dock) exists. */
+html[data-bt-askdock='open'] .bt-install-prompt {
+  display: none;
+}
+
+.bt-install-prompt__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bt-install-prompt__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Clear of the bottom bar, which owns the foot of the screen on a phone. */
+@media (max-width: 760px) {
+  .bt-install-prompt {
+    right: calc(12px + env(safe-area-inset-right, 0px));
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    left: calc(12px + env(safe-area-inset-left, 0px));
+    max-width: none;
+  }
+
+  /* The card's own 44px floor. Its actions are `size="sm"` (`.bt-btn--sm`,
+     28px) and the phone block far above lifts only `.bt-btn--icon`,
+     `.bt-iconbtn`, `.bt-tab` and `.bt-topbar .bt-btn` — so the dismiss X
+     cleared 44 as an icon button while INSTALL, the only install path left
+     once `beforeinstallprompt` is preventDefault-ed, measured 58×28. Keyed to
+     the card rather than to `.bt-btn` at large: a global floor would re-space
+     every dense page-level button on a phone, which is a redesign, not a fix.
+     Same breakpoint as the block it sits in — this is exactly the width band
+     where the card becomes the full-width touch affordance above the bottom
+     bar. Declared after `.bt-btn--sm`, and one class more specific than it. */
+  .bt-install-prompt .bt-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* The standalone window's own rules. Declared TWICE on purpose: the media
+   query is the standard, and `[data-bt-display-mode='standalone']` is what
+   `lib/pwaDisplayMode.ts` stamps from `navigator.standalone` — the only signal
+   the iOS versions below 16.4 give us, and this row is the iOS app. */
+@media (display-mode: standalone) {
+  /* `apple-mobile-web-app-status-bar-style: black-translucent` puts the status
+     bar OVER the page, and unlike in Safari there is no chrome above the
+     topbar to absorb it. The inset is 0 in a browser tab, so this is additive
+     only where it is needed. The 6px base deliberately MATCHES the phone rule
+     above (`@media (max-width: 480px) .bt-topbar`): this longhand wins over
+     that shorthand at equal specificity, so anything else would silently
+     re-tune the phone topbar's spacing on top of adding the inset. */
+  .bt-topbar {
+    padding-top: calc(6px + env(safe-area-inset-top, 0px));
+  }
+
+  /* No pull-to-refresh reload to fall back on, so the window must not
+     rubber-band the whole document away from the fixed chrome. */
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  /* The console's counterpart (#1891). `index.html` is served to BOTH origins,
+     so the admin SPA inherits the translucent status bar — and its sticky
+     `#admin-topbar` (`admin/components/AdminLayout.tsx`, `md:hidden`) is the
+     only way into console navigation below 768px, with nothing above it to
+     absorb the overlay. This file is unlayered while Tailwind's utilities live
+     in its `utilities` layer, so this wins over the bar's own `py-2`; the 8px
+     base is that utility's value, restated so the inset is purely additive and
+     the console's spacing is not re-tuned here. The console imports none of the
+     `.bt-*` language, hence the id selector rather than a class. */
+  #admin-topbar {
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+}
+
+:root[data-bt-display-mode='standalone'] .bt-topbar {
+  padding-top: calc(6px + env(safe-area-inset-top, 0px));
+}
+
+:root[data-bt-display-mode='standalone'] #admin-topbar {
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+}
+
+:root[data-bt-display-mode='standalone'] body {
+  overscroll-behavior-y: none;
+}
+
+/* The shell's own back button, rendered only in a standalone window. It is a
+   quiet icon button in the topbar's leading slot, where the browser's own back
+   button used to be. */
+.bt-topbar__back {
+  flex: none;
 }

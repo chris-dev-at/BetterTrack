@@ -13,12 +13,19 @@ import { REMEMBERED_DEVICE_TTL_SECONDS } from '../services/auth/loginThrottle';
  * - `false` → a **browser-session cookie**: no `Max-Age`/`Expires`, so it dies
  *   when the browser session ends. The server session behind it is separately
  *   bounded (sliding idle window + hard cap), so neither is immortal (§16).
+ *
+ * `absoluteExpiresAtMs` (§13.5 V5-P13c) is the instant the server will refuse
+ * the session regardless of the cookie — an ADMIN session's absolute 6–24 h
+ * lifetime. When it is nearer than the persistent window, it becomes the
+ * `Max-Age`, so the browser stops holding a 30-day cookie for a session the
+ * server retires the same day. It can only ever SHORTEN the cookie.
  */
 export function setSessionCookie(
   res: Response,
   config: AppConfig,
   sessionId: string,
   persistent: boolean,
+  absoluteExpiresAtMs?: number | null,
 ): void {
   res.cookie(config.cookie.name, sessionId, {
     httpOnly: true,
@@ -26,9 +33,28 @@ export function setSessionCookie(
     secure: config.cookie.secure,
     signed: true,
     // Omit maxAge entirely for an ephemeral session → a browser-session cookie.
-    ...(persistent ? { maxAge: config.cookie.maxAgeMs } : {}),
+    ...(persistent ? { maxAge: sessionCookieMaxAgeMs(config, absoluteExpiresAtMs) } : {}),
     path: '/',
   });
+}
+
+/**
+ * `Max-Age` (ms) for a persistent session cookie: the §6.1 window, bounded by an
+ * absolute session deadline when one is nearer (§13.5 V5-P13c).
+ *
+ * Rounded UP to the whole second the cookie header is expressed in, so the
+ * sub-millisecond gap between "the session was minted" and "the cookie is
+ * written" cannot shave a second off an ordinary user cookie — a bound derived
+ * from the standard window has to reproduce the standard window exactly.
+ * A deadline already in the past yields the shortest cookie the header can
+ * express rather than a negative one; the session behind it is already dead.
+ */
+function sessionCookieMaxAgeMs(config: AppConfig, absoluteExpiresAtMs?: number | null): number {
+  if (typeof absoluteExpiresAtMs !== 'number' || !Number.isFinite(absoluteExpiresAtMs)) {
+    return config.cookie.maxAgeMs;
+  }
+  const remainingMs = Math.ceil((absoluteExpiresAtMs - Date.now()) / 1000) * 1000;
+  return Math.max(1000, Math.min(config.cookie.maxAgeMs, remainingMs));
 }
 
 export function clearSessionCookie(res: Response, config: AppConfig): void {

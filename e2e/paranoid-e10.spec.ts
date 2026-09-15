@@ -16,10 +16,13 @@ import {
 import { newAdminRequestContext } from './support/adminApi';
 import { withoutMatcherAriaSnapshot } from './support/artifactHygiene';
 import { ACCOUNT_PASSWORD } from './support/config';
+import { CSRF_HEADERS } from './support/e2';
 import { passwordSignIn } from './support/auth';
 import { expectUserShellReady } from './support/flows';
 import { assertNoPd9Secrets, type Pd9SensitiveCanary } from './support/pd9Drive';
 import {
+  ACCESS_LOCKOUT_COPY,
+  ACCESS_REFUSAL_COPY,
   apiV1,
   attemptUnlock,
   createVaultThroughCeremony,
@@ -31,8 +34,9 @@ import {
   listDriveConnectionsApi,
   listVaultsApi,
   driveOwnerDigestInBrowser,
-  lockVaultsByReload,
+  lockVaults,
   openPrivacyPanel,
+  openVaultAction,
   openTransferReceiver,
   readEndpointLockout,
   submitTransferPayload,
@@ -43,21 +47,26 @@ import { assetIdFor, listTransactions, recordBuy } from './support/mirror';
 import { provisionUser, provisionUserInContext, type E2EUser } from './support/users';
 
 /**
- * PARANOID E10 — the Playwright vault gate (`docs/paranoid-design.md:959`).
+ * PARANOID E10 — the Playwright vault gate (the §20 row E10 arc list, archived
+ * verbatim in `docs/history/paranoid-design-history.md` §D).
  *
  * The spec line names seven arcs. Two of them cannot run against this build,
  * and each is a `test.fixme` naming the exact missing piece rather than a
  * weakened assertion:
  *
- *  1. **`test.fixme` — the fresh-start notice after the §17 wipe** needs **E9**
- *     (transition + v1 retirement), which is unbuilt and owner-gated.
+ *  1. **`test.fixme` — the fresh-start notice after the §17 wipe.** E9 has since
+ *     SHIPPED the machinery (#1419), but §17 is an owner-run runbook
+ *     (`docs/ops.md`) that has not been executed, so no account carries the
+ *     notice to assert against. [E10-A8] covers the notice component itself.
  *  2. **`test.fixme` — the Drive-only vault round trip** needs per-vault Drive
  *     provisioning, which `PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false`
  *     refuses in `provisionVault.ts`. The e2e web config does not override the
  *     flag and this spec does not either; what the flag DOES ship — an honest,
  *     disabled option that names the missing epic — is asserted in [E10-A5].
- *     The account-level v1 Drive-only round trip keeps its coverage in
- *     `e2e/paranoid.spec.ts` ([PD9-A3]).
+ *     The account-level v1 Drive-only round trip ([PD9-A3] in
+ *     `e2e/paranoid.spec.ts`) USED to carry this coverage; it is quarantined
+ *     since the §16 2026-08-30 ruling retired the v1 enable entry point, so the
+ *     product currently has NO Drive-medium e2e at all. Stated, not hidden.
  *
  * The former third carve-out — executable move-in / move-out — closed with the
  * E6 capture residual (#1525): [E10-A10] runs the full
@@ -203,8 +212,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
   // pattern; this test genuinely needs no fixture, hence the empty one.
   // eslint-disable-next-line no-empty-pattern
   test('[E10-A0] the E10 arc inventory stays complete', async ({}, testInfo) => {
-    // The spec line names seven sub-arcs; a dropped one is the whole point.
-    expect(E10_TRACEABILITY).toHaveLength(7);
+    // The spec line names seven sub-arcs, plus the #1529 imported+manual
+    // variant of the A10 arc; a dropped one is the whole point.
+    expect(E10_TRACEABILITY).toHaveLength(8);
 
     const source = await readFile(testInfo.file, 'utf8');
     const titles = [...source.matchAll(/^\s*test(?:\.fixme)?\(\s*'([^']+)'/gmu)].map(
@@ -273,8 +283,8 @@ test.describe('PARANOID E10 per-vault gate', () => {
         ).toBeVisible();
       });
 
-      await test.step('LOCK: a fresh document ends the in-memory endpoint session', async () => {
-        await lockVaultsByReload(page);
+      await test.step('LOCK: the account menu’s "Lock vault" ends the device session', async () => {
+        await lockVaults(page);
         await expectVaultState(page, name, 'Locked on this device');
         await expect(
           vaultRow(page, name).getByRole('link', { name: 'Unlock', exact: true }),
@@ -354,7 +364,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         devicePassword: DEVICE_PASSWORD,
       });
       sensitive.push({ name: 'e10-mnemonic', value: created.mnemonic });
-      await lockVaultsByReload(page);
+      await lockVaults(page);
       await expectVaultState(page, name, 'Locked on this device');
 
       await test.step('POSITIVE CONTROL: the correct password opens it right now', async () => {
@@ -367,7 +377,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(section).toBeHidden({ timeout: 60_000 });
         await expectVaultState(page, name, 'Ready on this device');
         // Re-lock, so the ladder below starts from the same state it did before.
-        await lockVaultsByReload(page);
+        await lockVaults(page);
         await expectVaultState(page, name, 'Locked on this device');
       });
 
@@ -379,7 +389,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         for (let attempt = 1; attempt <= 4; attempt += 1) {
           const section = await attemptUnlock(page, created.vaultId, WRONG_DEVICE_PASSWORD);
           await expect(
-            section.getByText('That action could not be completed.', { exact: false }),
+            section.getByText(ACCESS_REFUSAL_COPY, { exact: false }),
             `attempt ${attempt} must be refused`,
           ).toBeVisible({ timeout: 60_000 });
           // The refusal is not a partial open: the row never claims readiness.
@@ -395,9 +405,16 @@ test.describe('PARANOID E10 per-vault gate', () => {
 
       await test.step('[E10-A2 proof] the fifth failure arms the lockout', async () => {
         const section = await attemptUnlock(page, created.vaultId, WRONG_DEVICE_PASSWORD);
-        await expect(
-          section.getByText('That action could not be completed.', { exact: false }),
-        ).toBeVisible({ timeout: 60_000 });
+        // #1526: the refusal that ARMS the lockout says so, with the instant the
+        // endpoint accepts a password again — not the generic wrong-password
+        // copy the four attempts above got.
+        const armedNotice = section.getByText(ACCESS_LOCKOUT_COPY, { exact: false });
+        await expect(armedNotice).toBeVisible({ timeout: 60_000 });
+        expect(
+          (await armedNotice.textContent()) ?? '',
+          'the lockout copy must carry its retry time',
+        ).toMatch(/\d{1,2}:\d{2}/);
+        await expect(section.getByText(ACCESS_REFUSAL_COPY, { exact: false })).toHaveCount(0);
 
         // The window is read from E3's OWN persisted record rather than inferred
         // from the wall clock. That is the #1527/F7 repair: every claim below
@@ -410,19 +427,35 @@ test.describe('PARANOID E10 per-vault gate', () => {
         expect(armed.remainingMs).toBeLessThanOrEqual(ENDPOINT_LOCKOUT_INITIAL_MS);
       });
 
-      await test.step('THE assertion: the CORRECT password does not silently reopen it', async () => {
+      await test.step('THE assertion: no password — right or wrong — is taken while it lasts', async () => {
         // The whole point of a lockout, and it is taken FIRST now: it used to
         // run after three further SPA loads inside the frozen 30 s window
         // (#1527/F7). One navigation is deliberate — a fresh document is also
         // what proves the lockout is not an in-memory counter a refresh clears;
         // E3 persists `{ failures, lockedUntil }` in the endpoint keystore.
+        //
+        // Since #1526 the deep link is reconciled against that record, so the
+        // form the CORRECT password would go into is not rendered at all: the
+        // URL-addressed surface answers with the same wait-or-reset affordance
+        // the row offers. "The right password is still refused inside the
+        // window" is E3's own claim and stays pinned in `keystore.test.ts`;
+        // what this arc proves is that the surface never invites it.
         const live = await ensureLockoutWindow(page, created.vaultId, WRONG_DEVICE_PASSWORD);
-        const section = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
+        const section = await openVaultAction(page, created.vaultId, 'unlock');
         await expect(
-          section.getByText('That action could not be completed.', { exact: false }),
-          'the right password must NOT open a locked-out endpoint',
+          section.getByText(ACCESS_LOCKOUT_COPY, { exact: false }),
+          'a locked-out unlock deep link must name the lockout',
         ).toBeVisible({ timeout: 60_000 });
-        await expectStillLockedOut(page, live, 'the correct-password refusal');
+        await expect(
+          section.locator(`#vault-access-secret-${created.vaultId}`),
+          'no live password field may be offered inside the window',
+        ).toHaveCount(0);
+        await expect(section.getByRole('button', { name: 'Continue', exact: true })).toHaveCount(0);
+        await expect(
+          section.getByRole('link', { name: 'Reset this device', exact: true }),
+        ).toBeVisible();
+        await expect(page.getByText('Ready on this device')).toHaveCount(0);
+        await expectStillLockedOut(page, live, 'the withdrawn unlock form');
       });
 
       await test.step('the lockout withdraws the unlock affordance while it lasts', async () => {
@@ -747,7 +780,26 @@ test.describe('PARANOID E10 per-vault gate', () => {
     }
   });
 
-  test('[E10-A11] the enable wizard asks for Drive consent before the passphrase', async ({
+  /**
+   * [E10-A11] — the #1354 ORDERING property, carried over to the surface that
+   * still exists.
+   *
+   * #1354 ruled that the storage/medium consent is collected BEFORE the
+   * passphrase, so it can never be asked for after the point of no return. It
+   * was asserted on the account-level enable wizard, whose entry point the §16
+   * 2026-08-30 ruling retired (see `V1_ENABLE_ENTRY_RETIRED` in
+   * `e2e/paranoid.spec.ts`) — so the assertion moves to the per-portfolio
+   * ceremony, which is the ceremony a user can actually reach.
+   *
+   * The property survives the move intact and is, if anything, stronger here:
+   * `VaultCreationCeremony.nextFromMedia()` generates the seed phrase only
+   * after the medium is settled, so at the storage step no key material exists
+   * at all — not merely "is not on screen yet". The Drive-CONSENT half of
+   * #1354 cannot be asserted on this path because per-vault Drive is off at
+   * build level; [E10-A5] pins that it is refused honestly instead, and the
+   * account-level consent ordering is the fixme below.
+   */
+  test('[E10-A11] storage is chosen before any key material exists', async ({
     context,
   }, testInfo) => {
     skipOnPhone(testInfo);
@@ -764,69 +816,69 @@ test.describe('PARANOID E10 per-vault gate', () => {
       collectSanitizedDiagnostics(page, diagnostics);
       await openPrivacyPanel(page);
 
-      // The ONE paranoid entry point. "Set up" also exists in the first-run
-      // security step, so the count is asserted rather than assumed unique.
-      const setUp = page.getByRole('button', { name: 'Set up', exact: true });
-      await expect(setUp).toHaveCount(1);
-      await setUp.click();
-
-      const wizard = page.getByLabel('Enable Paranoid mode');
-      await expect(wizard).toBeVisible({ timeout: 60_000 });
-      await expect(wizard.getByText('Step 1 of 4')).toBeVisible();
-      await expect(
-        wizard.getByRole('heading', { name: 'What changes', exact: true }),
-      ).toBeVisible();
-      await wizard.getByRole('button', { name: 'Continue', exact: true }).click();
-
-      await test.step('[E10-A11 proof] storage + Drive consent is step 2, the passphrase is not', async () => {
-        // #1354: consent moved AHEAD of the passphrase so it can never be
-        // collected after the point of no return. The ordering is the security
-        // property, so it is asserted as an ordering — the consent control is
-        // on screen while the passphrase field does not exist yet.
-        await expect(wizard.getByText('Step 2 of 4')).toBeVisible();
+      await test.step('the retired account-level entry is gone, not merely unused', async () => {
+        // The §16 ruling's own regression pin. "Set up" also exists in the
+        // first-run security step, so this asserts the count on THIS panel
+        // rather than assuming the string is unique app-wide.
+        await expect(page.getByRole('button', { name: 'Set up', exact: true })).toHaveCount(0);
         await expect(
-          wizard.getByRole('heading', { name: 'Choose encrypted storage', exact: true }),
+          page.getByRole('button', { name: 'Create vault', exact: true }),
+          'the per-portfolio ceremony is what a normal account is offered instead',
         ).toBeVisible();
+      });
+
+      await page.getByRole('button', { name: 'Create vault', exact: true }).click();
+      const ceremony = page.getByRole('region', { name: 'Create a vault' });
+      await expect(ceremony.getByText('Step 1 of 6')).toBeVisible();
+      await ceremony.locator('#vault-create-name').fill('E10 ordering');
+      await ceremony.getByRole('button', { name: 'Continue', exact: true }).click();
+
+      await test.step('[E10-A11 proof] storage is step 2 and NO secret exists yet', async () => {
+        // The ordering IS the security property, so it is asserted as an
+        // ordering: the medium is on screen while neither the recovery words
+        // nor the device password exist anywhere in the DOM.
+        await expect(ceremony.getByText('Step 2 of 6')).toBeVisible();
+        await expect(ceremony.getByRole('heading', { name: 'Storage', exact: true })).toBeVisible();
         await expect(
-          wizard.getByText('Also keep a verified copy in my Google Drive'),
-          'the Drive consent must be offered here',
-        ).toBeVisible();
+          ceremony.getByRole('radio'),
+          'the storage choice must be offered here',
+        ).toHaveCount(3);
         await expect(
-          wizard.locator('#vault-passphrase'),
-          'the passphrase must NOT be collectable before the storage consent',
+          ceremony.locator('ol li'),
+          'the recovery words must NOT exist before the storage choice is settled',
+        ).toHaveCount(0);
+        await expect(
+          ceremony.locator('#vault-device-password'),
+          'the device password must NOT be collectable before the storage choice',
         ).toHaveCount(0);
       });
 
-      await test.step('the passphrase step follows, and cannot commit unacknowledged', async () => {
-        await wizard.getByRole('button', { name: 'Continue', exact: true }).click();
-        await expect(wizard.getByText('Step 3 of 4')).toBeVisible();
+      await test.step('the key material follows, and only then', async () => {
+        await ceremony.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(ceremony.getByText('Step 3 of 6')).toBeVisible();
         await expect(
-          wizard.getByRole('heading', { name: 'Protect your vault', exact: true }),
+          ceremony.getByRole('heading', { name: 'Recovery words', exact: true }),
         ).toBeVisible();
-        await expect(wizard.locator('#vault-passphrase')).toBeVisible();
-        // The one-way commit stays blocked until the kit is downloaded and both
-        // acknowledgments are given — nothing about this test enables the mode.
-        await expect(
-          wizard.getByRole('button', { name: 'Enable Paranoid mode', exact: true }),
-        ).toBeDisabled();
+        await expect(ceremony.locator('ol li')).toHaveCount(12);
+        // Still nothing irreversible: the vault is created at step 6, and the
+        // words are only ever displayed once the medium is decided.
+        await expect(ceremony.locator('#vault-device-password')).toHaveCount(0);
       });
 
-      await test.step('and walking the wizard changed nothing', async () => {
-        // The commit is the ONLY thing that flips the mode; reaching step 3 and
-        // leaving must not. (Step 3's footer offers Back and the commit — the
-        // quiet exit lives on step 1 — so this leaves by navigation.)
+      await test.step('and walking the ceremony changed nothing', async () => {
+        // Reaching the words and leaving must create no vault — the commit is
+        // the only thing that does.
         await page.goto('/portfolio');
         await expectUserShellReady(page);
+        expect(await listVaultsApi(owner!)).toHaveLength(0);
         const me = await owner!.context.request.get(apiV1('/auth/me'));
         expect(((await me.json()) as { privacyMode?: string }).privacyMode).toBe('normal');
-        expect(await listVaultsApi(owner!)).toHaveLength(0);
       });
     } catch (error) {
       bodyFailure = error;
       // Drop the matcher's aria snapshot before the runner turns this into
-      // `error-context.md`: it prints input VALUES, this arc types a real device
-      // password, and the artifact is uploaded by the nightly. See
-      // `e2e/support/artifactHygiene.ts`.
+      // `error-context.md`: it prints input VALUES, and the artifact is
+      // uploaded by the nightly. See `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -835,6 +887,21 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await assertNoE10Secrets(testInfo, diagnostics, [], bodyFailure);
       }
     }
+  });
+
+  /**
+   * CARVE-OUT 3 — the ACCOUNT-LEVEL half of #1354's ordering.
+   *
+   * "Drive consent is collected before the passphrase" was proven end to end on
+   * the v1 enable wizard until its entry point was retired (§16, 2026-08-30);
+   * the wizard component still exists and `POST /vault/enable` still serves the
+   * accounts that already took it, but nothing renders it, so there is nothing
+   * to drive. [E10-A11] above keeps the ORDERING property alive on the
+   * per-portfolio ceremony. Promote this only if the account-level entry
+   * returns; otherwise it retires with the v1 stack in §17/§19.
+   */
+  test.fixme('[E10-A11b] account-level Drive consent precedes the passphrase (blocked: the v1 enable entry point is retired)', () => {
+    // Intentionally empty: see the block comment above.
   });
 
   /**
@@ -847,8 +914,17 @@ test.describe('PARANOID E10 per-vault gate', () => {
    * neither does this spec — a test that flipped it would be exercising a build
    * that does not exist. Promote this when E5's per-connection data home lands
    * the provisioning path (#1415); [E10-A5] fails the moment the flag flips,
-   * which is the reminder. The account-level v1 Drive-only round trip is
-   * covered today by [PD9-A3] in `e2e/paranoid.spec.ts`.
+   * which is the reminder.
+   *
+   * NO OTHER SPEC CARRIES THIS COVERAGE. The account-level v1 Drive-only round
+   * trip in `e2e/paranoid.spec.ts` used to, but it is quarantined behind
+   * `test.skip(true, V1_ENABLE_ENTRY_RETIRED)` since the §16 2026-08-30
+   * entry-point retirement — so the product has no Drive-medium e2e at all,
+   * exactly as this file's header states at the top. (Until #1683 this comment
+   * claimed the opposite, and a reader who stopped here concluded coverage
+   * existed.) Both dead entries are registered as ONE waived V5-P14 scenario in
+   * `e2e/support/v5Gate.mjs`, so the nightly reports the gap by name instead of
+   * going green over it.
    */
   test.fixme('[E10-A9] Drive-only vault round trip (blocked: PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false)', () => {
     // Intentionally empty: see the block comment above.
@@ -895,10 +971,13 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
 
       await test.step('a locked target vault is stated as a blocking step and stays blocked', async () => {
-        // The full-page navigation IS the lock: E3 keeps the unwrapped device
-        // key only in memory, so the settings page opens with the freshly
-        // created vault locked on this endpoint — a genuinely-unready state
-        // even though the E6 capture engine resolves (#1525).
+        // The ceremony leaves the vault open and (§12 as amended 2026-09-03)
+        // the session survives navigation, so the locked precondition this step
+        // is about has to be produced by the product's own lock gesture.
+        await lockVaults(page);
+        // The settings page now opens with the freshly created vault locked on
+        // this endpoint — a genuinely-unready state even though the E6 capture
+        // engine resolves (#1525).
         await page.goto(`/portfolio/settings?portfolio=${encodeURIComponent(portfolioId)}`);
         await page.getByRole('button', { name: 'Move into vault', exact: true }).click();
         const wizard = page.getByRole('region', { name: 'Move portfolio into a vault' });
@@ -1043,11 +1122,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       };
 
       await test.step('MOVE-IN through the wizard on an unlocked endpoint', async () => {
-        // Unlock FIRST through the real access surface. The endpoint session
-        // lives only in page memory, so every navigation from here to the
-        // commit must be an SPA transition — a page load would relock it.
-        const access = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
-        await expect(access).toBeHidden({ timeout: 60_000 });
+        // The ceremony's device password IS this device's session, and since
+        // §12's 2026-09-03 amendment it survives every navigation below — so
+        // the endpoint is already open here, and the arc proves that rather
+        // than re-entering the password it never lost.
+        await openPrivacyPanel(page);
         await expectVaultState(page, name, 'Ready on this device');
 
         // Leave the Control Center popup the product's own way (SPA), then
@@ -1087,7 +1166,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
 
       await test.step('LOCK, and the stub refuses move-out from a locked endpoint', async () => {
-        // The full-page navigation IS the lock (E3 memory-only session).
+        // The product's own lock gesture; a navigation no longer ends a session
+        // (§12 as amended 2026-09-03).
+        await lockVaults(page);
         await page.goto(`/portfolio?portfolio=${encodeURIComponent(portfolioId)}`);
         const stub = page.getByTestId('locked-portfolio-stub');
         await expect(stub).toBeVisible({ timeout: 30_000 });
@@ -1111,16 +1192,22 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(wizard).toBeHidden();
       });
 
-      await test.step('UNLOCK, then MOVE-OUT restores the same rows under the same ids', async () => {
+      await test.step('UNLOCK IN PLACE, then MOVE-OUT restores the same rows under the same ids', async () => {
         const stub = page.getByTestId('locked-portfolio-stub');
-        // The stub's own state action is the §12 affordance — an SPA link into
-        // the Control Center popup; the workspace stays mounted behind it.
-        await stub.getByRole('link', { name: 'Unlock', exact: true }).click();
-        const access = page.getByRole('region', { name: /access$/ });
-        await expect(access).toBeVisible({ timeout: 30_000 });
-        await access.locator(`#vault-access-secret-${created.vaultId}`).fill(DEVICE_PASSWORD);
-        await access.getByRole('button', { name: 'Continue', exact: true }).click();
-        await expect(access).toBeHidden({ timeout: 60_000 });
+        // The stub's own state action prompts HERE (#4). It used to be a bare
+        // link into the Control Center, where the password field sat below the
+        // fold and success left the user standing in a settings panel; now the
+        // page the user is already on resolves behind the dialog.
+        await expect(stub.getByRole('link', { name: 'Unlock', exact: true })).toHaveCount(0);
+        await stub.getByRole('button', { name: 'Unlock', exact: true }).click();
+        const prompt = page.getByRole('dialog', { name: /^Unlock/u });
+        await expect(prompt).toBeVisible({ timeout: 30_000 });
+        await prompt.getByLabel('Device password').fill(DEVICE_PASSWORD);
+        await prompt.getByRole('button', { name: 'Unlock vault', exact: true }).click();
+        await expect(prompt).toBeHidden({ timeout: 60_000 });
+        expect(new URL(page.url()).pathname, 'the in-place unlock must not navigate').toBe(
+          '/portfolio',
+        );
 
         // A6's listener, inverted: the unlocked view is only worth anything if
         // it reads the VAULT. A single money request for this portfolio would
@@ -1162,9 +1249,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
           }
         });
 
-        // Leave the popup its own way (SPA back to the workspace behind it).
-        await page.getByRole('button', { name: 'Close', exact: true }).click();
-
+        // No popup to leave any more: the prompt closed over the workspace it
+        // unlocked, which is the whole of #4.
+        //
         // THE UNLOCKED IN-PLACE VIEW (#1416). The stub gives way to the real
         // portfolio, served by the client engine out of the encrypted document.
         await expect(stub).toBeHidden({ timeout: 60_000 });
@@ -1175,6 +1262,20 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(sapRow).toHaveCount(1, { timeout: 60_000 });
         // The buy itself: two shares, from bytes the server cannot read.
         await expect(sapRow.getByRole('cell').nth(2)).toHaveText(/^2([.,]0+)?$/);
+
+        // ROW-LEVEL READ through the #1532 document seam. Holdings are a
+        // DERIVATION — the client engine computes them and never touches the
+        // row projections — so a passing holdings assertion says nothing about
+        // whether `listTransactions` works. This one does: the ledger row
+        // itself, rendered from the same ~4000-line projection set the account
+        // store uses, now pointed at the resolution's authenticated document.
+        //
+        // Asserted on the OVERVIEW's recent-transactions section rather than on
+        // an Activity tab: that tab is still a Coming-Soon placeholder, and the
+        // overview is where the store's `listTransactions` actually renders.
+        const recent = page.getByRole('region', { name: 'Recent transactions' });
+        await expect(recent).toBeVisible({ timeout: 60_000 });
+        await expect(recent.getByText('SAP.DE').first()).toBeVisible({ timeout: 60_000 });
 
         await page.waitForTimeout(2_000);
         expect(serverMoneyReads, 'the unlocked view must read the vault, not the server').toEqual(
@@ -1209,6 +1310,217 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // `error-context.md`: it prints input VALUES, this arc types a real
       // device password and account password, and the artifact is uploaded by
       // the nightly. See `e2e/support/artifactHygiene.ts`.
+      throw withoutMatcherAriaSnapshot(error);
+    } finally {
+      try {
+        await admin.dispose();
+      } finally {
+        await assertNoE10Secrets(testInfo, diagnostics, sensitive, bodyFailure);
+      }
+    }
+  });
+
+  /**
+   * #1529 — the A10 arc over the two portfolio classes the #1528 ruling
+   * refused fail-closed: a portfolio with HISTORICAL IMPORT BATCHES and one
+   * holding an OWNER-MANUAL asset. Both now move in and back out through the
+   * lossless read seams; the acceptance bar is that every staging row and
+   * every manual value point re-reads identically after the round trip.
+   */
+  test('[E10-A10b] imported + manual portfolio moves in and back out losslessly', async ({
+    context,
+  }, testInfo) => {
+    skipOnPhone(testInfo);
+    test.setTimeout(480_000);
+
+    const diagnostics: string[] = [];
+    const sensitive: Pd9SensitiveCanary[] = [
+      { name: 'e10-device-password', value: DEVICE_PASSWORD },
+    ];
+    const admin = await newAdminRequestContext(newRequestContext);
+    let owner: E2EUser | null = null;
+    let bodyFailure: unknown;
+
+    try {
+      owner = await provisionUserInContext(context, admin, 'e10a10b');
+      const { page } = owner;
+      collectSanitizedDiagnostics(page, diagnostics);
+      const api = owner.context.request;
+
+      const portfolios = await api.get(apiV1('/portfolios'));
+      expect(portfolios.ok(), await portfolios.text()).toBeTruthy();
+      const portfolioId = ((await portfolios.json()) as { portfolios: Array<{ id: string }> })
+        .portfolios[0]!.id;
+
+      // 1. A plain catalog buy (the A10 baseline) …
+      const assetId = await assetIdFor(owner, 'SAP', 'SAP.DE');
+      const transactionId = await recordBuy(owner, portfolioId, {
+        assetId,
+        quantity: 2,
+        price: 100,
+      });
+
+      // 2. … an OWNER-MANUAL asset with value points and a buy of it …
+      const created = await api.post(apiV1('/custom-assets'), {
+        headers: CSRF_HEADERS,
+        data: { name: 'E10 Manual Flat', category: 'property', currency: 'EUR' },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      const manualAssetId = ((await created.json()) as { asset: { id: string } }).asset.id;
+      const points = await api.put(apiV1(`/custom-assets/${manualAssetId}/value-points`), {
+        headers: CSRF_HEADERS,
+        data: {
+          points: [
+            { date: '2026-07-01', value: 250000.5 },
+            { date: '2026-07-15', value: 251234.75 },
+          ],
+        },
+      });
+      expect(points.ok(), await points.text()).toBeTruthy();
+      const manualBuy = await api.post(apiV1(`/portfolios/${portfolioId}/transactions`), {
+        headers: CSRF_HEADERS,
+        data: {
+          assetId: manualAssetId,
+          side: 'buy',
+          quantity: 1,
+          price: 250000.5,
+          fee: 0,
+          executedAt: '2026-07-01T12:00:00.000Z',
+        },
+      });
+      expect(manualBuy.ok(), await manualBuy.text()).toBeTruthy();
+      const manualTransactionId = (
+        (await manualBuy.json()) as {
+          transactions: Array<{ id: string }>;
+        }
+      ).transactions[0]!.id;
+
+      // 3. … and a HISTORICAL import batch: staged through the real generic
+      // pipeline, then applied. One row resolves to nothing on purpose so the
+      // batch carries an unmapped row with its "did you mean" candidates —
+      // exactly the staging columns the capture must carry losslessly.
+      const csv = [
+        'Datum;Buchungstext;Typ;Stück;Kurs;Betrag;Währung;ISIN',
+        '05.01.2026;GEHALT ARBEITGEBER AG;Gutschrift;;;2.100,00;EUR;',
+        '12.01.2026;Unbekannte Muster AG;Kauf;10;100,00;-1.000,00;EUR;DE000MUSTER1',
+      ].join('\n');
+      const staged = await api.post(apiV1('/imports'), {
+        headers: CSRF_HEADERS,
+        multipart: {
+          portfolioId,
+          brokerId: 'generic',
+          file: { name: 'e10-a10b.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8') },
+        },
+      });
+      expect(staged.status(), await staged.text()).toBe(201);
+      const batchId = ((await staged.json()) as { batch: { id: string } }).batch.id;
+      const applied = await api.post(apiV1(`/imports/${batchId}/apply`), {
+        headers: CSRF_HEADERS,
+        data: {},
+      });
+      expect(applied.ok(), await applied.text()).toBeTruthy();
+
+      const readBatch = async () => {
+        const res = await api.get(apiV1(`/imports/${batchId}`));
+        expect(res.ok(), await res.text()).toBeTruthy();
+        return (await res.json()) as { batch: { status: string }; rows: unknown[] };
+      };
+      const readPoints = async () => {
+        const res = await api.get(apiV1(`/custom-assets/${manualAssetId}/value-points`));
+        expect(res.ok(), await res.text()).toBeTruthy();
+        return (await res.json()) as { points: unknown[] };
+      };
+      const batchBefore = await readBatch();
+      expect(batchBefore.batch.status).toBe('applied');
+      expect(batchBefore.rows).toHaveLength(2);
+      const pointsBefore = await readPoints();
+      expect(pointsBefore.points).toHaveLength(2);
+
+      // The revision fact the capture binds to must now COUNT the batch —
+      // and the client capture must move it instead of refusing.
+      const revision = await api.get(apiV1(`/portfolios/${portfolioId}/vault/revision`));
+      expect(revision.ok(), await revision.text()).toBeTruthy();
+      expect(((await revision.json()) as { importBatchCount: number }).importBatchCount).toBe(1);
+
+      await openPrivacyPanel(page);
+      const name = `E10 A10b ${randomUUID().slice(0, 8)}`;
+      const vault = await createVaultThroughCeremony(owner, {
+        name,
+        devicePassword: DEVICE_PASSWORD,
+      });
+      sensitive.push({ name: 'e10-mnemonic', value: vault.mnemonic });
+
+      const vaultedState = async (): Promise<string | null> => {
+        const after = await api.get(apiV1('/portfolios'));
+        const body = (await after.json()) as {
+          portfolios: Array<{ id: string; vaultId: string | null }>;
+        };
+        return body.portfolios.find((portfolio) => portfolio.id === portfolioId)?.vaultId ?? null;
+      };
+
+      await test.step('MOVE-IN carries the import batch and the manual asset', async () => {
+        const access = await attemptUnlock(page, vault.vaultId, DEVICE_PASSWORD);
+        await expect(access).toBeHidden({ timeout: 60_000 });
+        await expectVaultState(page, name, 'Ready on this device');
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await page.getByRole('link', { name: 'Portfolio', exact: true }).first().click();
+        await page.getByRole('button', { name: 'Switch portfolio' }).click();
+        await page.getByRole('link', { name: 'Portfolio settings', exact: true }).click();
+        await page.getByRole('button', { name: 'Move into vault', exact: true }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio into a vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await wizard.getByLabel('Target vault').selectOption(vault.vaultId);
+        await wizard.locator('#vault-move-credential-in').fill(ACCOUNT_PASSWORD);
+        await wizard.getByRole('button', { name: 'Move into vault', exact: true }).click();
+        await expect
+          .poll(vaultedState, { timeout: 180_000, intervals: [1_000] })
+          .toBe(vault.vaultId);
+
+        // The staging rows are gone server-side with the rest of the content.
+        const purged = await api.get(apiV1(`/imports/${batchId}`));
+        expect(purged.ok()).toBe(false);
+      });
+
+      await test.step('LOCK, UNLOCK, MOVE-OUT restores every row and point identically', async () => {
+        await page.goto(`/portfolio?portfolio=${encodeURIComponent(portfolioId)}`);
+        const stub = page.getByTestId('locked-portfolio-stub');
+        await expect(stub).toBeVisible({ timeout: 30_000 });
+        await stub.getByRole('link', { name: 'Unlock', exact: true }).click();
+        const access = page.getByRole('region', { name: /access$/ });
+        await expect(access).toBeVisible({ timeout: 30_000 });
+        await access.locator(`#vault-access-secret-${vault.vaultId}`).fill(DEVICE_PASSWORD);
+        await access.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(access).toBeHidden({ timeout: 60_000 });
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await expect(stub).toBeHidden({ timeout: 60_000 });
+        const opened = page.getByTestId('unlocked-vault-portfolio');
+        await expect(opened).toBeVisible({ timeout: 60_000 });
+
+        await opened.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio out of the vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await wizard
+          .getByRole('checkbox', { name: /portfolio becomes server-readable again/i })
+          .check();
+        await wizard.locator('#vault-move-credential-out').fill(ACCOUNT_PASSWORD);
+        await wizard.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+        await expect.poll(vaultedState, { timeout: 180_000, intervals: [1_000] }).toBeNull();
+
+        // The round-trip bar: staging rows and value points re-read IDENTICALLY.
+        expect(await readBatch()).toEqual(batchBefore);
+        expect(await readPoints()).toEqual(pointsBefore);
+        const restored = await listTransactions(owner!, portfolioId);
+        const ids = restored.map(({ id }) => id);
+        expect(ids).toContain(transactionId);
+        expect(ids).toContain(manualTransactionId);
+        expect(restored.find(({ id }) => id === manualTransactionId)).toMatchObject({
+          side: 'buy',
+          quantity: 1,
+          price: 250000.5,
+        });
+      });
+    } catch (error) {
+      bodyFailure = error;
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -1457,20 +1769,25 @@ test.describe('PARANOID E10 per-vault gate', () => {
       await test.step('the received phrase is real custody, not a one-shot open', async () => {
         // The state must have moved off "Words needed on this device" for good.
         // A fresh document is asserted deliberately: the transfer wrote a
-        // WRAPPED endpoint entry, so after a reload this device must present
-        // the same locked-but-known vault a locally created one does — the
-        // phrase is stored here now, and only the device password is missing.
+        // WRAPPED endpoint entry AND (§12 as amended 2026-09-03) the device
+        // session it established, so after a reload this device presents the
+        // vault as READY — the phrase is stored here now and the session
+        // survived the reload — never as "Words needed" again.
         await openPrivacyPanel(receiverPage);
-        await expectVaultState(receiverPage, name, 'Locked on this device');
-        await expect(
-          vaultRow(receiverPage, name).getByRole('link', { name: 'Unlock', exact: true }),
-        ).toBeVisible({ timeout: 30_000 });
+        await expectVaultState(receiverPage, name, 'Ready on this device');
         await expect(
           vaultRow(receiverPage, name).getByRole('link', { name: 'Enter words', exact: true }),
           'the second device must no longer be asking for the words',
         ).toHaveCount(0);
 
-        // And the transferred phrase really opens it here.
+        // Locked on purpose, the stored phrase is the locked-but-known vault a
+        // locally created one is — only the device password is missing — and
+        // the transferred phrase really opens it here.
+        await lockVaults(receiverPage);
+        await expectVaultState(receiverPage, name, 'Locked on this device');
+        await expect(
+          vaultRow(receiverPage, name).getByRole('link', { name: 'Unlock', exact: true }),
+        ).toBeVisible({ timeout: 30_000 });
         const section = await attemptUnlock(receiverPage, created.vaultId, DEVICE_PASSWORD);
         await expect(section).toBeHidden({ timeout: 60_000 });
         await expectVaultState(receiverPage, name, 'Ready on this device');
@@ -1479,8 +1796,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       await test.step('the handoff is endpoint-local: the first device is unchanged', async () => {
         expect(await listVaultsApi(owner!)).toHaveLength(1);
         await openPrivacyPanel(owner!.page);
-        // The first device reloads into the same locked-but-known state; the
-        // transfer neither revoked nor duplicated its custody.
+        // The first device still holds its own session (the transfer neither
+        // revoked nor duplicated its custody); locked on purpose, its own
+        // password still opens it.
+        await expectVaultState(owner!.page, name, 'Ready on this device');
+        await lockVaults(owner!.page);
         await expectVaultState(owner!.page, name, 'Locked on this device');
         const section = await attemptUnlock(owner!.page, created.vaultId, DEVICE_PASSWORD);
         await expect(section).toBeHidden({ timeout: 60_000 });

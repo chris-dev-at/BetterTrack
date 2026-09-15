@@ -27,6 +27,18 @@ export type DriveRegistryAuthorizationResult =
     };
 
 export interface DriveConnectionRegistry {
+  /**
+   * Load GIS into the very client the next gesture will use, so `connect()` and
+   * `authorize()` open Google's popup synchronously from the click instead of
+   * taking `authorize()`'s load-then-request fallback (#1518). With a
+   * connection it prepares that identity's client; without one it prepares the
+   * client a fresh `connect()` mints plus every already-registered identity.
+   *
+   * A surface that owns a Drive button awaits this and keeps the button
+   * unavailable until it settles — the popup guarantee is by construction here,
+   * not by convention.
+   */
+  prepare(connection?: DriveConnection): Promise<void>;
   connect(): Promise<DriveRegistryAuthorizationResult>;
   authorize(connection: DriveConnection): Promise<DriveRegistryAuthorizationResult>;
   authorization(connection: DriveConnection): GoogleDriveTokenClient['state'];
@@ -77,6 +89,10 @@ export function createDriveConnectionRegistry(
   options: DriveConnectionRegistryOptions,
 ): DriveConnectionRegistry {
   const clients = new Map<string, RegisteredDriveClient>();
+  // The client a fresh `connect()` gesture will use, minted (and prepared)
+  // ahead of that gesture instead of at click time.
+  let bootstrap: GoogleDriveTokenClient | null = null;
+  let prepared = false;
   const identify = options.identify ?? readGoogleDriveIdentity;
   const makeClient =
     options.tokenClient ??
@@ -145,11 +161,27 @@ export function createDriveConnectionRegistry(
     return { raw, tokens, state };
   }
 
+  function bootstrapClient(): GoogleDriveTokenClient {
+    bootstrap ??= makeClient();
+    return bootstrap;
+  }
+
+  /**
+   * A client minted AFTER the surface prepared — a connection row that appeared
+   * on a refetch — would otherwise be the one caller still taking `authorize()`'s
+   * deferred-popup fallback. The GIS script is cached by then, so this settles
+   * without another round trip.
+   */
+  function ensurePrepared(client: GoogleDriveTokenClient): void {
+    if (prepared) void client.prepare().catch(() => undefined);
+  }
+
   function clientFor(connection: DriveConnection): RegisteredDriveClient {
     let entry = clients.get(connection.id);
     if (!entry) {
       entry = registerClient(connection, makeClient(connection));
       clients.set(connection.id, entry);
+      ensurePrepared(entry.raw);
     } else {
       if (entry.state.connection.email !== connection.email) {
         entry.raw.identify(driveTokenClientIdentity(connection));
@@ -211,14 +243,26 @@ export function createDriveConnectionRegistry(
   }
 
   return {
+    async prepare(connection) {
+      if (connection) {
+        await clientFor(connection).raw.prepare();
+        return;
+      }
+      const pending = [bootstrapClient(), ...[...clients.values()].map((entry) => entry.raw)];
+      await Promise.all(pending.map((client) => client.prepare()));
+      prepared = true;
+    },
+
     async connect() {
-      const bootstrap = makeClient();
-      const authorized = await bootstrap.authorize();
+      const client = bootstrapClient();
+      const authorized = await client.authorize();
       if (authorized.status !== 'ok') {
+        // The prepared client keeps its loaded GIS, so a cancelled popup can be
+        // reopened synchronously from the user's next click.
         return { status: 'authorization-required', message: authorized.message };
       }
       try {
-        const identity = await identify(bootstrap);
+        const identity = await identify(client);
         const connection = await options.api.create(identity);
         // Keep the fresh capability under exactly one registry id AND pin it to
         // the identity the row just resolved. The bootstrap client was minted
@@ -227,16 +271,20 @@ export function createDriveConnectionRegistry(
         // and fall back to the generic sign-in copy. `tokens(connectionId)` is
         // a checked facade: every later mint repeats the about.get equality
         // proof before it exposes the new capability.
-        bootstrap.identify(driveTokenClientIdentity(connection));
+        client.identify(driveTokenClientIdentity(connection));
         // Re-consenting an already-registered account upserts onto the same id,
         // so the client it replaces is released here — otherwise its token and
         // expiry timer would outlive every reference to it.
         const replaced = clients.get(connection.id);
-        if (replaced?.raw !== bootstrap) replaced?.raw.clear();
-        clients.set(connection.id, registerClient(connection, bootstrap));
+        if (replaced?.raw !== client) replaced?.raw.clear();
+        clients.set(connection.id, registerClient(connection, client));
+        // This client is now pinned to the account it just registered, so the
+        // NEXT "add another account" gesture needs its own — minted and
+        // prepared by the surface's next preparation pass.
+        bootstrap = null;
         return { status: 'ok', connection };
       } catch (cause) {
-        bootstrap.clear();
+        client.clear();
         return {
           status: 'failed',
           message: cause instanceof Error ? cause.message : 'Google Drive could not be connected.',

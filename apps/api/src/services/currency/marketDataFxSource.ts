@@ -23,8 +23,9 @@ import { FxRateUnavailableError, type FxRateSource } from './currencyService';
  *
  * Historical legs that cannot be produced (provider hard-down past the stale
  * window, no close on/near the date) throw {@link FxRateUnavailableError} so
- * callers can degrade deliberately instead of 500ing; spot legs keep their
- * original propagate-the-quote-error behaviour.
+ * callers can degrade deliberately instead of 500ing. Spot legs raise the same
+ * typed error once their cached quote is older than {@link FX_SPOT_MAX_AGE_MS};
+ * every other quote error keeps propagating as before.
  */
 
 /**
@@ -34,6 +35,30 @@ import { FxRateUnavailableError, type FxRateSource } from './currencyService';
  * missing and the leg fails loud rather than silently applying a stale rate.
  */
 export const FX_NEAREST_PRIOR_MAX_DAYS = 7;
+
+/**
+ * Maximum age of a spot FX quote, measured from the moment the providers layer
+ * last stored it (`CachedResult.asOf`).
+ *
+ * §5.3 mandates serve-stale-while-revalidate — an expired entry is returned
+ * immediately marked `stale` while one background refresh runs — and that is
+ * preserved: a stale rate inside this window is used exactly as a fresh one.
+ * What this bounds is the far end. With the provider dead `asOf` stops
+ * advancing, and without a policy here the only ceiling on how old a spot rate
+ * may get is the providers layer's Redis retention (`STALE_TTL_SECONDS`, seven
+ * days) — a cache-eviction value, not a currency decision. Every non-EUR
+ * valuation in the app rides on this rate, so the ceiling belongs here and has
+ * to be stated, not inherited.
+ *
+ * 72 h covers the longest upstream outage that can plausibly pass unattended on
+ * a self-hosted single-owner deployment — a provider that starts failing on a
+ * Friday evening is still served through Monday morning — while cutting the
+ * incidental seven-day ceiling by more than half. Past it the number is no
+ * longer a price: the leg fails with {@link FxRateUnavailableError}, the same
+ * typed signal the historical leg already raises, so callers degrade
+ * deliberately instead of the app being silently priced off a week-old rate.
+ */
+export const FX_SPOT_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -74,6 +99,25 @@ export function createMarketDataFxSource(
     const rate = cached.value.price;
     if (!Number.isFinite(rate) || rate <= 0) {
       throw new Error(`FX leg EUR${ccy}=X returned an invalid rate ${rate}`);
+    }
+    // The `stale` mark and `asOf` stamp §5.3 produces are the whole point of
+    // the keystone; consuming them here is what turns "serve stale" into
+    // "serve stale, bounded" (see FX_SPOT_MAX_AGE_MS). The bound is applied to
+    // the age whatever the mark says: a copy the cache did not mark stale was
+    // written within the quote TTL, so in practice only a served-stale copy
+    // can trip it — but the guarantee ("no spot rate older than the bound is
+    // ever used to price money") must not rest on another layer's bookkeeping.
+    const ageMs = now() - cached.asOf;
+    if (ageMs > FX_SPOT_MAX_AGE_MS) {
+      const hours = (ms: number) => Math.round(ms / (60 * 60 * 1000));
+      throw new FxRateUnavailableError(
+        'EUR',
+        ccy,
+        null,
+        `Spot FX rate EUR${ccy}=X was last refreshed ${hours(ageMs)}h ago` +
+          `${cached.stale ? ' (served stale)' : ''}, past the ${hours(FX_SPOT_MAX_AGE_MS)}h ` +
+          `spot bound — the provider has been unreachable too long to price with it.`,
+      );
     }
     return rate;
   }

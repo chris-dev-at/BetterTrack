@@ -37,13 +37,27 @@ const DRAFT: AiConglomerateDraftResponse = {
   ],
 };
 
-function renderPanel(onApply: (positions: BuilderPosition[]) => void = vi.fn()) {
+function renderPanel(
+  onApply: (positions: BuilderPosition[]) => void = vi.fn(),
+  target: { name: string; positionCount: number } = { name: 'New blueprint', positionCount: 0 },
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <NlBuilderPanel onApply={onApply} />
+      <NlBuilderPanel
+        onApply={onApply}
+        targetName={target.name}
+        targetPositionCount={target.positionCount}
+      />
     </QueryClientProvider>,
   );
+}
+
+/** Type a description and ask for a draft — stops at the review step. */
+async function draft(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByRole('textbox'), '60% nasdaq, 40% unicorn dust');
+  await user.click(screen.getByRole('button', { name: 'Draft basket' }));
+  await screen.findByRole('group', { name: 'Review the AI draft' });
 }
 
 beforeEach(() => {
@@ -59,37 +73,86 @@ describe('NlBuilderPanel', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  test('prefills the builder with resolved lines and flags — never drops — unresolvable ones', async () => {
+  test('holds the draft for review — nothing reaches the Builder until the user applies', async () => {
     vi.mocked(useAiCapability).mockReturnValue({ data: AVAILABLE } as never);
     vi.mocked(draftConglomerate).mockResolvedValue(DRAFT);
     const onApply = vi.fn();
+    const user = userEvent.setup();
     renderPanel(onApply);
 
-    await userEvent.type(screen.getByRole('textbox'), '60% nasdaq, 40% unicorn dust');
-    await userEvent.click(screen.getByRole('button', { name: 'Draft basket' }));
+    await draft(user);
+
+    // The draft is on screen, and the Builder has NOT been handed anything yet —
+    // no state the autosave could persist has changed (§6.5: always reviewed).
+    expect(screen.getByText(/Draft ready: 1 positions/)).toBeInTheDocument();
+    expect(onApply).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Apply draft' }));
 
     // Only the RESOLVED line becomes a builder position; the weight is the model's,
     // the asset id comes from the catalog resolution.
-    await waitFor(() =>
-      expect(onApply).toHaveBeenCalledWith([
-        expect.objectContaining({ kind: 'asset', refId: ASSET_ID, symbol: 'QQQ', weightPct: 60 }),
-      ]),
-    );
-
-    // The unresolvable intent is surfaced (flagged), never silently dropped.
-    expect(screen.getByText('unicorn dust')).toBeInTheDocument();
-    expect(screen.getByText(/No catalog match/i)).toBeInTheDocument();
+    expect(onApply).toHaveBeenCalledWith([
+      expect.objectContaining({ kind: 'asset', refId: ASSET_ID, symbol: 'QQQ', weightPct: 60 }),
+    ]);
+    expect(screen.getByText(/Prefilled 1 positions/)).toBeInTheDocument();
   });
 
-  test('keeps the draft as a review step — the panel never saves anything itself', async () => {
+  test('flags — never drops — unresolvable intents BEFORE the confirmation', async () => {
     vi.mocked(useAiCapability).mockReturnValue({ data: AVAILABLE } as never);
     vi.mocked(draftConglomerate).mockResolvedValue(DRAFT);
+    const onApply = vi.fn();
+    const user = userEvent.setup();
+    renderPanel(onApply);
+
+    await draft(user);
+
+    const review = screen.getByRole('group', { name: 'Review the AI draft' });
+    expect(review).toHaveTextContent('No catalog match');
+    expect(review).toHaveTextContent('unicorn dust');
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
+  test('names what an apply would replace on an existing blueprint', async () => {
+    vi.mocked(useAiCapability).mockReturnValue({ data: AVAILABLE } as never);
+    vi.mocked(draftConglomerate).mockResolvedValue(DRAFT);
+    const user = userEvent.setup();
+    renderPanel(vi.fn(), { name: 'My Basket', positionCount: 20 });
+
+    await draft(user);
+
+    expect(
+      screen.getByText(/Applying replaces all 20 positions in .My Basket./),
+    ).toBeInTheDocument();
+  });
+
+  test('discarding drops the draft without ever handing it to the Builder', async () => {
+    vi.mocked(useAiCapability).mockReturnValue({ data: AVAILABLE } as never);
+    vi.mocked(draftConglomerate).mockResolvedValue(DRAFT);
+    const onApply = vi.fn();
+    const user = userEvent.setup();
+    renderPanel(onApply, { name: 'My Basket', positionCount: 20 });
+
+    await draft(user);
+    await user.click(screen.getByRole('button', { name: 'Discard draft' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Review the AI draft' })).toBeNull(),
+    );
+    expect(onApply).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Prefilled/)).toBeNull();
+  });
+
+  test('carries the hard not-financial-advice framing and saves nothing itself', async () => {
+    vi.mocked(useAiCapability).mockReturnValue({ data: AVAILABLE } as never);
+    vi.mocked(draftConglomerate).mockResolvedValue(DRAFT);
+    const user = userEvent.setup();
     renderPanel();
 
-    await userEvent.type(screen.getByRole('textbox'), 'anything');
-    await userEvent.click(screen.getByRole('button', { name: 'Draft basket' }));
+    expect(screen.getByText(/not financial advice/i)).toBeInTheDocument();
 
-    await waitFor(() => expect(screen.getByText(/Prefilled/i)).toBeInTheDocument());
+    await draft(user);
+
+    expect(screen.getByText(/not financial advice/i)).toBeInTheDocument();
     // The only actions are draft/review — nothing that persists a conglomerate.
     expect(screen.queryByRole('button', { name: /save|activate|create/i })).toBeNull();
   });

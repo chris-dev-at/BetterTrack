@@ -6,7 +6,7 @@ import type { PortfolioKind, PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { Icon } from '../../ui/origin';
-import { useOverlayEscape } from '../../ui/overlayStack';
+import { pointerInSeparateOverlay, useOverlayEscape } from '../../ui/overlayStack';
 import { restoreFocusTo } from '../../ui/useFocusTrap';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { cx } from '../components/ui';
@@ -26,6 +26,7 @@ import { usePortfolioStore } from './PortfolioStoreProvider';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { VaultStateAction } from '../vault/ui/VaultStateAction';
 import { useVaultEndpointState } from '../vault/ui/useVaultEndpointState';
+import { useUnlockedPortfolioNames } from '../vault/useUnlockedPortfolioNames';
 import {
   isVaultedPortfolio,
   lockedPortfolioCount,
@@ -216,9 +217,16 @@ export function PortfolioSwitcher() {
   const portfolios = useMemo(() => activeQuery.data?.portfolios ?? [], [activeQuery.data]);
   const lockedCount = lockedPortfolioCount(portfolios);
   const lockedFallback = t('vault.lockedStub.fallbackAlias');
+  // A vault this device is holding open has already put the decrypted name on
+  // screen inside the workspace; the switcher naming the same portfolio after
+  // its VAULT was not privacy, it was two names for one thing — and two
+  // portfolios in one vault were indistinguishable here (failure map #6).
+  // Locked rows are untouched: they keep the alias, or the generic fallback.
+  const unlockedNames = useUnlockedPortfolioNames(portfolios);
   const displayName = useCallback(
-    (portfolio: PortfolioSummary) => portfolioDisplayName(portfolio, lockedFallback),
-    [lockedFallback],
+    (portfolio: PortfolioSummary) =>
+      portfolioDisplayName(portfolio, lockedFallback, unlockedNames.get(portfolio.id)),
+    [lockedFallback, unlockedNames],
   );
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
@@ -240,7 +248,12 @@ export function PortfolioSwitcher() {
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // A dialog this popover opened is portalled to <body>, so containment
+      // alone reads its first click as "outside" and dismisses the popover —
+      // taking the dialog down with it (see `pointerInSeparateOverlay`).
+      if (pointerInSeparateOverlay(target, rootRef.current)) return;
+      if (rootRef.current && !rootRef.current.contains(target)) {
         closeAndRestoreFocus();
       }
     }
@@ -510,7 +523,7 @@ function LockedSwitcherRow({
         {selected ? <Icon className="bt-gold" name="check" size={15} /> : null}
       </button>
       {state.data ? (
-        <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+        <VaultStateAction inPlace state={state.data} vaultId={portfolio.vaultId} />
       ) : (
         <button
           className="bt-link text-sm"

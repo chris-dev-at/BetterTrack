@@ -1,0 +1,33 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "provider": {
+    "openrouter": {
+      "models": {
+        "stealth/ox-alpha": {}
+      }
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "webfetch": "deny",
+    "bash": {
+      "*": "allow",
+      "curl *": "deny",
+      "wget *": "deny",
+      "nc *": "deny",
+      "ssh *": "deny",
+      "scp *": "deny",
+      "aws *": "deny",
+      "gcloud *": "deny",
+      "kubectl *": "deny",
+      "docker *": "deny",
+      "sudo *": "deny",
+      "env": "deny",
+      "printenv": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~*": "deny"
+    }
+  }
+}

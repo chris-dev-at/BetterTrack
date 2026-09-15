@@ -141,7 +141,14 @@ export function ImportPreviewTable({
                 {row.amountEur === null ? (
                   EM_DASH
                 ) : (
-                  <MoneyText amount={row.amountEur} currency="EUR" />
+                  /* The row's OWN currency, exactly as ImportReview renders it.
+                     A decided row is already EUR (the cash ledger is EUR-only)
+                     and reads the same either way; an UNDECIDED one still
+                     carries the file's raw amount in the file's own currency, so
+                     a hard-coded € made the Review and Confirm steps of one
+                     wizard show the same row in two different currencies
+                     immediately before money is booked. */
+                  <MoneyText amount={row.amountEur} currency={row.currency ?? 'EUR'} />
                 )}
               </td>
               {anyTags ? (

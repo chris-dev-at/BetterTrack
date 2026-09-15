@@ -763,6 +763,11 @@ function taxEvents(
 function countryForRegime(regime: TaxRegime): TaxCountry | null {
   if (regime.kind === 'at') return 'AT';
   if (regime.kind === 'de') return 'DE';
+  // No FI cross-portfolio pool exists (§14 composes AT/DE only), so a frozen
+  // FI row is deliberately SKIPPED here exactly like a custom-frozen row —
+  // it never enters the AT or DE pool. Labelled rather than left to fall
+  // through (#1512 review F5).
+  if (regime.kind === 'fi') return null;
   return null;
 }
 

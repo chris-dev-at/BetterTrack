@@ -1,8 +1,14 @@
 import { Router } from 'express';
 
-import { adminBackupStatusResponseSchema } from '@bettertrack/contracts';
+import {
+  adminBackupStatusResponseSchema,
+  adminOpsJobsResponseSchema,
+  adminOpsProvidersResponseSchema,
+} from '@bettertrack/contracts';
 
 import { readBackupStatus } from '../../services/health/backupStatus';
+import { readJobOps } from '../../services/ops/jobOpsService';
+import { readProviderOps } from '../../services/ops/providerOpsService';
 import type { AppContext } from '../context';
 
 /**
@@ -24,5 +30,25 @@ export function registerAdminOpsRoutes(router: Router, ctx: AppContext): void {
   router.get('/ops/backup-status', async (_req, res) => {
     const status = await readBackupStatus(ctx.config.backup.statusFile);
     res.json(adminBackupStatusResponseSchema.parse(status));
+  });
+
+  // Queue depths, repeatable schedules with their next/last run, and the §9
+  // dead-letter list — the "Health & queues" tab of the W4 cockpit (#1406).
+  //
+  // READ-ONLY, and structurally so: the DECISION killed generic queue
+  // retry/discard/mass-retry, so there is no companion POST here to guard. Job
+  // payloads never leave the process (see `jobOpsService`), which is the same
+  // boundary Bull Board's `[redacted]` formatters hold.
+  router.get('/ops/jobs', async (_req, res) => {
+    const body = await readJobOps({ queues: ctx.queues, redis: ctx.redis });
+    res.json(adminOpsJobsResponseSchema.parse(body));
+  });
+
+  // Per-capability breaker state, cache hit/stale rates and provider call
+  // outcomes — the "Providers" tab (#1406 W4). No quota gauge: Yahoo is keyless
+  // and the DECISION rejected inventing one.
+  router.get('/ops/providers', async (_req, res) => {
+    const body = await readProviderOps({ marketData: ctx.marketData });
+    res.json(adminOpsProvidersResponseSchema.parse(body));
   });
 }

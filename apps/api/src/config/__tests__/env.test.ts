@@ -2,8 +2,14 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
+  DEFAULT_ADMIN_SESSION_LIFETIME_HOURS,
+} from '@bettertrack/contracts';
+
 import { decryptSecret, encryptSecret } from '../../services/crypto/secretBox';
-import { loadConfig } from '../env';
+import { loadConfig, UNSAFE_GRAFANA_PASSWORDS } from '../env';
 
 /**
  * Topology & derived-origin coverage (PROJECTPLAN.md §4.6, §10, §11). Proves the
@@ -275,23 +281,88 @@ describe('market-intelligence gate (§13.5 V5-P5)', () => {
   });
 });
 
+/**
+ * #1856: the deployment-network carve-out is documented for operators, so the
+ * variable has to be part of the boot contract — a typo in it must not leave the
+ * process running on a derivation the operator believes they overrode.
+ */
+describe('outbound deployment-network carve-out (§13.5 V5-P10)', () => {
+  it('accepts unset, blank, a CIDR list and the lone literal "none"', () => {
+    expect(() => config({})).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '' })).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '   ' })).not.toThrow();
+    expect(() =>
+      config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '172.18.0.0/16, fd00:beef::/64' }),
+    ).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: 'none' })).not.toThrow();
+  });
+
+  it.each([
+    ['a bare address', '172.18.0.0'],
+    ['a typo in one entry', '172.18.0.0/16, oops'],
+    ['an out-of-range prefix', '172.18.0.0/64'],
+    ['"none" mixed with a carve-out', '172.18.0.0/16, none'],
+  ])('refuses %s at boot instead of silently deriving', (_label, value) => {
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: value })).toThrow(
+      /BT_OUTBOUND_DEPLOYMENT_SUBNETS/,
+    );
+  });
+});
+
 describe('operational data retention (§13.5 V5-P14, PL-01)', () => {
   it('uses conservative defaults when the owner leaves the variables unset or blank', () => {
-    expect(config({}).retention).toEqual({ auditDays: 400, emailLogDays: 180 });
+    const defaults = {
+      auditDays: 400,
+      emailLogDays: 180,
+      problemDays: 90,
+      usageEventDays: 180,
+    };
+    expect(config({}).retention).toEqual(defaults);
     expect(
-      config({ BT_AUDIT_RETENTION_DAYS: '', BT_EMAIL_LOG_RETENTION_DAYS: '   ' }).retention,
-    ).toEqual({ auditDays: 400, emailLogDays: 180 });
+      config({
+        BT_AUDIT_RETENTION_DAYS: '',
+        BT_EMAIL_LOG_RETENTION_DAYS: '   ',
+        BT_PROBLEM_RETENTION_DAYS: '',
+        BT_USAGE_EVENT_RETENTION_DAYS: '  ',
+      }).retention,
+    ).toEqual(defaults);
   });
 
   it('accepts owner-adjusted whole-day windows and explicit zero as retain forever', () => {
     expect(
-      config({ BT_AUDIT_RETENTION_DAYS: '730', BT_EMAIL_LOG_RETENTION_DAYS: '0' }).retention,
-    ).toEqual({ auditDays: 730, emailLogDays: 0 });
+      config({
+        BT_AUDIT_RETENTION_DAYS: '730',
+        BT_EMAIL_LOG_RETENTION_DAYS: '0',
+        BT_PROBLEM_RETENTION_DAYS: '30',
+        BT_USAGE_EVENT_RETENTION_DAYS: '0',
+      }).retention,
+    ).toEqual({ auditDays: 730, emailLogDays: 0, problemDays: 30, usageEventDays: 0 });
   });
 
   it('rejects negative and fractional retention windows', () => {
     expect(() => config({ BT_AUDIT_RETENTION_DAYS: '-1' })).toThrow();
     expect(() => config({ BT_EMAIL_LOG_RETENTION_DAYS: '30.5' })).toThrow();
+  });
+
+  /**
+   * #1680: DAU/WAU/MAU and top assets read raw `usage_events`, so a retention
+   * window shorter than the 30-day analytics window collapses MAU onto WAU onto
+   * DAU while the admin page still labels them 30-day figures — a 4× traffic
+   * "collapse" that is only the owner's own privacy setting. Boot refuses it.
+   */
+  it('refuses a usage-event retention window shorter than the analytics window', () => {
+    expect(() => config({ BT_USAGE_EVENT_RETENTION_DAYS: '7' })).toThrow(
+      /BT_USAGE_EVENT_RETENTION_DAYS=7 .*30-day/s,
+    );
+    expect(() => config({ BT_USAGE_EVENT_RETENTION_DAYS: '29' })).toThrow();
+  });
+
+  it('boots at or above the analytics window, and on explicit zero (retain forever)', () => {
+    expect(config({ BT_USAGE_EVENT_RETENTION_DAYS: '30' }).retention.usageEventDays).toBe(30);
+    expect(config({ BT_USAGE_EVENT_RETENTION_DAYS: '365' }).retention.usageEventDays).toBe(365);
+    // `0` is the shared "retain forever" value: the safest possible setting for
+    // the analytics window, so the refine lets it through on purpose.
+    expect(config({ BT_USAGE_EVENT_RETENTION_DAYS: '0' }).retention.usageEventDays).toBe(0);
   });
 });
 
@@ -315,6 +386,29 @@ describe('observability grafana public URL (#632)', () => {
 
   it('a non-empty but invalid URL still fails loudly', () => {
     expect(() => config({ BT_GRAFANA_PUBLIC_URL: 'not-a-url' })).toThrow();
+  });
+});
+
+describe('grafana admin-password gate (#1698)', () => {
+  // The same literals the compose credential bootstrap refuses to seed into
+  // Grafana: neither door — the LAN bind nor the external proxy — may ever
+  // answer to one of them.
+  it('exports the unsafe literals the compose bootstrap mirrors', () => {
+    expect([...UNSAFE_GRAFANA_PASSWORDS].sort()).toEqual(['admin', 'change_me_before_first_boot']);
+  });
+
+  it.each([undefined, '', '   ', 'admin', 'ADMIN', '  Admin  ', 'CHANGE_ME_BEFORE_FIRST_BOOT'])(
+    'treats %p as unset, so external exposure stays refused',
+    (password) => {
+      const c = config(password === undefined ? {} : { BT_GRAFANA_ADMIN_PASSWORD: password });
+      expect(c.observability.grafanaPasswordSet).toBe(false);
+    },
+  );
+
+  it('counts a real password as set, and never retains it on the resolved config', () => {
+    const c = config({ BT_GRAFANA_ADMIN_PASSWORD: 'grafana-strong-secret-9' });
+    expect(c.observability.grafanaPasswordSet).toBe(true);
+    expect(JSON.stringify(c)).not.toContain('grafana-strong-secret-9');
   });
 });
 
@@ -481,5 +575,67 @@ describe('empty variables', () => {
 
   it('still rejects an empty REQUIRED variable', () => {
     expect(() => config({ SESSION_SECRET: '' })).toThrow(/SESSION_SECRET/);
+  });
+});
+
+/**
+ * V5-P0 kill-switch vs. bot token (#1795). Two independent facts that used to be
+ * ANDed into one flag: "does this build offer the channel" and "can it deliver".
+ * The conflation made the documented `available: false` branch unreachable, and
+ * made Telegram and Discord behave differently for the same operator mistake.
+ */
+describe('Telegram/Discord kill-switch is independent of the bot token', () => {
+  it('defaults OFF for both channels, on both flags', () => {
+    const cfg = config({ BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
+    expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+
+  it('switch ON without a token: the channel is OFFERED but cannot deliver', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'true' });
+    // `offered` is what the setup routes refuse on, so they stay reachable and
+    // answer `available: false` rather than a bare 404.
+    expect(cfg.telegram).toMatchObject({ offered: true, enabled: false });
+    // Discord needs no server credential, so the same env offers AND enables it.
+    expect(cfg.discord).toMatchObject({ offered: true, enabled: true });
+  });
+
+  it('switch ON with a token: both flags live for both channels', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'true', BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: true, enabled: true, botToken: 'token' });
+    expect(cfg.discord).toMatchObject({ offered: true, enabled: true });
+  });
+
+  it('an explicit OFF deactivates the channel even with a token present', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'false', BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
+    expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+});
+
+/**
+ * The 6/24/12 admin-session window is defined ONCE, in contracts — where it also
+ * gates the runtime write, the response payload and the console's own range
+ * check (#1833). The env fallback used to hardcode the same three numbers, so
+ * widening the window in contracts would have left this schema rejecting a legal
+ * value at boot.
+ */
+describe('the admin session lifetime env bounds come from contracts (§13.5 V5-P13c)', () => {
+  it('defaults to the contract default when unset', () => {
+    expect(config({}).admin.sessionLifetimeHours).toBe(DEFAULT_ADMIN_SESSION_LIFETIME_HOURS);
+  });
+
+  it('accepts exactly the contract window and refuses either side of it', () => {
+    for (const hours of [ADMIN_SESSION_LIFETIME_MIN_HOURS, ADMIN_SESSION_LIFETIME_MAX_HOURS]) {
+      expect(
+        config({ ADMIN_SESSION_LIFETIME_HOURS: String(hours) }).admin.sessionLifetimeHours,
+      ).toBe(hours);
+    }
+    for (const hours of [
+      ADMIN_SESSION_LIFETIME_MIN_HOURS - 1,
+      ADMIN_SESSION_LIFETIME_MAX_HOURS + 1,
+    ]) {
+      expect(() => config({ ADMIN_SESSION_LIFETIME_HOURS: String(hours) })).toThrow();
+    }
   });
 });

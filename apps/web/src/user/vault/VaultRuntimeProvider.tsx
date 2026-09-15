@@ -8,13 +8,16 @@ import {
   type ReactNode,
 } from 'react';
 
-import { VAULT_FORMAT_VERSION } from '@bettertrack/contracts';
+import { VAULT_FORMAT_VERSION, type DriveConnection } from '@bettertrack/contracts';
 
 import { getGoogleDriveClientId } from '../../lib/runtimeConfig';
+import { listDriveConnections } from '../../lib/userApi';
 import { createIndexedDbVaultCustody, type DeviceVaultCustody } from './custody';
 import {
   createDriveDataHome,
   createGoogleDriveTokenClient,
+  DriveNotConfiguredError,
+  revokeDriveGrant,
   type DriveDataHome,
   type DriveAuthorizationState,
   type GoogleDriveTokenClient,
@@ -70,6 +73,11 @@ export interface VaultRuntimeProviderDependencies {
   drive?: DriveDataHome;
   server?: DataHome;
   readEnvelope?: (userId: string) => Promise<Uint8Array>;
+  /**
+   * The registry read that decides whether releasing an abandoned Drive consent
+   * may take the Google-side grant with it (§8). Injected in tests.
+   */
+  listConnections?: () => Promise<readonly DriveConnection[]>;
   createRuntime?: (
     vaultKey: Parameters<typeof createUnlockedVaultDriveRuntime>[0],
     keyId: string,
@@ -112,12 +120,13 @@ export function VaultRuntimeProvider({
 
   const clientId =
     dependencies?.clientId === undefined ? getGoogleDriveClientId() || null : dependencies.clientId;
+  const listConnections = dependencies?.listConnections ?? listDriveConnections;
 
   const tokens = useCallback(
     (requireConfigured = false): GoogleDriveTokenClient => {
-      if (requireConfigured && !clientId) {
-        throw new VaultCryptoError('locked', 'Google Drive is not configured for this deployment.');
-      }
+      // A typed failure, not a generic locked one: a deployment without a
+      // client id must not be reported to the user as a connection problem.
+      if (requireConfigured && !clientId) throw new DriveNotConfiguredError();
       tokensRef.current ??= createGoogleDriveTokenClient({ clientId: clientId ?? '' });
       return tokensRef.current;
     },
@@ -126,9 +135,7 @@ export function VaultRuntimeProvider({
 
   const drive = useCallback(
     (accountId: string, requireConfigured = false): DriveDataHome => {
-      if (requireConfigured && !clientId) {
-        throw new VaultCryptoError('locked', 'Google Drive is not configured for this deployment.');
-      }
+      if (requireConfigured && !clientId) throw new DriveNotConfiguredError();
       if (dependencies?.drive) return dependencies.drive;
       if (driveRef.current?.userId !== accountId) {
         driveRef.current = {
@@ -429,6 +436,21 @@ export function VaultRuntimeProvider({
     return drive(userId, true);
   }, [authenticated, drive, tokens, userId]);
 
+  const releaseDriveStorage = useCallback(async (): Promise<void> => {
+    // Consent taken for a flow the user then abandoned. The local capability is
+    // this client's own, so it always goes. The Google-side revoke is NOT: GIS
+    // revokes the app's whole grant for the account, which would kill the
+    // separately minted token client of every registered Drive connection (§8)
+    // — including a bound, actively syncing one. So it runs only when the
+    // registry is empty, i.e. when nothing else holds this grant.
+    const tokenClient = tokensRef.current;
+    if (tokenClient == null) return;
+    await revokeDriveGrant(tokenClient, {
+      grantIsShared: async () => (await listConnections()).length > 0,
+    });
+    setDriveAuthorization(tokenClient.state);
+  }, [listConnections]);
+
   const cleanupAfterDisable = useCallback(async (): Promise<void> => {
     if (userId == null) return;
     const active = runtimeRef.current?.sync.state.active ?? null;
@@ -549,6 +571,7 @@ export function VaultRuntimeProvider({
       unlockFromDevice,
       prepareDriveStorage,
       authorizeDriveStorage,
+      releaseDriveStorage,
       reconnect,
       downloadRecoveryKit,
       changePassphrase,
@@ -569,6 +592,7 @@ export function VaultRuntimeProvider({
       phase,
       prepareDriveStorage,
       reconnect,
+      releaseDriveStorage,
       rotateKey,
       sync,
       syncState,

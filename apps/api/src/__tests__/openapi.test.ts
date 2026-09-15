@@ -737,6 +737,31 @@ describe('OpenAPI document', () => {
     );
   });
 
+  it('separates the retryable media 412 from the terminal in-flight-capture one', () => {
+    // #1530, on the same rule #1498 established: two meanings never share one
+    // code. A stale readback is worth retrying; a readback blocked by another
+    // portfolio's interrupted move-in is not, no matter how often it is sent.
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const transition = (paths['/vaults/{vaultId}/media'] as JsonObject).patch as JsonObject;
+    const responses = transition.responses as JsonObject;
+
+    expect(Object.keys(responses)).toContain('412');
+    expect(((responses['412'] as JsonObject).content as JsonObject)['application/json']).toEqual({
+      schema: { $ref: '#/components/schemas/ApiError' },
+    });
+    expect(contracts.PER_VAULT_ERROR_CODES.mediaCaptureInFlight).not.toBe(
+      contracts.PER_VAULT_ERROR_CODES.mediaVerificationFailed,
+    );
+    const codes = transition['x-error-codes'] as string[];
+    expect(codes).toEqual(
+      expect.arrayContaining([...contracts.PER_VAULT_MEDIA_TRANSITION_ERROR_CODES]),
+    );
+    expect(codes).toContain(contracts.PER_VAULT_ERROR_CODES.mediaCaptureInFlight);
+    // The description has to carry the "how to proceed" the code alone cannot.
+    expect(JSON.stringify(transition.description)).toContain('portfolioIds');
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI

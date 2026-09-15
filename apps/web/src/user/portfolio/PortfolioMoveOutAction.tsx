@@ -14,7 +14,10 @@ import {
   submitPortfolioMoveOut,
   type PortfolioVaultMoveCapture,
 } from '../vault/portfolioVaultMove';
-import { PortfolioVaultMoveWizard } from '../vault/ui/PortfolioVaultMoveWizard';
+import {
+  isDriveOnlyVaultMedia,
+  PortfolioVaultMoveWizard,
+} from '../vault/ui/PortfolioVaultMoveWizard';
 import { useVaultEndpointState } from '../vault/ui/useVaultEndpointState';
 
 /**
@@ -95,6 +98,7 @@ export function PortfolioMoveOutAction({
   }
   return (
     <PortfolioVaultMoveWizard
+      driveOnly={isDriveOnlyVaultMedia(vault.media)}
       mode="out"
       onCancel={() => setOpen(false)}
       onSubmit={async ({ stepUp }) => {

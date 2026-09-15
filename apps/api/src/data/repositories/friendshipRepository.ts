@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
@@ -8,6 +8,8 @@ import {
   friendRequests,
   friendships,
   portfolios,
+  shareAudienceMembers,
+  shareAudiences,
   users,
   workboardItems,
 } from '../schema';
@@ -564,14 +566,58 @@ export function createFriendshipRepository(db: Database) {
      * Delete the friendship between two users (either side may). Returns whether
      * a row was removed, so the service can 404 a non-friend. A removed row frees
      * the pair to send a fresh request afterwards (§6.9).
+     *
+     * ONE transaction covers the whole unfriend (#1710): the friendship row, the
+     * pair's `specific_friends` grants on each other's items, and — through
+     * `cleanup`, which receives this transaction — their group rosters. Either
+     * all of it commits or none of it does, so a failure mid-way can never leave
+     * the friendship gone but a stale grant/roster row behind, ready to become a
+     * live grant again the moment the pair re-friend (a plain accept: no
+     * re-share, no widen confirmation).
+     *
+     * Only `specific_friends` membership rows are pruned. On the broad rungs
+     * (`all_friends`/`public_link`) the very same table holds durable EXCLUSION
+     * markers written by paranoid enable; deleting one of those would WIDEN the
+     * share, so they survive an unfriend untouched (§6.9, fail-closed).
      */
-    async deleteFriendship(a: string, b: string): Promise<boolean> {
+    async deleteFriendship(
+      a: string,
+      b: string,
+      cleanup?: (tx: Database) => Promise<void>,
+    ): Promise<boolean> {
       const [lo, hi] = canonicalPair(a, b);
-      const deleted = await db
-        .delete(friendships)
-        .where(and(eq(friendships.userA, lo), eq(friendships.userB, hi)))
-        .returning({ userA: friendships.userA });
-      return deleted.length > 0;
+      return db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Database;
+        const deleted = await tx
+          .delete(friendships)
+          .where(and(eq(friendships.userA, lo), eq(friendships.userB, hi)))
+          .returning({ userA: friendships.userA });
+        if (deleted.length === 0) return false;
+
+        const pruneGrants = (ownerId: string, friendId: string) =>
+          tx.delete(shareAudienceMembers).where(
+            and(
+              eq(shareAudienceMembers.friendId, friendId),
+              inArray(
+                shareAudienceMembers.audienceId,
+                tx
+                  .select({ id: shareAudiences.id })
+                  .from(shareAudiences)
+                  .where(
+                    and(
+                      eq(shareAudiences.ownerId, ownerId),
+                      eq(shareAudiences.audience, 'specific_friends'),
+                    ),
+                  ),
+              ),
+            ),
+          );
+        await pruneGrants(a, b);
+        await pruneGrants(b, a);
+
+        await cleanup?.(tx);
+        return true;
+      });
     },
   };
 }

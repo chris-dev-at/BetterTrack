@@ -95,6 +95,20 @@ const VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION = {
     'design: an unrecognized value is read back as null rather than rejecting the row.',
 };
 
+// Same generator gap, sixth instance: the vault import-row `kind_undecided`
+// field is a `.catch(false)` for the same reason as its siblings — a malformed
+// value must not be why a portfolio cannot be restored. Reachable from
+// `PortfolioVaultMoveOutRequest`, so without a hint `/openapi.json` and `/docs`
+// 500 for the whole API (which is exactly how this one was caught).
+const VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION = {
+  type: 'boolean' as const,
+  description:
+    "Whether a staged import row's KIND is still an open question (§16 2026-08-29): the row " +
+    'parsed cleanly but nobody has said what it is, so a person may still confirm one. ' +
+    'Tolerant by design: an unrecognized value is read back as false — the row then reads as ' +
+    'a plain reported line, which is what it was before the affordance existed.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -121,6 +135,10 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowResolvedBySchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowKindUndecidedSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION,
   ],
 ];
 
@@ -210,6 +228,9 @@ const componentSchemas = {
   // Per-portfolio move pipeline (paranoid E4 #1414, E6 residual #1525)
   PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
   PortfolioVaultLifecycleResponse: contracts.portfolioVaultLifecycleResponseSchema,
+  // Lossless capture reads (#1529)
+  PortfolioVaultImportCaptureResponse: contracts.portfolioVaultImportCaptureResponseSchema,
+  CustomAssetVaultSnapshotsResponse: contracts.customAssetVaultSnapshotsResponseSchema,
   PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
   PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
   PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
@@ -296,6 +317,10 @@ const componentSchemas = {
   AdminStats: contracts.adminStatsSchema,
   AdminHealthResponse: contracts.adminHealthResponseSchema,
   AdminBackupStatusResponse: contracts.adminBackupStatusResponseSchema,
+  // Operations cockpit (#1406 W4) — read-only projections of counters the
+  // process already keeps. Neither has a request body: there is no write here.
+  AdminOpsJobsResponse: contracts.adminOpsJobsResponseSchema,
+  AdminOpsProvidersResponse: contracts.adminOpsProvidersResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -462,6 +487,7 @@ const componentSchemas = {
   SendFeedbackMessageRequest: contracts.sendFeedbackMessageRequestSchema,
   SendFeedbackMessageResponse: contracts.sendFeedbackMessageResponseSchema,
   AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
+  AdminFeedbackSubmission: contracts.adminFeedbackSubmissionSchema,
   UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
   UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
   UpdateFeedbackArchiveRequest: contracts.updateFeedbackArchiveRequestSchema,
@@ -576,6 +602,7 @@ const componentSchemas = {
 
   // Comments + reactions on shared items (§13.5 V5-P8)
   CommentThreadResponse: contracts.commentThreadResponseSchema,
+  CommentThreadSummaryResponse: contracts.commentThreadSummaryResponseSchema,
   CreateCommentRequest: contracts.createCommentRequestSchema,
   CreateCommentResponse: contracts.createCommentResponseSchema,
   ToggleReactionRequest: contracts.toggleReactionRequestSchema,
@@ -856,7 +883,7 @@ const endpoints: EndpointDef[] = [
     path: '/feature-flags',
     tag: 'Meta',
     summary:
-      'Effective runtime feature flags advertised to the SPA (killed features hide client-side).',
+      'Effective runtime feature flags plus deploy-time capabilities advertised to the SPA (killed or unconfigured features hide client-side).',
     status: 200,
     response: R.FeatureFlagsResponse,
   },
@@ -1596,7 +1623,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/invites',
     tag: 'Admin',
-    summary: 'List invites.',
+    summary: 'List invites (bounded page).',
+    query: contracts.adminListQuerySchema,
     status: 200,
     response: R.AdminInviteListResponse,
   },
@@ -1622,7 +1650,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/registration-tokens',
     tag: 'Admin',
-    summary: 'List registration access tokens (invite-token mode).',
+    summary: 'List registration access tokens (invite-token mode, bounded page).',
+    query: contracts.adminListQuerySchema,
     status: 200,
     response: R.RegistrationTokenListResponse,
   },
@@ -1648,7 +1677,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/registration-requests',
     tag: 'Admin',
-    summary: 'List pending approval-queue registration applications.',
+    summary: 'List pending approval-queue registration applications (bounded page).',
+    query: contracts.adminListQuerySchema,
     status: 200,
     response: R.RegistrationRequestListResponse,
   },
@@ -1770,6 +1800,30 @@ const endpoints: EndpointDef[] = [
       'Backup and restore-drill readiness, projected read-only from the scheduler status file.',
     status: 200,
     response: R.AdminBackupStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/jobs',
+    tag: 'Admin',
+    summary: 'Queue depths, repeatable schedules with next/last run, and the dead-letter list.',
+    description:
+      'Read-only operations cockpit projection (#1406 W4). Job payloads are never included; ' +
+      'a scheduled run reports its own counts only as numbers. `available: false` means this ' +
+      'process holds no queue registry — not that the queues are empty.',
+    status: 200,
+    response: R.AdminOpsJobsResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/providers',
+    tag: 'Admin',
+    summary: 'Per-capability circuit-breaker state, provider call outcomes and market-cache rates.',
+    description:
+      'Read-only (#1406 W4). Counters are process-local and reset on restart — `sampledSince` ' +
+      'is their epoch. There is no upstream quota gauge: the provider is keyless and no ' +
+      'authoritative quota exists to report.',
+    status: 200,
+    response: R.AdminOpsProvidersResponse,
   },
   {
     method: 'get',
@@ -2071,6 +2125,15 @@ const endpoints: EndpointDef[] = [
     response: R.AdminFeedbackListResponse,
   },
   {
+    method: 'get',
+    path: '/admin/feedback/{id}',
+    tag: 'Admin',
+    summary: 'Read one feedback submission for the helpdesk split pane.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminFeedbackSubmission,
+  },
+  {
     method: 'patch',
     path: '/admin/feedback/{id}',
     tag: 'Admin',
@@ -2168,7 +2231,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/admin/api-keys',
     tag: 'Admin',
-    summary: 'List every user’s API keys with their assigned tier (governance surface).',
+    summary: 'List a bounded page of API keys with their assigned tier (governance surface).',
+    query: contracts.adminApiKeyListQuerySchema,
     status: 200,
     response: R.AdminApiKeyListResponse,
   },
@@ -2428,7 +2492,9 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/assets/portfolio/dividend-projection',
     tag: 'Assets',
-    summary: 'Projected dividend income for the whole portfolio (monthly + yearly, EUR).',
+    summary:
+      'Projected dividend income (monthly + yearly, in the caller’s base currency) — every active portfolio, or one via portfolioId.',
+    query: contracts.projectedDividendIncomeQuerySchema,
     status: 200,
     response: R.ProjectedDividendIncomeResponse,
   },
@@ -2840,6 +2906,18 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete a custom asset (cascades).',
     params: contracts.customAssetIdParamSchema,
     status: 204,
+  },
+  {
+    method: 'get',
+    path: '/custom-assets/vault-snapshots',
+    tag: 'Custom Assets',
+    summary: 'Read the exact current state of the caller’s own manual assets (vault-entity rows).',
+    description:
+      'The lossless seam the per-portfolio vault move needs on both paths (#1529): each present asset in vault-entity row shape (decimal strings, verbatim meta) with every current value point; ids that are not the caller’s manual assets — unknown, catalog, another account’s — are simply absent (no oracle). `ids` is one comma-separated list of 1..200 UUIDs. Responses are no-store.',
+    query: contracts.customAssetVaultSnapshotsQuerySchema,
+    status: 200,
+    response: R.CustomAssetVaultSnapshotsResponse,
+    noStore: true,
   },
   {
     method: 'get',
@@ -3335,7 +3413,7 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/expenses/categories',
     tag: 'Expenses',
-    summary: 'The caller’s spending/income categories (defaults seeded on first read).',
+    summary: 'The caller’s spending/income categories (a pure read; never seeds).',
     status: 200,
     response: R.ExpenseCategoryListResponse,
   },
@@ -3606,7 +3684,7 @@ const endpoints: EndpointDef[] = [
     path: '/imports/{batchId}/rows/{rowId}',
     tag: 'Imports',
     summary:
-      "Pin an unresolved staged row to an asset the USER picked (#964): the row flips to mapped (or duplicate, if the pin collides with data already recorded), is stamped resolvedBy=user, and the refreshed preview is returned. The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted.",
+      "Finish one staged row a person had to decide about — exactly one of assetId or kind per request; the refreshed preview is returned either way, and the row is stamped resolvedBy=user. assetId (#964) pins an unresolved row to an asset the USER picked: the row flips to mapped (or duplicate, if the pin collides with data already recorded). The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted. kind (§16 2026-08-29) confirms what an UNDECIDED row is — one member of that row's confirmableKinds, and nothing else: no amount, date or id is accepted from the client, because the server re-derives every value it books from the fields staging already parsed. A kind the row's own contents (or the direction its file states) will not support is refused with the reason; confirmation is one-shot, and both paths require the batch to still be pending.",
     params: contracts.importRowIdParamSchema,
     body: R.ResolveImportRowRequest,
     status: 200,
@@ -3949,10 +4027,21 @@ const endpoints: EndpointDef[] = [
     path: '/social/items/{kind}/{subjectId}/thread',
     tag: 'Social',
     summary:
-      'A shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
+      'One bounded page of a shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
     params: contracts.audienceParamSchema,
+    query: contracts.commentThreadQuerySchema,
     status: 200,
     response: R.CommentThreadResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/items/{kind}/{subjectId}/thread/summary',
+    tag: 'Social',
+    summary:
+      'The collapsed thread head — live comment count + item reactions, no bodies (audience-scoped).',
+    params: contracts.audienceParamSchema,
+    status: 200,
+    response: R.CommentThreadSummaryResponse,
   },
   {
     method: 'post',
@@ -4921,10 +5010,19 @@ const endpoints: EndpointDef[] = [
     tag: 'Vault',
     summary:
       'Commit one verified full-document-set media transition; removing server retires bytes instead of purging them.',
+    description:
+      'The two 412 meanings carry DIFFERENT codes: VAULT_MEDIA_VERIFICATION_FAILED is worth retrying with a fresh readback, while VAULT_MEDIA_CAPTURE_IN_FLIGHT is terminal for this caller — the readback is exact except for documents an interrupted portfolio move-in staged in the vault, whose ids are listed in error.details.portfolioIds. That move must be finished or cancelled first.',
     params: contracts.vaultIdParamSchema,
     body: R.PerVaultMediaTransitionRequest,
     status: 200,
     response: R.PerVaultMediaTransitionResponse,
+    errorResponses: {
+      400: 'The requested selection names the reserved local medium (VAULT_MEDIA_RESERVED).',
+      404: 'No such caller-owned vault (VAULT_NOT_FOUND).',
+      409: 'The durable media state, Drive binding, or a pending retirement refuses this transition (VAULT_MEDIA_STATE_CONFLICT / VAULT_DRIVE_BINDING_INVALID / VAULT_RETIRED_SERVER_CONFLICT / VAULT_RETIREMENT_PENDING).',
+      412: 'The submitted full-document-set readback does not cover or does not match what the server holds (VAULT_MEDIA_PARTIAL_SET / VAULT_MEDIA_VERIFICATION_FAILED / VAULT_MEDIA_CAPTURE_IN_FLIGHT).',
+    },
+    errorCodes: contracts.PER_VAULT_MEDIA_TRANSITION_ERROR_CODES,
   },
   {
     method: 'put',
@@ -5017,6 +5115,23 @@ const endpoints: EndpointDef[] = [
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
       409: 'The portfolio is not stored in a vault, or its transition state is inconsistent.',
       429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/import-batches',
+    tag: 'Vault',
+    summary: 'Read a plain portfolio’s historical import batches and staging rows losslessly.',
+    description:
+      'The lossless capture read that lets the §9 move-in carry historical import batches into the encrypted portfolio document instead of refusing (#1529, lifting the #1528 fail-closed ruling). Owner-scoped; every batch keyed to the portfolio rides on every page, staging rows page by an opaque cursor, and every column is served exactly as stored (decimals as strings). Session-only by the vault-namespace fence (bearer admission deferred: raw staging rows and memos must not reach third-party keys) — NOT a transition carve-out: a vaulted portfolio is refused at the enforcement boundary. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    query: contracts.portfolioVaultImportCaptureQuerySchema,
+    status: 200,
+    response: R.PortfolioVaultImportCaptureResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is already stored in a vault, the cursor does not belong to this read, or a stored staging row cannot be served losslessly (PORTFOLIO_VAULT_CAPTURE_UNSERVABLE).',
     },
   },
   {

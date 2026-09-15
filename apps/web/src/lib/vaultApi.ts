@@ -6,6 +6,9 @@ import {
   patchVaultResponseSchema,
   perVaultMediaStateResponseSchema,
   perVaultMediaTransitionResponseSchema,
+  perVaultRetiredServerPurgeChallengeResponseSchema,
+  perVaultRetiredServerPurgeResponseSchema,
+  portfolioVaultImportCaptureResponseSchema,
   portfolioVaultLifecycleResponseSchema,
   portfolioVaultMoveInResponseSchema,
   portfolioVaultMoveOutChallengeResponseSchema,
@@ -18,6 +21,12 @@ import {
   type PatchVaultRequest,
   type PerVaultMediaState,
   type PerVaultMediaTransitionRequest,
+  type PerVaultRetiredServerPurgeChallengeRequest,
+  type PerVaultRetiredServerPurgeChallengeResponse,
+  type PerVaultRetiredServerPurgeRequest,
+  type PerVaultRetiredServerPurgeResponse,
+  type PortfolioVaultImportCaptureQuery,
+  type PortfolioVaultImportCaptureResponse,
   type PortfolioVaultLifecycleResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveInResponse,
@@ -90,6 +99,44 @@ export async function transitionVaultMedia(
   return perVaultMediaTransitionResponseSchema.parse(data);
 }
 
+/**
+ * §16 (2026-07-28) retired-bytes destruction, per vault (#1520). Retiring the
+ * server medium leaves the ciphertext RETAINED, never purged: destroying it is
+ * a separate, deliberate action the user takes, and it is authenticated by a
+ * fresh client readback of the surviving medium — the server has no Drive
+ * capability and can never confirm the copy is live on its own (§8/§22).
+ *
+ * Step one of two: exchange the retirement identity the client just read from
+ * `GET /vaults/:id/media` for a short-lived server nonce. A stale generation or
+ * versionSetHash is a 409 here rather than a signature that would fail later.
+ */
+export async function requestVaultRetiredPurgeChallenge(
+  vaultId: string,
+  body: PerVaultRetiredServerPurgeChallengeRequest,
+): Promise<PerVaultRetiredServerPurgeChallengeResponse> {
+  const data = await apiRequest<unknown>(
+    `/vaults/${segment(vaultId)}/media/retired/purge/challenge`,
+    { method: 'POST', body },
+  );
+  return perVaultRetiredServerPurgeChallengeResponseSchema.parse(data);
+}
+
+/**
+ * Step two: the nonce, the freshly observed full doc roster on the surviving
+ * medium, and the Ed25519 signature over that transcript. Only this call ever
+ * destroys retired bytes; nothing on the server purges them on a timer.
+ */
+export async function purgeVaultRetiredServer(
+  vaultId: string,
+  body: PerVaultRetiredServerPurgeRequest,
+): Promise<PerVaultRetiredServerPurgeResponse> {
+  const data = await apiRequest<unknown>(`/vaults/${segment(vaultId)}/media/retired/purge`, {
+    method: 'POST',
+    body,
+  });
+  return perVaultRetiredServerPurgeResponseSchema.parse(data);
+}
+
 export async function getPortfolioVaultRevision(
   portfolioId: string,
   signal?: AbortSignal,
@@ -114,6 +161,27 @@ export async function getPortfolioVaultLifecycle(
     signal,
   });
   return portfolioVaultLifecycleResponseSchema.parse(data);
+}
+
+/**
+ * #1529: one page of a PLAIN portfolio's historical import batches and staging
+ * rows in vault-document row shape — the lossless read that lets the §9
+ * capture carry them into the portfolio document instead of refusing.
+ */
+export async function listPortfolioVaultImportBatches(
+  portfolioId: string,
+  query: PortfolioVaultImportCaptureQuery = {},
+  signal?: AbortSignal,
+): Promise<PortfolioVaultImportCaptureResponse> {
+  const search = new URLSearchParams();
+  if (query.cursor !== undefined) search.set('cursor', query.cursor);
+  if (query.limit !== undefined) search.set('limit', String(query.limit));
+  const suffix = search.size > 0 ? `?${search.toString()}` : '';
+  const data = await apiRequest<unknown>(
+    `/portfolios/${segment(portfolioId)}/vault/import-batches${suffix}`,
+    { signal },
+  );
+  return portfolioVaultImportCaptureResponseSchema.parse(data);
 }
 
 export async function movePortfolioIntoVault(

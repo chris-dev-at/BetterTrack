@@ -23,11 +23,16 @@ const PANEL_ALIASES: Readonly<Record<string, string>> = {
 export const PRIVACY_PANEL_ID = 'privacy';
 
 /**
- * `/control/privacy?enable=1` — the ONE deliberate gesture that asks a
- * normal-mode account for the client-encryption stack. It rides in the URL so
- * the request survives the tree swap it triggers (see `AccountModeRoot`), which
- * is also why the panel drives its wizard from this param instead of local
- * state.
+ * `/control/privacy?enable=1` — the mount seam `AccountModeRoot` still honours
+ * for the legacy ACCOUNT-LEVEL client-encryption stack.
+ *
+ * RETIRED AS AN ENTRY POINT (PROJECTPLAN §16, 2026-08-30). Nothing in the app
+ * produces this param any more: the Privacy panel's "Set up" row and its wizard
+ * render are gone, so a link carrying it swaps the tree and then lands on the
+ * ordinary panel. The seam is kept because the swap it triggers is
+ * `AccountModeRoot`'s, not this module's, and removing it belongs with the §19
+ * v1 retirement rather than with a UI ruling — `UserApp.accountMode.test.tsx`
+ * pins that it is now inert.
  */
 export const VAULT_ENABLE_PARAM = 'enable';
 

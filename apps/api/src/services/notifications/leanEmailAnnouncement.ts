@@ -51,7 +51,7 @@ const ANNOUNCEMENT_COPY: AnnouncementCopyMap = {
 };
 
 export interface AnnounceLeanEmailDefaultsDeps {
-  users: Pick<UserRepository, 'list'>;
+  users: Pick<UserRepository, 'listRecipientsAfter'>;
   notifications: Pick<NotificationRepository, 'insert'>;
   logger?: Logger;
 }

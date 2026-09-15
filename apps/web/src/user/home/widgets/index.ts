@@ -222,6 +222,8 @@ export const WIDGET_REGISTRY = {
     defaultSettings: {},
     // The digest endpoint spans every held asset, not one portfolio.
     supportsScope: false,
+    // Market intelligence unconfigured ⇒ not offered at all (§13.5 V5-P5).
+    capability: 'marketIntel',
     Component: NewsWidget,
   },
   attention: {
@@ -306,6 +308,8 @@ export const WIDGET_REGISTRY = {
     defaultSettings: {},
     // The calendar endpoint spans held + watchlist assets user-level.
     supportsScope: false,
+    // Market intelligence unconfigured ⇒ not offered at all (§13.5 V5-P5).
+    capability: 'marketIntel',
     Component: DividendsWidget,
   },
   alerts: {

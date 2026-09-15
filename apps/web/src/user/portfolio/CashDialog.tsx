@@ -145,8 +145,15 @@ export function CashDialog({
       const body = {
         amountEur: parsedAmount,
         sourceId: scopedSourceId,
-        // Cash movements use noon UTC so they replay after same-day trades.
-        executedAt: `${date}T12:00:00.000Z`,
+        // TODAY BOOKS ON THE SERVER'S CLOCK. A backdated movement is stamped
+        // noon UTC so it replays after that day's trades, but stamping TODAY at
+        // noon puts the money in the future for anyone recording before 12:00Z:
+        // solvency evaluates a same-day transfer at the real instant, so a
+        // deposit just made read as €0 available and the transfer 400'd with
+        // `INSUFFICIENT_CASH` (#1371). Omitting `executedAt` lets the server
+        // stamp "now" — the same clock it judges by, and what `RecordCashDialog`
+        // already does.
+        ...(date === isoToday(today) ? {} : { executedAt: `${date}T12:00:00.000Z` }),
         note: note.trim() === '' ? null : note.trim(),
       };
       // Through the store seam (PD8): a paranoid account's cash lives in the
