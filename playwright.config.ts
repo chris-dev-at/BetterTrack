@@ -9,6 +9,7 @@ import {
   API_HOST,
   API_PORT,
   DATABASE_URL,
+  FAKE_GOOGLE_HOST,
   FAKE_GOOGLE_PORT,
   FAKE_GOOGLE_URL,
   GOOGLE_CLIENT_ID,
@@ -276,13 +277,17 @@ export default defineConfig({
     // Fake Google IdP (issue #520): a local OAuth/OIDC stand-in so the real
     // Google sign-in redirect chain runs network-free. It bounces the browser
     // back to the callback on the WEB origin (proxied) so the host-only
-    // `bt_goog_state` cookie survives the round-trip. Test infra only.
+    // `bt_goog_state` cookie survives the round-trip. Test infra only. Binds
+    // loopback only (#2016) — it mints signed id_tokens with zero
+    // authentication, so an all-interfaces listener would hand the developer's
+    // LAN a token-minting oracle for the length of a run.
     {
       command: 'node e2e/support/fakeGoogleIdp.mjs',
       url: `${FAKE_GOOGLE_URL}/health`,
       env: {
         ...process.env,
         E2E_FAKE_GOOGLE_PORT: FAKE_GOOGLE_PORT,
+        E2E_FAKE_GOOGLE_HOST: FAKE_GOOGLE_HOST,
         BT_GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID,
         E2E_GOOGLE_CALLBACK_ORIGIN: WEB_BASE_URL,
       },
