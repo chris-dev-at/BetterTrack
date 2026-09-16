@@ -183,11 +183,12 @@ export async function getParanoidNormalRevision(
  * Commit the destructive normal → paranoid transition after every medium
  * verified its blob.
  *
- * The optional signal is NOT a cancel handle — the wizard has no cancel
- * affordance past this point. It carries the wizard's
- * `markRateLimitHandledLocally` tag, so a 429 on the commit is reported
- * by the wizard's own stage copy instead of the app-wide "you're doing that too
- * fast" banner.
+ * The optional signal is NOT a cancel handle — there is no cancel affordance
+ * past this point. It carries a caller's `markRateLimitHandledLocally` tag, so
+ * a 429 on the commit is reported by the caller's own stage copy instead of
+ * the app-wide "you're doing that too fast" banner. No client path calls this
+ * since the `ParanoidEnableWizard` was deleted in #1648; it stays for the
+ * future account-level entry (docs/paranoid-design.md §19).
  */
 export async function enableParanoidMode(
   body: ParanoidEnableRequest,
