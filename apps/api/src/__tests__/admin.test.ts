@@ -828,9 +828,13 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
       `expected 200 (admin session alive); got ${patched.status} → ${patchedWhy}`,
     ).toBe(200);
 
-    // Existing session is dead. 401 is the only correct answer: a 200 means the
-    // kill did not take, and anything else means the principal itself vanished —
-    // the message says which half did.
+    // Existing session is dead. 401 is the only correct answer. Decoding any
+    // other status: 403 means the kill did not take (the doomed user is
+    // `mustChangePassword`, so a live session answers 403 here, not 200); a
+    // 404 means the ADMIN principal vanished — the doomed user's own
+    // `session present=0/1` is the EXPECTED state after a successful disable
+    // (its `status=disabled` says so), so only the admin half and the
+    // store-wide counts tell "one principal lost a half" from "store wiped".
     const me = await userAgent.get('/api/v1/auth/me');
     const meWhy = me.status === 401 ? '' : await lostSessionForensics(harness, [doomedSubject]);
     expect(me.status, `expected 401 (session killed); got ${me.status} → ${meWhy}`).toBe(401);
