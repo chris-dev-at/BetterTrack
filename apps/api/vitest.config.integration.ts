@@ -54,6 +54,14 @@ export default defineConfig({
       // running only on PGlite. #1443 is exactly the PGlite-vs-postgres-js
       // divergence class that repository's raw SQL can hit in production.
       'src/__tests__/adminSupportInbox.test.ts',
+      // #1969: …and the typing discriminator that suite cannot be. The
+      // lifecycle `CASE` now binds its ranks with `cast($n as int)` instead of
+      // splicing them as SQL text, so what it asserts IS parameter type
+      // resolution — precisely the PGlite-vs-postgres-js divergence class the
+      // list above exists for. PGlite does reproduce the text resolution
+      // faithfully (measured), so this is belt-and-braces rather than a known
+      // gap; it runs here so the Bind path is the one under test too.
+      'src/data/repositories/__tests__/feedbackLifecycleRankOrder.test.ts',
       // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).
