@@ -18,6 +18,7 @@ import { alertFireLockKey, alertFireWindowStart } from '../services/alerts/alert
 import {
   createFeatureFlagService,
   FEATURE_FLAG_CACHE_KEY,
+  FEATURE_FLAG_CONFIG_CHANGED,
   FEATURE_FLAG_CONFIG_UNREADABLE,
   FEATURE_FLAG_GENERATION_KEY,
   FEATURE_FLAG_PROPAGATION_UNCONFIRMED,
@@ -850,6 +851,32 @@ describe('an unparseable stored row can never resurrect a killed feature', () =>
     expect(anon.body.flags.chat).toBe(false);
   });
 
+  /**
+   * The KILL SWITCH's own refusal. It is the control an operator reaches for
+   * mid-incident and the one that sends `{ enabled }` alone, so it is also the
+   * write most likely to meet a degraded row — and it must be refused for the
+   * same reason as any other partial: inheriting `rolloutPercent` from a row
+   * nobody could read means writing a guess back as fact.
+   */
+  it('refuses the `{ enabled }`-only kill switch onto a degraded row too', async () => {
+    await storeRaw('chat', { enabled: true, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const refused = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: false });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error?.code).toBe(FEATURE_FLAG_CONFIG_UNREADABLE);
+    // The refusal names the state it refused on, so the console can say which
+    // half of the row is unreadable instead of guessing.
+    expect(refused.body.error?.details).toMatchObject({ stored: 'salvaged' });
+
+    // The feature is untouched — refused, not half-applied.
+    const anon = await request(harness.app).get('/api/v1/feature-flags');
+    expect(anon.body.flags.chat).toBe(true);
+  });
+
   it('accepts a COMPLETE replacement, which invents nothing — the operator escape hatch', async () => {
     await storeRaw('chat', { enabled: false, rolloutPercent: 'fifty' });
     const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
@@ -857,10 +884,49 @@ describe('an unparseable stored row can never resurrect a killed feature', () =>
     const repaired = await adminAgent
       .patch('/api/v1/admin/feature-flags/chat')
       .set(...XRW)
-      .send({ enabled: true, rolloutPercent: 50, allowUserIds: [], denyUserIds: [] });
+      // `repair` asserts the state the caller OBSERVED. Since #1950 a degraded
+      // row takes no write without it — see the stale-view suite below.
+      .send({
+        enabled: true,
+        rolloutPercent: 50,
+        allowUserIds: [],
+        denyUserIds: [],
+        repair: 'salvaged',
+      });
     expect(repaired.status).toBe(200);
     const chat = repaired.body.flags.find((f: { key: string }) => f.key === 'chat');
     expect(chat).toMatchObject({ enabled: true, rolloutPercent: 50 });
+  });
+
+  /**
+   * The row with NOTHING readable in it, driven end to end. The salvage cases
+   * above all still had an `enabled` to honour; this is the one where the
+   * console is showing pure defaults, and the repair has to land anyway.
+   */
+  it('repairs a fully UNREADABLE row and stores it in the rollback-safe shape', async () => {
+    await storeRaw('imports', { nothing: 'usable', rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const repaired = await adminAgent
+      .patch('/api/v1/admin/feature-flags/imports')
+      .set(...XRW)
+      .send({
+        enabled: true,
+        rolloutPercent: 100,
+        allowUserIds: [],
+        denyUserIds: [],
+        repair: 'unreadable',
+      });
+    expect(repaired.status).toBe(200);
+    const imports = repaired.body.flags.find((f: { key: string }) => f.key === 'imports');
+    expect(imports).toMatchObject({ enabled: true, rolloutPercent: 100, stored: 'parsed' });
+
+    // Untargeted after the repair, so it goes back to disk as the legacy BARE
+    // BOOLEAN — the shape a deploy rolled back past #1910 can still read. A
+    // repair that wrote the object form would leave the row unreadable to the
+    // very version an operator might roll back to.
+    const row = await createAppSettingsRepository(harness.db).get('feature_flag_imports');
+    expect(row?.value).toBe(true);
   });
 
   it('records a TRUTHFUL audit `before` — never the invented default', async () => {
@@ -883,6 +949,70 @@ describe('an unparseable stored row can never resurrect a killed feature', () =>
     // that never happened.
     expect(entry.meta.before.enabled).toBe(false);
     expect(entry.meta.after.enabled).toBe(false);
+    // …and the log says HOW MUCH of that `before` was actually read. This row
+    // PARSED — the stored schema strips the unknown key rather than failing on
+    // it — so the `before` above is a row that was genuinely read, and the field
+    // says so. The next test is the case where it is not.
+    expect(entry.meta.storedBefore).toBe('parsed');
+  });
+
+  /**
+   * The limit of a truthful `before` (#1950 M2). On an UNREADABLE row there is
+   * no `enabled` to report, so `before` is unavoidably the default — and a log
+   * that stops there claims the flag was ON before the write, which is a
+   * statement about the estate that nobody verified.
+   *
+   * `storedBefore` is what makes that honest: the counts stay, and beside them
+   * sits the fact that they describe a fallback rather than a row. An enum, no
+   * ids — the same rule `auditableConfig` follows.
+   */
+  it('records that a repaired `before` was a FALLBACK, not a row that was read', async () => {
+    await storeRaw('imports', { nothing: 'usable' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/imports')
+      .set(...XRW)
+      .send({
+        enabled: false,
+        rolloutPercent: 100,
+        allowUserIds: [],
+        denyUserIds: [],
+        repair: 'unreadable',
+      })
+      .expect(200);
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const entry = audit.body.entries.find(
+      (e: { action: string; meta?: { key?: string } }) =>
+        e.action === 'feature_flag.changed' && e.meta?.key === 'imports',
+    );
+    expect(entry.meta.storedBefore).toBe('unreadable');
+    // The `before` block is still served — it is just no longer the only thing
+    // the reader has to go on.
+    expect(entry.meta.before).toMatchObject({ enabled: true, allowCount: 0, denyCount: 0 });
+    expect(entry.meta.after.enabled).toBe(false);
+  });
+
+  /** A healthy write says so too, so the field is never "present ⇒ trouble". */
+  it('records `storedBefore` on an ordinary flip as well', async () => {
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send({ enabled: false })
+      .expect(200);
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const entry = audit.body.entries.find(
+      (e: { action: string; meta?: { key?: string } }) =>
+        e.action === 'feature_flag.changed' && e.meta?.key === 'alerts',
+    );
+    // `unset`, not `parsed`: the console collapses those two because neither
+    // needs repairing, but the LOG keeps them apart — "nobody had ever
+    // configured this" and "it was configured and readable" are different
+    // histories, and the audit is where that difference is asked for later.
+    expect(entry.meta.storedBefore).toBe('unset');
   });
 
   it('still degrades to ON when an ENABLED flag has a garbled rollout', async () => {
@@ -899,6 +1029,104 @@ describe('an unparseable stored row can never resurrect a killed feature', () =>
     const list = await adminAgent.get('/api/v1/admin/feature-flags');
     const alerts = list.body.flags.find((f: { key: string }) => f.key === 'alerts');
     expect(alerts).toMatchObject({ enabled: true, rolloutPercent: 100, allowUserIds: [] });
+  });
+});
+
+/**
+ * The console cannot repair what it cannot see (#1950).
+ *
+ * #1910 made the READ honest — a degraded row no longer reports an invented
+ * healthy configuration — and made a partial PATCH onto one a 409. Both halves
+ * are invisible to the operator: the list served a row that looks exactly like a
+ * clean one, so the only way to discover the damage was to attempt a write and
+ * read a conflict. The list therefore carries the READ OUTCOME per flag, which
+ * is the same four-outcome value `readStoredConfig` already computes — `unset`
+ * reported as `parsed`, because "nobody has configured this" and "configured and
+ * fully understood" are the same thing to an operator: nothing to repair.
+ */
+describe('the admin list reports how well each stored row could be read', () => {
+  async function storeRaw(key: string, value: unknown): Promise<void> {
+    await createAppSettingsRepository(harness.db).upsert(`feature_flag_${key}`, value, null);
+    await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
+  }
+
+  /** One admin per test — `seedAdmin` uses a fixed email, so two would collide. */
+  type AdminAgent = Awaited<ReturnType<typeof harness.loginAdmin>>;
+
+  async function storedOf(adminAgent: AdminAgent): Promise<Record<string, unknown>> {
+    const list = await adminAgent.get('/api/v1/admin/feature-flags').expect(200);
+    return Object.fromEntries(
+      (list.body.flags as Array<{ key: string; stored: unknown }>).map((f) => [f.key, f.stored]),
+    );
+  }
+
+  it('says `parsed` for an unset row and for one it understands completely', async () => {
+    // Written by this version, in the object form…
+    await storeRaw('chat', {
+      enabled: true,
+      rolloutPercent: 25,
+      allowUserIds: [],
+      denyUserIds: [],
+    });
+    // …and in the legacy bare-boolean form, which is equally well understood.
+    await storeRaw('alerts', false);
+
+    const stored = await storedOf(await harness.loginAdmin(await harness.seedAdmin()));
+    expect(stored.chat).toBe('parsed');
+    expect(stored.alerts).toBe('parsed');
+    // Never configured: there is nothing to repair, so it must not wear a badge.
+    expect(stored.imports).toBe('parsed');
+  });
+
+  it('says `salvaged` when only the targeting fields were unreadable', async () => {
+    await storeRaw('alerts', { enabled: true, rolloutPercent: 'fifty' });
+
+    const stored = await storedOf(await harness.loginAdmin(await harness.seedAdmin()));
+    expect(stored.alerts).toBe('salvaged');
+    // The salvage is per row, not a global degradation.
+    expect(stored.chat).toBe('parsed');
+  });
+
+  it('says `unreadable` when there was no `enabled` left to honour', async () => {
+    await storeRaw('imports', { rolloutPercent: 'fifty', nothing: 'usable' });
+
+    expect((await storedOf(await harness.loginAdmin(await harness.seedAdmin()))).imports).toBe(
+      'unreadable',
+    );
+  });
+
+  /**
+   * The repair path end to end: the badge the console draws off `stored` leads to
+   * a complete replacement, and the replacement clears it. A row that stayed
+   * marked after a successful repair would send the operator round the loop again.
+   */
+  it('clears back to `parsed` once a complete replacement has landed', async () => {
+    await storeRaw('chat', { enabled: false, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+    expect((await storedOf(adminAgent)).chat).toBe('salvaged');
+
+    const repaired = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      // Exactly the body the console's rollout Save sends for a degraded row:
+      // all four fields plus the state it observed, so nothing is inherited
+      // from a row we could not read and nothing lands on a row that has
+      // meanwhile changed underneath the view.
+      .send({
+        enabled: false,
+        rolloutPercent: 100,
+        allowUserIds: [],
+        denyUserIds: [],
+        repair: 'salvaged',
+      })
+      .expect(200);
+
+    // The response the write returns is the same list shape, already repaired —
+    // the console renders it optimistically and must not keep showing the badge.
+    const chat = repaired.body.flags.find((f: { key: string }) => f.key === 'chat');
+    expect(chat.stored).toBe('parsed');
+    expect(chat.enabled).toBe(false);
+    expect((await storedOf(adminAgent)).chat).toBe('parsed');
   });
 });
 
@@ -958,5 +1186,167 @@ describe('an untargeted flag is still stored in the pre-#1910 shape', () => {
       .send({ rolloutPercent: 100 })
       .expect(200);
     expect(await storedValue('alerts')).toBe(true);
+  });
+});
+
+/**
+ * A repair is a CONDITIONAL write (#1950 M1).
+ *
+ * The complete replacement that repairs a degraded row is, by construction, the
+ * one write that inherits nothing — it states all four fields. That is exactly
+ * what makes it dangerous against a console that fetched its list on mount: the
+ * operator's tab keeps believing a row is degraded long after a colleague
+ * repaired it, and the "repair" it then sends is a full overwrite of a row that
+ * is now healthy. Two operators, one repairing and killing a feature and one
+ * sitting on a stale tab, and the kill is silently reverted — precisely the
+ * clobber the PATCH-merge design exists to avoid, arriving through the one path
+ * that is allowed to bypass the merge.
+ *
+ * So the replacement carries a PRECONDITION: `repair` names the degraded state
+ * the caller observed, and the server applies the write only while that is still
+ * what the row says. It is the same idea as the Vaults CAS `expectedVersion`,
+ * narrowed to the only transition that needs it.
+ */
+describe('a complete replacement only lands on the row the operator actually saw', () => {
+  async function storeRaw(key: string, value: unknown): Promise<void> {
+    await createAppSettingsRepository(harness.db).upsert(`feature_flag_${key}`, value, null);
+    await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
+  }
+
+  /** The body a console holding a salvaged view of `chat` would send. */
+  const STALE_REPAIR = {
+    enabled: true,
+    rolloutPercent: 100,
+    allowUserIds: [],
+    denyUserIds: [],
+    repair: 'salvaged',
+  } as const;
+
+  it('refuses a stale repair after someone else fixed the row, keeping their kill', async () => {
+    await storeRaw('chat', { enabled: true, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    // Operator A loads the console and sees a degraded row. Nothing is sent yet;
+    // this read is only what A's Save will later be built from.
+    const aView = await adminAgent.get('/api/v1/admin/feature-flags').expect(200);
+    expect(aView.body.flags.find((f: { key: string }) => f.key === 'chat').stored).toBe('salvaged');
+
+    // Operator B repairs the same row…
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({
+        enabled: true,
+        rolloutPercent: 100,
+        allowUserIds: [],
+        denyUserIds: [],
+        repair: 'salvaged',
+      })
+      .expect(200);
+    // …and then kills the feature, which is now an ordinary one-field flip.
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: false })
+      .expect(200);
+
+    // A's tab still believes the row is salvaged and sends the repair it was
+    // offered. Without the precondition this is a 200 that reverts B's kill.
+    const stale = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send(STALE_REPAIR);
+    expect(stale.status).toBe(409);
+    expect(stale.body.error?.code).toBe(FEATURE_FLAG_CONFIG_CHANGED);
+
+    // The kill survives, on the durable row and on the wire.
+    const anon = await request(harness.app).get('/api/v1/feature-flags');
+    expect(anon.body.flags.chat).toBe(false);
+    const after = await adminAgent.get('/api/v1/admin/feature-flags').expect(200);
+    expect(after.body.flags.find((f: { key: string }) => f.key === 'chat')).toMatchObject({
+      enabled: false,
+      stored: 'parsed',
+    });
+  });
+
+  it('refuses a repair that names the WRONG degradation', async () => {
+    // Asserting `salvaged` against a row that is unreadable is the same class of
+    // stale view: what the operator is looking at is not what is on disk.
+    await storeRaw('chat', { nothing: 'usable' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const refused = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send(STALE_REPAIR);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error?.code).toBe(FEATURE_FLAG_CONFIG_CHANGED);
+  });
+
+  it('refuses a complete body that asserts NOTHING about a degraded row', async () => {
+    await storeRaw('chat', { enabled: true, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    // Completeness alone is not consent to overwrite: without `repair` the
+    // server cannot tell a considered repair from a blind write by a client
+    // that never looked. It refuses, and the message says what to add.
+    const refused = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: false, rolloutPercent: 100, allowUserIds: [], denyUserIds: [] });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error?.code).toBe(FEATURE_FLAG_CONFIG_UNREADABLE);
+  });
+
+  /**
+   * The precondition must not leak into the ordinary path: a healthy row keeps
+   * taking the partial patches both console controls send, with no new field and
+   * no new refusal.
+   */
+  it('leaves a healthy row exactly as it was — partial patches, no precondition', async () => {
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ rolloutPercent: 40 })
+      .expect(200);
+    const flipped = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: false })
+      .expect(200);
+
+    // The rollout survived the flip and the flip survived the rollout: the merge
+    // still merges.
+    expect(flipped.body.flags.find((f: { key: string }) => f.key === 'chat')).toMatchObject({
+      enabled: false,
+      rolloutPercent: 40,
+      stored: 'parsed',
+    });
+  });
+
+  it('refuses a repair asserted against a row that was never degraded', async () => {
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    const refused = await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send(STALE_REPAIR);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error?.code).toBe(FEATURE_FLAG_CONFIG_CHANGED);
+  });
+
+  it('rejects an unknown repair value at the contract boundary, not in the service', async () => {
+    await storeRaw('chat', { enabled: true, rolloutPercent: 'fifty' });
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    // `parsed` is not a repairable state, so it is not in the enum: asserting it
+    // is an operator typo, and a typo on a security-relevant gate is a 400.
+    const refused = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ ...STALE_REPAIR, repair: 'parsed' });
+    expect(refused.status).toBe(400);
   });
 });

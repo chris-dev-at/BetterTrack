@@ -183,18 +183,21 @@ test('registration modes: approval mode gates on admin approve / reject via the 
 
     // (3) Admin drives the real People → Registration page — approve A, reject
     // B. ADMIN-W1 (#1406) moved the queue there from Settings; `RegistrationPage`
-    // is the only admin page that renders the Approve / Reject rows. Each row is
-    // keyed on the applicant's username, so we scope by that to avoid a race
-    // between them.
+    // is the only admin page that renders the Approve / Reject rows. ADMIN-W2
+    // (#1572) rebuilt the queue as a real `<table>` (`DataTable`/`Th`/`Td` in
+    // ../admin/components/ui.tsx) rather than a `<ul>`, so each queue entry is
+    // an ARIA `row`, not a `listitem` — the same role `RegistrationPage.test.tsx`
+    // queries with `getAllByRole('row')`. Each row is keyed on the applicant's
+    // username, so we scope by that to avoid a race between them.
     adminCtx = await newAdminBrowserContext(browser, apiRequest);
     const adminPage = await adminCtx.newPage();
     await adminPage.goto('/admin/registration');
-    const approveRow = adminPage.getByRole('listitem').filter({ hasText: approveUsername });
+    const approveRow = adminPage.getByRole('row').filter({ hasText: approveUsername });
     await expect(approveRow).toBeVisible({ timeout: 30_000 });
     await approveRow.getByRole('button', { name: 'Approve' }).click();
     await expect(approveRow).toBeHidden({ timeout: 15_000 });
 
-    const rejectRow = adminPage.getByRole('listitem').filter({ hasText: rejectUsername });
+    const rejectRow = adminPage.getByRole('row').filter({ hasText: rejectUsername });
     await expect(rejectRow).toBeVisible();
     await rejectRow.getByRole('button', { name: 'Reject' }).click();
     await expect(rejectRow).toBeHidden({ timeout: 15_000 });

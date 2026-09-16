@@ -12,6 +12,7 @@ vi.mock('../../lib/socialApi', () => ({
 
 import { FRIEND_GROUPS_MAX } from '@bettertrack/contracts';
 
+import { ApiError } from '../../lib/apiClient';
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 import { AudiencePicker } from './AudiencePicker';
@@ -722,5 +723,168 @@ describe('AudiencePicker — the friend-group list is bounded (#1780)', () => {
 
     expect(screen.getByText('Circle 0')).toBeInTheDocument();
     expect(screen.queryByText(/the maximum/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * #1899 — a share whose circle was deleted. `share_audiences.group_id` is
+ * `ON DELETE SET NULL` (`apps/api/src/data/schema.ts`), so the server state is
+ * `{ audience: 'group', groupId: null }`: the tier outlives the circle and the
+ * enforcement layer then admits NOBODY. The picker seeded that verbatim and
+ * disabled Save with nothing rendered to explain it, and the matching refusal
+ * (`GROUP_AUDIENCE_INVALID`) arrived as the generic "please try again", so
+ * retrying repeated it forever.
+ *
+ * The repair must never widen on its own: every way out of this state is either
+ * a narrowing (`private`) or walks the §16 friction ladder.
+ */
+describe('AudiencePicker — a share whose circle was deleted (#1899)', () => {
+  const FAMILY = '00000000-0000-0000-0000-0000000000f1';
+  const WORK = '00000000-0000-0000-0000-0000000000f2';
+  const WORK_ROW = { id: WORK, name: 'Work', memberCount: 18, members: [], shareCount: 0 };
+  const FAMILY_ROW = { id: FAMILY, name: 'Family', memberCount: 3, members: [], shareCount: 0 };
+
+  const DELETED_CIRCLE_NOTICE =
+    'The group this was shared with no longer exists, so right now nobody can see it. ' +
+    'Pick another group or a different audience below, then save.';
+  const GROUP_GONE_ERROR =
+    'That group no longer exists. Your sharing is unchanged — pick another group or a ' +
+    'different audience, then save again.';
+
+  function deletedCircleShare() {
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: SUBJECT,
+      audience: 'group',
+      friendIds: [],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(listGroups).mockResolvedValue({ groups: [WORK_ROW] });
+  }
+
+  function savedState(audience: 'private' | 'group', groupId: string | null = null) {
+    return {
+      state: {
+        kind: 'portfolio' as const,
+        subjectId: SUBJECT,
+        audience,
+        friendIds: [],
+        groupId,
+        link: { active: false, createdAt: null },
+      },
+    };
+  }
+
+  test('explains the state instead of presenting a silently disabled Save', async () => {
+    deletedCircleShare();
+    renderPicker();
+
+    expect(await screen.findByText(DELETED_CIRCLE_NOTICE)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+  });
+
+  test('is repairable to private from inside the dialog — no reload, no ladder, no widening', async () => {
+    deletedCircleShare();
+    vi.mocked(setAudience).mockResolvedValue(savedState('private'));
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /only me/i }));
+    const save = screen.getByRole('button', { name: /^save$/i });
+    // Narrowing: the ladder has no rung here, and nothing was widened to escape.
+    expect(screen.queryByRole('checkbox', { name: /this change widens access/i })).toBeNull();
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'private',
+      friendIds: undefined,
+      groupId: undefined,
+      acknowledgePublic: undefined,
+      confirmWiden: undefined,
+    });
+  });
+
+  test('is repairable by re-picking a live circle, under the ladder', async () => {
+    deletedCircleShare();
+    vi.mocked(setAudience).mockResolvedValue(savedState('group', WORK));
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /work/i }));
+    const save = screen.getByRole('button', { name: /^save$/i });
+    expect(save).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /this change widens access/i }));
+    await user.click(save);
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'group',
+      friendIds: undefined,
+      groupId: WORK,
+      acknowledgePublic: undefined,
+      confirmWiden: true,
+    });
+  });
+
+  /**
+   * The judgment call the issue asked to decide deliberately: the ladder's FROM
+   * slot must name the reach it means. "from Friend group to All friends" reads
+   * as though a populated circle already sees the item, which understates the
+   * widening the acknowledgment exists to make explicit.
+   */
+  test('the ladder names the zero reach, never a populated “Friend group”', async () => {
+    deletedCircleShare();
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+
+    expect(
+      screen.getByText(/change access from a deleted group \(reaches nobody\) to All friends/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/from Friend group to All friends/i)).toBeNull();
+
+    const save = screen.getByRole('button', { name: /^save$/i });
+    expect(save).toBeDisabled();
+    expect(setAudience).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('checkbox', { name: /this change widens access/i }));
+    expect(save).toBeEnabled();
+  });
+
+  test('a GROUP_AUDIENCE_INVALID refusal names the cause, refreshes the stale list and leaves sharing unchanged', async () => {
+    // The issue's scenario: the circle list is cached 30 s and never refetches
+    // while the dialog is open. The owner deletes "Family" in a second tab,
+    // returns, and picks it from the stale list.
+    vi.mocked(listGroups)
+      .mockResolvedValueOnce({ groups: [FAMILY_ROW, WORK_ROW] })
+      .mockResolvedValue({ groups: [WORK_ROW] });
+    vi.mocked(setAudience).mockRejectedValue(
+      new ApiError(400, 'GROUP_AUDIENCE_INVALID', 'Sharing to a group requires one of your own.'),
+    );
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /friend group/i }));
+    await user.click(screen.getByRole('radio', { name: /family/i }));
+    await user.click(screen.getByRole('checkbox', { name: /this change widens access/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(await screen.findByText(GROUP_GONE_ERROR)).toBeInTheDocument();
+    expect(screen.queryByText('Could not update sharing. Please try again.')).toBeNull();
+
+    // The stale list is refreshed, and the dead circle is gone from it.
+    await waitFor(() => expect(listGroups).toHaveBeenCalledTimes(2));
+    // Sharing is unchanged: the picker is back on the server's own audience,
+    // never on a wider one, and nothing was re-submitted behind the owner.
+    expect(await screen.findByRole('radio', { name: /only me/i })).toBeChecked();
+    expect(setAudience).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('radio', { name: /friend group/i }));
+    expect(screen.getByRole('radio', { name: /work/i })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: /family/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
   });
 });

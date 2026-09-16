@@ -125,6 +125,7 @@ const featureFlag = (key: AdminFeatureFlag['key']): AdminFeatureFlag => ({
   rolloutPercent: 100,
   allowUserIds: [],
   denyUserIds: [],
+  stored: 'parsed',
   description: `${key} desc`,
   updatedAt: null,
   updatedBy: null,

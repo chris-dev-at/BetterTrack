@@ -500,6 +500,9 @@
         "disconnected": "Drive-Konto getrennt. Seine Dateien bleiben in Google Drive.",
         "acknowledge": "Tresore verwenden diese Verbindung noch. Beim Trennen wird ihre Drive-Bindung entfernt und jede verifizierte Serverkopie bleibt genau so, wie sie ist — Änderungen, die nur Drive erreicht haben, bleiben zurück. Die verschlüsselten Dateien bleiben dein Eigentum in Google Drive.",
         "acknowledgeAction": "Trennen und Dateien in Drive behalten",
+        "acknowledgeStepUp": "Bestätige, dass du es bist, bevor diese Verbindung ihre Reichweite verliert: Es geht um eine der beiden Kopien deines Tresors.",
+        "acknowledgeStepUpError": "Die Bestätigung wurde nicht akzeptiert. Prüfe dein Passwort oder deinen Code und versuche es erneut.",
+        "acknowledgeThrottled": "Zu viele Versuche. Warte einen Moment und bestätige dann erneut.",
         "lastMedium": "Ein Tresor mit dieser Verbindung hat keine verifizierte Serverkopie, Drive hält also seine einzige Kopie. Das Medium „Server“ auszuwählen genügt nicht — dieser Tresor muss zuerst eine verifizierte Serverkopie abschließen oder in ein anderes Drive-Konto umziehen, bevor du trennst.",
         "error": "Die Drive-Verbindung konnte nicht geändert werden.",
         "bindings": "Drive-Bindungen der Tresore",
@@ -2138,9 +2141,9 @@
       "perMonth": "prognostiziert / Monat",
       "perYear": "prognostiziert / Jahr",
       "projectionUnresolved": "Ein prognostizierter Gesamtbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück. Die Termine unten sind davon nicht betroffen.",
-      "projectionTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb zeigen wir keinen Gesamtbetrag. Die Termine unten sind davon nicht betroffen.",
+      "projectionTruncated": "Dieses Portfolio enthält mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb zeigen wir keinen Gesamtbetrag. Die Termine unten sind davon nicht betroffen.",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
-      "calendarTruncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
+      "calendarTruncated": "Nur teilweise: Dieses Portfolio enthält mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
@@ -3264,7 +3267,10 @@
       "other": "{{count}} Mitglieder"
     },
     "groupsAtLimit": "Das sind alle {{count}} Gruppen – das Maximum. Verwalte sie auf der Personen-Seite.",
-    "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
+    "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann.",
+    "groupDeletedNotice": "Die Gruppe, mit der dies geteilt wurde, existiert nicht mehr — derzeit sieht es niemand. Wähle unten eine andere Gruppe oder eine andere Sichtbarkeit und speichere dann.",
+    "groupGoneError": "Diese Gruppe existiert nicht mehr. Deine Freigabe bleibt unverändert — wähle eine andere Gruppe oder eine andere Sichtbarkeit und speichere erneut.",
+    "audienceGroupDeleted": "einer gelöschten Gruppe (erreicht niemanden)"
   },
   "watchlists": {
     "title": "Watchlists",
@@ -5180,6 +5186,15 @@
         "other": "An für {{percent}} % + {{count}} Konten"
       },
       "killedNote": "Der Schalter ist aus, damit ist die Funktion für alle aus — der Rollout unten gilt nicht, auch die Immer-an-Liste nicht.",
+      "stored": {
+        "salvagedBadge": "Rollout unlesbar",
+        "unreadableBadge": "Konfig. unlesbar",
+        "salvagedNote": "Das gespeicherte Targeting dieses Schalters konnte nicht gelesen werden. Der Rollout unten ist deshalb der Standard, den diese App gerade ausliefert — nicht das, was gespeichert ist. Der Schalter selbst war lesbar und gilt. Speichern Sie den Rollout, um die gespeicherte Konfiguration vollständig zu ersetzen.",
+        "unreadableNote": "Die gespeicherte Konfiguration dieses Schalters konnte gar nicht gelesen werden. Schalter und Rollout unten sind deshalb der Standard, den diese App gerade ausliefert — nicht das, was gespeichert ist. Speichern Sie den Rollout, um die gespeicherte Konfiguration vollständig zu ersetzen.",
+        "conflictError": "Die gespeicherte Konfiguration dieses Schalters ist unlesbar — ersetzen Sie sie vollständig über „Rollout speichern“.",
+        "conflictErrorSalvaged": "Der gespeicherte Rollout dieses Schalters ist unlesbar — ersetzen Sie die gesamte Konfiguration über „Rollout speichern“.",
+        "changedError": "Dieser Schalter hat sich geändert, seit die Liste geladen wurde — möglicherweise hat ihn jemand anderes bereits repariert. Aktualisieren Sie die Liste und nehmen Sie die Änderung auf dem aktuellen Stand vor."
+      },
       "rolloutHeading": "Rollout",
       "percentLabel": "Rollout %",
       "percentHint": "0–100. Jedes Konto liegt in einem festen Bucket, deshalb nimmt eine Ausweitung niemandem die Funktion wieder weg.",
@@ -5211,6 +5226,10 @@
       "views": "{{count}} Aufrufe",
       "eventsLabel": "Ereignisse",
       "activeUsersLabel": "Aktive Nutzer",
+      "todayStale": {
+        "badge": "Veraltet",
+        "tooltip": "Die heutigen Zahlen könnten veraltet sein — die letzte Aktualisierung ist fehlgeschlagen; der nächste planmäßige Rollup gleicht das aus."
+      },
       "stage": {
         "registered": "Registriert",
         "activated": "Aktiviert",
