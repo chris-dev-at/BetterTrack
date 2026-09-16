@@ -3,16 +3,24 @@ import { readFile } from 'node:fs/promises';
 
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
+// The root e2e context resolves workspace contracts by path, exactly as the PD9
+// and E3 harnesses do — there is no `@bettertrack/contracts` alias in this
+// tsconfig.
+import type { CustomAssetCategory } from '../packages/contracts/src/portfolio';
 import {
   serializeVaultTransferPayload,
   VAULT_TRANSFER_CONFORMANCE_VECTORS,
   VAULT_TRANSFER_VECTOR_FINGERPRINT,
   type VaultTransferPayload,
+  type VaultTransferPayloadErrorOutcome,
 } from '../apps/web/src/user/vault/qr';
 import {
   isParanoidKilledPath,
   safeDestination,
 } from '../apps/web/src/user/vault/ui/ParanoidSurfaceGate';
+// Read from the message bundle the app renders it from — never a second
+// hardcoded copy (the google-login spec pins the same idiom, #1859).
+import en from '../apps/web/src/i18n/messages/en.json' with { type: 'json' };
 import { newAdminRequestContext } from './support/adminApi';
 import { withoutMatcherAriaSnapshot } from './support/artifactHygiene';
 import { ACCOUNT_PASSWORD } from './support/config';
@@ -103,6 +111,16 @@ const DEVICE_PASSWORD = 'E10-Device-Password-2026!';
 const WRONG_DEVICE_PASSWORD = 'E10-Wrong-Password-2026!';
 
 /**
+ * [E10-A10b]'s manual asset needs a real category off the current catalog
+ * taxonomy — `property` was retired with the old real_estate/vehicle/collectible
+ * enum (V3-P2, #325) and the API now 400s it. Typed against the contract
+ * (rather than a bare string literal) so the next rename of
+ * `CUSTOM_ASSET_CATEGORIES` fails this file at typecheck, not at runtime; `other`
+ * fits a flat (#1706).
+ */
+const MANUAL_ASSET_CATEGORY: CustomAssetCategory = 'other';
+
+/**
  * PD9's scan reports on a fixed canary set plus whatever the caller adds. E10
  * adds its own per-test secrets; the shared helper is reused rather than
  * duplicated so a future artifact format is covered in one place.
@@ -184,6 +202,27 @@ const VAULT_TRANSFER_ACCEPT_VECTORS: ReadonlyArray<
 ).filter((entry): entry is [VaultTransferAcceptVectorName, VaultTransferAcceptVector] =>
   Object.hasOwn(entry[1], 'expected'),
 );
+
+const RECEIVER_ERROR_COPY = en.vault.transfer.receiver.errors;
+
+/**
+ * The receiver copy for a rejected outcome, read from the SAME message bundle
+ * `VaultReceivePhrase` renders it from (`payloadErrorKey`'s
+ * outcome-to-i18n-key map, mirrored here by the kebab-to-camel convention every
+ * `vault.transfer.receiver.errors.*` key already follows) rather than a second,
+ * hand-retyped copy of the sentence (#1706). An outcome whose key doesn't
+ * follow that convention fails loudly here instead of asserting `undefined`.
+ */
+function outcomeErrorCopy(outcome: VaultTransferPayloadErrorOutcome): string {
+  const camelKey = outcome.replace(/-([a-z])/g, (_match, letter: string) =>
+    letter.toUpperCase(),
+  ) as keyof typeof RECEIVER_ERROR_COPY;
+  const copy = RECEIVER_ERROR_COPY[camelKey];
+  if (typeof copy !== 'string') {
+    throw new Error(`no receiver copy for outcome "${outcome}" (looked up "${camelKey}")`);
+  }
+  return copy;
+}
 
 /** The phone project has its own permanent suite; these are desktop arcs. */
 function skipOnPhone(testInfo: { project: { name: string } }): void {
@@ -1363,7 +1402,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // 2. … an OWNER-MANUAL asset with value points and a buy of it …
       const created = await api.post(apiV1('/custom-assets'), {
         headers: CSRF_HEADERS,
-        data: { name: 'E10 Manual Flat', category: 'property', currency: 'EUR' },
+        data: { name: 'E10 Manual Flat', category: MANUAL_ASSET_CATEGORY, currency: 'EUR' },
       });
       expect(created.ok(), await created.text()).toBeTruthy();
       const manualAssetId = ((await created.json()) as { asset: { id: string } }).asset.id;
@@ -1604,40 +1643,28 @@ test.describe('PARANOID E10 per-vault gate', () => {
         // `qr/payload.test.ts`; what is checked here is the vector's declared
         // OUTCOME against the copy the receiver actually shows for it, so the
         // fixture and this UI seam cannot drift apart.
-        const rejects: ReadonlyArray<readonly [VaultTransferRejectVectorName, string, string]> = [
-          ['unknownPrefix', 'update-required', 'This transfer code uses an unsupported version.'],
-          [
-            'missingMnemonic',
-            'missing-mnemonic',
-            'The transfer code has no seed phrase and was rejected.',
-          ],
-          [
-            'missingVaultId',
-            'missing-vault-id',
-            'The transfer code has no vault ID and was rejected.',
-          ],
-          [
-            'badChecksum',
-            'invalid-mnemonic',
-            'The seed phrase must be 12 valid English BIP39 words',
-          ],
-          [
-            'elevenWords',
-            'invalid-mnemonic',
-            'The seed phrase must be 12 valid English BIP39 words',
-          ],
-          [
-            'duplicateVaultId',
-            'invalid-vault-id',
-            'The transfer code contains an invalid vault ID.',
-          ],
+        //
+        // Neither half is hand-transcribed (#1706): the outcome is read off the
+        // vector itself — indexing `.outcome` also pins these six as REJECT
+        // vectors at the TYPE level, so promoting one to an accept vector stops
+        // this file compiling rather than quietly asserting a message that can
+        // no longer appear — and the copy comes from the same i18n bundle the
+        // receiver renders it from, keyed by that same outcome. A hand-typed
+        // pair of the two (the #1706 bug: `duplicateVaultId` pinned the RETIRED
+        // `invalid-vault-id` outcome the vector no longer carries) can no longer
+        // drift from either source.
+        const rejects: readonly VaultTransferRejectVectorName[] = [
+          'unknownPrefix',
+          'missingMnemonic',
+          'missingVaultId',
+          'badChecksum',
+          'elevenWords',
+          'duplicateVaultId',
         ];
-        for (const [vectorName, outcome, message] of rejects) {
+        for (const vectorName of rejects) {
           const vector = VAULT_TRANSFER_CONFORMANCE_VECTORS[vectorName];
-          // Indexing `.outcome` also pins these six as REJECT vectors at the
-          // type level: promote one to an accept vector and this stops compiling
-          // rather than quietly asserting a message that can no longer appear.
-          expect(vector.outcome, `${vectorName} must still be a ${outcome} vector`).toBe(outcome);
+          const outcome = vector.outcome;
+          const message = outcomeErrorCopy(outcome);
 
           // The shipped method button re-selects the scan source, which is the
           // receiver's own reset of the error state — no test-only hook.
