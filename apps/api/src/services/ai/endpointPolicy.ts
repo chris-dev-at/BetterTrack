@@ -105,25 +105,44 @@ export async function resolveLocalAiEndpoint(
 }
 
 /**
- * Whether a write may proceed for this endpoint.
+ * Whether a write may proceed for this endpoint. Returns whether the address was
+ * actually vetted, so the caller can say which of the two "allowed" outcomes it
+ * got; throws {@link AiEndpointNotLocalError} when the destination is refused.
  *
- * A POLICY refusal blocks the write (typed 400). A host that simply does not
- * resolve right now does NOT: an admin configuring the box before powering it
- * on, or saving during a DNS blip, is a legitimate flow, and the fetch-time
- * guard refuses the request anyway if the name later answers with a public
- * address. Fail-open here is therefore not a widening — nothing is reachable
- * that the fetch-time guard would not re-vet.
+ * A POLICY refusal blocks the write. A host that simply cannot be classified
+ * right now does NOT: an admin configuring the box before powering it on, or
+ * saving during a DNS blip, is a legitimate flow, and the fetch-time guard
+ * refuses the request anyway if the name later answers with a public address.
+ * Fail-open here is not a widening — nothing becomes reachable that the
+ * fetch-time guard would not re-vet.
+ *
+ * ## Why the catch is "anything that is not a policy refusal"
+ *
+ * The first version of this caught {@link UnsafeOutboundUrlError} and rethrew
+ * the rest, on the theory that an unresolvable host arrives as the guard's
+ * `invalid_resolved_address`. It does not. `node:dns`'s `lookup` REJECTS on
+ * NXDOMAIN with a plain `Error{code:'ENOTFOUND'}` and never returns the empty
+ * array that branch needs, so in production that branch was unreachable and
+ * every transient DNS condition escaped as a non-`ApiError` → 500. The flow this
+ * fail-open exists to support — save the endpoint before the box exists — was
+ * the exact flow it broke (#1992 review, blocker 1).
+ *
+ * So the predicate is the one the repo already uses for the same decision on the
+ * webhook receiver (`webhookService.assertAllowedDestination`): a refusal is a
+ * refusal, and EVERYTHING else is treated as "cannot classify right now". That
+ * is fail-open on a write whose value is re-vetted before every single use, and
+ * fail-closed on the use itself.
  */
 export async function assertWritableLocalAiEndpoint(
   endpoint: string,
   deps: LocalAiEndpointGuardDeps = {},
-): Promise<void> {
+): Promise<boolean> {
   try {
     await resolveLocalAiEndpoint(endpoint, deps);
+    return true;
   } catch (err) {
     if (err instanceof AiEndpointNotLocalError) throw err;
-    if (err instanceof UnsafeOutboundUrlError) return; // transient: unresolvable right now
-    throw err;
+    return false;
   }
 }
 
@@ -152,8 +171,14 @@ export const AI_DETAIL_INVALID_RESPONSE = 'invalid response';
  * `http NNN` is produced by this module's own thrower, not by the target.
  */
 export function providerErrorDetail(err: unknown): string {
-  if (err instanceof UnsafeOutboundUrlError) return AI_DETAIL_NOT_LOCAL;
-  if (err instanceof AiEndpointNotLocalError) return AI_DETAIL_NOT_LOCAL;
+  // Only a POLICY refusal is "not local". The guard's other failure —
+  // `invalid_resolved_address`, i.e. the name gave us nothing to vet — is a
+  // transient network condition and must not be reported as a configuration
+  // error the admin has to go fix.
+  if (isOutboundPolicyRefusal(err) || err instanceof AiEndpointNotLocalError) {
+    return AI_DETAIL_NOT_LOCAL;
+  }
+  if (err instanceof UnsafeOutboundUrlError) return AI_DETAIL_UNREACHABLE;
   if (!(err instanceof Error)) return AI_DETAIL_UNREACHABLE;
   if (err.name === 'TimeoutError' || err.name === 'AbortError') return 'timeout';
   if (err instanceof AiResponseStatusError) return `http ${err.status}`;

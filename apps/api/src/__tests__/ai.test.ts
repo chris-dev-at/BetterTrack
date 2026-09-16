@@ -228,6 +228,55 @@ describe('admin AI settings (§13.5 V5-P12)', () => {
     }
   });
 
+  /**
+   * The setup flow the guard must not break: an admin names the Ollama host
+   * before the box exists, or saves during a DNS blip. `node:dns` raises
+   * NXDOMAIN rather than returning an empty answer, and a layer that only
+   * handled the empty answer turned this whole flow into a 500 (#1992 review,
+   * blocker 1). `.invalid` is reserved by RFC 2606 and never resolves, so this
+   * is deterministic and offline.
+   */
+  it('stores an endpoint whose host does not resolve yet, instead of 500ing', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+
+    const res = await agent
+      .patch('/api/v1/admin/ai/settings')
+      .set(...XRW)
+      .send({ endpoint: 'http://ollama.notyet.invalid:11434', model: 'llama3.1:8b' });
+    expect(res.status).toBe(200);
+    expect(aiSettingsResponseSchema.parse(res.body).endpoint).toBe(
+      'http://ollama.notyet.invalid:11434',
+    );
+  });
+
+  it('fails test-connection SOFT against an unresolvable host, not with a 500', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-connection')
+      .set(...XRW)
+      .send({ endpoint: 'http://ollama.notyet.invalid:11434' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.models).toEqual([]);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  it('fails test-request SOFT against an unresolvable host, not with a 500', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({ endpoint: 'http://ollama.notyet.invalid:11434', model: 'm', prompt: 'ping' });
+    expect(res.status).toBe(200);
+    const body = aiTestRequestResponseSchema.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.reply).toBeNull();
+    expect(body.error).toBeTruthy();
+  });
+
   it('refuses a test-REQUEST against a rejected target the same way', async () => {
     const admin = await harness.seedAdmin();
     const agent = await harness.loginAdmin(admin);

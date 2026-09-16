@@ -694,6 +694,84 @@ describe('AI admin settings — the endpoint may only name the internal network'
   });
 
   /**
+   * "Unresolvable right now" is a different statement from "you aimed this at
+   * the internet", and only the second is permanent. `node:dns` raises NXDOMAIN
+   * as a plain `Error{code:'ENOTFOUND'}` — it never returns an empty answer set
+   * — so a layer that only handled the empty-array shape turned every DNS blip
+   * into a 500 (#1992 review, blocker 1).
+   */
+  describe('a host that cannot be resolved right now is transient, not a refusal', () => {
+    /** Exactly how `node:dns/promises`.lookup fails on NXDOMAIN. */
+    const notFound: OutboundUrlResolver = async (hostname) => {
+      throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' });
+    };
+    const exploding: OutboundUrlResolver = async () => {
+      throw new Error('resolver exploded');
+    };
+
+    it('STORES an endpoint whose box is not up yet (the documented setup flow)', async () => {
+      const { service, appSettings } = makeService({ resolver: notFound });
+      await service.updateSettings(
+        { endpoint: 'http://ollama.lan:11434', model: 'llama3.1:8b' },
+        { id: 'admin-1', ip: null },
+      );
+      expect((await appSettings.getAiSettings()).endpoint).toBe('http://ollama.lan:11434');
+    });
+
+    it.each([
+      ['NXDOMAIN', notFound],
+      ['a resolver that fails outright', exploding],
+    ])('fails test-connection SOFT (never a 500) on %s', async (_label, resolver) => {
+      const { service, fetch } = makeService({ resolver });
+      const result = await service.testConnection('http://ollama.lan:11434');
+      expect(result.ok).toBe(false);
+      expect(result.models).toEqual([]);
+      expect(result.error).toBeTruthy();
+      // …and the probe is still "not local"-free: this is a transport condition.
+      expect(result.error).not.toBe('endpoint not local');
+      expect(fetch.calls).toHaveLength(0);
+    });
+
+    it('fails test-request SOFT (never a 500) on NXDOMAIN', async () => {
+      const { service, fetch } = makeService({ resolver: notFound });
+      const result = await service.testRequest({
+        endpoint: 'http://ollama.lan:11434',
+        model: 'llama3.1:8b',
+        prompt: 'ping',
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reply).toBeNull();
+      expect(result.error).toBe('ENOTFOUND');
+      expect(fetch.calls).toHaveLength(0);
+    });
+
+    it('still takes GENERATION quiet with the typed 503 while the name is dark', async () => {
+      const { service } = makeService({
+        aiDefaults: { endpoint: 'http://ollama.lan:11434', model: 'llama3.1:8b', dailyCap: 20 },
+        resolver: notFound,
+      });
+      // Fail-closed on the use even though the write was fail-open: a provider
+      // error, not a silent success, and no budget burned.
+      await expect(service.complete('user-1', { prompt: 'a' })).rejects.toBeInstanceOf(
+        AiProviderError,
+      );
+      expect((await service.capability('user-1')).used).toBe(0);
+    });
+
+    it('still REFUSES a public target outright — the soft path is not a bypass', async () => {
+      const { service } = makeService({ resolver: notFound });
+      // A public LITERAL needs no resolver at all, so the refusal stands
+      // regardless of what DNS is doing.
+      await expect(service.testConnection('https://93.184.216.34:11434')).rejects.toBeInstanceOf(
+        AiEndpointNotLocalError,
+      );
+      await expect(
+        service.updateSettings({ endpoint: 'http://169.254.169.254/' }, { id: 'a', ip: null }),
+      ).rejects.toBeInstanceOf(AiEndpointNotLocalError);
+    });
+  });
+
+  /**
    * The existing-row question (#1656): a public endpoint stored before this
    * validation existed must take the feature QUIET with the typed 503, not down
    * with a 500, and must stay visible to the admin so it can be fixed.

@@ -166,7 +166,7 @@ describe('local-AI endpoint policy — the write gate', () => {
       assertWritableLocalAiEndpoint('http://ollama.internal:11434', {
         resolver: resolving('10.1.2.3'),
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
   });
 
   /**
@@ -175,14 +175,74 @@ describe('local-AI endpoint policy — the write gate', () => {
    * real flow. Nothing is widened by allowing it: the fetch-time guard re-vets
    * the name on every single call, so a value saved this way is unreachable
    * until it resolves to something local.
+   *
+   * The resolver shapes below are the ones that actually happen. `node:dns`'s
+   * `lookup` REJECTS on NXDOMAIN — it never returns an empty array — so a write
+   * gate that only handled the empty-array shape was a gate that only worked
+   * against a stub (#1992 review, blocker 1). Every transient shape is covered
+   * here, and the empty array last, because it is the only one a real resolver
+   * does not produce.
    */
-  it('allows a write whose host does not resolve yet, but never fetches it', async () => {
-    const unresolvable: OutboundUrlResolver = async () => [];
+  const TRANSIENT_RESOLVERS: ReadonlyArray<readonly [string, OutboundUrlResolver]> = [
+    [
+      'NXDOMAIN, exactly as node:dns raises it',
+      async () => {
+        throw Object.assign(new Error('getaddrinfo ENOTFOUND ollama.notyet'), {
+          code: 'ENOTFOUND',
+        });
+      },
+    ],
+    [
+      'a temporary resolver failure',
+      async () => {
+        throw Object.assign(new Error('getaddrinfo EAI_AGAIN ollama.notyet'), {
+          code: 'EAI_AGAIN',
+        });
+      },
+    ],
+    [
+      'a resolver that fails without a code at all',
+      async () => {
+        throw new Error('resolver exploded');
+      },
+    ],
+    ['an empty answer set', async () => []],
+  ];
+
+  it.each(TRANSIENT_RESOLVERS)(
+    'allows a write whose host cannot be classified right now — %s',
+    async (_label, resolver) => {
+      await expect(
+        assertWritableLocalAiEndpoint('http://ollama.notyet:11434', { resolver }),
+      ).resolves.toBe(false);
+    },
+  );
+
+  it('reports a vetted write as vetted, so the two outcomes are distinguishable', async () => {
     await expect(
-      assertWritableLocalAiEndpoint('http://ollama.notyet:11434', { resolver: unresolvable }),
-    ).resolves.toBeUndefined();
+      assertWritableLocalAiEndpoint('http://ollama.internal:11434', {
+        resolver: resolving('10.1.2.3'),
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it.each(TRANSIENT_RESOLVERS)(
+    'still refuses to FETCH a host it cannot classify — %s',
+    async (_label, resolver) => {
+      const err = await resolveLocalAiEndpoint('http://ollama.notyet:11434/api/chat', {
+        resolver,
+      }).catch((e: unknown) => e);
+      // Not the typed policy refusal: the caller has to be able to tell "you
+      // aimed this at the internet" from "your DNS is down", because only the
+      // first is permanent.
+      expect(err).not.toBeInstanceOf(AiEndpointNotLocalError);
+      expect(err).toBeInstanceOf(Error);
+    },
+  );
+
+  it('keeps the empty-answer shape mapped to the guard’s own typed error', async () => {
     await expect(
-      resolveLocalAiEndpoint('http://ollama.notyet:11434/api/chat', { resolver: unresolvable }),
+      resolveLocalAiEndpoint('http://ollama.notyet:11434/api/chat', { resolver: async () => [] }),
     ).rejects.toMatchObject({ code: OUTBOUND_URL_BLOCKED });
   });
 });

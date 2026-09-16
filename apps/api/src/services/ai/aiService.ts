@@ -254,6 +254,26 @@ export function createAiService(deps: AiServiceDeps): AiService {
     });
   }
 
+  /**
+   * Vet a probe target. Raises {@link AiEndpointNotLocalError} when the guard
+   * refuses it by POLICY — an admin may not aim a probe at the internet, at
+   * cloud metadata, or at this deployment's own services, and a soft result for
+   * one of those is still a scan result.
+   *
+   * Returns a soft failure DETAIL when the target merely could not be resolved
+   * right now: that is an ordinary transport condition, the probe has always
+   * reported it softly, and a 500 for "your DNS is down" helps nobody.
+   */
+  async function probeRefusal(target: string): Promise<string | null> {
+    try {
+      await resolveLocalAiEndpoint(target, guardDeps);
+      return null;
+    } catch (err) {
+      if (err instanceof AiEndpointNotLocalError) throw err;
+      return providerErrorDetail(err);
+    }
+  }
+
   async function getSettings(): Promise<AiSettingsResponse> {
     return serialize(await appSettings.getAiSettings());
   }
@@ -268,8 +288,19 @@ export function createAiService(deps: AiServiceDeps): AiService {
     // schema has already settled scheme + credentials + syntax; what only the
     // server can decide is where the host actually IS, which is why the address
     // policy lives in the shared outbound guard and is applied here.
+    //
+    // A host that cannot be classified right now is stored anyway (an admin
+    // configuring the box before powering it on), and the fact is logged rather
+    // than swallowed silently — the value is unusable until it resolves to
+    // something local, because the fetch-time guard re-vets it every call.
     if (typeof input.endpoint === 'string') {
-      await assertWritableLocalAiEndpoint(input.endpoint, guardDeps);
+      const vetted = await assertWritableLocalAiEndpoint(input.endpoint, guardDeps);
+      if (!vetted) {
+        logger.warn(
+          { endpoint: redactEndpoint(input.endpoint) },
+          'ai endpoint stored without a resolved address; it stays refused until it resolves locally',
+        );
+      }
     }
     const previous = await appSettings.getAiSettings();
     const next = await appSettings.updateAiSettings(input, actor.id);
@@ -303,7 +334,13 @@ export function createAiService(deps: AiServiceDeps): AiService {
     // it reports whether that address answered. The typed 400 reports only that
     // the admin may not aim the probe there, which is the same answer for
     // `169.254.169.254` as for a bridge-internal `redis:6379`.
-    await resolveLocalAiEndpoint(target, guardDeps);
+    //
+    // Only a POLICY refusal raises. A host that simply cannot be resolved right
+    // now is an ordinary transport failure and keeps the soft shape this probe
+    // has always had — turning it into a 500 was the regression #1992's review
+    // caught (blocker 1).
+    const refusal = await probeRefusal(target);
+    if (refusal) return { ok: false, models: [], error: refusal };
     // The model is irrelevant to a list-models probe; pass the effective one (or
     // empty) so the adapter is well-formed. Only the given endpoint is reached.
     const provider = registry.resolveFor(target, settings.model ?? '');
@@ -321,7 +358,10 @@ export function createAiService(deps: AiServiceDeps): AiService {
 
     // Same refusal as test-connection: a generation probe reaches further than a
     // list-models probe, so it is vetted on the same terms before anything opens.
-    await resolveLocalAiEndpoint(endpoint, guardDeps);
+    const refusal = await probeRefusal(endpoint);
+    if (refusal) {
+      return { ok: false, model, reply: null, latencyMs: 0, error: refusal };
+    }
 
     // Straight to the candidate provider — no cap consumption and no feature-flag
     // gate: this is the admin's way to verify a model (or trial an unsaved one)

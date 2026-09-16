@@ -1,6 +1,13 @@
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+
 import type { Logger } from '../../logger';
 import { retryOnce } from '../../providers/resilience';
-import type { OutboundUrlResolver } from '../security/outboundUrlGuard';
+import {
+  createPinnedAgent,
+  type OutboundUrlResolver,
+  type ResolvedOutboundUrl,
+} from '../security/outboundUrlGuard';
 import {
   AiInvalidResponseError,
   AiResponseStatusError,
@@ -39,15 +46,25 @@ import type {
  * per request (none at all for a literal address, which the guard short-circuits)
  * against a completion that takes seconds on a local model.
  *
- * The residual, stated: the vetted address set is not pinned INTO the socket the
- * way `createPinnedAgent` pins one for the webhook and OAuth-logo transports.
- * Node's `fetch` exposes no lookup hook, and rewriting the request URL to the
- * vetted literal is not an option — undici overwrites a caller-set `Host`
- * header, which would silently break any endpoint served behind a
- * name-based reverse proxy. What remains open is therefore a same-millisecond
- * rebinding race between this module's resolution and undici's own, against an
- * endpoint only an admin can set; everything a slower-changing record can do is
- * closed. `redirect: 'error'` below closes the redirect pivot.
+ * ## …and the vetted address is PINNED into the socket
+ *
+ * Vetting and then handing the HOSTNAME to `fetch` is not a pin. It is two
+ * independent `getaddrinfo` calls per request, and a zone answering with TTL 0
+ * can hand a different address to each of them deterministically — so the guard
+ * approves `10.0.0.5` and the socket lands wherever the second answer points.
+ * The guard says as much at {@link createPinnedAgent} ("callers must pin
+ * `addresses` into the actual connection"), and `webhookDispatcher.ts` already
+ * obeys it; this adapter was the one caller that did not (#1992 review).
+ *
+ * So the production transport is `node:http`/`node:https` over a single-use
+ * agent whose socket lookup can only ever answer with the address set the guard
+ * just approved. The request keeps its ORIGINAL hostname, which is why the agent
+ * is pinned instead of the URL being rewritten to the vetted literal: undici
+ * overwrites a caller-set `Host` header (measured), so a rewrite would silently
+ * break any endpoint served behind a name-based reverse proxy, while a pinned
+ * agent preserves `Host` and, for `https:`, SNI and certificate verification.
+ * `node:http` never follows redirects, so the redirect pivot is closed by
+ * construction rather than by a flag.
  *
  * Resilience follows `providers/resilience.ts`: a bounded per-call timeout
  * (aborting the socket) and retry-once on the cheap control calls
@@ -65,7 +82,13 @@ export interface CreateOllamaProviderDeps {
   endpoint: string;
   /** Model to generate with (e.g. `llama3.1:8b`). */
   model: string;
-  /** Injectable fetch (tests + no-external-call enforcement). Defaults to global `fetch`. */
+  /**
+   * Injectable fetch — a TEST seam only (canned payloads + no-external-call
+   * enforcement). Left undefined in production, where the transport is the
+   * guard-pinned `node:http` path below; `ollamaPinnedTransport.test.ts` covers
+   * that path over a real socket, and everything either path shares (the
+   * fetch-time guard, the status check, the JSON handling) is one function.
+   */
   fetchImpl?: typeof fetch;
   /**
    * DNS resolver for the fetch-time egress guard. Defaults to the system
@@ -90,8 +113,116 @@ function stripTrailingSlash(url: string): string {
   return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
+/**
+ * Hard ceiling on a response body. A local model's JSON reply is kilobytes; this
+ * only exists so a misconfigured or hostile endpoint cannot make the API buffer
+ * without bound (the same reason `oauthLogo.ts` caps its download).
+ */
+export const OLLAMA_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/** What either transport returns: a status and the raw body text. */
+interface OllamaRawResponse {
+  status: number;
+  body: string;
+}
+
+/**
+ * One request over a single-use agent pinned to the addresses the guard just
+ * approved — the production transport.
+ *
+ * Structural failures only: a socket error is re-raised as-is so
+ * `providerErrorDetail` can read its `code` (ECONNREFUSED vs ENOTFOUND is the
+ * one diagnostic that separates "wrong port" from "wrong host"), and nothing
+ * derived from the body ever becomes an error message.
+ */
+function pinnedRequest(
+  target: ResolvedOutboundUrl,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<OllamaRawResponse> {
+  const agent = createPinnedAgent(target);
+  const send = target.url.protocol === 'http:' ? httpRequest : httpsRequest;
+  const payload = typeof init.body === 'string' ? Buffer.from(init.body, 'utf8') : null;
+  const headers: Record<string, string> = {
+    accept: 'application/json',
+    ...((init.headers as Record<string, string> | undefined) ?? {}),
+    ...(payload ? { 'content-length': String(payload.byteLength) } : {}),
+  };
+
+  return new Promise<OllamaRawResponse>((resolve, reject) => {
+    // One shared cell so whichever of the response, the error or the deadline
+    // settles first clears the other two.
+    const attempt: { settled: boolean; timer?: ReturnType<typeof setTimeout> } = { settled: false };
+    const finish = (
+      outcome: { ok: true; value: OllamaRawResponse } | { ok: false; err: unknown },
+    ) => {
+      if (attempt.settled) return;
+      attempt.settled = true;
+      if (attempt.timer !== undefined) clearTimeout(attempt.timer);
+      agent.destroy();
+      if (outcome.ok) resolve(outcome.value);
+      else reject(outcome.err);
+    };
+
+    const req = send(target.url, { method: init.method ?? 'GET', agent, headers });
+
+    attempt.timer = setTimeout(() => {
+      // Named so `providerErrorDetail` reports `timeout`, exactly as the
+      // `AbortSignal.timeout` path did.
+      const timeout = Object.assign(new Error('ollama request timed out'), {
+        name: 'TimeoutError',
+      });
+      req.destroy(timeout);
+      finish({ ok: false, err: timeout });
+    }, timeoutMs);
+
+    req.on('response', (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > OLLAMA_MAX_RESPONSE_BYTES) {
+          res.destroy(new Error('ollama response exceeded the size cap'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.once('end', () =>
+        finish({
+          ok: true,
+          value: {
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks, size).toString('utf8'),
+          },
+        }),
+      );
+      res.once('error', (err) => finish({ ok: false, err }));
+    });
+    req.once('error', (err) => finish({ ok: false, err }));
+    if (payload) req.end(payload);
+    else req.end();
+  });
+}
+
+/** The test transport: the injected `fetch`, reduced to the same raw shape. */
+async function fetchRequest(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<OllamaRawResponse> {
+  const res = await fetchImpl(url, {
+    ...init,
+    // Never follow a redirect: a well-behaved local Ollama never issues one,
+    // and refusing keeps every request pinned to the configured host. (The
+    // production path gets this for free — `node:http` never redirects.)
+    redirect: 'error',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return { status: res.status, body: await res.text() };
+}
+
 export function createOllamaProvider(deps: CreateOllamaProviderDeps): AiProvider {
-  const fetchImpl = deps.fetchImpl ?? fetch;
   const base = stripTrailingSlash(deps.endpoint);
   const { model } = deps;
   /** The only spelling of the endpoint allowed to reach a log line (#1656). */
@@ -102,22 +233,21 @@ export function createOllamaProvider(deps: CreateOllamaProviderDeps): AiProvider
     const url = `${base}${path}`;
     // The egress guard, immediately before the socket. Refuses a public,
     // metadata, or deployment-internal destination even when the STORED string
-    // looked private — the address behind a hostname is only knowable here.
-    await resolveLocalAiEndpoint(url, { resolver: deps.resolver });
-    const res = await fetchImpl(url, {
-      ...init,
-      // Never follow a redirect: a well-behaved local Ollama never issues one,
-      // and refusing keeps every request pinned to the configured host.
-      redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) throw new AiResponseStatusError(res.status);
-    // A 2xx is not a promise of JSON. `res.json()` rejects with a `SyntaxError`
-    // whose message quotes the first ~30 characters of whatever the target sent,
-    // and that message used to travel verbatim into the admin UI — so the parse
+    // looked private — the address behind a hostname is only knowable here. Its
+    // answer is then PINNED into the connection, so the socket cannot resolve
+    // the name a second time and land somewhere else.
+    const target = await resolveLocalAiEndpoint(url, { resolver: deps.resolver });
+    const res = deps.fetchImpl
+      ? await fetchRequest(deps.fetchImpl, url, init, timeoutMs)
+      : await pinnedRequest(target, init, timeoutMs);
+
+    if (res.status < 200 || res.status >= 300) throw new AiResponseStatusError(res.status);
+    // A 2xx is not a promise of JSON. `JSON.parse` throws a `SyntaxError` whose
+    // message quotes the first ~30 characters of whatever the target sent, and
+    // that message used to travel verbatim into the admin UI — so the parse
     // failure is converted to an error that carries nothing from the body.
     try {
-      return (await res.json()) as T;
+      return JSON.parse(res.body) as T;
     } catch {
       throw new AiInvalidResponseError();
     }
