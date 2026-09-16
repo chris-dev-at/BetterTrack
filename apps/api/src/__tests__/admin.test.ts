@@ -60,12 +60,86 @@ async function failLogin(app: Application, identifier: string, times: number) {
   }
 }
 
-async function sessionKeyFor(harness: TestHarness, userId: string): Promise<string> {
+/** Every live `sess:` record that belongs to `userId`. */
+async function sessionKeysFor(harness: TestHarness, userId: string): Promise<string[]> {
+  const owned: string[] = [];
   for (const key of await harness.ctx.redis.keys('sess:*')) {
     const raw = await harness.ctx.redis.get(key);
-    if (raw && (JSON.parse(raw) as { userId?: string }).userId === userId) return key;
+    if (raw && (JSON.parse(raw) as { userId?: string }).userId === userId) owned.push(key);
   }
-  throw new Error(`No session found for ${userId}`);
+  return owned;
+}
+
+async function sessionKeyFor(harness: TestHarness, userId: string): Promise<string> {
+  const [key] = await sessionKeysFor(harness, userId);
+  if (!key) throw new Error(`No session found for ${userId}`);
+  return key;
+}
+
+/** One principal whose disappearance could explain an unexpected auth answer. */
+interface SessionSubject {
+  /** How the failure message names them, e.g. `admin` / `doomed user`. */
+  label: string;
+  userId: string;
+  /** The `sess:` keys that provably existed when that principal logged in. */
+  sessionKeys: readonly string[];
+}
+
+/**
+ * Name what vanished behind an unexpected auth answer (#1970).
+ *
+ * A lost session is mute about WHICH half it lost, and the two readings differ
+ * by route: `requireAdmin` answers a bare 404 to anything that is not an
+ * authenticated admin (§6.12 no-route disclosure — `http/middleware/session.ts`),
+ * so a lost ADMIN session reads 404 on every `/admin/*` call, while a lost USER
+ * session reads 401 on `/auth/me`. Neither says whether the Redis record or the
+ * `users` row went away. This dumps both, plus the store-wide counts, which
+ * separate the three explanations a flake here has ever had:
+ *
+ *   * this principal alone lost one half → that subject reads `false`/`0/1`
+ *     while the store-wide counts stay non-zero;
+ *   * the whole scratch store was wiped under the test → both counts 0, the
+ *     signature of a concurrent `FLUSHDB` + `TRUNCATE` from a second vitest
+ *     process pointed at the same scratch database;
+ *   * NOTHING was lost — every subject present, counts non-zero — in which case
+ *     the answer did not come from the state this test can see at all, and the
+ *     suspect is the transport, not authentication (this host answers a loaded
+ *     suite with `Parse Error: Expected HTTP/` on unrelated files too).
+ *
+ * Read-only, and never throws: it runs only on the failing path, and must
+ * explain the assertion rather than replace it with an error of its own.
+ */
+async function lostSessionForensics(
+  harness: TestHarness,
+  subjects: readonly SessionSubject[],
+): Promise<string> {
+  try {
+    const parts: string[] = [];
+    for (const subject of subjects) {
+      const present =
+        subject.sessionKeys.length === 0
+          ? 'no key captured'
+          : `${await harness.ctx.redis.exists(...subject.sessionKeys)}/${subject.sessionKeys.length}`;
+      const [row] = await harness.db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, subject.userId));
+      const rowState = row
+        ? `true (status=${row.status}, role=${row.role}, generation=${row.securityGeneration})`
+        : 'false';
+      parts.push(`${subject.label}: session present=${present}, user row present=${rowState}`);
+    }
+    const liveSessions = (await harness.ctx.redis.keys('sess:*')).length;
+    const userRows = (await harness.db.select({ id: schema.users.id }).from(schema.users)).length;
+    parts.push(
+      `store-wide: sess:* keys=${liveSessions}, users rows=${userRows}` +
+        ' (both 0 ⇒ the scratch store was wiped under this test; everything present ⇒ nothing' +
+        ' was lost and the refusal did not come from this state — suspect the transport)',
+    );
+    return parts.join('; ');
+  } catch (err) {
+    return `forensics unavailable: ${String(err)}`;
+  }
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -709,25 +783,57 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
   it('kills live sessions instantly and blocks re-login', async () => {
     const admin = await harness.seedAdmin();
     const adminAgent = await harness.loginAdmin(admin);
+    // `sessions.create` awaits the Redis SET *and* the per-user index add before
+    // `POST /auth/login` answers (services/sessions/sessionService.ts), so a
+    // resolved login has a readable record — the kill below cannot race a
+    // still-pending session write. Capturing the key here is both that ordering
+    // proof and the baseline the forensics compare against: a later
+    // `session present=0/1` then means something REMOVED a record that provably
+    // existed, rather than one that was never written (#1970).
+    const adminSessions = await sessionKeysFor(harness, admin.id);
+    const adminSubject = { label: 'admin', userId: admin.id, sessionKeys: adminSessions };
 
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
       .send({ email: 'doomed@test.dev', username: 'doomed_user' });
+    // A 404 here is `requireAdmin` refusing to disclose the route, i.e. the
+    // ADMIN session is what went missing — never a routing change.
+    const createdWhy =
+      created.status === 201 ? '' : await lostSessionForensics(harness, [adminSubject]);
+    expect(
+      created.status,
+      `expected 201 (admin session alive); got ${created.status} → ${createdWhy}`,
+    ).toBe(201);
     const userId = created.body.user.id as string;
     const tempPassword = created.body.tempPassword as string;
 
     const userAgent = await loginAgent(harness.app, 'doomed@test.dev', tempPassword);
+    const doomedSubject = {
+      label: 'doomed user',
+      userId,
+      sessionKeys: await sessionKeysFor(harness, userId),
+    };
 
     const patched = await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
       .set(...XRW)
       .send({ status: 'disabled', reason: 'Suspended pending review.' });
-    expect(patched.status).toBe(200);
+    const patchedWhy =
+      patched.status === 200
+        ? ''
+        : await lostSessionForensics(harness, [adminSubject, doomedSubject]);
+    expect(
+      patched.status,
+      `expected 200 (admin session alive); got ${patched.status} → ${patchedWhy}`,
+    ).toBe(200);
 
-    // Existing session is dead.
+    // Existing session is dead. 401 is the only correct answer: a 200 means the
+    // kill did not take, and anything else means the principal itself vanished —
+    // the message says which half did.
     const me = await userAgent.get('/api/v1/auth/me');
-    expect(me.status).toBe(401);
+    const meWhy = me.status === 401 ? '' : await lostSessionForensics(harness, [doomedSubject]);
+    expect(me.status, `expected 401 (session killed); got ${me.status} → ${meWhy}`).toBe(401);
 
     // Re-login with the correct password is rejected with the distinct
     // account-disabled error (revealed only post-verification, §6.1/§16).
