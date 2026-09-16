@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   MIRROR_MAX_MEMBERS,
+  type MirrorChainPendingInvite,
   type MirrorInvite,
   type MirrorMember,
   type MirrorMemberRole,
@@ -297,6 +298,10 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
           ))}
         </ul>
 
+        {data.pendingInvites.length > 0 ? (
+          <PendingInvitesSection chainId={chainId} invites={data.pendingInvites} />
+        ) : null}
+
         <ActivitySection query={activityQuery} />
       </div>
 
@@ -418,6 +423,91 @@ function MemberRow({
         ) : null}
       </div>
     </li>
+  );
+}
+
+// ─── Pending invites (inside the member sheet) ───────────────────────────────
+
+/**
+ * Every still-open invite on the chain, with a Cancel control (design §4
+ * "revocable by owner/managers" + §11's one-surface rule). The server ships
+ * this list ONLY to a caller who holds the §5 `invite` capability, so its mere
+ * presence is the permission — there is no client-side role gate to get wrong.
+ *
+ * Chain-scoped, not viewer-scoped: this is how an owner reaches an invite a
+ * manager sent. `inviterStillAuthorized === false` marks one the server will
+ * now refuse at accept, so the owner can close it instead of waiting out its
+ * 30-day horizon.
+ */
+function PendingInvitesSection({
+  chainId,
+  invites,
+}: {
+  chainId: string;
+  invites: MirrorChainPendingInvite[];
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const revoke = useMutation({
+    mutationFn: (inviteId: string) => revokeMirrorInvite(inviteId),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: chainMembersKey(chainId) });
+      void queryClient.invalidateQueries({ queryKey: MIRROR_INVITES_KEY });
+    },
+    onError: () => setError(t('mirrorchain.pendingInvites.revokeError')),
+  });
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
+        {t('mirrorchain.pendingInvites.title')}
+      </h3>
+      <p className="text-xs text-neutral-400">{t('mirrorchain.pendingInvites.body')}</p>
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <ul
+        aria-label={t('mirrorchain.pendingInvitesListAria')}
+        className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
+      >
+        {invites.map((invite) => (
+          <li
+            key={invite.id}
+            className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+          >
+            <div className="flex items-center gap-3">
+              <Avatar name={invite.toUsername} iconId={invite.toProfileIcon} size="md" />
+              <div className="flex flex-col leading-tight">
+                <span className="text-sm font-medium text-neutral-100">{invite.toUsername}</span>
+                <span className="text-xs text-neutral-400">
+                  {invite.fromUsername
+                    ? t('mirrorchain.pendingInvites.sentBy', {
+                        inviter: invite.fromUsername,
+                        date: formatDate(invite.createdAt),
+                      })
+                    : t('mirrorchain.pendingInvites.sentOn', {
+                        date: formatDate(invite.createdAt),
+                      })}
+                </span>
+                {!invite.inviterStillAuthorized ? (
+                  <span className="text-xs text-amber-300">
+                    {t('mirrorchain.pendingInvites.senderNoLongerAuthorized')}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            <Button
+              variant="secondary"
+              className="bt-btn--danger"
+              disabled={revoke.isPending}
+              onClick={() => revoke.mutate(invite.id)}
+            >
+              {t('mirrorchain.actions.revokeInvite')}
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

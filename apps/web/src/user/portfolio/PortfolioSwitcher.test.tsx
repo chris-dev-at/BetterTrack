@@ -713,6 +713,7 @@ describe('PortfolioSwitcher', () => {
       role: 'owner',
       memberCap: MIRROR_MAX_MEMBERS,
       members: [],
+      pendingInvites: [],
     });
     vi.mocked(listFriends).mockResolvedValue({ friends: [] });
     const user = userEvent.setup();

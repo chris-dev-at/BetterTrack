@@ -21,15 +21,95 @@ import { assetTypeSchema, currencyCodeSchema } from './market';
 export const AI_UNAVAILABLE = 'AI_UNAVAILABLE';
 export const AI_CAP_EXCEEDED = 'AI_CAP_EXCEEDED';
 export const AI_PROVIDER_ERROR = 'AI_PROVIDER_ERROR';
+/**
+ * The admin named an endpoint that is not on the internal network (§16
+ * 2026-07-22 — "internal network only, never publicly exposed"): a public
+ * address, a cloud-metadata or otherwise refused range, or one of the
+ * deployment's own service addresses. Raised at WRITE time (`PATCH
+ * /admin/ai/settings`) and by the admin probes, so a refused destination is
+ * never probed and never stored.
+ */
+export const AI_ENDPOINT_NOT_LOCAL = 'AI_ENDPOINT_NOT_LOCAL';
+/**
+ * The provider answered, but its output could not be used for what was asked
+ * (the NL builder parsed zero intents out of it). Distinct from
+ * {@link AI_PROVIDER_ERROR} on purpose: the provider is healthy and the daily-cap
+ * unit has been refunded, so the right client behaviour is "rephrase and try
+ * again", not "the local model is down".
+ */
+export const AI_UNUSABLE_OUTPUT = 'AI_UNUSABLE_OUTPUT';
 
 /** Per-user daily completion budget bounds (admin-configurable). */
 export const AI_DAILY_CAP_MIN = 1;
 export const AI_DAILY_CAP_MAX = 100_000;
 
+/** The only schemes an Ollama endpoint may be written with. */
+const ENDPOINT_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:']);
+
+/** Longest endpoint the settings store accepts. */
+const ENDPOINT_MAX_LENGTH = 2048;
+
+/**
+ * Everything about an endpoint string that can be decided WITHOUT a resolver
+ * (#1656 defects 1 + 2). Shared so the admin form, the OpenAPI document and the
+ * API all refuse the same strings, and so the response schema can assert the
+ * same credential rule on the way back out.
+ *
+ * `z.string().url()` is not this check: under zod 3 it is a bare `new URL()`
+ * try/catch, so it accepts `javascript:`, `file:`, `gopher:` — and
+ * `https://svc:s3cr3t@host/`, which is how an Ollama behind a basic-auth proxy
+ * gets written and how a credential ends up in a jsonb row, an audit record and
+ * a log line.
+ *
+ * What it deliberately does NOT do is classify the HOST. Address classification
+ * is one policy that lives in the API's `outboundUrlGuard` (Node `BlockList`
+ * over the RFC ranges, plus the deployment's own service network); this package
+ * ships to the browser and cannot import it, and a second hand-rolled copy here
+ * would be the two-lists-that-drift failure `auditRedaction.ts` already
+ * documents. The API therefore runs the real guard at write time — and again at
+ * fetch time, which is the only place a HOSTNAME's address can be known at all.
+ */
+function checkEndpointSyntax(value: string, ctx: z.RefinementCtx): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Must be a valid URL.' });
+    return;
+  }
+  if (!ENDPOINT_PROTOCOLS.has(url.protocol)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Must be an http:// or https:// URL.' });
+  }
+  if (url.username !== '' || url.password !== '') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Must not embed credentials — put the endpoint alone in this field.',
+    });
+  }
+  if (url.hostname === '') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Must name a host.' });
+  }
+  // A base URL with a query or fragment is never a real Ollama endpoint; both
+  // would be silently dropped when `/api/chat` is appended, so refusing them
+  // says so rather than saving something that does not mean what it reads as.
+  if (url.search !== '' || url.hash !== '') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Must not carry a query string or fragment.',
+    });
+  }
+}
+
 /** An Ollama endpoint URL, or empty/null to clear the stored override. */
 const endpointField = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? null : v),
-  z.string().url().max(2048).nullable(),
+  z
+    .string()
+    .max(ENDPOINT_MAX_LENGTH)
+    .nullable()
+    .superRefine((value, ctx) => {
+      if (value !== null) checkEndpointSyntax(value, ctx);
+    }),
 );
 /** A model name, or empty/null to clear the stored override. */
 const modelField = z.preprocess(
@@ -40,8 +120,35 @@ const modelField = z.preprocess(
 /** `GET /admin/ai/settings` — the admin LLM-settings read. No secrets, ever. */
 export const aiSettingsResponseSchema = z
   .object({
-    /** Effective Ollama base URL (stored override else env default); null when unset. */
-    endpoint: z.string().url().nullable(),
+    /**
+     * Effective Ollama base URL (stored override else env default); null when
+     * unset — and null, too, when the stored value is unparseable.
+     *
+     * The same credential rule as the write path, asserted on the way OUT
+     * (#1656 defect 2). The service already strips any userinfo an older row
+     * carries, so this can only ever fire if that stripping regresses — and
+     * then failing the response is strictly better than serving the credential
+     * to the admin SPA, where it would land in a browser cache and a screenshot.
+     * A public host is deliberately still rendered: an endpoint stored before
+     * this validation existed has to be VISIBLE to be fixed.
+     */
+    endpoint: z
+      .string()
+      .max(ENDPOINT_MAX_LENGTH)
+      .nullable()
+      .superRefine((value, ctx) => {
+        if (value === null) return;
+        let url: URL;
+        try {
+          url = new URL(value);
+        } catch {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Must be a valid URL.' });
+          return;
+        }
+        if (url.username !== '' || url.password !== '') {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Must not embed credentials.' });
+        }
+      }),
     /** Effective model name (stored override else env default); null when unset. */
     model: z.string().nullable(),
     /** Per-user daily completion cap in effect. */

@@ -13,6 +13,7 @@ import {
   deriveVaultWrapKey,
   wrapContentKey,
 } from '../keys/keyCore';
+import { acknowledgePlainCustodyRisk } from './acknowledgment';
 import { EndpointVaultKeystore } from './core';
 import { deriveDeviceKey, verifyEndpointPassword, type DevicePasswordArgon2 } from './deviceCrypto';
 import { isEndpointDeviceLocked, rememberEndpointDeviceLocked } from './deviceLock';
@@ -368,6 +369,294 @@ describe('the race discipline (reviewer finding B2, probes P1/P1b)', () => {
     // …and it stays locked for a tab opened afterwards.
     const third = tab();
     await expect(third.resumeSessionFromOpenTabs()).resolves.toEqual({ unlockedVaultIds: [] });
+  });
+});
+
+/**
+ * ── THE HOT PATH READS THE §12 MARKER (#1640 residue 1) ────────────────────
+ *
+ * `stateFor()` and `readMnemonic()` are every surface state read and every
+ * plaintext hand-out. A tab whose session is already live served BOTH purely
+ * from memory, so the marker — the one signal a locking tab writes
+ * synchronously before any await — was never consulted where it matters most.
+ * The guarantee "a lock on this device revokes this tab" therefore rested on
+ * two EVENT paths, both of which can be absent at once:
+ *
+ *   • the `session-lock` message — no `BroadcastChannel` at all, a transport
+ *     that returned `null`, or a wedged/backgrounded channel; AND
+ *   • the account-scoped `storage` twin — `localStorage` unavailable in that
+ *     tab, a private-mode context, or a `broadcastVaultLock` that threw.
+ *
+ * Every probe below detaches BOTH: the tab is built `transport: () => null`
+ * (so no channel exists to carry `session-lock`) and no `bindToVaultLockSignal`
+ * listener is attached (so no `storage` event can arrive either). What is left
+ * is the marker, flipped out of band exactly as a sibling tab's synchronous
+ * write would flip it.
+ */
+describe('the hot path reads the §12 marker (#1640 residue 1)', () => {
+  /**
+   * H1 — the plaintext hand-out, ISOLATED. `readMnemonic` is the first hot call
+   * after the flip, so nothing else can have torn the session down for it.
+   * Red before the fix: it resolved the seed phrase after the device was locked.
+   */
+  it('H1: readMnemonic refuses once the marker is set, both event paths detached', async () => {
+    const keystore = tab({ transport: () => null });
+    await seedWrappedVault(keystore);
+    await keystore.unlock(PASSWORD);
+    // Non-vacuity: the session really is live and really does serve from memory.
+    await expect(keystore.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+    const generationBefore = sessionGeneration(keystore);
+
+    // Another tab of this device locked; only its synchronous marker write has
+    // landed. Nothing has touched this instance.
+    rememberEndpointDeviceLocked(ACCOUNT_ID);
+
+    await expect(keystore.readMnemonic(VAULT_1)).rejects.toThrow(/device password/i);
+    // …and the refusal is a real teardown, not a cosmetic report: the session
+    // generation moved, so the in-memory entropy was zeroed with it.
+    expect(sessionGeneration(keystore)).toBeGreaterThan(generationBefore);
+    await expect(keystore.readMnemonic(VAULT_1)).rejects.toThrow(/device password/i);
+  });
+
+  /**
+   * H2 — the surface state read, ISOLATED. A separate keystore instance, so the
+   * teardown H1 proves cannot be what makes this one report `locked`.
+   * Red before the fix: it reported `session: 'unlocked'` after the lock.
+   */
+  it('H2: stateFor reports locked once the marker is set, both event paths detached', async () => {
+    const keystore = tab({ transport: () => null });
+    await seedWrappedVault(keystore);
+    await keystore.unlock(PASSWORD);
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    const generationBefore = sessionGeneration(keystore);
+
+    rememberEndpointDeviceLocked(ACCOUNT_ID);
+
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({
+      status: 'stored+wrapped',
+      session: 'locked',
+      requiredAction: { kind: 'unlock', credential: 'device-password' },
+    });
+    expect(sessionGeneration(keystore)).toBeGreaterThan(generationBefore);
+  });
+
+  /**
+   * H2b — THE CONTENT KEY, isolated (#1640 review, B1).
+   *
+   * K_c decrypts and encrypts every vault document, and `withContentKey` served
+   * it from `contentKeys` with no marker read of its own. The shape here is
+   * R1b's: NO intervening `stateFor` or `readMnemonic`, because with one the
+   * probe passes for the wrong reason — the other site tears the session down
+   * and `withContentKey` then finds an empty map. Several real callers reach
+   * K_c exactly like this (`engine/portfolioDocumentSet.ts`,
+   * `portfolioMoveCapture.ts`, `portfolioRestoreDocument.ts`). Red before the
+   * fix: it resolved the borrowed key after the device was locked.
+   */
+  it('H2b: withContentKey refuses once the marker is set, with no intervening hot read', async () => {
+    const keystore = tab({ transport: () => null });
+    // `storeAfterVerifiedOpen` leaves the session AND the content key live, so
+    // no `unlock()` follows — an unlock would clear the cache this probes.
+    await seedWrappedVault(keystore);
+    // Non-vacuity: K_c really is cached and really is served from memory.
+    await expect(keystore.withContentKey(VAULT_1, (contentKey) => contentKey.length)).resolves.toBe(
+      32,
+    );
+    const generationBefore = sessionGeneration(keystore);
+
+    rememberEndpointDeviceLocked(ACCOUNT_ID);
+
+    await expect(
+      keystore.withContentKey(VAULT_1, (contentKey) => contentKey.length),
+    ).rejects.toThrow(/content key is not unlocked/i);
+    expect(sessionGeneration(keystore)).toBeGreaterThan(generationBefore);
+    // …and the operation never ran: a refusal that still called it would have
+    // handed a zeroed borrow to a caller about to WRITE a vault document.
+    const operation = vi.fn(() => 'served');
+    await expect(keystore.withContentKey(VAULT_1, operation)).rejects.toThrow();
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  /**
+   * H2c — the marker must tear the session DOWN during a password lockout, not
+   * merely report `locked` (#1640 review, M1). The lockout branch returns early
+   * from `stateFor`, so a marker read sitting under it left the entropy and K_c
+   * in the maps for the whole window while the surface said "locked".
+   *
+   * The lockout has to be reached through E7 STEP-UP, not through `unlock()`:
+   * a failed `unlock()` tears its own session down (`beginSessionChange`), and a
+   * sibling tab burning the failures moves the metadata revision, which
+   * `reconcileSessionRevision` already ends the session on. `verifyDevicePassword`
+   * is the one path that records a failure and deliberately keeps the live
+   * session — which is precisely why a live session and an open lockout can
+   * coexist at all.
+   */
+  it('H2c: a lock during a password lockout ends the session, not just the report', async () => {
+    const clock = 1_000_000;
+    const keystore = tab({ transport: () => null, now: () => clock });
+    await seedWrappedVault(keystore);
+    await expect(keystore.withContentKey(VAULT_1, (contentKey) => contentKey.length)).resolves.toBe(
+      32,
+    );
+
+    // §12's ladder: five wrong attempts open the 30 s window. These are
+    // step-ups, so they open it without touching the session.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await expect(keystore.verifyDevicePassword('wrong password')).rejects.toThrow();
+    }
+    // Non-vacuity, both halves: the lockout is really open AND the session it
+    // must not have touched is really still serving.
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({
+      status: 'stored+wrapped',
+      session: 'locked',
+      requiredAction: { kind: 'wait-or-reset' },
+    });
+    await expect(keystore.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+    const generationBefore = sessionGeneration(keystore);
+
+    // A sibling tab locks the device while that window is still open.
+    rememberEndpointDeviceLocked(ACCOUNT_ID);
+
+    // The state still names the lockout — that IS the truthful next action —
+    // but the same read must have ended the session standing behind it.
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({
+      requiredAction: { kind: 'wait-or-reset' },
+    });
+    expect(sessionGeneration(keystore)).toBeGreaterThan(generationBefore);
+    await expect(keystore.readMnemonic(VAULT_1)).rejects.toThrow(/device password/i);
+    await expect(keystore.withContentKey(VAULT_1, () => 'served')).rejects.toThrow();
+  });
+
+  /**
+   * H2d — the hot-path teardown is the FULL one (#1640 review, M2).
+   *
+   * `endSession()` alone left the device session record
+   * (`bettertrack-paranoid-session-v1`) in place. The §12 marker keeps a stale
+   * record inert, so nothing could have resumed from it — but a record that
+   * only a marker makes harmless is the same residue in a different drawer, and
+   * `lockDevice`/`applyRemoteLock` delete it precisely because they do not want
+   * to rely on that. The hot path takes the same exit.
+   */
+  it('H2d: the hot-path teardown removes the device session record as well', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const keystore = tab({ persistence, transport: () => null });
+    await seedWrappedVault(keystore);
+    await keystore.unlock(PASSWORD);
+    await bus.settle();
+    expect(persistence.size(), 'the device record must really exist here').toBe(1);
+
+    rememberEndpointDeviceLocked(ACCOUNT_ID);
+
+    await expect(keystore.readMnemonic(VAULT_1)).rejects.toThrow(/device password/i);
+    await bus.settle();
+    expect(persistence.size()).toBe(0);
+  });
+
+  /**
+   * H3 — ANOTHER account's marker must not lock this one. The per-account
+   * scoping of the marker is pinned in G3 for the reader; this pins it on the
+   * hot path, where a prefix slip would lock every session on a shared profile.
+   */
+  it('H3: a marker for another account leaves this session untouched', async () => {
+    const keystore = tab({ transport: () => null });
+    await seedWrappedVault(keystore);
+    await keystore.unlock(PASSWORD);
+
+    rememberEndpointDeviceLocked(ACCOUNT_B);
+
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    await expect(keystore.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+  });
+
+  /**
+   * H4 — THE CONTROL. The un-flipped path is unchanged, and the cost of the new
+   * guarantee is pinned at exactly ONE marker read per hot call: not zero (that
+   * would be the residue again) and not one per stored entry, per retry or per
+   * loop iteration, which is how a synchronous read on a hot path turns into a
+   * real regression. There is deliberately no cache — see the note on
+   * `endSessionIfDeviceLocked` in `core.ts`.
+   */
+  it('H4: with no marker set the hot path is unchanged and costs one marker read per call', async () => {
+    const keystore = tab({ transport: () => null });
+    await seedWrappedVault(keystore, VAULT_1);
+    await seedWrappedVault(keystore, VAULT_2);
+    await keystore.unlock(PASSWORD);
+    // `unlock()` clears the content-key cache, so re-open one vault: all THREE
+    // hot hand-outs have to be live for the control to measure all three.
+    await keystore.openStoredVault(VAULT_1, verifiedHeaderFetch(VAULT_1));
+    // `unlock()` also leaves a fire-and-forget `rememberSession` in flight, and
+    // its own `sessionStillCurrent` reads the marker one microtask later. Let it
+    // land BEFORE the counter arms, or the control would measure that instead
+    // of the per-call cost it exists to bound.
+    await bus.settle();
+
+    const markerKey = `bettertrack:endpoint-device-locked:${ACCOUNT_ID}`;
+    const reads: string[] = [];
+    const original = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+    ) {
+      if (key.startsWith('bettertrack:endpoint-device-locked:')) reads.push(key);
+      return original.call(this, key);
+    });
+
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    expect(reads, 'stateFor reads the marker exactly once').toEqual([markerKey]);
+    reads.length = 0;
+    await expect(keystore.readMnemonic(VAULT_2)).resolves.toBe(MNEMONIC);
+    expect(reads, 'readMnemonic reads the marker exactly once').toEqual([markerKey]);
+    reads.length = 0;
+    await expect(keystore.withContentKey(VAULT_1, (contentKey) => contentKey.length)).resolves.toBe(
+      32,
+    );
+    expect(reads, 'withContentKey reads the marker exactly once').toEqual([markerKey]);
+  });
+
+  /**
+   * H5 — THE FAIL-CLOSED DECISION, pinned (#1640 asked for it either way).
+   *
+   * `isEndpointDeviceLocked` reads an unreadable `localStorage` as LOCKED, which
+   * is right for the resume and the grant responder: those install or hand out a
+   * session this tab has not proven, so "no news" must mean "no". The hot path
+   * is the opposite case and takes the opposite decision — a store that cannot
+   * be READ cannot have been WRITTEN either, so it carries no lock news in
+   * either direction, while failing closed there would not cost "one password
+   * entry": `unlock()` clears the marker through the same broken store, so
+   * every unlock would be revoked by the very next read, forever. That is a
+   * permanent denial of the vault in a private-mode or quota-wedged profile, and
+   * it would be a REGRESSION on today's behaviour, which serves such a profile
+   * fine with one password per session.
+   */
+  it('H5: an unreadable localStorage does not revoke a session this password established', async () => {
+    const keystore = tab({ transport: () => null });
+    await seedWrappedVault(keystore);
+    await keystore.unlock(PASSWORD);
+
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('The operation is insecure.', 'SecurityError');
+    });
+
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    await expect(keystore.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+  });
+
+  /**
+   * H6 — plain custody is NOT device-password custody (§12), so the marker must
+   * not reach it. A plain phrase opens with no prompt at all; turning it into a
+   * "locked" surface would invent a state whose required action does not exist.
+   */
+  it('H6: the marker does not lock a plain-custody phrase', async () => {
+    const keystore = tab({ transport: () => null });
+    await seedWrappedVault(keystore);
+    await keystore.switchToPlain(VAULT_1, acknowledgePlainCustodyRisk(VAULT_1));
+
+    rememberEndpointDeviceLocked(ACCOUNT_ID);
+
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({
+      status: 'stored+plain',
+      requiredAction: { kind: 'open-silently' },
+    });
+    await expect(keystore.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
   });
 });
 

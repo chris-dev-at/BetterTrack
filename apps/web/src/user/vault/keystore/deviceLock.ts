@@ -31,7 +31,9 @@
  *
  * It is read fail-closed on purpose: a localStorage that throws (private mode,
  * a blocked third-party context, a quota-wedged profile) reads as LOCKED, which
- * costs a user one password entry and costs an attacker the session.
+ * costs a user one password entry and costs an attacker the session. The one
+ * caller that needs the third state spelled out is the hot read path — see
+ * {@link readEndpointDeviceLockMarker}.
  */
 
 const DEVICE_LOCKED_STORAGE_PREFIX = 'bettertrack:endpoint-device-locked:';
@@ -70,10 +72,33 @@ export function forgetEndpointDeviceLocked(accountId: string): void {
   }
 }
 
-export function isEndpointDeviceLocked(accountId: string): boolean {
+/**
+ * What the marker says, with "I could not read it" kept DISTINCT from "it is
+ * set" — because the two callers want opposite answers to an unreadable store.
+ *
+ *   • `resumeSessionFromOpenTabs`, `sessionStillCurrent` and the grant
+ *     responder install or hand OUT a session this tab has not proven. For them
+ *     "no news" must mean "no": {@link isEndpointDeviceLocked} folds
+ *     `'unreadable'` into `true` and they stay fail-closed, exactly as before.
+ *   • The hot path (`stateFor`, `readMnemonic`, #1640) is the opposite case: it
+ *     serves a session THIS tab's password already established. A store that
+ *     cannot be read cannot have been written either, so it carries no lock news
+ *     in either direction — while failing closed there would revoke every
+ *     unlock on the next read forever, since `unlock()` clears the marker
+ *     through the same broken store. See `core.ts#endSessionIfDeviceLocked`.
+ */
+export type EndpointDeviceLockMarker = 'locked' | 'clear' | 'unreadable';
+
+export function readEndpointDeviceLockMarker(accountId: string): EndpointDeviceLockMarker {
   try {
-    return globalThis.localStorage?.getItem(`${DEVICE_LOCKED_STORAGE_PREFIX}${accountId}`) === '1';
+    return globalThis.localStorage?.getItem(`${DEVICE_LOCKED_STORAGE_PREFIX}${accountId}`) === '1'
+      ? 'locked'
+      : 'clear';
   } catch {
-    return true;
+    return 'unreadable';
   }
+}
+
+export function isEndpointDeviceLocked(accountId: string): boolean {
+  return readEndpointDeviceLockMarker(accountId) !== 'clear';
 }
