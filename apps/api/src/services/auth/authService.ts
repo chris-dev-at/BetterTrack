@@ -1261,17 +1261,37 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         // response deadline below masks the known-account writes (§6.1). Both
         // branches also take the repository's per-address issue lock, so a burst
         // of concurrent requests cannot distinguish the row-locking branch.
+        //
+        // The success audit rides INSIDE the issue transaction (§16 2026-09-16).
+        // It used to be a second awaited write, after that transaction had
+        // committed and handed its connection back — and a second write has to
+        // *acquire* a connection, an acquisition the no-account branch never
+        // makes. Under a saturated pool that wait is bounded only by request
+        // concurrency, which the caller chooses, and it falls on the known
+        // branch alone, so it overruns the fixed response floor that is supposed
+        // to hide the difference and leaves response time an account-existence
+        // oracle (§6.1). Measured on postgres:17, 48 requests in flight against
+        // a 3-connection pool: paired |known − unknown| p50 239–266 ms, p90
+        // 267–336 ms against a 250 ms floor, same-signed on every pair.
+        //
+        // Same row, same content, now on the connection this request already
+        // holds: both branches make exactly two awaited pooled operations per
+        // request (pinned by auth.test.ts), and the audit row commits or rolls
+        // back with the token it describes.
         await passwordResetRepo.issueOrEqualize(
           resetUser ? { userId: resetUser.id, tokenHash, expiresAt } : null,
           address.trim().toLowerCase(),
+          resetUser
+            ? (executor) =>
+                audit.recordInTransaction(executor, {
+                  action: AuditAction.PasswordResetRequested,
+                  targetType: 'user',
+                  targetId: resetUser.id,
+                  ip,
+                })
+            : undefined,
         );
         if (resetUser) {
-          await audit.record({
-            action: AuditAction.PasswordResetRequested,
-            targetType: 'user',
-            targetId: resetUser.id,
-            ip,
-          });
           // Best-effort send after the token is committed. SMTP latency must never
           // become an account-existence oracle; the detached send still owns the
           // normal email_log and failure-audit semantics (§6.10/§6.11).
