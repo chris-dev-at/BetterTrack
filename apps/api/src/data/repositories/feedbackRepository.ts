@@ -13,6 +13,7 @@ import {
   or,
   sql,
   type SQL,
+  type SQLWrapper,
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
@@ -56,6 +57,45 @@ export interface AdminFeedbackRow extends FeedbackRow {
  */
 export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+/**
+ * Build `case <expression> when <value> then <rank> … else <n> end` as an
+ * INTEGER sort key: the values stay bound parameters, and every rank is a bound
+ * parameter with an explicit `cast(… as int)`.
+ *
+ * The cast is the load-bearing part, and the hazard it closes is a silent wrong
+ * answer rather than an error. Measured on Postgres 17 (and reproduced on
+ * PGlite): a `CASE` whose arms are all unknown-typed parameters prepares and
+ * runs perfectly happily — Postgres resolves the unknowns to **text**, so
+ * `pg_typeof` on the expression reports `text` and the ranks are compared
+ * LEXICOGRAPHICALLY. Rank 10 then sorts before rank 2 and the grouping quietly
+ * inverts, with every row still returned and every existing assertion still
+ * green. Nothing shows it while a partition has ten or fewer entries, because
+ * `'0'`…`'9'` order identically as text and as int; the eleventh entry is where
+ * a green suite starts lying. `cast(${rank} as int)` resolves the expression to
+ * `integer` and the ranks sort numerically at any length.
+ *
+ * (The comment this replaces claimed a bound rank would fail to prepare with
+ * `could not determine data type of parameter` and that only `sql.raw` would
+ * do. It was never measured and it is not what Postgres does — hence no
+ * `sql/no-dynamic-identifier` exemption here: nothing is spliced into the
+ * statement text at all.)
+ *
+ * `feedbackLifecycleRankOrder.test.ts` drives this builder with twelve ranks,
+ * which is the length at which the two typings disagree.
+ */
+export function buildRankOrder(
+  expression: SQLWrapper,
+  rankedValues: readonly string[],
+): SQL<number> {
+  if (rankedValues.length === 0) {
+    // `case x else … end` without a single `when` is a Postgres syntax error;
+    // fail here, at the builder, instead of inside the query.
+    throw new Error('buildRankOrder needs at least one ranked value');
+  }
+  const arms = rankedValues.map((value, index) => sql`when ${value} then cast(${index} as int)`);
+  return sql<number>`case ${expression} ${sql.join(arms, sql` `)} else cast(${rankedValues.length} as int) end`;
 }
 
 export interface MyFeedbackRow extends FeedbackRow {
@@ -576,19 +616,12 @@ export function createFeedbackRepository(
         ...FEEDBACK_TERMINAL_STATUSES,
       ] satisfies readonly FeedbackStatus[];
       /**
-       * The sort keys are the only part of this `CASE` that is SQL text rather
-       * than a bind parameter, and they have to be: every arm of a `CASE` whose
-       * results are unknown-typed parameters leaves Postgres with no way to
-       * resolve the expression's type (`could not determine data type of
-       * parameter`), a failure PGlite does not reliably reproduce. So the
-       * positions go through `sql.raw` and each call is exempted from
-       * `sql/no-dynamic-identifier` one line at a time: the value is a `map`
-       * index (and the array's length) over `lifecycleStatusOrder`, a
-       * module-level `as const` partition — no user input can reach it. The
-       * status literals themselves stay bound parameters, which is why they are
-       * spelled `${status}` here rather than as SQL text like `priorityOrder`'s
-       * categories above: they come from the same closed list, but binding them
-       * keeps one more string out of the statement text for free.
+       * Nothing in this key is SQL text: the status literals and the sort ranks
+       * are all bound parameters, and `buildRankOrder` gives each rank the
+       * `cast(… as int)` that keeps the `CASE` an integer expression instead of
+       * a text one. See that function for the measured reason — an all-unknown
+       * `CASE` resolves to `text` and sorts the ranks lexicographically, which
+       * this six-status partition is still too short to reveal.
        *
        * The `else` arm is unreachable in production — the column is the
        * `feedback_status` pg enum and the partition covers it exhaustively, so
@@ -596,17 +629,7 @@ export function createFeedbackRepository(
        * the partition sorts last deterministically instead of producing a NULL
        * key; do not go looking for the query that exercises it.
        */
-      const lifecycleArms = lifecycleStatusOrder.map((status, index) => {
-        // eslint-disable-next-line sql/no-dynamic-identifier -- integer index into lifecycleStatusOrder, the closed FEEDBACK_OPEN_STATUSES + FEEDBACK_TERMINAL_STATUSES partition; never user input
-        const position = sql.raw(String(index));
-        return sql`when ${status} then ${position}`;
-      });
-      // eslint-disable-next-line sql/no-dynamic-identifier -- length of that same closed partition, one past its last index; never user input
-      const lifecycleFallback = sql.raw(String(lifecycleStatusOrder.length));
-      const lifecycleOrder = sql<number>`case ${feedback.status} ${sql.join(
-        lifecycleArms,
-        sql` `,
-      )} else ${lifecycleFallback} end`;
+      const lifecycleOrder = buildRankOrder(feedback.status, lifecycleStatusOrder);
 
       /**
        * Every ordering ends on the `id` tiebreak. Without it two rows sharing
