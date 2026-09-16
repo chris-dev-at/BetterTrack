@@ -10,6 +10,7 @@ import {
   cashEntryRequestSchema,
   cashMovementKindSchema,
   cashMovementsQuerySchema,
+  cashMovementsResponseSchema,
   cashPreviewRequestSchema,
   createCustomAssetRequestSchema,
   createPortfolioRequestSchema,
@@ -274,8 +275,40 @@ describe('cash movement pagination', () => {
       cursor,
       limit: 20,
       tag: cursor,
+      // The source facet is opt-in and defaults off, exactly as on the
+      // transaction ledger (V5-P0c, #1658).
+      includeSourceTags: false,
     });
     expect(cashMovementsQuerySchema.safeParse({ tag: 'untagged' }).success).toBe(true);
+  });
+
+  it('opts into the portfolio-wide source facet from the query string', () => {
+    expect(cashMovementsQuerySchema.parse({ includeSourceTags: 'true' }).includeSourceTags).toBe(
+      true,
+    );
+    expect(cashMovementsQuerySchema.parse({ includeSourceTags: 'false' }).includeSourceTags).toBe(
+      false,
+    );
+    // Anything else is a 400, never a silently-on facet.
+    expect(cashMovementsQuerySchema.safeParse({ includeSourceTags: 'yes' }).success).toBe(false);
+  });
+
+  it('keeps the response facet optional and source-tag shaped', () => {
+    const page = {
+      balanceEur: 10,
+      movements: [],
+      sources: [],
+      nextCursor: null,
+    };
+    expect(cashMovementsResponseSchema.safeParse(page).success).toBe(true);
+    expect(
+      cashMovementsResponseSchema.safeParse({ ...page, sourceTags: ['manual', 'import:flatex'] })
+        .success,
+    ).toBe(true);
+    // A facet entry is a source TAG, not free text.
+    expect(cashMovementsResponseSchema.safeParse({ ...page, sourceTags: ['IMPORT'] }).success).toBe(
+      false,
+    );
   });
 
   it('rejects malformed cursors, tags, and out-of-range limits', () => {

@@ -2797,6 +2797,13 @@
       "needTwo": "Select at least {{min}} blueprints to compare.",
       "error": "The comparison could not be computed. Please try again.",
       "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
+      "windowMismatch": {
+        "startsLate": "{{name}} doesn’t cover the comparison window: its price history only starts on {{seriesStart}}, after the window opens on {{windowStart}}.",
+        "endsEarly": "{{name}} doesn’t cover the comparison window: its price history ends on {{seriesEnd}}, before the window closes on {{windowEnd}}.",
+        "clipped": "{{name}} doesn’t cover the comparison window — it shares too little price history with the other picks.",
+        "hint": "Remove it from the comparison, or choose a shorter range.",
+        "drop": "Remove {{name}} from the comparison"
+      },
       "chartAriaLabel": "Blueprint comparison chart",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
@@ -3566,7 +3573,9 @@
         "chartAriaLabel": "What-if performance over time",
         "weightsPositiveHint": "Give every holding a weight above 0 to preview.",
         "previewError": "Couldn't run this what-if. Try a different range or weights.",
-        "empty": "No data to preview for this range."
+        "empty": "No data to preview for this range.",
+        "sharedWeightsMovedOne": "The owner changed a shared weight while you were experimenting: {{names}}. Your value is kept — “Reset to shared” adopts the new one.",
+        "sharedWeightsMovedOther": "The owner changed {{count}} shared weights while you were experimenting: {{names}}. Your values are kept — “Reset to shared” adopts the new ones."
       }
     },
     "sharedIdea": {
@@ -6505,6 +6514,7 @@
         "namePlaceholder": "e.g. Groceries",
         "nameRequired": "Enter a name.",
         "nameTaken": "You already have a tag with that name.",
+        "limitReached": "You already have the maximum number of tags. Delete one to add another.",
         "color": "Colour",
         "saveError": "Couldn't save the tag. Please try again."
       }

@@ -163,7 +163,35 @@ export interface NewTransaction {
   cashMovements?: readonly LinkedCashMovement[];
 }
 
-function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
+/**
+ * Exactly the columns `toRecord` reads. Spelled out so a narrowed projection
+ * cannot silently drop one: `findByIdForUser` used to project without `source`
+ * and cast the row to the full select type, so every `TransactionRecord` it
+ * returned carried `source: undefined` behind a `string` type — which is how a
+ * deleted import row's tax correction ended up stamped `manual` (#1658). With
+ * this type the omission is a compile error instead.
+ */
+type TransactionRecordColumns = Pick<
+  typeof transactions.$inferSelect,
+  | 'id'
+  | 'portfolioId'
+  | 'assetId'
+  | 'side'
+  | 'quantity'
+  | 'price'
+  | 'fee'
+  | 'executedAt'
+  | 'note'
+  | 'taxMode'
+  | 'taxCountry'
+  | 'taxAmountEur'
+  | 'taxParams'
+  | 'allowUncovered'
+  | 'uncoveredEntryPrice'
+  | 'source'
+>;
+
+function toRecord(row: TransactionRecordColumns): TransactionRecord {
   return {
     id: row.id,
     portfolioId: row.portfolioId,
@@ -506,13 +534,17 @@ export function createTransactionRepository(db: Database) {
           taxParams: transactions.taxParams,
           allowUncovered: transactions.allowUncovered,
           uncoveredEntryPrice: transactions.uncoveredEntryPrice,
+          // V5-P0c (#1658): the delete path plans its tax correction from this
+          // record and stamps the correction with the row's tag, so the source
+          // column MUST be projected here.
+          source: transactions.source,
         })
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .where(and(eq(transactions.id, id), eq(portfolios.userId, userId)))
         .limit(1);
       const row = rows[0];
-      return row ? toRecord(row as typeof transactions.$inferSelect) : null;
+      return row ? toRecord(row) : null;
     },
 
     /**

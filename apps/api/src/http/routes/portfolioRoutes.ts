@@ -458,12 +458,14 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
     validateQuery(cashMovementsQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { cursor, limit, source, tag } = req.valid?.query as CashMovementsQuery;
+      const { cursor, limit, source, tag, includeSourceTags } = req.valid
+        ?.query as CashMovementsQuery;
       const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, {
         cursor,
         limit,
         source,
         tag,
+        includeSourceTags,
       });
       const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
       const movements = cash.movements.map((m) => {

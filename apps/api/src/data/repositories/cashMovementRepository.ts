@@ -375,6 +375,22 @@ export function createCashMovementRepository(db: Database) {
       return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
     },
 
+    /**
+     * Complete, sorted source facet for the portfolio's cash ledger, independent
+     * of the row filters and of the page (V5-P0c, #1658) — the exact twin of
+     * `transactionRepository.listSourceTagsByPortfolio`. Without it the web
+     * derived its filter options from whatever pages happened to be cached, so a
+     * lone `import:flatex` row older than the first 50 rows was unfilterable.
+     */
+    async listSourceTagsByPortfolio(portfolioId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ source: portfolioCashMovements.source })
+        .from(portfolioCashMovements)
+        .where(eq(portfolioCashMovements.portfolioId, portfolioId))
+        .orderBy(asc(portfolioCashMovements.source));
+      return rows.map((row) => row.source);
+    },
+
     /** Per-source cash totals without materialising the movement ledger. */
     async balancesForPortfolio(
       portfolioId: string,

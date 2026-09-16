@@ -29,6 +29,15 @@ x-api-worker-environment: &api-worker-environment
   # projects freshness from it and never writes here.
   BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
 
+  # API listen address (#2004). Forwarded, but empty is the only value this
+  # topology supports: empty means "unset", which the API turns into the
+  # wildcard dual-stack bind nginx and the container healthcheck need to reach
+  # the service by name. It lives in the anchor so the narrowing knob is part of
+  # the one documented API/worker environment — a bare-metal self-host running
+  # the API beside its own reverse proxy sets it to 127.0.0.1, and the throwaway
+  # e2e stack does exactly that. Outbound connections are unaffected by it.
+  BT_HOST: '${BT_HOST:-}'
+
   # Required data stores and cookie signing.
   DATABASE_URL: '${DATABASE_URL}'
   REDIS_URL: '${REDIS_URL}'

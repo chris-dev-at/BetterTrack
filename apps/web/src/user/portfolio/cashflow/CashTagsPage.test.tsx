@@ -112,6 +112,27 @@ describe('CashTagsPage', () => {
     expect(await screen.findByText('You already have a tag with that name.')).toBeInTheDocument();
   });
 
+  test('surfaces the per-user tag cap inline, in the user s language', async () => {
+    // The cap is a 409 the user can act on (#1963) — delete one, add another —
+    // so it reads as its own line rather than as the generic save failure.
+    vi.mocked(createCashTag).mockRejectedValue(
+      new ApiError(409, 'CASH_TAG_LIMIT_REACHED', 'You already have the maximum of 1000 tags.'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'New tag' }));
+    const dialog = screen.getByRole('dialog', { name: 'New tag' });
+    await user.type(within(dialog).getByLabelText('Name'), 'One too many');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(
+      await screen.findByText(
+        'You already have the maximum number of tags. Delete one to add another.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   test('renders a load error when tags fail to load', async () => {
     vi.mocked(listCashTags).mockRejectedValue(new Error('offline'));
     renderPage();

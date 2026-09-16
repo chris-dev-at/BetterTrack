@@ -182,7 +182,7 @@ describe('CashSourcesPage', () => {
     expect(screen.queryByText('Older movement')).not.toBeInTheDocument();
     expect(portfolioApi.getCashMovements).toHaveBeenCalledWith(
       'p1',
-      { cursor: undefined, limit: 50, source: undefined },
+      { cursor: undefined, limit: 50, source: undefined, includeSourceTags: true },
       expect.anything(),
     );
 
@@ -190,7 +190,7 @@ describe('CashSourcesPage', () => {
     expect(await screen.findByText('Older movement')).toBeInTheDocument();
     expect(portfolioApi.getCashMovements).toHaveBeenLastCalledWith(
       'p1',
-      { cursor: 'older-cursor', limit: 50, source: undefined },
+      { cursor: 'older-cursor', limit: 50, source: undefined, includeSourceTags: false },
       expect.anything(),
     );
   });
@@ -212,6 +212,7 @@ describe('CashSourcesPage', () => {
         movements: [DEPOSIT, imported],
         sources: [MAIN, BANK, SAVINGS],
         nextCursor: null,
+        sourceTags: ['import:george', 'manual'],
       };
     });
     const client = new QueryClient({
@@ -236,11 +237,48 @@ describe('CashSourcesPage', () => {
       movements: [imported],
       sources: [MAIN, BANK, SAVINGS],
       nextCursor: null,
+      sourceTags: ['import:george', 'manual'],
     });
 
     await waitFor(() => expect(screen.queryByText(/\+300,00\s*€/)).not.toBeInTheDocument());
     expect(screen.getByLabelText('Source')).toHaveValue('import:george');
     expect(screen.getByRole('option', { name: 'All sources' })).toBeInTheDocument();
+  });
+
+  /**
+   * V5-P0c, issue #1658 part 2. The option list used to be derived from whatever
+   * pages happened to be cached over a 50-row page, so one `import:flatex` row on
+   * page 3 left `sourceTags` at `['manual']`, the filter hidden, and the imported
+   * row unreachable — even though `GET /cash?source=import:flatex` answered fine.
+   * The server's portfolio-wide facet decides now.
+   */
+  test('offers a facet tag that the loaded page does not contain', async () => {
+    vi.mocked(portfolioApi.getCashMovements).mockResolvedValue({
+      balanceEur: 6000,
+      // Nothing imported on this page…
+      movements: [DEPOSIT],
+      sources: [MAIN, BANK, SAVINGS],
+      nextCursor: 'older-cursor',
+      // …but the portfolio holds an imported row further back.
+      sourceTags: ['import:flatex', 'manual'],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const filter = await screen.findByLabelText('Source');
+    expect(within(filter).getByRole('option', { name: 'Imported · Flatex' })).toBeInTheDocument();
+
+    await user.selectOptions(filter, 'import:flatex');
+    expect(portfolioApi.getCashMovements).toHaveBeenLastCalledWith(
+      'p1',
+      expect.objectContaining({ source: 'import:flatex' }),
+      expect.anything(),
+    );
+    expect(portfolioApi.getCashMovements).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ includeSourceTags: true }),
+      expect.anything(),
+    );
   });
 
   test('lists every source with balance, type label and liquidity share', async () => {

@@ -273,8 +273,17 @@ describe('a restored rule’s TAG FAN-OUT meets the same cap a written one does 
    */
   const RULE_A = '018f0000-0000-7000-8000-0000000000e1';
   const RULE_B = '018f0000-0000-7000-8000-0000000000e2';
-  const links = (ruleId: string, count: number) =>
-    Array.from({ length: count }, () => ({ ruleId }));
+  /**
+   * A DISTINCT tag per link. `(ruleId, tagId)` is unique in `cash_rule_tags` and
+   * the gate says so too (#1963), so a fan-out fixture repeating one tag id
+   * would be refused as a duplicate and would stop proving anything about the
+   * fan-out cap.
+   */
+  const links = (ruleId: string, count: number, offset = 0) =>
+    Array.from({ length: count }, (_unused, i) => ({
+      ruleId,
+      tagId: `018f0000-0000-7000-8000-1${(offset + i).toString(16).padStart(11, '0')}`,
+    }));
 
   it('accepts a rule landing exactly ON the cap', async () => {
     const document = links(RULE_A, CASH_TAGS_PER_ITEM_MAX);
@@ -343,6 +352,78 @@ describe('a restored rule’s TAG FAN-OUT meets the same cap a written one does 
 
     await service(stubRules()).restoreRuleTags(USER, [], { insertRuleTags });
 
+    expect(insertRuleTags).not.toHaveBeenCalled();
+  });
+});
+
+describe('a restored rule→tag link is UNIQUE per pair (#1963)', () => {
+  /**
+   * `cash_rule_tags` carries `uniqueIndex('cash_rule_tags_rule_tag_unique')` and
+   * `restoreCashRuleTags` inserts with no conflict handling ON PURPOSE — a
+   * duplicate means a malformed vault and must fail loudly. Loudly meant a
+   * driver error inside the OPEN rehydration transaction: a 500 raised after the
+   * document had been proved and the write had begun. The document schema
+   * refuses the shape at parse time; this is the gate on the TABLE, for any
+   * caller that did not come through that parse (§13.5: the server does not
+   * trust a vault payload, and does not trust one parser either).
+   */
+  const RULE_A = '018f0000-0000-7000-8000-0000000000e1';
+  const RULE_B = '018f0000-0000-7000-8000-0000000000e2';
+  const TAG = '018f0000-0000-7000-8000-0000000000f1';
+  const OTHER_TAG = '018f0000-0000-7000-8000-0000000000f2';
+
+  it('refuses the same (rule, tag) pair twice, rather than leaving it to the unique index', async () => {
+    const insertRuleTags = vi.fn(async () => {});
+
+    const err = await refusal(() =>
+      service(stubRules()).restoreRuleTags(
+        USER,
+        [
+          { ruleId: RULE_A, tagId: TAG },
+          { ruleId: RULE_A, tagId: TAG },
+        ],
+        { insertRuleTags },
+      ),
+    );
+
+    expect(err.code).toBe('CASH_RULE_TAG_DUPLICATE');
+    // 400, not the cap's 409: a repeated link is a MALFORMED ROW SET, which is
+    // what the write path refuses with a 400 from its request schema.
+    expect(err.statusCode).toBe(400);
+    expect(insertRuleTags).not.toHaveBeenCalled();
+  });
+
+  it('is a PAIR, not an id: one tag on two rules and two tags on one rule are legal', async () => {
+    const insertRuleTags = vi.fn(async () => {});
+
+    await service(stubRules()).restoreRuleTags(
+      USER,
+      [
+        { ruleId: RULE_A, tagId: TAG },
+        { ruleId: RULE_B, tagId: TAG },
+        { ruleId: RULE_A, tagId: OTHER_TAG },
+      ],
+      { insertRuleTags },
+    );
+
+    expect(insertRuleTags).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the DUPLICATE, not the cap, when duplicates are what push a rule over it', async () => {
+    // CASH_TAGS_PER_ITEM_MAX distinct links plus one repeat is one row past the
+    // fan-out cap as well. Only the ORDER of the two checks can decide the
+    // answer, and the accurate one is the duplicate.
+    const insertRuleTags = vi.fn(async () => {});
+    const distinct = Array.from({ length: CASH_TAGS_PER_ITEM_MAX }, (_unused, i) => ({
+      ruleId: RULE_A,
+      tagId: `018f0000-0000-7000-8000-2${i.toString(16).padStart(11, '0')}`,
+    }));
+
+    const err = await refusal(() =>
+      service(stubRules()).restoreRuleTags(USER, [...distinct, distinct[0]!], { insertRuleTags }),
+    );
+
+    expect(err.code).toBe('CASH_RULE_TAG_DUPLICATE');
     expect(insertRuleTags).not.toHaveBeenCalled();
   });
 });

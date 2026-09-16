@@ -2,10 +2,11 @@ import { afterAll, beforeEach } from 'vitest';
 import { getCurrentTest } from 'vitest/suite';
 
 import { liveHarnesses } from './harnessRegistry';
+import { installLoopbackOnlyListen } from './loopbackOnlyListen';
 
 /**
- * Shared vitest setup file (#1936, #1940) — listed in `setupFiles` of both
- * `vitest.config.ts` and `vitest.config.integration.ts`.
+ * Shared vitest setup file (#1936, #1940, #1998) — listed in `setupFiles` of
+ * both `vitest.config.ts` and `vitest.config.integration.ts`.
  *
  * Setup files are evaluated once per test file, in that file's module graph and
  * before its own code, so these two calls install hooks on each test file's root
@@ -37,6 +38,14 @@ import { liveHarnesses } from './harnessRegistry';
  * are set by the same calls that register the hooks, so
  * `harnessLifecycle.test.ts` can prove the wiring without this file being able
  * to lie about it.
+ *
+ * The third call is not a hook at all but a process-wide transport guarantee
+ * (#1998): every host-less `listen()` — supertest opens one per request — binds
+ * `127.0.0.1` instead of the IPv6 wildcard, so a resident process squatting an
+ * ephemeral port on the IPv4 loopback can no longer be handed requests meant for
+ * the app under test. `loopbackOnlyListen.ts` carries the full mechanism; doing
+ * it from here means both vitest configs get it, before any test module loads.
  */
 liveHarnesses.installReaper(afterAll);
 liveHarnesses.installSuiteReaper(beforeEach, () => getCurrentTest() !== undefined);
+installLoopbackOnlyListen();
