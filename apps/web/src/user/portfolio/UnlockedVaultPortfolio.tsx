@@ -14,10 +14,21 @@ import { PortfolioStoreProvider, type PortfolioStoreCapabilities } from './Portf
  * resolution carries a derivation engine rather than the account-level mutation
  * store those projections are written against; writes refuse because a
  * resolution is a READ of an authenticated snapshot and owns no CAS write path.
+ *
+ * `serverPortfolioReads` is the THIRD, independent statement (#1981): no
+ * endpoint under this subtree may be handed this portfolio's id, because the
+ * server refuses every one of them with 403 VAULTED_PORTFOLIO. It does not
+ * follow from either flag above and must not be derived from them — §6.16 kills
+ * server-computed reads for a vaulted portfolio whatever the client store turns
+ * out to be able to serve locally.
+ *
+ * Exported for the request fence in `UnlockedVaultPortfolioRequests.test.tsx`,
+ * which mounts the overview over these exact capabilities.
  */
-const RESOLVED_VAULT_STORE_CAPABILITIES: PortfolioStoreCapabilities = {
+export const RESOLVED_VAULT_STORE_CAPABILITIES: PortfolioStoreCapabilities = {
   writes: false,
   rowReads: false,
+  serverPortfolioReads: false,
 };
 
 /**
