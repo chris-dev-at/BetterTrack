@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useId, useMemo, useState, type FormEvent } from 'react';
 
 import {
@@ -37,6 +37,33 @@ import { Dialog } from '../components/Dialog';
  */
 
 const GROUPS_STALE_MS = 30_000;
+
+/**
+ * Everything a circle edit moves, as ONE prefix (#1899).
+ *
+ * §6.9 promises "editing a group updates its reach" — a claim about the
+ * surfaces that REPORT reach, not just about the circle list. Those are My
+ * items' badges (`['social','my-shared']`, 30 s stale) and every open share
+ * dialog's audience read (`['social','audience',kind,subjectId]`); with the
+ * app-wide `staleTime: 30_000` and `refetchOnWindowFocus: false`
+ * (`UserApp.tsx`), invalidating `['social','groups']` alone left them serving
+ * pre-mutation reach for half a minute — an owner deleting a circle four items
+ * point at still read "Family · 4" on all four rows.
+ *
+ * This takes the same prefix the AudiencePicker's own write already takes
+ * rather than hand-listing dependents: the hand-listing is precisely what
+ * drifted. Every reach-bearing read in the app lives under `['social']`, and
+ * nothing outside it derives reach from a circle — the workboard, portfolio,
+ * idea and chat caches carry an audience TIER at most, which a circle edit
+ * never changes. The cost is that a few sibling social reads (friends,
+ * requests, shared-with-me) refetch too; the alternative is a list that goes
+ * stale the next time a surface starts reporting reach.
+ */
+const REACH_QUERY_KEY = ['social'] as const;
+
+export function invalidateReachQueries(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: [...REACH_QUERY_KEY] });
+}
 
 // ─── Delete confirmation (warns the owner shares will go dark) ────────────────
 
@@ -102,7 +129,7 @@ function GroupCard({ group }: { group: FriendGroup }) {
   });
 
   function invalidate() {
-    void queryClient.invalidateQueries({ queryKey: ['social', 'groups'] });
+    invalidateReachQueries(queryClient);
   }
 
   const renameMutation = useMutation({
@@ -310,7 +337,9 @@ export function FriendGroupsSection() {
     mutationFn: (name: string) => createGroup(name),
     onSuccess: () => {
       setNewName('');
-      void queryClient.invalidateQueries({ queryKey: ['social', 'groups'] });
+      // The fifth copy of the invalidation used to live here, and it is the one
+      // that never got widened. There is one definition now (#1899).
+      invalidateReachQueries(queryClient);
     },
   });
 

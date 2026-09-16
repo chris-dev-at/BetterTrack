@@ -33,7 +33,6 @@ import {
   Input,
   LinkButton,
   Panel,
-  Select,
   SkeletonBlock,
 } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
@@ -54,6 +53,7 @@ import {
   vaultStateTone,
 } from '../vaultStateAffordance';
 import { vaultRetryTimeLabel } from './retryTime';
+import { StepUpCredentialFields } from './StepUpCredentialFields';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
 import { VaultStateAction } from './VaultStateAction';
@@ -616,7 +616,7 @@ function VaultManagerRow({
       {deleteOpen ? (
         <Panel className="flex flex-col gap-3 p-3" pad={false} soft>
           <p className="bt-soft text-sm">{t('vault.manager.deleteWarning')}</p>
-          <CredentialFields
+          <StepUpCredentialFields
             credential={credential}
             credentialKind={credentialKind}
             id={`vault-delete-${vault.id}`}
@@ -998,7 +998,7 @@ function VaultAccessAction({
           >
             {t('vault.manager.access.startFreshConfirm')}
           </CheckRow>
-          <CredentialFields
+          <StepUpCredentialFields
             credential={stepUpValue}
             credentialKind={stepUpKind}
             id={`vault-start-fresh-${vault.id}`}
@@ -1124,46 +1124,5 @@ function SilentVaultOpen({
       <p className="bt-row-sub">{t('vault.manager.access.opening')}</p>
       {failure ? <AccessFailureNotice failure={failure} /> : null}
     </section>
-  );
-}
-
-function CredentialFields({
-  id,
-  credentialKind,
-  credential,
-  onKindChange,
-  onCredentialChange,
-}: {
-  id: string;
-  credentialKind: 'password' | 'code' | 'recoveryCode';
-  credential: string;
-  onKindChange(kind: 'password' | 'code' | 'recoveryCode'): void;
-  onCredentialChange(value: string): void;
-}) {
-  const t = useT();
-  return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      <Field htmlFor={`${id}-kind`} label={t('vault.portfolioMove.credentialKind')}>
-        <Select
-          id={`${id}-kind`}
-          onChange={(event) =>
-            onKindChange(event.target.value as 'password' | 'code' | 'recoveryCode')
-          }
-          value={credentialKind}
-        >
-          <option value="password">{t('vault.portfolioMove.credential.password')}</option>
-          <option value="code">{t('vault.portfolioMove.credential.code')}</option>
-          <option value="recoveryCode">{t('vault.portfolioMove.credential.recoveryCode')}</option>
-        </Select>
-      </Field>
-      <Field htmlFor={`${id}-value`} label={t('vault.portfolioMove.credentialValue')}>
-        <Input
-          id={`${id}-value`}
-          onChange={(event) => onCredentialChange(event.target.value)}
-          type={credentialKind === 'password' ? 'password' : 'text'}
-          value={credential}
-        />
-      </Field>
-    </div>
   );
 }

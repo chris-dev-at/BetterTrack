@@ -2951,7 +2951,20 @@ export function createParanoidRehydrationService(
         await cashTagService.restoreRules(userId, restoredCashRules, {
           insertRules: (restoredRows) => sourceRows.restoreCashRules(restoredRows),
         });
-        await sourceRows.restoreCashRuleTags(rows(entities, 'cashRuleTag'));
+        // …and the LINKS through their own gate (#1954). `restoreRules` caps how
+        // many rules a document may install; this caps how many TAGS each rule
+        // carries, which is the other factor of the same product — `loadRules`
+        // aggregates a rule's tags with an unbounded `array_agg` and
+        // `applyCashRuleTags` writes one pair per tag per matched movement. The
+        // document schema refuses an over-tagged rule at parse time; this is the
+        // gate on the TABLE, for any caller that did not come through that parse.
+        const restoredCashRuleTags = rows(entities, 'cashRuleTag').map((entity) => ({
+          ...entity,
+          ruleId: entity.data.ruleId,
+        }));
+        await cashTagService.restoreRuleTags(userId, restoredCashRuleTags, {
+          insertRuleTags: (restoredRows) => sourceRows.restoreCashRuleTags(restoredRows),
+        });
         await stage('cashRules');
 
         await sourceRows.restoreCashBudgets(rows(entities, 'cashBudget'));

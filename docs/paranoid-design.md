@@ -322,6 +322,13 @@ reconciliation (#895/#896) and is kept because it is right:
    needs an exact candidate roster plus one signed readback receipt each, else
    412 `VAULT_MEDIA_PARTIAL_SET`.
 2. **Remove a medium:** only while another medium holds a verified-fresh copy.
+   The readback that authorises it is taken from a medium the transition KEEPS,
+   never from the one it retires: removing `server` needs a `drive`-kind
+   attestation and removing `drive` a `server`-kind one, and the other way round
+   is refused `VAULT_MEDIA_VERIFICATION_FAILED`. The surviving-medium rule is
+   enforced twice — on the wire by `perVaultMediaTransitionRequestSchema`, and
+   again in `vaultBlobRepository`, which is the boundary that actually retires
+   the bytes.
    Removing `server` atomically moves the vault's blobs + history into the
    retired recovery set (`vault_retired`), destroyable only through the signed
    purge gate: minimum 7-day retention, fresh other-medium readback, server
@@ -331,15 +338,6 @@ reconciliation (#895/#896) and is kept because it is right:
    (the leftover is the user's own ciphertext in their own Drive).
 3. The last medium can never be removed (`vaultMediaListSchema.min(1)` plus the
    `vaults_media_state` CHECK).
-
-**Recorded honestly against the code — rule 2 is not fully enforced (#1637).**
-On an ordinary transition `vaultBlobRepository` accepts a readback attestation
-of EITHER kind, so removing `server` can be authorised by a _server_-kind
-attestation — an attestation against the medium being removed rather than the
-one that must survive. Strict enforcement exists only in the same-selection
-refresh and Drive-replacement branches. Nothing is lost today (the media CHECK
-still refuses an empty set and no vault has a second medium yet), but #1637
-must land before Drive provisioning ships.
 
 **Staged-candidate lifetime — retained to TTL, never deleted at success
 (#1491, Chief 2026-08-22).** A staged batch (`vault_server_candidates`, 10-minute
@@ -924,13 +922,28 @@ recoveryCode? }`, at least one required via schema `.refine`
   default-closed via the method-aware allowlist (`bearerAuth.ts`), with the
   #1326 acceptance battery (wrong-credential = nothing purged,
   INSUFFICIENT_SCOPE naming the scope, unknown-future-route canary) inherited
-  as this arc's tests.
+  as this arc's tests. **One deliberate exception, STRICTER not looser:** the
+  Drive disconnect has no bearer path at all. `/drive-connections` is classified
+  session-only (`DRIVE_CONNECTIONS_SESSION_ONLY_ROUTES`) and its router refuses
+  any API key outright with `API_KEY_FORBIDDEN` (403), because a Drive identity
+  is paired with a browser-memory Google capability that a bearer caller could
+  never hold (§8). The parity rule exists so a bearer path cannot be the weaker
+  way in; closing it entirely satisfies that rule rather than bending it. If
+  this surface is ever opened to bearers, it inherits the §15 credential
+  unchanged — the gate lives in the service, not in the session check.
 
-**Shipped today: three of the five.** Move-in, move-out
-(`portfolioVaultTransitionService`) and vault deletion (`vaultService`) verify
-the in-body credential. **Drive disconnect-with-loss takes only the
-`acknowledgeBound` query flag and no step-up** (`vaultRoutes`, the
-`drive-connections` DELETE handler) — tracked as **#1632**. The §17 commit is
+**Shipped today: four of the five.** Move-in, move-out
+(`portfolioVaultTransitionService`), vault deletion (`vaultService`) and the
+Drive disconnect-with-loss acknowledgment (`driveConnectionService`, closed by
+**#1632**) all verify the in-body credential through the one verifier in
+`paranoidDiscardReauth`, each on its own throttle namespace. On the disconnect
+the gate sits on precisely the branch that loses something: the
+`acknowledgeBound` form, which is the only way past the `DRIVE_CONNECTION_BOUND`
+refusal. The unacknowledged disconnect is what DISCOVERS the binding and stays
+bodyless — an owner is never asked for a password merely to be told that a vault
+is bound — and `DRIVE_CONNECTION_LAST_MEDIUM` is still decided BEFORE the
+credential is read, so a Drive-only vault is refused without spending a throttle
+budget or burning a one-use recovery code. The §17 commit is
 not a gap: the wipe has **no HTTP route at all** (§17), so there is no request
 for a credential to ride in; it is owner-run from a shell behind the recorded
 backup attestation.
@@ -1053,8 +1066,11 @@ account family in `vaultRoutes.ts`), `users.privacy_mode` + the paranoid media
 columns + the `users_paranoid_media_state` CHECK, the account-wide
 `PARANOID_MODE` kill rail (`bearerAuth.ts`), `MeResponse.privacyMode` as a
 mode signal, the v1 app-wide unlock gate (`VaultUnlockGate.tsx`), the
-account-level wizard (`ParanoidEnableWizard.tsx`) + recovery-kit flow
-(`recovery.ts`), and v1's persisted-VK "keep unlocked" custody (`custody.ts`).
+recovery-kit flow (`recovery.ts`), and v1's persisted-VK "keep unlocked"
+custody (`custody.ts`). The account-level wizard (`ParanoidEnableWizard.tsx`)
+jumped the train early: #1648 deleted the client component outright once it
+had sat unreferenced long enough to be dead weight, ahead of the rest of this
+list.
 Drops ship as append-only migrations after an owner-authorized external
 ciphertext backup for any straggler accounts (§17); the
 `zz_paranoid_v1_backup_*` quarantine is dropped by the same train, never by

@@ -13,6 +13,7 @@ import {
   OAUTH_REFRESH_TOKEN_TTL_SECONDS,
   OAUTH_SCOPE_LABELS,
   isValidRedirectUri,
+  scopeSatisfies,
   withImpliedReadScopes,
   type ApiKeyScope,
   type CreateOAuthClientResponse,
@@ -219,20 +220,35 @@ function logoPathFor(row: OAuthClientLogoState): string | null {
   return `/oauth/client-logos/${row.clientId}`;
 }
 
-/** Parse the space-delimited `scope` param into a validated, client-allowed set. */
+/**
+ * Parse the space-delimited `scope` param into a validated, client-allowed,
+ * write⇒read-closed set.
+ *
+ * Two uses of the ONE implication rule (#1740, V5-P0b), both deliberate:
+ *
+ *  - The ceiling test is `scopeSatisfies`, not raw set membership. A client
+ *    whose ceiling holds `x:write` permits `x:read`, because a token minted from
+ *    that client already reaches every `x:read` route through the very same
+ *    `scopeSatisfies` in the bearer middleware. Refusing the read here was a
+ *    spurious `INVALID_SCOPE`, never a real authorization boundary. Nothing that
+ *    was refusable before stops being refused: an unknown scope and a scope
+ *    outside the ceiling under this rule still throw.
+ *  - The RESULT is normalized, so the auth code, the grant and the access token
+ *    all store exactly the set the consent screen showed the user (it renders
+ *    `withImpliedReadScopes` too). This is the grant-time half of the rule.
+ */
 function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): ApiKeyScope[] {
   const requested = scope.split(/\s+/).filter(Boolean);
   if (requested.length === 0) {
     throw badRequest('At least one scope is required.', 'INVALID_SCOPE');
   }
-  const allowed = new Set(client.scopes);
   const out: ApiKeyScope[] = [];
   const seen = new Set<string>();
   for (const s of requested) {
     if (!VALID_SCOPES.has(s)) {
       throw badRequest(`Unknown scope "${s}".`, 'INVALID_SCOPE');
     }
-    if (!allowed.has(s)) {
+    if (!scopeSatisfies(client.scopes, s)) {
       throw badRequest(`Scope "${s}" is not permitted for this app.`, 'INVALID_SCOPE');
     }
     if (!seen.has(s)) {
@@ -240,7 +256,7 @@ function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): Api
       out.push(s as ApiKeyScope);
     }
   }
-  return out;
+  return withImpliedReadScopes(out);
 }
 
 /**
@@ -266,8 +282,15 @@ function clampToAllowed(
   consented: readonly ApiKeyScope[],
   allowed: readonly string[],
 ): ApiKeyScope[] {
-  const ceiling = new Set(allowed);
-  return consented.filter((s) => ceiling.has(s));
+  // The ceiling test is `scopeSatisfies`, not raw set membership (#1740): a
+  // ceiling that holds `x:write` permits `x:read`, so a consented read is kept
+  // rather than silently dropped from the grant list, the consent payload and
+  // the token principal. This can only RETAIN a scope the user already consented
+  // to under a ceiling that already permits it — it never adds one, and the two
+  // behaviours above are untouched: a scope removed from the app entirely (both
+  // halves) still disappears immediately, and a scope the user never consented
+  // to is still absent no matter how wide the ceiling grows.
+  return consented.filter((s) => scopeSatisfies(allowed, s));
 }
 
 /**
@@ -442,6 +465,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         throw badRequest(`Invalid redirect URI "${uri}".`, 'INVALID_REDIRECT_URI');
       }
     }
+    // Write⇒read at the WRITE path (#1740, V5-P0b): the stored ceiling never
+    // carries a `:write` without its `:read`. This is the single choke point for
+    // both user-registered and admin first-party apps, so neither can store the
+    // half-set that produced the spurious `INVALID_SCOPE`. Purely additive — a
+    // registration that was accepted before is still accepted, with the read
+    // added rather than refused.
+    const scopes = withImpliedReadScopes(input.scopes);
     const clientId = `${OAUTH_CLIENT_ID_PREFIX}${randomBytes(16).toString('base64url')}`;
     let clientSecret: string | null = null;
     let clientSecretHash: string | null = null;
@@ -461,7 +491,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       name: input.name,
       clientSecretHash,
       redirectUris: input.redirectUris,
-      scopes: input.scopes,
+      scopes,
       isPublic: input.isPublic,
       isFirstParty: input.isFirstParty,
       // First-party apps render the BetterTrack mark, so a logo is never stored.
@@ -480,7 +510,8 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       meta: {
         public: input.isPublic,
         firstParty: input.isFirstParty,
-        scopes: input.scopes,
+        // Audit the set actually stored, not the raw request.
+        scopes,
         redirectUris: input.redirectUris,
       },
     });
@@ -581,7 +612,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       const row = await repo.updateFirstPartyClient(id, {
         name,
         redirectUris,
-        scopes,
+        // Write⇒read at the WRITE path (#1740): an admin who ticks only the write
+        // half stores the pair, exactly as the picker already implies.
+        scopes: withImpliedReadScopes(scopes),
         // First-party apps render the BetterTrack mark, so a logo is never stored
         // (mirrors registration).
         logoUrl: null,
@@ -864,7 +897,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         // Clamp the consented scopes to the app's CURRENT allowed set: if the admin
         // narrowed the app during the code's brief lifetime, the grant + token
         // reflect the reduced set immediately (consent-safe narrowing).
-        const scopes = clampToAllowed(exchange.code.scopes as ApiKeyScope[], client.scopes);
+        // Closed under write⇒read (#1740): `parseScopes` already normalized what
+        // the code stores, and the clamp only ever filters, so this re-normalizes
+        // nothing in the ordinary case — it exists for a code minted by a
+        // pre-#1740 process whose short TTL straddles the deploy.
+        const scopes = withImpliedReadScopes(
+          clampToAllowed(exchange.code.scopes as ApiKeyScope[], client.scopes),
+        );
         if (scopes.length === 0) {
           throw badRequest('No requested scope is still permitted for this app.', 'INVALID_SCOPE');
         }
@@ -941,7 +980,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // Clamp to the app's current allowed scopes so a refresh never re-broadens a
     // grant past a scope the admin has since removed, and the advertised `scope`
     // matches what the freshly-issued token can actually use.
-    const scopes = clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes);
+    // Normalized on the way out (#1740) so a grant row STORED before this rule
+    // reached the write paths still mints a token whose stored scope set and
+    // advertised `scope` carry the implied reads — the read-side healing that
+    // makes a data migration unnecessary.
+    const scopes = withImpliedReadScopes(
+      clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes),
+    );
     const pair = prepareTokenPair(scopes);
     const rotation = await repo.rotateRefreshToken({
       tokenId: found.token.id,

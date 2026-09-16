@@ -309,14 +309,22 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
   return {
     async create({ userId, name, scopes, ip }) {
       const { token, tokenHash } = mintToken();
-      const row = await repo.create({ userId, name, tokenHash, scopes });
+      // Write⇒read at the WRITE path (#1740, V5-P0b): the STORED set never
+      // carries a `:write` without its `:read`. The four browser pickers already
+      // send the pair; this makes a direct API caller equivalent instead of
+      // storing a half-set that `toSummary` then has to paper over on display.
+      // Purely additive — a request that was accepted before is still accepted,
+      // with the implied read added rather than refused.
+      const normalized = withImpliedReadScopes(scopes);
+      const row = await repo.create({ userId, name, tokenHash, scopes: normalized });
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyCreated,
         targetType: 'api_key',
         targetId: row.id,
         ip: ip ?? null,
-        meta: { scopes },
+        // Audit the set actually stored, not the raw request.
+        meta: { scopes: normalized },
       });
       return { key: toSummary(row), token };
     },

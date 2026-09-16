@@ -90,6 +90,7 @@ import {
   type TwoFactorEmailCodeRequest,
   type TwoFactorVerifyRequest,
   type VaultConfig,
+  type VaultStepUpCredential,
 } from '@bettertrack/contracts';
 
 import { ApiError, apiRequest } from './apiClient';
@@ -182,11 +183,12 @@ export async function getParanoidNormalRevision(
  * Commit the destructive normal → paranoid transition after every medium
  * verified its blob.
  *
- * The optional signal is NOT a cancel handle — the wizard has no cancel
- * affordance past this point. It carries the wizard's
- * `markRateLimitHandledLocally` tag, so a 429 on the commit is reported
- * by the wizard's own stage copy instead of the app-wide "you're doing that too
- * fast" banner.
+ * The optional signal is NOT a cancel handle — there is no cancel affordance
+ * past this point. It carries a caller's `markRateLimitHandledLocally` tag, so
+ * a 429 on the commit is reported by the caller's own stage copy instead of
+ * the app-wide "you're doing that too fast" banner. No client path calls this
+ * since the `ParanoidEnableWizard` was deleted in #1648; it stays for the
+ * future account-level entry (docs/paranoid-design.md §19).
  */
 export async function enableParanoidMode(
   body: ParanoidEnableRequest,
@@ -348,13 +350,28 @@ export async function verifyDriveConnection(connectionId: string): Promise<Drive
   return createDriveConnectionResponseSchema.parse(data).connection;
 }
 
+/**
+ * Disconnect one Drive identity. The acknowledged form is the §15 gated
+ * operation (#1632): it asserts loss of reach to a bound vault's Drive copy and
+ * therefore carries the same in-body step-up credential vault deletion and both
+ * portfolio moves carry. The unacknowledged probe stays bodyless — it is the
+ * call that DISCOVERS the binding, and the server refuses any body on it.
+ */
 export async function deleteDriveConnection(
   connectionId: string,
   acknowledgeBound = false,
+  stepUp?: VaultStepUpCredential,
 ): Promise<void> {
   await apiRequest<unknown>(`/drive-connections/${encodeURIComponent(connectionId)}`, {
     method: 'DELETE',
     query: acknowledgeBound ? { acknowledgeBound: 'true' } : undefined,
+    body: acknowledgeBound ? { stepUp } : undefined,
+    // `suppressAuthRedirect` on the gated form only: a 401 there is the step-up
+    // refusing a wrong password or code — an in-form error, exactly as on
+    // `/auth/change-password` — and must not eject the owner from the dialog as
+    // an expired session. The unacknowledged probe keeps the global policy,
+    // where a 401 really does mean the session is gone.
+    suppressAuthRedirect: acknowledgeBound,
   });
 }
 

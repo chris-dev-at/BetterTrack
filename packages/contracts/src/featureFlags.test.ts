@@ -133,6 +133,45 @@ describe('feature-flag rollout configuration', () => {
     expect(updateFeatureFlagRequestSchema.safeParse({ rolloutPercent: 101 }).success).toBe(false);
   });
 
+  /**
+   * The repair precondition (#1950 M1). A complete replacement inherits nothing,
+   * which is what repairs an unreadable row — and what makes it a blind
+   * overwrite if the row is no longer the one the caller looked at. `repair`
+   * names the state that was observed so the server can refuse a stale one.
+   */
+  it('carries the repair precondition, over the DEGRADED states only', () => {
+    const complete = {
+      enabled: true,
+      rolloutPercent: 100,
+      allowUserIds: [],
+      denyUserIds: [],
+    };
+    for (const repair of ['salvaged', 'unreadable'] as const) {
+      expect(updateFeatureFlagRequestSchema.safeParse({ ...complete, repair }).success).toBe(true);
+    }
+    // Optional: the ordinary partial patches both console controls send carry no
+    // precondition at all, and must not start needing one.
+    expect(updateFeatureFlagRequestSchema.safeParse({ enabled: false }).success).toBe(true);
+    // `parsed` is not a repairable state — a healthy row is patched, not
+    // repaired — so asserting it is an operator typo and earns the 400 that any
+    // other misspelling on this route does.
+    expect(
+      updateFeatureFlagRequestSchema.safeParse({ ...complete, repair: 'parsed' }).success,
+    ).toBe(false);
+    expect(updateFeatureFlagRequestSchema.safeParse({ ...complete, repair: true }).success).toBe(
+      false,
+    );
+    // It is a PRECONDITION, not a config field: parsing it must not invent one.
+    const parsed = updateFeatureFlagRequestSchema.parse({ ...complete, repair: 'unreadable' });
+    expect(Object.keys(parsed).sort()).toEqual([
+      'allowUserIds',
+      'denyUserIds',
+      'enabled',
+      'repair',
+      'rolloutPercent',
+    ]);
+  });
+
   it('separates the STRICT request shape from the forward-compatible storage shape', () => {
     // The request boundary must refuse an unknown key: there it is an operator's
     // typo on a security-relevant gate, and a silent no-op would be worse than a
@@ -192,6 +231,7 @@ describe('feature-flag rollout configuration', () => {
       rolloutPercent: 25,
       allowUserIds: [uuid(1)],
       denyUserIds: [],
+      stored: 'parsed' as const,
       description: 'Friend chat.',
       updatedAt: null,
       updatedBy: null,
@@ -200,6 +240,36 @@ describe('feature-flag rollout configuration', () => {
     // Total, not optional: the console renders one shape for every flag.
     const { rolloutPercent, ...missing } = flag;
     expect(rolloutPercent).toBe(25);
+    expect(adminFeatureFlagSchema.safeParse(missing).success).toBe(false);
+  });
+
+  /**
+   * The read outcome the admin list carries (#1950). It is what lets the console
+   * tell "fully rolled" from "we could not read this row and are showing you
+   * fully rolled" — two rows that are otherwise byte-identical on the wire.
+   */
+  it('reports how well the stored row could be read, as a closed set', () => {
+    const flag = {
+      key: 'chat' as const,
+      enabled: true,
+      rolloutPercent: 100,
+      allowUserIds: [],
+      denyUserIds: [],
+      stored: 'parsed' as const,
+      description: 'Friend chat.',
+      updatedAt: null,
+      updatedBy: null,
+    };
+    for (const stored of ['parsed', 'salvaged', 'unreadable'] as const) {
+      expect(adminFeatureFlagSchema.safeParse({ ...flag, stored }).success).toBe(true);
+    }
+    // A closed enum, so a fourth outcome invented server-side is a contract error
+    // in the client rather than a row the console silently draws as healthy.
+    expect(adminFeatureFlagSchema.safeParse({ ...flag, stored: 'unset' }).success).toBe(false);
+    // Required: an OMITTED outcome must not read as "fine". A serving instance
+    // that predates this field would otherwise reassure a console that does not.
+    const { stored, ...missing } = flag;
+    expect(stored).toBe('parsed');
     expect(adminFeatureFlagSchema.safeParse(missing).success).toBe(false);
   });
 });

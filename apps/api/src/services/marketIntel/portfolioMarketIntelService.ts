@@ -51,8 +51,18 @@ export interface PortfolioMarketIntelService {
    * and each asset's own event count at
    * {@link DIVIDEND_CALENDAR_MAX_EVENTS_PER_ASSET}; either cut yields
    * `truncated: true` beside the entries it did cover.
+   *
+   * Without `portfolioId` the subjects are the caller's held positions across
+   * every active, non-vaulted portfolio PLUS their watchlists — the
+   * cross-portfolio forward calendar the Home widget shows. With one they are
+   * that portfolio's holdings ALONE: the portfolio page renders this list under
+   * copy naming "this portfolio" (#1898), and a watchlist is an account-level
+   * set that belongs to no portfolio, so it has no scoped half to contribute.
    */
-  dividendCalendar(userId: string): Promise<DividendCalendarResponse>;
+  dividendCalendar(
+    userId: string,
+    opts?: DividendCalendarOptions,
+  ): Promise<DividendCalendarResponse>;
   /**
    * Projected dividend income, monthly + yearly, in the caller's base currency
    * (arc a). All-or-nothing (#1616), so a book over the fan-out cap returns the
@@ -68,6 +78,16 @@ export interface PortfolioMarketIntelService {
     userId: string,
     opts?: ProjectedIncomeOptions,
   ): Promise<ProjectedDividendIncomeResponse>;
+}
+
+/** Per-request narrowing for {@link PortfolioMarketIntelService.dividendCalendar}. */
+export interface DividendCalendarOptions {
+  /**
+   * Narrow the calendar to ONE portfolio's holdings; omitted ⇒ user-wide held +
+   * watched. The id is NOT an ownership claim: it is handed to the user-scoped
+   * repository read, so a foreign or unknown id simply matches no holdings.
+   */
+  portfolioId?: string;
 }
 
 /** Per-request narrowing + denomination for {@link PortfolioMarketIntelService.projectedIncome}. */
@@ -202,12 +222,22 @@ export function createPortfolioMarketIntelService(
     base === undefined ? currency : currency.withBase(base);
 
   return {
-    async dividendCalendar(userId) {
+    async dividendCalendar(userId, opts) {
       if (!enabled) return UNAVAILABLE_CALENDAR;
 
+      // The SAME user-scoped held read the projection uses, narrowed the same
+      // way — the id never reaches a query that is not already filtered by
+      // `portfolios.user_id`, so ownership is enforced by the repository rather
+      // than re-checked here (§10: scoping lives in the repository).
+      //
+      // A watchlist is an account-level set with no portfolio column, so a
+      // scoped request has no watchlist half to answer with: including it would
+      // put assets the portfolio does not hold under the page's "this
+      // portfolio" copy, which is the very defect the parameter exists to fix.
+      const scoped = opts?.portfolioId !== undefined;
       const [held, watched] = await Promise.all([
-        repo.listHeldPositionsForUser(userId),
-        repo.listWatchlistAssetsForUser(userId),
+        repo.listHeldPositionsForUser(userId, opts?.portfolioId),
+        scoped ? [] : repo.listWatchlistAssetsForUser(userId),
       ]);
 
       // Held wins over watchlist for the source tag when an asset is both.
