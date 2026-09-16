@@ -322,6 +322,13 @@ reconciliation (#895/#896) and is kept because it is right:
    needs an exact candidate roster plus one signed readback receipt each, else
    412 `VAULT_MEDIA_PARTIAL_SET`.
 2. **Remove a medium:** only while another medium holds a verified-fresh copy.
+   The readback that authorises it is taken from a medium the transition KEEPS,
+   never from the one it retires: removing `server` needs a `drive`-kind
+   attestation and removing `drive` a `server`-kind one, and the other way round
+   is refused `VAULT_MEDIA_VERIFICATION_FAILED`. The surviving-medium rule is
+   enforced twice — on the wire by `perVaultMediaTransitionRequestSchema`, and
+   again in `vaultBlobRepository`, which is the boundary that actually retires
+   the bytes.
    Removing `server` atomically moves the vault's blobs + history into the
    retired recovery set (`vault_retired`), destroyable only through the signed
    purge gate: minimum 7-day retention, fresh other-medium readback, server
@@ -331,15 +338,6 @@ reconciliation (#895/#896) and is kept because it is right:
    (the leftover is the user's own ciphertext in their own Drive).
 3. The last medium can never be removed (`vaultMediaListSchema.min(1)` plus the
    `vaults_media_state` CHECK).
-
-**Recorded honestly against the code — rule 2 is not fully enforced (#1637).**
-On an ordinary transition `vaultBlobRepository` accepts a readback attestation
-of EITHER kind, so removing `server` can be authorised by a _server_-kind
-attestation — an attestation against the medium being removed rather than the
-one that must survive. Strict enforcement exists only in the same-selection
-refresh and Drive-replacement branches. Nothing is lost today (the media CHECK
-still refuses an empty set and no vault has a second medium yet), but #1637
-must land before Drive provisioning ships.
 
 **Staged-candidate lifetime — retained to TTL, never deleted at success
 (#1491, Chief 2026-08-22).** A staged batch (`vault_server_candidates`, 10-minute
