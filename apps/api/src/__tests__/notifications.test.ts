@@ -1,6 +1,6 @@
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { notificationListResponseSchema } from '@bettertrack/contracts';
 
@@ -225,14 +225,19 @@ describe('POST /api/v1/notifications/mark-read', () => {
 
 describe('friend-request notification regression (#248)', () => {
   /** Poll the recipient's notification list until an item lands, or time out. */
-  async function waitForBellItem(agent: Agent) {
-    let page = await listNotifications(agent);
-    for (let attempt = 0; attempt < 60 && page.items.length === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      page = await listNotifications(agent);
-    }
-    return page;
-  }
+  const waitForBellItem = (agent: Agent) =>
+    // 5 s, not `vi.waitFor`'s 1 s default: the loop this replaced allowed 60
+    // attempts at 15 ms plus 60 round-trips, comfortably past a second, and
+    // shrinking a bell-delivery budget is how a green suite starts flaking on
+    // a loaded runner.
+    vi.waitFor(
+      async () => {
+        const page = await listNotifications(agent);
+        expect(page.items).not.toHaveLength(0);
+        return page;
+      },
+      { timeout: 5_000 },
+    );
 
   it('a friend request produces the recipient in-app bell item via the central pipeline', async () => {
     try {
@@ -256,14 +261,19 @@ describe('friend-request notification regression (#248)', () => {
 
 describe('alert.triggered notification (§14, V3-P10)', () => {
   /** Poll the recipient's notification list until an item lands, or time out. */
-  async function waitForBellItem(agent: Agent) {
-    let page = await listNotifications(agent);
-    for (let attempt = 0; attempt < 60 && page.items.length === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      page = await listNotifications(agent);
-    }
-    return page;
-  }
+  const waitForBellItem = (agent: Agent) =>
+    // 5 s, not `vi.waitFor`'s 1 s default: the loop this replaced allowed 60
+    // attempts at 15 ms plus 60 round-trips, comfortably past a second, and
+    // shrinking a bell-delivery budget is how a green suite starts flaking on
+    // a loaded runner.
+    vi.waitFor(
+      async () => {
+        const page = await listNotifications(agent);
+        expect(page.items).not.toHaveLength(0);
+        return page;
+      },
+      { timeout: 5_000 },
+    );
 
   it('a fired alert reaches the owner’s bell via the center → dispatcher path', async () => {
     try {

@@ -43,6 +43,7 @@ import {
 } from '../services/oauth/firstPartyClients';
 import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { flushMacrotasks } from '../test/waitFor';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const HTTPS_REDIRECT = 'https://app.example/callback';
@@ -946,8 +947,10 @@ describe('grant revocation', () => {
         disableFinished = true;
       });
     // Let the suspend operation reach its status write. It must wait on the
-    // exchange's user-row lock rather than completing its cleanup early.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    // exchange's user-row lock rather than completing its cleanup early. One
+    // event-loop turn, not a window: the lock is held by THIS test and released
+    // two lines down (#1622).
+    await flushMacrotasks();
     expect(disableFinished).toBe(false);
 
     releaseGrantStep.resolve();

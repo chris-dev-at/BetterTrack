@@ -4,7 +4,7 @@ import { and, count, eq } from 'drizzle-orm';
 import type { Application } from 'express';
 import postgres from 'postgres';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   encodeVaultDocEnvelope,
@@ -93,25 +93,29 @@ async function waitForVaultRowLockWaiters(
   observer: ReturnType<typeof postgres>,
   minimum: number,
 ): Promise<DatabaseLockWait[]> {
-  const deadline = Date.now() + 4_000;
-  let observed: DatabaseLockWait[] = [];
-  while (Date.now() < deadline) {
-    observed = await observer<DatabaseLockWait[]>`
+  // `vi.waitFor` re-reads `pg_stat_activity` on a bounded schedule and rethrows
+  // the LAST failure when the deadline passes, so the diagnostic below is what
+  // a timeout still reports — the hand-rolled sleep-and-retry loop this replaces
+  // gave the same guarantee with a sleep in the middle of it (#1622).
+  return vi.waitFor(
+    async () => {
+      const observed = await observer<DatabaseLockWait[]>`
       SELECT pid, query, wait_event AS "waitEvent"
       FROM pg_stat_activity
       WHERE datname = current_database()
         AND wait_event_type = 'Lock'
     `;
-    const vaultWaiters = observed.filter(
-      (row) => /from\s+"?vaults"?/iu.test(row.query) && /for update/iu.test(row.query),
-    );
-    if (new Set(vaultWaiters.map(({ pid }) => pid)).size >= minimum) return vaultWaiters;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(
-    `Timed out waiting for ${minimum} vault row-lock waiters; observed ${JSON.stringify(
-      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
-    )}`,
+      const vaultWaiters = observed.filter(
+        (row) => /from\s+"?vaults"?/iu.test(row.query) && /for update/iu.test(row.query),
+      );
+      if (new Set(vaultWaiters.map(({ pid }) => pid)).size >= minimum) return vaultWaiters;
+      throw new Error(
+        `Timed out waiting for ${minimum} vault row-lock waiters; observed ${JSON.stringify(
+          observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+        )}`,
+      );
+    },
+    { timeout: 4_000, interval: 10 },
   );
 }
 

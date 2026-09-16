@@ -1,7 +1,7 @@
 import { Queue, Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { pino } from 'pino';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type { Logger } from '../../logger';
 import { createJobConnection } from '../connection';
@@ -103,13 +103,16 @@ describe.skipIf(!REDIS_URL)('BullMQ integration (real Redis)', () => {
 
     await queue.add(name, {}, { attempts: 2, backoff: { type: 'fixed', delay: 50 } });
 
-    // Poll the dead-letter list until the permanent failure lands.
-    const deadline = Date.now() + 8000;
-    let entries = await deadLetter.list();
-    while (entries.length === 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 100));
-      entries = await deadLetter.list();
-    }
+    // The dead-letter entry IS the completion — wait for it, bounded, instead of
+    // sleeping around a poll loop (#1622).
+    const entries = await vi.waitFor(
+      async () => {
+        const current = await deadLetter.list();
+        expect(current).not.toHaveLength(0);
+        return current;
+      },
+      { timeout: 8_000, interval: 50 },
+    );
 
     expect(attempts).toBe(2); // ran twice (initial + one retry), then gave up
     expect(entries).toHaveLength(1);

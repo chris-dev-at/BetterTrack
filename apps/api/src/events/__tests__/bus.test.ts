@@ -3,8 +3,15 @@ import RedisMock from 'ioredis-mock';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Logger } from '../../logger';
-import type { DomainEvent, DomainEventType } from '../types';
-import { channelForType, createEventBus, typeForChannel, type EventBus } from '../bus';
+import { waitForEvent } from '../../test/waitFor';
+import type { DomainEvent, DomainEventOf, DomainEventType } from '../types';
+import {
+  channelForType,
+  createEventBus,
+  typeForChannel,
+  type EventBus,
+  type Unsubscribe,
+} from '../bus';
 
 let publisher: Redis;
 let subscriber: Redis;
@@ -23,21 +30,40 @@ afterEach(async () => {
   await bus.close();
 });
 
-/** Resolve once a handler is invoked, or reject after `ms`. */
-function waitFor<T>(register: (resolve: (value: T) => void) => void, ms = 1000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for event')), ms);
-    register((value) => {
-      clearTimeout(timer);
-      resolve(value);
-    });
+/**
+ * Subscribe, and hand back both halves of the handshake this suite needs.
+ *
+ * `bus.subscribe` resolves only once Redis has acknowledged the SUBSCRIBE, so
+ * awaiting it is the registration signal every `await sleep(20)` in this file
+ * used to guess at (#1622): publish after the await and the delivery cannot be
+ * missed, on any machine, at any load. `first` carries its own deadline, so a
+ * delivery that never comes fails by name instead of hanging.
+ */
+async function subscribeAndCapture<T extends DomainEventType>(
+  type: T,
+): Promise<{ first: Promise<DomainEventOf<T>>; unsubscribe: Unsubscribe }> {
+  let deliver!: (event: DomainEventOf<T>) => void;
+  const first = waitForEvent<DomainEventOf<T>>(`a \`${type}\` delivery`, (handoff) => {
+    deliver = handoff;
   });
+  const unsubscribe = await bus.subscribe(type, (event) => {
+    deliver(event);
+  });
+  return { first, unsubscribe };
 }
 
 const quoteEvent: DomainEvent = {
   type: 'quote.updated',
   assetId: 'asset-1',
   occurredAt: '2026-06-15T00:00:00.000Z',
+};
+
+const alertEvent: DomainEvent = {
+  type: 'alert.triggered',
+  userId: 'u1',
+  alertId: 'alert-1',
+  assetId: 'asset-1',
+  occurredAt: '2026-06-15T00:00:01.000Z',
 };
 
 describe('channel helpers', () => {
@@ -63,81 +89,77 @@ describe('channel helpers', () => {
 
 describe('EventBus publish → subscribe', () => {
   it('round-trips a typed event to a subscriber', async () => {
-    const received = waitFor<DomainEvent>((resolve) => {
-      void bus.subscribe('quote.updated', (event) => resolve(event));
-    });
-    // Give the subscribe a tick to register before publishing.
-    await new Promise((r) => setTimeout(r, 20));
+    const { first } = await subscribeAndCapture('quote.updated');
     await bus.publish(quoteEvent);
-    expect(await received).toEqual(quoteEvent);
+    expect(await first).toEqual(quoteEvent);
   });
 
   it('delivers an event to every subscriber of its type', async () => {
-    const seen: string[] = [];
-    const both = Promise.all([
-      waitFor<void>((resolve) =>
-        bus.subscribe('portfolio.changed', () => {
-          seen.push('a');
-          resolve();
-        }),
-      ),
-      waitFor<void>((resolve) =>
-        bus.subscribe('portfolio.changed', () => {
-          seen.push('b');
-          resolve();
-        }),
-      ),
-    ]);
-    await new Promise((r) => setTimeout(r, 20));
-    await bus.publish({
+    const a = await subscribeAndCapture('portfolio.changed');
+    const b = await subscribeAndCapture('portfolio.changed');
+    const portfolioEvent: DomainEvent = {
       type: 'portfolio.changed',
       userId: 'u1',
       portfolioId: 'p1',
       occurredAt: '2026-06-15T00:00:00.000Z',
-    });
-    await both;
-    expect(seen.sort()).toEqual(['a', 'b']);
+    };
+    await bus.publish(portfolioEvent);
+    // Both subscribers get the whole event, not merely "something".
+    expect(await a.first).toEqual(portfolioEvent);
+    expect(await b.first).toEqual(portfolioEvent);
   });
 
   it('only delivers to handlers of the matching type', async () => {
-    const wrongType: DomainEventType[] = [];
-    await bus.subscribe('alert.triggered', () => {
-      wrongType.push('alert.triggered');
+    const otherChannel: DomainEvent[] = [];
+    await bus.subscribe('alert.triggered', (event) => {
+      otherChannel.push(event);
     });
-    const right = waitFor<void>((resolve) => bus.subscribe('quote.updated', () => resolve()));
-    await new Promise((r) => setTimeout(r, 20));
+    const { first: rightChannel } = await subscribeAndCapture('quote.updated');
+
     await bus.publish(quoteEvent);
-    await right;
-    // Let any stray cross-delivery flush.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(wrongType).toEqual([]);
+    expect(await rightChannel).toEqual(quoteEvent);
+
+    // A real `alert.triggered` publish is the barrier the old 30 ms "let any
+    // stray cross-delivery flush" sleep was standing in for: it is published
+    // AFTER the quote event on the same publisher connection, so by the time
+    // the alert handler has seen it, a leaked quote event would already be
+    // sitting in front of it in `otherChannel`. Asserting the exact contents —
+    // not just "empty" — also keeps the test from passing vacuously if the
+    // alert subscription silently stopped working.
+    await bus.publish(alertEvent);
+    await vi.waitFor(() => expect(otherChannel).toHaveLength(1));
+    expect(otherChannel).toEqual([alertEvent]);
   });
 
   it('stops delivering after unsubscribe', async () => {
-    let count = 0;
-    const unsubscribe = await bus.subscribe('quote.updated', () => {
-      count += 1;
+    const delivered: DomainEvent[] = [];
+    const unsubscribe = await bus.subscribe('quote.updated', (event) => {
+      delivered.push(event);
     });
-    await new Promise((r) => setTimeout(r, 20));
     await bus.publish(quoteEvent);
-    await new Promise((r) => setTimeout(r, 30));
-    expect(count).toBe(1);
+    await vi.waitFor(() => expect(delivered).toEqual([quoteEvent]));
 
     await unsubscribe();
+    // A tracer on the same channel is the barrier: the bus dispatches one
+    // message to every handler of a type in a single pass, so the moment the
+    // tracer has the second publish, the unsubscribed handler has provably had
+    // its chance at it — no quiet window needed.
+    const tracer = vi.fn();
+    await bus.subscribe('quote.updated', tracer);
     await bus.publish(quoteEvent);
-    await new Promise((r) => setTimeout(r, 30));
-    expect(count).toBe(1); // no further deliveries
+    await vi.waitFor(() => expect(tracer).toHaveBeenCalledTimes(1));
+    expect(delivered).toEqual([quoteEvent]); // no further deliveries
   });
 
   it('isolates a throwing handler from its siblings', async () => {
-    const good = waitFor<void>((resolve) => bus.subscribe('quote.updated', () => resolve()));
+    const { first: good } = await subscribeAndCapture('quote.updated');
     await bus.subscribe('quote.updated', () => {
       throw new Error('handler boom');
     });
-    await new Promise((r) => setTimeout(r, 20));
     await bus.publish(quoteEvent);
-    // The good handler still fires despite the sibling throwing.
-    await expect(good).resolves.toBeUndefined();
+    // The good handler still fires — with the whole event — despite the sibling
+    // throwing on the same dispatch.
+    await expect(good).resolves.toEqual(quoteEvent);
   });
 
   it('warns and drops an unparseable message without invoking subscribers', async () => {
