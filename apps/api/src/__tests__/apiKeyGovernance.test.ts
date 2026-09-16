@@ -315,6 +315,83 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     expect(JSON.stringify(rows)).not.toContain(RESOURCE_ASSET_ID);
   });
 
+  /**
+   * The non-GET half of the same boundary (#1952). The custody predicate has
+   * been method-independent since #1896, so a vault owner's personal-key WRITE
+   * to a private custom asset drops the ENTIRE `api_key_request_log` row — not
+   * a redacted line, not a line with the path stripped. That is the accepted
+   * audit-trail cost priced in `apiKeyRequestLog.ts`, and until now only GETs
+   * were driven here, so the write half rested on nothing.
+   */
+  it('drops the whole audit line for a vault owner’s non-GET on a private custom asset', async () => {
+    const { userId, token, keyId } = await mintKey(['portfolio:read', 'portfolio:write']);
+    const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
+
+    const createAsset = async (name: string): Promise<string> => {
+      const res = await request(harness.app)
+        .post('/api/v1/custom-assets')
+        .set('Authorization', `Bearer ${token}`)
+        .set(...XRW)
+        .send({ name, category: 'other', currency: 'EUR' });
+      expect(res.status).toBe(201);
+      return res.body.asset.id as string;
+    };
+    const deleteAsset = async (id: string): Promise<number> => {
+      const res = await request(harness.app)
+        .delete(`/api/v1/custom-assets/${id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set(...XRW);
+      return res.status;
+    };
+    const waitForRows = async (atLeast: number) => {
+      let rows = await repo.listForKey(keyId, 50);
+      for (let i = 0; i < 40 && rows.length < atLeast; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        rows = await repo.listForKey(keyId, 50);
+      }
+      return rows;
+    };
+
+    const beforeVault = await createAsset('Vintage car');
+    const afterVault = await createAsset('Family home');
+
+    // CONTROL, while the account owns no vault: the same DELETE is audited,
+    // private uuid and all. Without this the assertion below would pass just as
+    // well if custom-asset writes were never logged for anyone.
+    expect(await deleteAsset(beforeVault)).toBe(204);
+    const control = await waitForRows(3);
+    expect(control.map((row) => row.path)).toContain(`/custom-assets/${beforeVault}`);
+    const auditedBefore = control.length;
+
+    // Now the account owns a vault (identity/config metadata only — the request
+    // log must retain neither the vault stub nor the private asset uuid).
+    const vaultId = '018f0000-0000-7000-8000-000000001349';
+    await harness.db.insert(vaults).values({
+      id: vaultId,
+      userId,
+      name: 'Audit boundary — writes',
+      headerDocId: '018f0000-0000-7000-8000-00000000134a',
+      commonDocId: '018f0000-0000-7000-8000-00000000134b',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'deterministic-audit-write-public-proof',
+      keyFingerprint: 'deterministic-audit-write-fingerprint',
+    });
+    const lockedId = await harness.ctx.portfolio.getDefaultPortfolioId(userId);
+    await harness.db.update(portfolios).set({ vaultId }).where(eq(portfolios.id, lockedId));
+
+    // The write still SUCCEEDS — suppression is about the audit row, never
+    // about refusing the user their own custom asset.
+    expect(await deleteAsset(afterVault)).toBe(204);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const after = await repo.listForKey(keyId, 50);
+    // Not one row was added by that DELETE, and the uuid is nowhere in the log.
+    expect(after).toHaveLength(auditedBefore);
+    expect(after.map((row) => row.path)).not.toContain(`/custom-assets/${afterVault}`);
+    expect(JSON.stringify(after)).not.toContain(afterVault);
+  });
+
   it('never lets a log-write failure surface — recordRequest swallows repo errors', async () => {
     const failingLog = {
       record: async () => {
