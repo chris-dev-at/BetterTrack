@@ -2,7 +2,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { MIRROR_CONFLICT, MIRROR_STRIPPED_ATTRIBUTION_USERNAME } from '@bettertrack/contracts';
+import {
+  MIRROR_CONFLICT,
+  MIRROR_STRIPPED_ATTRIBUTION_USERNAME,
+  mirrorRowInfoSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
@@ -407,5 +411,143 @@ describe('mirrorchain M5 — attribution stripping (design §10)', () => {
     for (const info of kept.transactions.values()) {
       expect(info.addedBy.username).toBe('aliceM5');
     }
+  });
+});
+
+describe('mirrorchain M5 — a deleted author is not a stripped one (#2009, §6/§7 vs §10)', () => {
+  /**
+   * TWO different mechanisms null the actor id on a chain row, and the design
+   * gives them OPPOSITE renderings:
+   *
+   * - the author's ACCOUNT was deleted (§6/§7) — `mirror_rows.created_by`
+   *   SET-NULLs, the denormalized `created_by_username` survives, and every
+   *   surviving copy keeps rendering "alice (account deleted)". That is history
+   *   the design promises to entitled readers;
+   * - attribution was STRIPPED for this viewer (§10) — the viewer is not an
+   *   active member of the chain, so the actor is replaced wholesale. A member
+   *   exposes their own book, never their co-members' identities.
+   *
+   * Collapsing them (as `userId === null` alone forces) either loses the §6
+   * promise or leaks a co-member's name. `state` is the discriminator; this
+   * block pins both directions, and the §10 direction is a negative test.
+   */
+  async function chainWithADeletedAuthor() {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 20,
+        fee: 0,
+        executedAt: '2026-02-01T10:00:00.000Z',
+      },
+    ]);
+    const [bobSource] = [
+      await harness.ctx.mirror.submitSourceCreate(bob.id, bPid, {
+        name: 'Broker cash',
+        type: 'bank',
+      }),
+    ];
+    expect(bobSource).toBeTruthy();
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Bob is a PLAIN MEMBER, so §7 succession never fires: the chain stays
+    // active with Alice as owner and Alice's copy is untouched — except that
+    // the rows Bob authored on it lose their `created_by` to the SET NULL.
+    await harness.ctx.accountDeletion.deleteAccount({
+      userId: bob.id,
+      body: { confirmUsername: bob.username, password: bob.password },
+    });
+    return { alice, aPid, chain, deletedUsername: bob.username, deletedUserId: bob.id };
+  }
+
+  it("an entitled viewer reads the deleted author's frozen name with state 'deleted'", async () => {
+    const { alice, aPid, chain, deletedUsername } = await chainWithADeletedAuthor();
+    const repo = createMirrorchainRepository(harness.db);
+    // Precondition: the chain survived Bob's deletion with Alice still on it.
+    expect((await repo.getChain(chain.id))!.status).toBe('active');
+    expect((await repo.listActiveMembers(chain.id)).map((m) => m.userId)).toEqual([alice.id]);
+
+    const overlay = await harness.ctx.mirror.overlayForPortfolio(aPid);
+    const bobRows = [...overlay.cashSources.values()].filter(
+      (info) => info.addedBy.username === deletedUsername,
+    );
+    // Not vacuous: Bob's replicated source is on Alice's copy.
+    expect(bobRows.length).toBeGreaterThan(0);
+    for (const info of bobRows) {
+      expect(info.addedBy.state).toBe('deleted');
+      expect(info.addedBy.userId).toBeNull();
+      // The §6 promise: the frozen name is what makes "(account deleted)"
+      // renderable at all, so it must still be here.
+      expect(info.addedBy.username).toBe('bobM5');
+      expect(info.addedBy.profileIcon).toBeNull();
+      // …and the row is a legal DTO, refinement included.
+      expect(mirrorRowInfoSchema.safeParse(info).success).toBe(true);
+    }
+
+    // Alice is alive, so HER rows are untouched — `deleted` is per-row, derived
+    // from the stored `created_by`, not a property of the copy.
+    const aliceRows = [...overlay.transactions.values()];
+    expect(aliceRows.length).toBeGreaterThan(0);
+    for (const info of aliceRows) {
+      expect(info.addedBy.state).toBe('shown');
+      expect(info.addedBy.userId).toBe(alice.id);
+      expect(info.addedBy.username).toBe('aliceM5');
+    }
+
+    // And it reaches the wire the chip reads, not just the service.
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const cashRes = await aliceAgent.get(`/api/v1/portfolios/${aPid}/cash`).set(...XRW);
+    expect(cashRes.status).toBe(200);
+    const wire = cashRes.body.sources.filter(
+      (src: { mirror?: { addedBy: { state: string; username: string } } }) =>
+        src.mirror?.addedBy.state === 'deleted',
+    );
+    expect(wire).toHaveLength(bobRows.length);
+    expect(wire[0].mirror.addedBy.username).toBe('bobM5');
+  });
+
+  it('a third-party viewer gets NEITHER name: stripping outranks the deleted flag (§10)', async () => {
+    const { alice, aPid, chain, deletedUsername } = await chainWithADeletedAuthor();
+    const repo = createMirrorchainRepository(harness.db);
+
+    // The third party: a real second user who is NOT an active member of the
+    // chain, i.e. exactly the viewer §10 guards against on a shared copy.
+    const carol = await harness.seedUser({
+      email: 'carol-m5@bettertrack.test',
+      username: 'carolM5',
+    });
+    const activeMemberIds = (await repo.listActiveMembers(chain.id)).map((m) => m.userId);
+    expect(activeMemberIds).not.toContain(carol.id);
+    expect(activeMemberIds).toContain(alice.id);
+
+    const stripped = await harness.ctx.mirror.overlayForPortfolio(aPid, {
+      stripAttribution: true,
+    });
+    const all = [
+      ...stripped.transactions.values(),
+      ...stripped.dividends.values(),
+      ...stripped.cashMovements.values(),
+      ...stripped.cashSources.values(),
+    ];
+    // Not vacuous: both an alive author's rows and the deleted author's are here.
+    expect(all.length).toBeGreaterThan(1);
+    for (const info of all) {
+      expect(info.addedBy.state).toBe('stripped');
+      expect(info.addedBy.userId).toBeNull();
+      expect(info.addedBy.username).toBe(MIRROR_STRIPPED_ATTRIBUTION_USERNAME);
+      expect(info.addedBy.profileIcon).toBeNull();
+      expect(mirrorRowInfoSchema.safeParse(info).success).toBe(true);
+    }
+    // NEGATIVE SPACE, named term by term — the regression this guards is a
+    // branch order that hands the deleted author's FROZEN name to the one
+    // reader who may not have it, which a `state`-only assertion would miss.
+    const serialized = JSON.stringify(all);
+    expect(serialized).not.toContain(deletedUsername);
+    expect(serialized).not.toContain('bobM5');
+    expect(serialized).not.toContain('aliceM5');
+    expect(serialized).not.toContain(alice.id);
+    expect(serialized).not.toContain('account deleted');
   });
 });
