@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { ApiKeyScope } from '@bettertrack/contracts';
 
+import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
+import { AuditAction, createAuditService } from '../services/audit/auditService';
 import {
   BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
   FIRST_PARTY_CLIENTS,
@@ -78,7 +80,10 @@ describe('seedFirstPartyClients (#395)', () => {
     expect(row.isFirstParty).toBe(true);
     expect(row.clientSecretHash).toBeNull(); // public/PKCE — no secret
     expect(row.userId).toBeNull(); // system-owned
-    expect(resultFor(results, MOBILE.clientId).action).toBe('created');
+    expect(resultFor(results, MOBILE.clientId)).toMatchObject({
+      action: 'created',
+      grantsWidened: 0,
+    });
   });
 
   it('is a no-op on the second run — same row, no drift', async () => {
@@ -92,7 +97,10 @@ describe('seedFirstPartyClients (#395)', () => {
     expect(second.createdAt).toEqual(first.createdAt);
     expect(second.scopes).toEqual(first.scopes);
     expect(second.redirectUris).toEqual(first.redirectUris);
-    expect(resultFor(results, MOBILE.clientId).action).toBe('unchanged');
+    expect(resultFor(results, MOBILE.clientId)).toMatchObject({
+      action: 'unchanged',
+      grantsWidened: 0,
+    });
   });
 
   it('converges an existing row with a NARROWER ceiling up to the full ceiling', async () => {
@@ -165,6 +173,12 @@ describe('seedFirstPartyClients (#395)', () => {
 
   it('unions a synthetic definition scope into active grants only for that first-party client', async () => {
     const syntheticScope = 'synthetic:first-party' as ApiKeyScope;
+    const existingGrantScopes = ['market:read', 'portfolio:read'];
+    const expectedGrantScopes = [
+      ...existingGrantScopes,
+      ...CEILING.filter((scope) => !existingGrantScopes.includes(scope)),
+      syntheticScope,
+    ];
     const user = await harness.seedUser({
       email: 'first-party-grant-reconcile@bt.test',
       username: 'fpgrantreconcile',
@@ -188,7 +202,7 @@ describe('seedFirstPartyClients (#395)', () => {
     const [activeFirstParty, revokedFirstParty, activeThirdParty] = await harness.db
       .insert(schema.oauthGrants)
       .values([
-        { clientId: mobile.id, userId: user.id, scopes: ['portfolio:read'] },
+        { clientId: mobile.id, userId: user.id, scopes: existingGrantScopes },
         {
           clientId: mobile.id,
           userId: user.id,
@@ -199,15 +213,46 @@ describe('seedFirstPartyClients (#395)', () => {
       ])
       .returning();
 
-    await seedFirstPartyClients(repo, [
-      { ...MOBILE, scopeCeiling: [...MOBILE.scopeCeiling, syntheticScope] },
-    ]);
+    const audit = createAuditService(createAuditRepository(harness.db));
+    const definitions = [{ ...MOBILE, scopeCeiling: [...MOBILE.scopeCeiling, syntheticScope] }];
+    const results = await seedFirstPartyClients(repo, definitions, audit);
 
     const grants = await harness.db.select().from(schema.oauthGrants);
     const byId = new Map(grants.map((grant) => [grant.id, grant]));
-    expect(byId.get(activeFirstParty!.id)?.scopes).toEqual([...CEILING, syntheticScope]);
+    expect(byId.get(activeFirstParty!.id)?.scopes).toEqual(expectedGrantScopes);
     expect(byId.get(revokedFirstParty!.id)?.scopes).toEqual(['portfolio:read']);
     expect(byId.get(activeThirdParty!.id)?.scopes).toEqual(['portfolio:read']);
     expect((await clientRow(MOBILE.clientId))?.scopes).toEqual([...CEILING, syntheticScope]);
+    expect(resultFor(results, MOBILE.clientId)).toMatchObject({
+      action: 'converged',
+      grantsWidened: 1,
+    });
+
+    const [wideningAudit] = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, AuditAction.OAuthGrantScopesWidened));
+    expect(wideningAudit).toMatchObject({
+      actorId: null,
+      targetType: 'oauth_grant',
+      targetId: activeFirstParty!.id,
+      meta: {
+        clientId: MOBILE.clientId,
+        userId: user.id,
+        beforeScopes: existingGrantScopes,
+        afterScopes: expectedGrantScopes,
+      },
+    });
+
+    const rerun = await seedFirstPartyClients(repo, definitions, audit);
+    expect(resultFor(rerun, MOBILE.clientId)).toMatchObject({
+      action: 'unchanged',
+      grantsWidened: 0,
+    });
+    const auditRows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, AuditAction.OAuthGrantScopesWidened));
+    expect(auditRows).toHaveLength(1);
   });
 });
