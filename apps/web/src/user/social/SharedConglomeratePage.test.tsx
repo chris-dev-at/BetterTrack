@@ -52,6 +52,7 @@ const CONGLOMERATE_ID = '00000000-0000-0000-0000-000000000010';
 const CHILD_ID = '00000000-0000-0000-0000-000000000011';
 const A_ID = '00000000-0000-0000-0000-00000000000a';
 const B_ID = '00000000-0000-0000-0000-00000000000b';
+const C_ID = '00000000-0000-0000-0000-00000000000c';
 
 const detail: SharedConglomerateDetailResponse = {
   conglomerateId: CONGLOMERATE_ID,
@@ -95,6 +96,76 @@ const nestedDetail: SharedConglomerateDetailResponse = {
       sortOrder: 1,
       asset: { symbol: 'AAA', name: 'Asset A', currency: 'EUR', type: 'stock' },
     },
+  ],
+};
+
+/**
+ * The SAME basket after the owner re-weighted it 60/40 → 90/10. Nothing else
+ * about it moved, so a sandbox that still shows 60/40 is showing the viewer a
+ * basket that no longer exists (#1659 defect 1).
+ */
+const reweightedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[0]!, weightPct: 90 },
+    { ...detail.positions[1]!, weightPct: 10 },
+  ],
+};
+
+/**
+ * The owner re-weighted AAA to exactly the 80 the viewer had already tweaked to
+ * (and BBB to the 20 that balances it). Every cell on the page now agrees.
+ */
+const convergedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[0]!, weightPct: 80 },
+    { ...detail.positions[1]!, weightPct: 20 },
+  ],
+};
+
+/** The same converged basket again, as a distinct payload (the owner edited the blurb). */
+const convergedAgainDetail: SharedConglomerateDetailResponse = {
+  ...convergedDetail,
+  description: 'Rebalanced.',
+};
+
+/** The owner moved BOTH weights while the viewer held a tweak on each. */
+const bothMovedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[0]!, weightPct: 55 },
+    { ...detail.positions[1]!, weightPct: 45 },
+  ],
+};
+
+/** The owner moved a constituent the viewer did NOT tweak (BBB 40 → 45). */
+const bbbMovedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [detail.positions[0]!, { ...detail.positions[1]!, weightPct: 45 }],
+};
+
+/** AAA left the basket and CCC joined it. */
+const swappedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[1]!, weightPct: 50, sortOrder: 0 },
+    {
+      kind: 'asset',
+      assetId: C_ID,
+      weightPct: 50,
+      sortOrder: 1,
+      asset: { symbol: 'CCC', name: 'Asset C', currency: 'EUR', type: 'stock' },
+    },
+  ],
+};
+
+/** …and then the owner put AAA back, at a weight of its own. */
+const aaaBackDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[0]!, weightPct: 25 },
+    { ...detail.positions[1]!, weightPct: 75 },
   ],
 };
 
@@ -262,6 +333,274 @@ describe('SharedConglomeratePage — what-if sandbox (V5-P6 arc c)', () => {
     );
     expect(nestedDetail).toEqual(untouchedSharedDetail);
     expect(getSharedConglomerate).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** Force the shared-detail query to run again, as a focus/reconnect/invalidation would. */
+async function refetchShared(queryClient: QueryClient): Promise<void> {
+  await act(async () => {
+    await queryClient.refetchQueries({
+      queryKey: ['social', 'shared', 'conglomerate', CONGLOMERATE_ID],
+    });
+  });
+}
+
+/** The number input of one sandbox row. */
+function weightInput(symbol: string): HTMLInputElement {
+  return screen.getByLabelText(`Weight for ${symbol}`) as HTMLInputElement;
+}
+
+async function openSandbox(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /What-if sandbox/i }));
+  await waitFor(() => expect(previewSharedConglomerateSandbox).toHaveBeenCalled());
+}
+
+const MOVED_NOTICE = /while you were experimenting/i;
+
+describe('SharedConglomeratePage — the sandbox resyncs to refetched shared weights (#1659)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (previewSharedConglomerateSandbox as unknown as Mock).mockResolvedValue(previewResponse);
+  });
+
+  test('an un-tweaked sandbox follows the owner’s re-weight instead of freezing at mount', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(reweightedDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+    expect(lastPreviewPositions()).toEqual([
+      { id: A_ID, weight: 60 },
+      { id: B_ID, weight: 40 },
+    ]);
+
+    await refetchShared(queryClient);
+
+    // The sandbox rows equal the read-only position list again…
+    await waitFor(() => expect(weightInput('AAA').value).toBe('90'));
+    expect(weightInput('BBB').value).toBe('10');
+    // …the viewer never touched anything, so the sandbox is still pristine…
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+    // …nothing claims their work was disturbed…
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+    // …and the curve under the rows is the NEW shared basket's, not the old one.
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toEqual([
+        { id: A_ID, weight: 90 },
+        { id: B_ID, weight: 10 },
+      ]),
+    );
+  });
+
+  test('a refetch that does not move the tweaked constituent keeps the tweak, silently', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(bbbMovedDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    const inputA = weightInput('AAA');
+    await user.clear(inputA);
+    await user.type(inputA, '80');
+    await waitFor(() => expect(lastPreviewPositions()).toContainEqual({ id: A_ID, weight: 80 }));
+
+    // (a) A refetch that changes NOTHING must not disturb the edit or nag.
+    await refetchShared(queryClient);
+    expect(weightInput('AAA').value).toBe('80');
+    expect(weightInput('BBB').value).toBe('40');
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+
+    // (b) A refetch that moves a DIFFERENT row leaves the in-progress tweak be,
+    //     and still says nothing — the viewer's own value was never at risk.
+    await refetchShared(queryClient);
+    await waitFor(() => expect(weightInput('BBB').value).toBe('45'));
+    expect(weightInput('AAA').value).toBe('80');
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeEnabled();
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toEqual([
+        { id: A_ID, weight: 80 },
+        { id: B_ID, weight: 45 },
+      ]),
+    );
+  });
+
+  test('a re-weight UNDER a live tweak keeps the edit and names the row whose baseline moved', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(reweightedDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    const inputA = weightInput('AAA');
+    await user.clear(inputA);
+    await user.type(inputA, '80');
+    await waitFor(() => expect(lastPreviewPositions()).toContainEqual({ id: A_ID, weight: 80 }));
+
+    await refetchShared(queryClient);
+
+    // The untouched row follows the new shared weight…
+    await waitFor(() => expect(weightInput('BBB').value).toBe('10'));
+    // …the viewer's own edit is NOT thrown away…
+    expect(weightInput('AAA').value).toBe('80');
+    // …and the notice names the row whose shared baseline moved, and only it.
+    const notice = screen.getByText(MOVED_NOTICE);
+    expect(notice).toHaveTextContent('AAA');
+    expect(notice).not.toHaveTextContent('BBB');
+
+    // "Reset to shared" adopts the NEW shared weights and retires the notice.
+    await user.click(screen.getByRole('button', { name: /Reset to shared/i }));
+    await waitFor(() => expect(weightInput('AAA').value).toBe('90'));
+    expect(weightInput('BBB').value).toBe('10');
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+  });
+
+  test('a row typed back to its shared weight follows the owner again', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(reweightedDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    // Away from the shared weight…
+    const inputA = weightInput('AAA');
+    await user.clear(inputA);
+    await user.type(inputA, '80');
+    await waitFor(() => expect(lastPreviewPositions()).toContainEqual({ id: A_ID, weight: 80 }));
+    // …and back onto it: the sandbox is pristine again, with no held opinion.
+    await user.clear(weightInput('AAA'));
+    await user.type(weightInput('AAA'), '60');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled(),
+    );
+
+    await refetchShared(queryClient);
+
+    await waitFor(() => expect(weightInput('AAA').value).toBe('90'));
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+  });
+
+  test('an owner who lands ON the viewer’s value leaves nothing to warn about', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValueOnce(convergedDetail)
+      .mockResolvedValue(convergedAgainDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    const inputA = weightInput('AAA');
+    await user.clear(inputA);
+    await user.type(inputA, '80');
+    await waitFor(() => expect(lastPreviewPositions()).toContainEqual({ id: A_ID, weight: 80 }));
+
+    // The owner re-weights AAA to the very 80 the viewer chose. The baseline
+    // moved, but the viewer's opinion and the shared basket now AGREE — every
+    // cell matches, `isPristine` is true and Reset is disabled, so a notice
+    // telling the reader to press Reset would contradict the page it sits on.
+    await refetchShared(queryClient);
+    await waitFor(() => expect(weightInput('BBB').value).toBe('20'));
+    expect(weightInput('AAA').value).toBe('80');
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+
+    // …and it stays clean: a converged row holds no opinion to re-flag later.
+    await refetchShared(queryClient);
+    expect(await screen.findByText('Rebalanced.')).toBeInTheDocument();
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+  });
+
+  test('the notice counts the rows it names — singular for one, plural for two', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(bothMovedDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    await user.clear(weightInput('AAA'));
+    await user.type(weightInput('AAA'), '70');
+    await user.clear(weightInput('BBB'));
+    await user.type(weightInput('BBB'), '30');
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toEqual([
+        { id: A_ID, weight: 70 },
+        { id: B_ID, weight: 30 },
+      ]),
+    );
+
+    await refetchShared(queryClient);
+
+    // Two rows moved: the plural sentence, naming both, and counted.
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent('AAA');
+    expect(notice).toHaveTextContent('BBB');
+    expect(notice).toHaveTextContent('2');
+    expect(notice.textContent).toMatch(/weights/);
+    expect(notice.textContent).not.toMatch(/\bweight\b/);
+
+    // Acknowledging one of them leaves the singular sentence for the other.
+    await user.clear(weightInput('AAA'));
+    await user.type(weightInput('AAA'), '65');
+    const single = await screen.findByRole('status');
+    expect(single).toHaveTextContent('BBB');
+    expect(single).not.toHaveTextContent('AAA');
+    expect(single.textContent).toMatch(/\bweight\b/);
+    expect(single.textContent).not.toMatch(/weights/);
+  });
+
+  test('a constituent that leaves stops contributing, a new one joins at its shared weight, and a returning id does not resurrect the old tweak', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValueOnce(swappedDetail)
+      .mockResolvedValue(aaaBackDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    const inputA = weightInput('AAA');
+    await user.clear(inputA);
+    await user.type(inputA, '80');
+    await waitFor(() => expect(lastPreviewPositions()).toContainEqual({ id: A_ID, weight: 80 }));
+
+    // AAA leaves, CCC joins: the request covers exactly the new shared set, at
+    // the new shared weights — the server's exact-set guard keeps passing.
+    await refetchShared(queryClient);
+    await waitFor(() => expect(screen.queryByLabelText('Weight for AAA')).toBeNull());
+    expect(weightInput('CCC').value).toBe('50');
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toEqual([
+        { id: B_ID, weight: 50 },
+        { id: C_ID, weight: 50 },
+      ]),
+    );
+
+    // AAA comes back at 25: it is the SHARED weight that shows, never the tweak
+    // the viewer made against a basket that no longer contained this row.
+    await refetchShared(queryClient);
+    await waitFor(() => expect(weightInput('AAA').value).toBe('25'));
+    expect(weightInput('BBB').value).toBe('75');
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toEqual([
+        { id: A_ID, weight: 25 },
+        { id: B_ID, weight: 75 },
+      ]),
+    );
   });
 });
 
