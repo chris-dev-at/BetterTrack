@@ -7,6 +7,7 @@ import {
   createCaptureReceiver,
   createWebhookHarness,
   independentSignature,
+  WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -169,8 +170,22 @@ test('webhooks: a dead receiver retries, auto-disables, and re-enables from Sett
 
     // Failures #2…#threshold as immediate-terminal deliveries; the LAST one
     // crosses the consecutive-failure threshold and auto-disables the webhook.
+    //
+    // They are SPACED (#1646): auto-disable needs a span as well as a count —
+    // the tripping streak must cover at least WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS
+    // from its first failure. Driven back-to-back these deliveries are a burst,
+    // which is precisely the shape that must NOT kill a receiver (five events
+    // during one five-minute outage), so the harness clock carries them past
+    // the span instead — which is what a receiver that is genuinely down looks
+    // like. No sleeping: the dispatcher reads the harness clock. Note the
+    // signature timestamp is that same clock, so the receiver in THIS test sees
+    // stamps up to an hour ahead of wall time — harmless while the capture
+    // receiver enforces no freshness tolerance; if one is ever added, this test
+    // must advance the receiver's clock too.
+    const step = Math.ceil(WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS / (WEBHOOK_AUTO_DISABLE_THRESHOLD - 1));
     let lastOutcome = '';
     for (let failure = 2; failure <= WEBHOOK_AUTO_DISABLE_THRESHOLD; failure += 1) {
+      harness.advanceClock(step);
       const r = await harness.deliver(sub.id, {
         deliveryId: randomUUID(),
         attempt: 1,

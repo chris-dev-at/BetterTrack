@@ -8,8 +8,8 @@ import { feedbackStatusSchema } from './feedback';
  * when a matching event fires for THAT user, BetterTrack POSTs an HMAC-signed
  * JSON payload to the URL. A per-subscription secret is shown exactly once at
  * creation (only an encrypted form is stored, never logged); a dead receiver
- * auto-disables after N consecutive failed deliveries and can be re-enabled
- * manually. A bounded per-subscription delivery log records each outcome.
+ * auto-disables after N consecutive failed deliveries that span at least
+ * {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS}, and can be re-enabled manually. A bounded per-subscription delivery log records each outcome.
  *
  * The subscribable **catalog** ({@link WEBHOOK_EVENT_TYPES}) is the user-scoped
  * subset of the API's typed domain events (`apps/api/src/events/` —
@@ -248,9 +248,92 @@ export const WEBHOOK_SECRET_PREFIX = 'whsec_';
 /**
  * Consecutive terminally-failed deliveries after which a subscription
  * auto-disables (`disabledReason: 'auto'`). Shared so the UI can name the
- * threshold in its copy. Re-enabling resets the counter.
+ * threshold in its copy. A success or a re-enable resets the counters.
+ *
+ * The threshold alone is a lifetime tally, which cannot tell a dead receiver
+ * from a healthy one that has blipped five times over five months. It is
+ * therefore counted on TWO streaks and gated by a span — see the full rule at
+ * {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS}:
+ *
+ * - the WINDOWED streak counts only failures inside
+ *   {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} of its first failure;
+ * - the UNBROKEN streak counts every terminal failure since the last success,
+ *   however far apart — which is what lets a dead receiver whose events are
+ *   rarer than the window trip at all, so the threshold is expressly NOT
+ *   confined to the window.
+ *
+ * Reaching it on either streak is necessary and not sufficient: the tripping
+ * streak must also span {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS}.
  */
 export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
+
+/**
+ * The bounded window the {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} terminal
+ * failures must fall inside for a subscription to auto-disable: the streak is
+ * anchored at its FIRST failure and a failure arriving AT OR MORE THAN this
+ * long after that anchor starts a fresh streak at 1 rather than adding to a
+ * stale one. (The boundary is exclusive on the window side: the predicate is
+ * `anchor > at − windowMs`, so a failure landing exactly at `anchor + windowMs`
+ * restarts.)
+ *
+ * 24 hours, and the trade is deliberate in both directions. An outage that ends
+ * inside the window leaves the streak to expire on its own, with no user
+ * action, and a streak can no longer be assembled out of blips months apart.
+ *
+ * The window is only ONE of the two conditions a disable needs. It bounds a
+ * streak's MAXIMUM span; {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS} bounds the
+ * minimum, and {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} consecutive failures that
+ * survive a success are counted by the unbroken streak regardless of age. See
+ * the min-span constant for the full rule (#1646).
+ */
+export const WEBHOOK_AUTO_DISABLE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The minimum elapsed span between a streak's FIRST failure and the failure
+ * that disables it. One hour: below this, the failures are a burst, not a dead
+ * receiver.
+ *
+ * The window alone could never express that. An age-only window bounds a
+ * streak's maximum span and never its minimum, so five events delivered during
+ * a single five-minute 503 burned five terminal failures minutes apart, all
+ * inside the 24 h window, and killed the subscription outright — issue #1592's
+ * second consequence bullet, closed here.
+ *
+ * A receiver still failing an hour after its first failure is not blipping.
+ * What this costs, stated: a subscription whose events are rare enough that all
+ * N failures land inside the span and then stop arriving sits at N with no
+ * further delivery to re-evaluate it, so it stays enabled. The disable is only
+ * ever decided ON a failure; nothing sweeps.
+ *
+ * Chosen over the alternative shape, a half-open probe delivery before the flip
+ * (see #1646): a probe invents traffic the user never subscribed to, needs its
+ * own delivery-log and signing semantics, and answers a question the next real
+ * delivery answers for free.
+ */
+export const WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS = 60 * 60 * 1000;
+
+/**
+ * The auto-disable rule, in full (#1592 + #1646). A subscription disables on a
+ * terminal failure when BOTH:
+ *
+ *  1. at least {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} consecutive terminal
+ *     failures have accumulated, on EITHER
+ *     - the windowed streak (`consecutive_failures`, decayed by
+ *       {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS}), or
+ *     - the unbroken streak (`unbroken_failure_streak`, never decayed by age —
+ *       only a success or a manual re-enable clears it), which is what lets a
+ *       genuinely dead receiver whose events are rarer than the window still
+ *       trip; and
+ *  2. the tripping streak spans at least
+ *     {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS} from its first failure.
+ *
+ * Note the first condition's windowed leg is mathematically subsumed by its
+ * unbroken leg — the unbroken streak is never smaller and its anchor never
+ * later, so a windowed trip implies an unbroken one. It is evaluated anyway:
+ * the two counters are written by one statement but read by separate rules, and
+ * an explicit disjunction keeps the windowed semantics of #1592 enforced rather
+ * than merely implied by an invariant a future writer could break.
+ */
 
 /** Hard cap on active subscriptions per user (anti-abuse / anti-bloat). */
 export const WEBHOOK_MAX_SUBSCRIPTIONS = 20;

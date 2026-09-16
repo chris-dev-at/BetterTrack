@@ -4161,8 +4161,9 @@ export type NewExpenseBudgetFireRow = typeof expenseBudgetFires.$inferInsert;
 // User-defined URLs subscribed to user-scoped domain event types. The signing
 // secret is stored ONLY as an AES-256-GCM envelope (secretBox) so deliveries can
 // HMAC-sign — the plaintext is shown once at creation and never persisted. A
-// receiver that fails `consecutive_failures` times in a row auto-disables
-// (disabled_reason = 'auto'); a manual pause sets 'manual'. Deleting a user
+// receiver that fails `consecutive_failures` times in a row WITHIN the streak
+// window (`failure_window_started_at`) auto-disables (disabled_reason =
+// 'auto'); a manual pause sets 'manual'. Deleting a user
 // cascades to their subscriptions and thence their deliveries.
 
 /** A recorded delivery outcome (one row per delivered / permanently-failed event). */
@@ -4186,18 +4187,56 @@ export const webhookSubscriptions = pgTable(
     // AES-256-GCM envelope of the signing secret — never the plaintext.
     secretEncrypted: text('secret_encrypted').notNull(),
     enabled: boolean('enabled').notNull().default(true),
-    // 'auto' (N consecutive failures) or 'manual' (paused); null while enabled.
+    // 'auto' (N consecutive failures on either streak below, spanning at least
+    // WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS) or 'manual' (paused); null while enabled.
     disabledReason: text('disabled_reason'),
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
     // Consecutive terminally-failed deliveries; reset to 0 on any success or
     // manual re-enable, incremented on each permanently-failed delivery.
     consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    // When the current streak started — the timestamp of its FIRST failure, and
+    // the anchor of the auto-disable window (WEBHOOK_AUTO_DISABLE_WINDOW_MS). A
+    // failure landing after the window has passed restarts the streak at 1
+    // instead of extending it, so failures spread over months never add up to a
+    // disable. Null exactly when `consecutive_failures` is 0.
+    failureWindowStartedAt: timestamp('failure_window_started_at', { withTimezone: true }),
+    // The SECOND streak (#1646): consecutive terminal failures since the last
+    // success, never decayed by age. `consecutive_failures` restarts whenever a
+    // failure lands outside the window, so a dead receiver whose events are
+    // rarer than the window could never accumulate one — it reset to 1 forever
+    // and never auto-disabled. This counter does not reset on age; only a
+    // success or a manual re-enable clears it.
+    unbrokenFailureStreak: integer('unbroken_failure_streak').notNull().default(0),
+    // That streak's own anchor — the first failure after the last success, and
+    // the basis of the minimum-span check on this leg. It cannot be derived
+    // from `last_success_at`: a receiver that succeeded a year ago and then
+    // failed five times in five minutes would measure a one-year span and
+    // defeat the very burst protection the span exists for. Null exactly when
+    // `unbroken_failure_streak` is 0.
+    unbrokenStreakStartedAt: timestamp('unbroken_streak_started_at', { withTimezone: true }),
     lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
     lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('webhook_subscriptions_user_idx').on(t.userId)],
+  (t) => [
+    // Three comments assert "null exactly when the counter is 0" and nothing
+    // used to enforce it (#1619 found 34 live CHECKs schema.ts never declared;
+    // this is the same class caught before it starts). Every current writer
+    // honours it — `recordSuccess`, `incrementFailure`, the manual re-enable —
+    // so these make a documented invariant true by construction rather than by
+    // review. Declared here as well as in SQL because `check:schema-drift`
+    // compares both directions.
+    check(
+      'webhook_subscriptions_failure_window_anchor',
+      sql`(${t.consecutiveFailures} = 0) = (${t.failureWindowStartedAt} is null)`,
+    ),
+    check(
+      'webhook_subscriptions_unbroken_streak_anchor',
+      sql`(${t.unbrokenFailureStreak} = 0) = (${t.unbrokenStreakStartedAt} is null)`,
+    ),
+    index('webhook_subscriptions_user_idx').on(t.userId),
+  ],
 );
 
 export const webhookDeliveries = pgTable(

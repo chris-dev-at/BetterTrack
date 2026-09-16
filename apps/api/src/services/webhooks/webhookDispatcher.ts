@@ -3,6 +3,8 @@ import { request as httpsRequest } from 'node:https';
 
 import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
+  WEBHOOK_AUTO_DISABLE_WINDOW_MS,
+  WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_DELIVERY_HTTP_ERROR,
   WEBHOOK_DELIVERY_NETWORK_ERROR,
@@ -66,6 +68,23 @@ import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
  * answer that cannot change, and the operator's "my endpoint is gone" signal
  * should surface on the first event rather than the fifth. It is still recorded
  * as a failure with its status, so the auto-disable streak is unaffected.
+ *
+ * Auto-disable needs a COUNT and a SPAN, and the count comes from either of two
+ * streaks (§13.5, #1592 + #1646):
+ *
+ * - the WINDOWED streak, which counts only failures inside
+ *   {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} of its first failure — a lifetime
+ *   tally cannot distinguish a dead receiver from a healthy one that blipped N
+ *   times over months, and the streak has no other way to decay;
+ * - the UNBROKEN streak, which age never decays, so a dead receiver whose
+ *   events are rarer than the window still trips instead of resetting to 1
+ *   forever.
+ *
+ * Whichever reaches {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} must ALSO span at
+ * least {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS} from its own first failure.
+ * Without that, five events delivered during one five-minute 503 burned five
+ * terminal failures minutes apart and killed the subscription outright. Only a
+ * success or a manual re-enable clears either streak.
  */
 
 export interface WebhookTransportResult {
@@ -135,6 +154,10 @@ export interface WebhookDispatcherDeps {
   logger: Logger;
   /** Consecutive failures before auto-disable. Defaults to the contract constant. */
   autoDisableThreshold?: number;
+  /** Window those failures must fall inside. Defaults to the contract constant. */
+  autoDisableWindowMs?: number;
+  /** Minimum span from a streak's first failure to the disabling one. */
+  autoDisableMinSpanMs?: number;
   /** DNS seam for the per-attempt outbound guard (tests); defaults to the system resolver. */
   dnsResolver?: OutboundUrlResolver;
   /** Injectable clock (tests) — drives the signature timestamp + row stamps. */
@@ -216,6 +239,8 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     audit,
     logger,
     autoDisableThreshold = WEBHOOK_AUTO_DISABLE_THRESHOLD,
+    autoDisableWindowMs = WEBHOOK_AUTO_DISABLE_WINDOW_MS,
+    autoDisableMinSpanMs = WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS,
     dnsResolver,
     now = Date.now,
   } = deps;
@@ -241,12 +266,47 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     if (!inserted) return false;
 
     const at = new Date(now());
-    const failures = await subscriptions.incrementFailure(input.subscriptionId, at);
-    if (failures < autoDisableThreshold) return false;
+    const streaks = await subscriptions.incrementFailure(
+      input.subscriptionId,
+      at,
+      autoDisableWindowMs,
+    );
 
-    await subscriptions.disable(input.subscriptionId, 'auto', at);
+    // A streak trips only if it is long enough AND old enough. The span is
+    // measured from that streak's OWN first failure: a missing anchor is a
+    // streak of 0, which cannot reach the threshold anyway.
+    const spanFrom = (anchor: Date | null): number =>
+      anchor === null ? 0 : at.getTime() - anchor.getTime();
+    const trips = (failures: number, anchor: Date | null): boolean =>
+      failures >= autoDisableThreshold && spanFrom(anchor) >= autoDisableMinSpanMs;
+
+    // Both legs are evaluated even though the windowed one is subsumed by the
+    // unbroken one (the unbroken count is never smaller and its anchor never
+    // later, so a windowed trip implies an unbroken one). The disjunction keeps
+    // #1592's windowed semantics enforced by a rule rather than implied by an
+    // invariant some future writer of these two counters could break.
+    const windowedTrip = trips(streaks.windowedFailures, streaks.windowStartedAt);
+    const unbrokenTrip = trips(streaks.unbrokenFailures, streaks.unbrokenStartedAt);
+    if (!windowedTrip && !unbrokenTrip) return false;
+
+    // Report the count that actually caused the disable. For a sparse receiver
+    // the windowed counter is 1 while the unbroken one is at the threshold, so
+    // the windowed number would make the audit row and the UI hint read as
+    // "disabled after 1 consecutive failures".
+    const trip = windowedTrip ? 'windowed' : 'unbroken';
+    const failures = windowedTrip ? streaks.windowedFailures : streaks.unbrokenFailures;
+    const spanMs = spanFrom(windowedTrip ? streaks.windowStartedAt : streaks.unbrokenStartedAt);
+
+    await subscriptions.disable(input.subscriptionId, 'auto', at, failures);
     logger.warn(
-      { subscriptionId: input.subscriptionId, failures },
+      {
+        subscriptionId: input.subscriptionId,
+        failures,
+        trip,
+        spanMs,
+        windowMs: autoDisableWindowMs,
+        minSpanMs: autoDisableMinSpanMs,
+      },
       'webhook subscription auto-disabled after consecutive failures',
     );
     await audit.record({
@@ -255,7 +315,13 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
       targetType: 'webhook_subscription',
       targetId: input.subscriptionId,
       ip: null,
-      meta: { failures },
+      meta: {
+        failures,
+        trip,
+        spanMs,
+        windowMs: autoDisableWindowMs,
+        minSpanMs: autoDisableMinSpanMs,
+      },
     });
     return true;
   }
