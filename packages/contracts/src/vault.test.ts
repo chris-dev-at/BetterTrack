@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import { CASH_RULE_PATTERN_MAX } from './cash';
+import { CASH_RULE_PATTERN_MAX, CASH_TAGS_PER_ITEM_MAX } from './cash';
 import { EXPENSE_RULE_PATTERN_MAX } from './expenses';
 import {
   decodeVaultEnvelope,
@@ -34,7 +34,9 @@ import {
   vaultRetirementProofPublicKeySchema,
   vaultRetirementProofPrivateKeySchema,
   vaultServerHeaderSchema,
+  VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
+  vaultStrictDocumentV1Schema,
   vaultVersionSchema,
 } from './vault';
 
@@ -456,5 +458,142 @@ describe('restored rule rows', () => {
     const kept = ' spaced pattern ';
     const ok = VAULT_ENTITY_ROW_SCHEMAS.cashRule.safeParse(cashRule(kept));
     expect(ok.success && ok.data.pattern).toBe(kept);
+  });
+});
+
+describe('a restored rule’s tag fan-out (#1954)', () => {
+  /**
+   * `CASH_TAGS_PER_ITEM_MAX` is the cap the HTTP path gets for free, because a
+   * written rule carries its tags as ONE array (`tagIdsSchema`). A restore
+   * carries the same set as N independent `cashRuleTag` link rows, so no row
+   * schema can see the cardinality and the document has to state it.
+   *
+   * Left ungated, the fan-out multiplies every later pass: `loadRules`
+   * aggregates a rule's tags with an unbounded `array_agg` and
+   * `applyCashRuleTags` pushes one (movement, tag) pair per tag per matched
+   * movement — the other half of the product #1743 capped the rule COUNT of.
+   */
+  const RULE_A = '018f0000-0000-7000-8000-0000000000e1';
+  const RULE_B = '018f0000-0000-7000-8000-0000000000e2';
+  const TAG = '018f0000-0000-7000-8000-0000000000f1';
+
+  const link = (ruleId: string, index: number, deletedAt: string | null = null) => ({
+    id: `018f0000-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
+    rev: 1,
+    editedAt: '2026-01-01T00:00:00.000Z',
+    editedBy: UUID_A,
+    deletedAt,
+    kind: 'cashRuleTag' as const,
+    data: { ruleId, tagId: TAG, createdAt: '2026-01-01T00:00:00.000Z' },
+  });
+
+  const documentWith = (...links: ReturnType<typeof link>[]) => ({
+    schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+    entities: links,
+    mergeLog: [],
+    mirrorProvenance: [],
+  });
+
+  const linksFor = (ruleId: string, count: number, offset = 0) =>
+    Array.from({ length: count }, (_unused, i) => link(ruleId, offset + i));
+
+  /** Soft-deleted links: `deletedAt` set, which is what a tombstone IS (§2/§4). */
+  const tombstonesFor = (ruleId: string, count: number, offset = 0) =>
+    Array.from({ length: count }, (_unused, i) =>
+      link(ruleId, offset + i, '2026-02-01T00:00:00.000Z'),
+    );
+
+  it('accepts a rule landing EXACTLY on the cap', () => {
+    const parsed = vaultStrictDocumentV1Schema.safeParse(
+      documentWith(...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX)),
+    );
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_PER_ITEM_MAX);
+  });
+
+  it('refuses the WHOLE document one link past the cap — never a bounded prefix', () => {
+    const parsed = vaultStrictDocumentV1Schema.safeParse(
+      documentWith(...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX + 1)),
+    );
+    expect(parsed.success).toBe(false);
+    expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('too_big');
+    expect(parsed.success === false && parsed.error.issues[0]?.path).toEqual(['entities']);
+  });
+
+  it('counts PER RULE, so two capped rules in one document are legal', () => {
+    // The bound is a rule's fan-out, not the document's link count: an account
+    // with many fully-tagged rules is ordinary, and refusing it would make a
+    // legitimate vault unrestorable.
+    const parsed = vaultStrictDocumentV1Schema.safeParse(
+      documentWith(
+        ...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX),
+        ...linksFor(RULE_B, CASH_TAGS_PER_ITEM_MAX, 1_000),
+      ),
+    );
+    expect(parsed.success).toBe(true);
+
+    // …and one rule past the cap still condemns the document even when its
+    // sibling is fine — the offender is found wherever it sits.
+    expect(
+      vaultStrictDocumentV1Schema.safeParse(
+        documentWith(
+          ...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX),
+          ...linksFor(RULE_B, CASH_TAGS_PER_ITEM_MAX + 1, 1_000),
+        ),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('refuses the 16 MB case the bound exists for', () => {
+    // A document is bounded only by VAULT_MAX_BYTES_DEFAULT, so "one rule, five
+    // thousand tags" is a shape a client can actually write.
+    expect(
+      vaultStrictDocumentV1Schema.safeParse(documentWith(...linksFor(RULE_A, 5_000))).success,
+    ).toBe(false);
+  });
+
+  it('counts LIVE links only — a tombstone is not a tag the rule carries', () => {
+    /**
+     * THE TWO SEAMS HAVE TO AGREE, AND THE SERVICE SEAM COUNTS LIVE ROWS.
+     * `paranoidRehydrationService` hands `restoreRuleTags` the output of
+     * `liveEntities()` (`entity.deletedAt === null`), so a tombstoned link never
+     * reaches the table and never joins a rule's `array_agg`. A refinement
+     * counting tombstones would therefore refuse documents the service accepts —
+     * the two gates disagreeing about the same document.
+     *
+     * And the disagreement would not be academic. `paranoidDisable.ts`'s
+     * `toStrictRestoreDocument` pushes EVERY row of the unlocked document into
+     * this schema, tombstones included, and throws `document-invalid` when the
+     * parse fails — with no bypass. The day the paranoid client can soft-delete
+     * a `cashRuleTag` (§16 2026-08-19 item 6), a user who had unlinked one tag
+     * from a fully-tagged rule could not disable paranoid mode or move a
+     * portfolio out AT ALL. A cap on live fan-out must not become a lock on the
+     * exit.
+     */
+    const parsed = vaultStrictDocumentV1Schema.safeParse(
+      documentWith(
+        ...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX),
+        ...tombstonesFor(RULE_A, 40, 2_000),
+      ),
+    );
+    expect(parsed.success).toBe(true);
+    // The tombstones are CARRIED, not dropped: §4's merge rules key off them, so
+    // the refinement must ignore them without removing them.
+    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_PER_ITEM_MAX + 40);
+
+    // …and the live count is still what decides: one live link past the cap is
+    // refused however many tombstones sit beside it.
+    expect(
+      vaultStrictDocumentV1Schema.safeParse(
+        documentWith(
+          ...linksFor(RULE_A, CASH_TAGS_PER_ITEM_MAX + 1),
+          ...tombstonesFor(RULE_A, 40, 2_000),
+        ),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('leaves a document with no rule links alone', () => {
+    expect(vaultStrictDocumentV1Schema.safeParse(documentWith()).success).toBe(true);
   });
 });
