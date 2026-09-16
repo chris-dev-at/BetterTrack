@@ -138,11 +138,12 @@ interface RequestOptions {
 }
 
 /**
- * The request-option fragment EVERY §15 step-up-gated call spreads in — vault
- * deletion, portfolio move-in, portfolio move-out, the acknowledged Drive
- * disconnect, and the locked-vault discard (`docs/paranoid-design.md` §15/§17).
+ * The request-option fragment EVERY credential-gated call spreads in — the
+ * §15 step-up operations (vault deletion, portfolio move-in, portfolio
+ * move-out, the acknowledged Drive disconnect, the locked-vault discard;
+ * `docs/paranoid-design.md` §15/§17) and the §6.1 two-factor disable (#2026).
  *
- * All five carry an in-body credential (`{ password? | code? | recoveryCode? }`)
+ * All of them carry an in-body credential (`{ password? | code? | recoveryCode? }`)
  * that the server verifies inside the same account lock as the transition and
  * refuses GENERICALLY — it never says which factor was wrong, and a wrong one
  * comes back as `401 INVALID_CREDENTIALS`. Under the app-wide policy that 401 is
@@ -151,10 +152,13 @@ interface RequestOptions {
  * their half-finished ceremony gone (#2000). It is an in-form error, exactly as
  * on `/auth/change-password`, so these calls opt out of the policy.
  *
- * ONE definition on purpose. Five copies of `suppressAuthRedirect: true` is five
+ * ONE definition on purpose. Six copies of `suppressAuthRedirect: true` is six
  * chances for the next gated operation to be added without it — which is
  * precisely how move-in, move-out and vault deletion were missed when #1632
- * fixed the disconnect. A new §15 call spreads this constant or it is wrong.
+ * fixed the disconnect, and how disable-2FA was missed by #2000. The rule: a
+ * call whose body carries a credential AND whose server refuses a wrong one
+ * with 401 spreads this constant, or it is wrong. A call the server refuses
+ * with 400 (the 2FA confirms) or that carries no credential must NOT.
  *
  * The trade-off, accepted deliberately: a session that has GENUINELY expired
  * while a gated dialog was open now shows that dialog's generic step-up error
