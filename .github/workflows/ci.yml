@@ -108,6 +108,13 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # Collection only — no browser, no stack, ~1 s. Under `"type": "module"` one
+      # spec that fails to load (a bare JSON import without `with { type: 'json' }`)
+      # aborts the WHOLE Playwright collection, and the PR e2e slice never loads
+      # those files, so the nightly ran 0 tests from 2026-09-06 until this gate.
+      - name: E2E collection gate (every spec must load)
+        run: pnpm exec playwright test --list --project=chromium
+
       - name: Test
         run: pnpm test
 
