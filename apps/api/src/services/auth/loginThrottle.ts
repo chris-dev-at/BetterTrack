@@ -112,6 +112,14 @@ export const PORTFOLIO_VAULT_MOVE_IN_NAMESPACE = 'portfolio_vault_move_in_accoun
 export const PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE = 'portfolio_vault_move_out_account';
 
 /**
+ * The §15 budget for the acknowledged Drive disconnect (#1632). Its own
+ * namespace for the same reason the three siblings have theirs: guessing here
+ * must be no cheaper than at login, and must charge neither the vault-delete
+ * nor either move counter.
+ */
+export const DRIVE_CONNECTION_DISCONNECT_NAMESPACE = 'drive_connection_disconnect_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

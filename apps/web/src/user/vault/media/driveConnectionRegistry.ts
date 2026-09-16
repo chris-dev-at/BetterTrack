@@ -1,4 +1,8 @@
-import type { CreateDriveConnectionRequest, DriveConnection } from '@bettertrack/contracts';
+import type {
+  CreateDriveConnectionRequest,
+  DriveConnection,
+  VaultStepUpCredential,
+} from '@bettertrack/contracts';
 
 import {
   readGoogleDriveIdentity,
@@ -10,7 +14,11 @@ import { createGoogleDriveTokenClient } from '../drive';
 export interface DriveConnectionRegistryApi {
   create(identity: CreateDriveConnectionRequest): Promise<DriveConnection>;
   verify(connectionId: string): Promise<DriveConnection>;
-  delete(connectionId: string, acknowledgeBound: boolean): Promise<void>;
+  delete(
+    connectionId: string,
+    acknowledgeBound: boolean,
+    stepUp?: VaultStepUpCredential,
+  ): Promise<void>;
 }
 
 export type DriveRegistryAuthorizationResult =
@@ -44,7 +52,17 @@ export interface DriveConnectionRegistry {
   authorization(connection: DriveConnection): GoogleDriveTokenClient['state'];
   subscribe(connection: DriveConnection, listener: () => void): () => void;
   tokens(connectionId: string): GoogleDriveTokenClient | null;
-  disconnect(connection: DriveConnection, acknowledgeBound: boolean): Promise<void>;
+  /**
+   * Disconnect one registered identity. `acknowledgeBound` asserts loss of
+   * reach to a bound vault's Drive copy, which paranoid design §15 names a
+   * gated operation — that form carries the in-body step-up credential (#1632).
+   * The unacknowledged probe takes none: it is what discovers the binding.
+   */
+  disconnect(
+    connection: DriveConnection,
+    acknowledgeBound: boolean,
+    stepUp?: VaultStepUpCredential,
+  ): Promise<void>;
 }
 
 export interface DriveConnectionRegistryOptions {
@@ -308,8 +326,8 @@ export function createDriveConnectionRegistry(
       return clients.get(connectionId)?.tokens ?? null;
     },
 
-    async disconnect(connection, acknowledgeBound) {
-      await options.api.delete(connection.id, acknowledgeBound);
+    async disconnect(connection, acknowledgeBound, stepUp) {
+      await options.api.delete(connection.id, acknowledgeBound, stepUp);
       clients.get(connection.id)?.raw.clear();
       clients.delete(connection.id);
     },

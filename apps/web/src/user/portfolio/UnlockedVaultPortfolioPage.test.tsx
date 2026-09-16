@@ -16,11 +16,48 @@ vi.mock('../../lib/portfolioApi', async (importOriginal) => ({
   getRecategorizationStatus: vi.fn(async () => ({ pending: 0 })),
   dismissRecategorization: vi.fn(async () => undefined),
 }));
+// The overview's dividend block reads the PORTFOLIO-SCOPED roll-ups (#1898), so
+// the scoped pair is what has to be stubbed here; the user-wide pair stays
+// mocked because the module is replaced whole. Every stub answers the shape the
+// SERVER answers with — an empty calendar is `available: true` with no entries,
+// not `available: false`, which means "the gate is off" — so a stub can never
+// make a block hide for a reason the real endpoint would not produce.
+const EMPTY_CALENDAR = { available: true, entries: [] };
+const EMPTY_PROJECTION = {
+  available: false,
+  currency: 'EUR',
+  monthlyTotalBase: 0,
+  yearlyTotalBase: 0,
+  basis: null,
+  holdings: [],
+};
 vi.mock('../../lib/marketIntelApi', () => ({
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY: ['portfolio', 'dividend-calendar'],
   PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY: ['portfolio', 'dividend-projection'],
-  getPortfolioDividendCalendar: vi.fn(async () => ({ entries: [] })),
-  getPortfolioDividendProjection: vi.fn(async () => ({ perPortfolio: [], totalEur: 0 })),
+  PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY: (portfolioId: string) => [
+    'portfolio',
+    portfolioId,
+    'dividend-calendar',
+  ],
+  PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY: (portfolioId: string) => [
+    'portfolio',
+    portfolioId,
+    'dividend-projection',
+  ],
+  getPortfolioDividendCalendar: vi.fn(async () => EMPTY_CALENDAR),
+  getPortfolioDividendProjection: vi.fn(async () => EMPTY_PROJECTION),
+  getPortfolioDividendCalendarFor: vi.fn(async () => EMPTY_CALENDAR),
+  getPortfolioDividendProjectionFor: vi.fn(async () => EMPTY_PROJECTION),
+}));
+
+// The deploy-time market-intel capability resolves through a bootstrap this
+// harness never runs, so it reads false and the dividend block would never query
+// whatever the page did — a test asserting "no call" against it proves nothing.
+// Force it ON, so the only thing that can keep the block quiet here is the
+// store capability under test.
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapability: () => true,
 }));
 vi.mock('../../lib/searchApi', () => ({ searchAssets: vi.fn() }));
 
@@ -64,6 +101,12 @@ vi.mock('../vault/useVaultedPortfolioStores', () => ({
   useVaultedPortfolioStores: storeMocks.useVaultedPortfolioStores,
 }));
 
+import {
+  getPortfolioDividendCalendar,
+  getPortfolioDividendCalendarFor,
+  getPortfolioDividendProjection,
+  getPortfolioDividendProjectionFor,
+} from '../../lib/marketIntelApi';
 import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
 import { waitForColdStart } from '../../test/waitForColdStart';
 import { createUnlockedVaultPortfolioAccess } from '../vault/resolvedPortfolioStore';
@@ -349,5 +392,41 @@ describe('the name an unlocked vault portfolio is given', () => {
 
     expect(await waitForColdStart(() => screen.getAllByText(NET_WORTH))).not.toHaveLength(0);
     expect(container.textContent).not.toContain('__vaulted_portfolio__');
+  });
+});
+
+// ─── Server-side roll-ups on a vaulted portfolio (§6.16, #1898) ───────────────
+
+/**
+ * The dividend block is the one thing on this page that talks to the API rather
+ * than to the store, and since #1898 it sends the portfolio's own id. On a
+ * VAULTED portfolio that id is a refusal: `createVaultedPortfolioRouteGuard`
+ * reads `portfolioId` off the query and answers 403 VAULTED_PORTFOLIO on both
+ * roll-ups, so asking would be four doomed requests per mount (the retry policy
+ * doubles each) whose failures the block swallows into "nothing to show". The
+ * store's capabilities already state that server reads are dead here, which is
+ * what `PortfolioStoreProvider` exists for (#1416), and §6.16 kills
+ * server-computed reads for a vaulted portfolio anyway — so the block asks
+ * nothing and renders nothing.
+ */
+describe('the dividend block on an unlocked vault portfolio', () => {
+  test('asks neither roll-up and renders nothing, rather than 403ing twice over', async () => {
+    renderUnlocked(liveAccess('vault-access-intel'));
+
+    // Wait for the page's own cascade to settle first, so "not called" is a
+    // settled fact and not a race against a query that has yet to start.
+    expect(await waitForColdStart(() => screen.getAllByText(NET_WORTH))).not.toHaveLength(0);
+
+    expect(getPortfolioDividendProjectionFor).not.toHaveBeenCalled();
+    expect(getPortfolioDividendCalendarFor).not.toHaveBeenCalled();
+    // …nor the user-wide pair, which would be a different portfolio's data on a
+    // page that shows exactly one.
+    expect(getPortfolioDividendProjection).not.toHaveBeenCalled();
+    expect(getPortfolioDividendCalendar).not.toHaveBeenCalled();
+
+    expect(
+      screen.queryByRole('region', { name: 'Dividend income and calendar' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Dividends' })).not.toBeInTheDocument();
   });
 });

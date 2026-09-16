@@ -12,6 +12,13 @@ vi.mock('../../lib/socialApi', () => ({
   listFriends: vi.fn(),
   listGroups: vi.fn(),
   setAudience: vi.fn(),
+  // #1899 mounts the circle editor beside this page to prove one surface hears
+  // the other's mutation, so its client calls have to exist on the mock too.
+  createGroup: vi.fn(),
+  renameGroup: vi.fn(),
+  deleteGroup: vi.fn(),
+  addGroupMember: vi.fn(),
+  removeGroupMember: vi.fn(),
   // The owner's comment surface mounts the same CommentThread the viewer pages
   // do (#1677), so its client calls have to exist on the mocked module.
   getCommentThread: vi.fn(),
@@ -33,19 +40,23 @@ vi.mock('../../lib/portfolioApi', () => ({
 }));
 
 import {
+  addGroupMember,
   deleteComment,
+  deleteGroup,
   getAudience,
   getCommentThread,
   getCommentThreadSummary,
   listFriends,
   listGroups,
   listMyShared,
+  removeGroupMember,
   setAudience,
 } from '../../lib/socialApi';
 import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { setViewportWidth } from '../../test/viewport';
 import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
+import { FriendGroupsSection } from './FriendGroupsSection';
 import { MySharedItemsPage } from './MySharedItemsPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
@@ -791,5 +802,170 @@ describe('the owner opens and moderates the thread of their own item', () => {
 
     expect(await screen.findByText('Main')).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * #1899 — the cross-surface half. §6.9 promises "editing a group updates its
+ * reach"; My items is where the owner READS that reach. Both surfaces live on
+ * the People area and share one query cache, so a circle edit made in the
+ * circle editor has to reach the badges here without a manual refetch — the
+ * group mutations invalidated `['social','groups']` alone, and these badges
+ * (`['social','my-shared']`, 30 s stale) kept naming a circle the server had
+ * already nulled out.
+ */
+describe('the reach badges hear a circle edit made on the same page (#1899)', () => {
+  const FAMILY_ID = '00000000-0000-0000-0000-0000000000f1';
+
+  function sharedToFamily(group: { id: string; name: string; memberCount: number } | null) {
+    return {
+      portfolios: [
+        {
+          portfolioId: PORTFOLIO_ID,
+          name: 'Main',
+          audience: 'group' as const,
+          friendCount: 0,
+          group,
+        },
+      ],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [],
+    };
+  }
+
+  /** The People area as the owner actually sees it: circles above, items below. */
+  function renderPeopleArea() {
+    const queryClient = new QueryClient({
+      // The app's real default (`UserApp.tsx:47-48`) — the window the stale
+      // badge used to survive.
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/people/shared']}>
+          <MutationFeedbackProvider>
+            <FriendGroupsSection />
+            <MySharedItemsPage />
+          </MutationFeedbackProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  test('deleting a circle four items point at stops the rows naming it', async () => {
+    vi.mocked(listMyShared)
+      .mockResolvedValueOnce(sharedToFamily({ id: FAMILY_ID, name: 'Family', memberCount: 4 }))
+      .mockResolvedValue(sharedToFamily(null));
+    vi.mocked(listGroups)
+      .mockResolvedValueOnce({
+        groups: [{ id: FAMILY_ID, name: 'Family', memberCount: 4, members: [], shareCount: 4 }],
+      })
+      .mockResolvedValue({ groups: [] });
+    vi.mocked(deleteGroup).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPeopleArea();
+
+    const badge = await screen.findByTestId('who-sees-this');
+    expect(badge).toHaveTextContent('Family · 4');
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(screen.getByRole('button', { name: /delete group/i }));
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    // No remount, no refetch button, no 30 s wait: the badge tells the truth as
+    // soon as the mutation lands.
+    await waitFor(() =>
+      expect(screen.getByTestId('who-sees-this')).toHaveTextContent(
+        'Friend group deleted · reaches nobody',
+      ),
+    );
+    expect(screen.getByTestId('who-sees-this')).toHaveAttribute('data-reach', 'nobody');
+    expect(screen.queryByText(/Family · 4/)).not.toBeInTheDocument();
+  });
+
+  test('the reach count follows the roster the owner just edited', async () => {
+    const BOB = '00000000-0000-0000-0000-0000000000b2';
+    vi.mocked(listMyShared)
+      .mockResolvedValueOnce(sharedToFamily({ id: FAMILY_ID, name: 'Family', memberCount: 1 }))
+      .mockResolvedValue(sharedToFamily({ id: FAMILY_ID, name: 'Family', memberCount: 2 }));
+    vi.mocked(listGroups)
+      .mockResolvedValueOnce({
+        groups: [{ id: FAMILY_ID, name: 'Family', memberCount: 1, members: [], shareCount: 1 }],
+      })
+      .mockResolvedValue({
+        groups: [
+          {
+            id: FAMILY_ID,
+            name: 'Family',
+            memberCount: 2,
+            members: [{ id: BOB, username: 'bob', profileIcon: null }],
+            shareCount: 1,
+          },
+        ],
+      });
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [{ user: { id: BOB, username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    vi.mocked(addGroupMember).mockResolvedValue({
+      id: FAMILY_ID,
+      name: 'Family',
+      memberCount: 2,
+      members: [{ id: BOB, username: 'bob', profileIcon: null }],
+      shareCount: 1,
+    });
+    const user = userEvent.setup();
+    renderPeopleArea();
+
+    expect(await screen.findByTestId('who-sees-this')).toHaveTextContent('Family · 1');
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(await screen.findByRole('button', { name: /^add$/i }));
+
+    await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(FAMILY_ID, BOB));
+    await waitFor(() =>
+      expect(screen.getByTestId('who-sees-this')).toHaveTextContent('Family · 2'),
+    );
+  });
+
+  test('removing the last member reports the circle now reaches nobody', async () => {
+    const BOB = '00000000-0000-0000-0000-0000000000b2';
+    vi.mocked(listMyShared)
+      .mockResolvedValueOnce(sharedToFamily({ id: FAMILY_ID, name: 'Family', memberCount: 1 }))
+      .mockResolvedValue(sharedToFamily({ id: FAMILY_ID, name: 'Family', memberCount: 0 }));
+    vi.mocked(listGroups)
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            id: FAMILY_ID,
+            name: 'Family',
+            memberCount: 1,
+            members: [{ id: BOB, username: 'bob', profileIcon: null }],
+            shareCount: 1,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        groups: [{ id: FAMILY_ID, name: 'Family', memberCount: 0, members: [], shareCount: 1 }],
+      });
+    vi.mocked(removeGroupMember).mockResolvedValue({
+      id: FAMILY_ID,
+      name: 'Family',
+      memberCount: 0,
+      members: [],
+      shareCount: 1,
+    });
+    const user = userEvent.setup();
+    renderPeopleArea();
+
+    expect(await screen.findByTestId('who-sees-this')).toHaveTextContent('Family · 1');
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(await screen.findByRole('button', { name: /^remove$/i }));
+
+    await waitFor(() => expect(removeGroupMember).toHaveBeenCalledWith(FAMILY_ID, BOB));
+    await waitFor(() =>
+      expect(screen.getByTestId('who-sees-this')).toHaveTextContent('Family · reaches nobody'),
+    );
   });
 });

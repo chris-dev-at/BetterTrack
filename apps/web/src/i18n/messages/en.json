@@ -500,6 +500,9 @@
         "disconnected": "Drive account disconnected. Its files remain in Google Drive.",
         "acknowledge": "Vaults still use this connection. Disconnecting now removes their Drive binding and keeps each verified server copy exactly as it is — any change that reached Drive but not the server stays behind. The encrypted files remain your property in Google Drive.",
         "acknowledgeAction": "Disconnect and leave files in Drive",
+        "acknowledgeStepUp": "Confirm it is you before this connection loses reach: this is one of the two copies of your vault.",
+        "acknowledgeStepUpError": "That confirmation was not accepted. Check your password or code and try again.",
+        "acknowledgeThrottled": "Too many attempts. Wait a moment, then confirm again.",
         "lastMedium": "A vault using this connection has no verified server copy, so Drive holds its only copy. Choosing the server medium is not enough — that vault must finish a verified server copy, or move to another Drive account, before you disconnect.",
         "error": "The Drive connection could not be changed.",
         "bindings": "Vault Drive bindings",
@@ -2138,9 +2141,9 @@
       "perMonth": "projected / month",
       "perYear": "projected / year",
       "projectionUnresolved": "We couldn't work out a projected total for this portfolio just now — part of the data it needs didn't come back. The dates below are unaffected.",
-      "projectionTruncated": "You hold more assets than we project in one pass, so no total is shown. The dates below are unaffected.",
+      "projectionTruncated": "This portfolio holds more assets than we project in one pass, so no total is shown. The dates below are unaffected.",
       "calendarTitle": "Upcoming ex-dividend dates",
-      "calendarTruncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
+      "calendarTruncated": "Partial: this portfolio holds more assets than we look up in one pass, so some are missing below.",
       "exOn": "ex {{date}}",
       "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
@@ -3271,7 +3274,10 @@
       "other": "{{count}} members"
     },
     "groupsAtLimit": "This is all {{count}} of your groups — the maximum. Manage them on the People page.",
-    "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
+    "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it.",
+    "groupDeletedNotice": "The group this was shared with no longer exists, so right now nobody can see it. Pick another group or a different audience below, then save.",
+    "groupGoneError": "That group no longer exists. Your sharing is unchanged — pick another group or a different audience, then save again.",
+    "audienceGroupDeleted": "a deleted group (reaches nobody)"
   },
   "watchlists": {
     "title": "Watchlists",
@@ -5182,6 +5188,15 @@
         "other": "On for {{percent}} % + {{count}} accounts"
       },
       "killedNote": "The switch is off, so this feature is off for everyone — the rollout below, allow list included, does not apply.",
+      "stored": {
+        "salvagedBadge": "Rollout unreadable",
+        "unreadableBadge": "Config unreadable",
+        "salvagedNote": "The stored targeting for this flag could not be read, so the rollout below is the default this app is serving — not what is on disk. The switch itself was readable and is honoured. Save the rollout to replace the stored configuration completely.",
+        "unreadableNote": "The stored configuration for this flag could not be read at all, so the switch and the rollout below are the default this app is serving — not what is on disk. Save the rollout to replace the stored configuration completely.",
+        "conflictError": "This flag's stored configuration is unreadable — use Save rollout to replace it completely.",
+        "conflictErrorSalvaged": "This flag's stored rollout is unreadable — use Save rollout to replace the whole configuration.",
+        "changedError": "This flag has changed since the list was loaded — someone else may have repaired it already. Refresh and make the change against what it says now."
+      },
       "rolloutHeading": "Rollout",
       "percentLabel": "Rollout %",
       "percentHint": "0–100. Each account lands in a stable bucket, so widening never takes the feature away from someone who had it.",

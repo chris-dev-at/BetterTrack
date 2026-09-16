@@ -40,8 +40,17 @@ export const ASSET_NEWS_QUERY_KEY = (id: string) => ['asset', id, 'intel', 'news
 export const PORTFOLIO_NEWS_DIGEST_QUERY_KEY = ['portfolio', 'news-digest'] as const;
 /** Query key for the portfolio-level upcoming-earnings calendar (Workboard panel). */
 export const EARNINGS_CALENDAR_QUERY_KEY = ['intel', 'earnings-calendar'] as const;
-/** Query key for the portfolio-level dividend calendar (arc a). */
+/** Query key for the USER-WIDE dividend calendar across held + watched (arc a). */
 export const PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY = ['portfolio', 'dividend-calendar'] as const;
+/**
+ * Query key for ONE portfolio's dividend calendar (#1898). The id is part of the
+ * key for the same reason it is on the projection: the user-wide list and a
+ * single portfolio's are different answers, so they may never share a cache
+ * entry and a topbar switch has to refetch rather than serve the previous
+ * portfolio's dates.
+ */
+export const PORTFOLIO_DIVIDEND_CALENDAR_SCOPED_QUERY_KEY = (portfolioId: string) =>
+  ['portfolio', portfolioId, 'dividend-calendar'] as const;
 /** Query key for the USER-WIDE projected dividend income (arc a). */
 export const PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY = [
   'portfolio',
@@ -112,11 +121,33 @@ export async function getEarningsCalendar(signal?: AbortSignal): Promise<Earning
   return earningsCalendarResponseSchema.parse(data);
 }
 
-/** `GET /assets/portfolio/dividend-calendar` — upcoming ex/pay across held + watched (arc a). */
+/**
+ * `GET /assets/portfolio/dividend-calendar` — upcoming ex/pay across held +
+ * watched assets in EVERY active portfolio (arc a). The cross-portfolio view the
+ * Home widgets show; a portfolio-scoped surface wants the function below.
+ */
 export async function getPortfolioDividendCalendar(
   signal?: AbortSignal,
 ): Promise<DividendCalendarResponse> {
   const data = await apiRequest<unknown>('/assets/portfolio/dividend-calendar', { signal });
+  return dividendCalendarResponseSchema.parse(data);
+}
+
+/**
+ * The same read scoped to ONE portfolio's holdings (`?portfolioId=`), which
+ * drops the account-level watchlist half — a watched asset sits in no portfolio.
+ * A separate function rather than an optional argument, matching the projection
+ * pair, so each call site states which list it means: the portfolio page's block
+ * is scoped to the portfolio it sits on (#1898), the Home widget's is not.
+ */
+export async function getPortfolioDividendCalendarFor(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<DividendCalendarResponse> {
+  const data = await apiRequest<unknown>(
+    `/assets/portfolio/dividend-calendar?portfolioId=${encodeURIComponent(portfolioId)}`,
+    { signal },
+  );
   return dividendCalendarResponseSchema.parse(data);
 }
 

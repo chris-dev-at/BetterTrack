@@ -240,6 +240,25 @@ export const dividendCalendarResponseSchema = z
 export type DividendCalendarResponse = z.infer<typeof dividendCalendarResponseSchema>;
 
 /**
+ * Query for `GET /assets/portfolio/dividend-calendar`. Omitted ⇒ the read stays
+ * user-wide: the caller's held positions across every active, non-vaulted
+ * portfolio PLUS their watchlists, which is what the cross-portfolio Home
+ * widgets show. `portfolioId` narrows it to ONE portfolio's holdings — the
+ * portfolio page renders this calendar under copy that names "this portfolio"
+ * (#1898), and a watchlist belongs to the account rather than to any portfolio,
+ * so a scoped read carries no watchlist-only subject.
+ *
+ * Same ownership rule as {@link projectedDividendIncomeQuerySchema}: the
+ * repository filter is user-scoped, so a portfolio the caller does not own
+ * matches no holdings and the answer is an empty calendar — indistinguishable
+ * from an id that does not exist, and never another user's book.
+ */
+export const dividendCalendarQuerySchema = z
+  .object({ portfolioId: z.string().uuid().optional() })
+  .strict();
+export type DividendCalendarQuery = z.infer<typeof dividendCalendarQuerySchema>;
+
+/**
  * One holding's projected annual dividend income. `annualPerShare` is the
  * forward estimate in the asset's **dividend** `currency` (the standard "assume
  * it continues" proxy) and `annualPerShareBasis` names which basis that estimate
