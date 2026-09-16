@@ -152,16 +152,20 @@ export function sharedTestServer(slot: SharedServerSlot, app: ListenableApp): ht
   // would read `null` off this server one line later — fail here, where the
   // reason is legible, rather than there.
   const address = server.address() as AddressInfo | string | null;
-  if (address === null || typeof address === 'string') {
+  // Stock Node ALSO binds a host-less `listen(0)` synchronously — on the IPv6
+  // wildcard `::`, which is exactly the #1998 squatting class. So a readable
+  // address is not proof the patch ran; the loopback ADDRESS is. Check both.
+  if (address === null || typeof address === 'string' || address.address !== '127.0.0.1') {
     // Best-effort unbind of a server we are about to throw away. Unreachable in
     // the suite: `installLoopbackOnlyListen()` proves the synchronous bind
     // primitive exists before any test module loads.
     server.close();
     throw new Error(
-      'sharedTestServer (#2020): app.listen(0) did not bind synchronously, so supertest cannot ' +
-        'read a port off this server. The loopback-only listen patch (#1998, installed by ' +
-        'setupHarnessReaper.ts) is what makes a host-less listen synchronous — is the shared ' +
-        'vitest setup file loaded?',
+      'sharedTestServer (#2020): app.listen(0) did not bind synchronously on 127.0.0.1 ' +
+        `(got ${address === null ? 'null' : typeof address === 'string' ? address : address.address}), ` +
+        'so supertest would either read no port or dial a wildcard bind an IDE can squat. The ' +
+        'loopback-only listen patch (#1998, installed by setupHarnessReaper.ts) is what makes a ' +
+        'host-less listen a synchronous loopback bind — is the shared vitest setup file loaded?',
     );
   }
   // A forgotten harness must never hold a vitest worker open; an in-flight
