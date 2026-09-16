@@ -9,6 +9,7 @@ import {
   createDriveConnectionResponseSchema,
   deleteVaultRequestSchema,
   deleteVaultResponseSchema,
+  driveConnectionDisconnectAcknowledgedRequestSchema,
   driveConnectionDisconnectQuerySchema,
   driveConnectionEmptyBodySchema,
   driveConnectionIdParamSchema,
@@ -58,6 +59,7 @@ import {
   type ParanoidMediaTransitionRequest,
   type CreateVaultRequest,
   type CreateDriveConnectionRequest,
+  type DriveConnectionDisconnectAcknowledgedRequest,
   type DriveConnectionDisconnectQuery,
   type DriveConnectionIdParam,
   type DeleteVaultRequest,
@@ -795,16 +797,36 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
     // same schema (instead of reading one field by hand) keeps route and
     // OpenAPI on one definition and refuses an unknown parameter.
     validateQuery(driveConnectionDisconnectQuerySchema),
-    validateBody(driveConnectionEmptyBodySchema),
+    // §15 (#1632): the acknowledgement is the loss-of-reach assertion, so THAT
+    // request carries the in-body step-up credential — the same
+    // `vaultStepUpCredentialSchema` vault deletion and both portfolio moves
+    // carry. The unacknowledged disconnect is the call that DISCOVERS the
+    // binding and keeps its bodyless contract, so no owner is asked for a
+    // password merely to be told a vault is bound. Choosing the schema from the
+    // already-parsed query keeps the refusal a plain schema refusal (400
+    // VALIDATION_ERROR, exactly like `DELETE /vaults/:id` without `stepUp`)
+    // instead of a second hand-rolled check.
+    (req, res, next) => {
+      const { acknowledgeBound } = req.valid?.query as DriveConnectionDisconnectQuery;
+      validateBody(
+        acknowledgeBound === 'true'
+          ? driveConnectionDisconnectAcknowledgedRequestSchema
+          : driveConnectionEmptyBodySchema,
+      )(req, res, next);
+    },
     async (req, res) => {
       const { acknowledgeBound } = req.valid?.query as DriveConnectionDisconnectQuery;
       const { connectionId } = req.valid?.params as DriveConnectionIdParam;
-      const result = await ctx.driveConnections.delete(
-        req.authUser!.id,
+      const acknowledged = acknowledgeBound === 'true';
+      const result = await ctx.driveConnections.delete({
+        userId: req.authUser!.id,
         connectionId,
-        acknowledgeBound === 'true',
-        req.ip,
-      );
+        acknowledgeBound: acknowledged,
+        ip: req.ip,
+        stepUp: acknowledged
+          ? (req.valid?.body as DriveConnectionDisconnectAcknowledgedRequest).stepUp
+          : undefined,
+      });
       switch (result.status) {
         case 'ok':
           res.status(204).end();

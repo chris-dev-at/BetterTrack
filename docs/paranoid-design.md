@@ -922,13 +922,28 @@ recoveryCode? }`, at least one required via schema `.refine`
   default-closed via the method-aware allowlist (`bearerAuth.ts`), with the
   #1326 acceptance battery (wrong-credential = nothing purged,
   INSUFFICIENT_SCOPE naming the scope, unknown-future-route canary) inherited
-  as this arc's tests.
+  as this arc's tests. **One deliberate exception, STRICTER not looser:** the
+  Drive disconnect has no bearer path at all. `/drive-connections` is classified
+  session-only (`DRIVE_CONNECTIONS_SESSION_ONLY_ROUTES`) and its router refuses
+  any API key outright with `API_KEY_FORBIDDEN` (403), because a Drive identity
+  is paired with a browser-memory Google capability that a bearer caller could
+  never hold (§8). The parity rule exists so a bearer path cannot be the weaker
+  way in; closing it entirely satisfies that rule rather than bending it. If
+  this surface is ever opened to bearers, it inherits the §15 credential
+  unchanged — the gate lives in the service, not in the session check.
 
-**Shipped today: three of the five.** Move-in, move-out
-(`portfolioVaultTransitionService`) and vault deletion (`vaultService`) verify
-the in-body credential. **Drive disconnect-with-loss takes only the
-`acknowledgeBound` query flag and no step-up** (`vaultRoutes`, the
-`drive-connections` DELETE handler) — tracked as **#1632**. The §17 commit is
+**Shipped today: four of the five.** Move-in, move-out
+(`portfolioVaultTransitionService`), vault deletion (`vaultService`) and the
+Drive disconnect-with-loss acknowledgment (`driveConnectionService`, closed by
+**#1632**) all verify the in-body credential through the one verifier in
+`paranoidDiscardReauth`, each on its own throttle namespace. On the disconnect
+the gate sits on precisely the branch that loses something: the
+`acknowledgeBound` form, which is the only way past the `DRIVE_CONNECTION_BOUND`
+refusal. The unacknowledged disconnect is what DISCOVERS the binding and stays
+bodyless — an owner is never asked for a password merely to be told that a vault
+is bound — and `DRIVE_CONNECTION_LAST_MEDIUM` is still decided BEFORE the
+credential is read, so a Drive-only vault is refused without spending a throttle
+budget or burning a one-use recovery code. The §17 commit is
 not a gap: the wipe has **no HTTP route at all** (§17), so there is no request
 for a credential to ride in; it is owner-run from a shell behind the recorded
 backup attestation.

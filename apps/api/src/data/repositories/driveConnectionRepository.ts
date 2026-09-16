@@ -4,7 +4,19 @@ import type { CreateDriveConnectionRequest, DriveConnection } from '@bettertrack
 
 import type { Database } from '../db';
 import { driverError } from '../driverError';
-import { driveConnections, vaults } from '../schema';
+import { driveConnections, users, vaults } from '../schema';
+
+/**
+ * The account columns the §15 step-up is verified against, read under the same
+ * `FOR UPDATE` the detach commits beneath. Structurally identical to the vault
+ * delete gate's locked auth (`VaultDeleteLockedAuth`) — the verifier is shared.
+ */
+export interface DriveConnectionDisconnectLockedAuth {
+  passwordHash: string;
+  twoFactorSecret: string | null;
+  twoFactorEnabled: boolean;
+  twoFactorEmailEnabled: boolean;
+}
 
 export interface DetachedVault {
   id: string;
@@ -37,12 +49,20 @@ export interface DriveConnectionRepository {
     verifiedAt: Date,
   ): Promise<DriveConnectionUpsert>;
   touch(userId: string, connectionId: string, verifiedAt: Date): Promise<DriveConnection | null>;
-  delete(
-    userId: string,
-    connectionId: string,
-    acknowledgeBound: boolean,
-    now: Date,
-  ): Promise<DriveConnectionDeleteResult>;
+  delete(input: {
+    userId: string;
+    connectionId: string;
+    acknowledgeBound: boolean;
+    now: Date;
+    /**
+     * §15 gate, invoked ONLY on the branch that actually loses a copy — a
+     * bound, acknowledged, replicated disconnect. `not_found`, `last_medium`
+     * and the unacknowledged `bound` refusal all return before it is reached,
+     * so a doomed request never spends a throttle budget or burns a one-use
+     * recovery code. Throwing from it rolls the whole transaction back.
+     */
+    verifyStepUp: (auth: DriveConnectionDisconnectLockedAuth, tx: Database) => Promise<void>;
+  }): Promise<DriveConnectionDeleteResult>;
 }
 
 function dto(row: typeof driveConnections.$inferSelect): DriveConnection {
@@ -127,10 +147,31 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
       return row ? dto(row) : null;
     },
 
-    async delete(userId, connectionId, acknowledgeBound, now) {
+    async delete({ userId, connectionId, acknowledgeBound, now, verifyStepUp }) {
       try {
         return await db.transaction(async (rawTx) => {
           const tx = rawTx as unknown as Database;
+          // The account row is the FIRST lock in every transaction that can gate
+          // a destructive vault write (`vaultRepository.delete`, both portfolio
+          // transitions). Taking it here too — before the registry row and the
+          // bound vaults, and whether or not this particular disconnect turns
+          // out to need a credential — keeps one global lock order
+          // account -> connection -> vault, so a concurrent vault delete cannot
+          // deadlock against a disconnect. Acquiring the lock is not the same as
+          // READING the credential: that still happens only on the losing branch
+          // below.
+          const [owner] = await tx
+            .select({
+              passwordHash: users.passwordHash,
+              twoFactorSecret: users.twoFactorSecret,
+              twoFactorEnabled: users.twoFactorEnabled,
+              twoFactorEmailEnabled: users.twoFactorEmailEnabled,
+            })
+            .from(users)
+            .where(eq(users.id, userId))
+            .for('update');
+          if (!owner) return { status: 'not_found' as const };
+
           const [connection] = await tx
             .select({ id: driveConnections.id })
             .from(driveConnections)
@@ -190,6 +231,23 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
               vaults: bound.map(({ id, name }) => ({ id, name })),
             };
           }
+
+          // §15 gate. The acknowledgement IS the loss-of-reach assertion, and it
+          // is the only way past the refusal above, so every request that can
+          // still drop a copy has it set. The credential is verified HERE —
+          // against the account row locked at the top of this transaction, and
+          // inside the transaction that detaches — so there is no check-then-act
+          // window in which the password or the second factor could change
+          // between the proof and the write.
+          //
+          // The condition is the acknowledgement itself, not `bound.length`, so
+          // it is exactly the condition under which the route's contract demands
+          // the credential: no request shape can carry a step-up that is
+          // accepted but never verified. A plain disconnect (`acknowledgeBound`
+          // absent) that reaches this line has nothing bound to it, loses
+          // nothing, and stays ungated — §15 names the acknowledgment, not the
+          // disconnect.
+          if (acknowledgeBound) await verifyStepUp(owner, tx);
 
           // Explicit loss-of-reach acknowledgement is meaningful only for a
           // replicated vault: keep its verified server copy active, detach Drive
