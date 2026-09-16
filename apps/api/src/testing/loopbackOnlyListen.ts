@@ -159,6 +159,10 @@ function planLoopbackListen(args: readonly unknown[]): LoopbackListenPlan | null
   for (const key of Object.keys(options)) {
     if (!REWRITABLE_OPTION_KEYS.has(key)) return null;
   }
+  // An options object without `port` (e.g. `{ backlog }` alone) is an error in
+  // stock Node (ERR_INVALID_ARG_VALUE); leave it to Node instead of silently
+  // binding port 0 (#2019 review).
+  if (!('port' in options)) return null;
   const port = options.port;
   if (port !== undefined && port !== null && !isNumericPort(port)) return null;
   const trailing = args.slice(1);
