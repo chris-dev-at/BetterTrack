@@ -134,6 +134,56 @@ describe('MirrorchainPanel — member actions', () => {
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
   });
 
+  /**
+   * #1612 — the sheet is where an owner discovers an invite a manager sent. The
+   * server ships `pendingInvites` ONLY to a caller holding the §5 invite
+   * capability, so the section's presence IS the permission; the component
+   * renders whatever arrives and gates nothing itself.
+   */
+  test('lists the chain’s pending invites with a cancel control and flags a dead sender', async () => {
+    vi.mocked(getMirrorMembers).mockResolvedValue({
+      chainId: '00000000-0000-4000-8000-000000000020',
+      name: 'Household',
+      status: 'active',
+      role: 'owner',
+      memberCap: 16,
+      members: [
+        {
+          userId: '00000000-0000-4000-8000-000000000021',
+          username: 'owner',
+          profileIcon: null,
+          role: 'owner',
+          joinedAt: '2026-07-30T00:00:00.000Z',
+          isSelf: true,
+          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+        },
+      ],
+      pendingInvites: [
+        {
+          id: '00000000-0000-4000-8000-000000000031',
+          toUsername: 'carol',
+          toProfileIcon: null,
+          fromUsername: 'bob',
+          inviterStillAuthorized: false,
+          createdAt: '2026-08-01T00:00:00.000Z',
+        },
+      ],
+    });
+    vi.mocked(getMirrorActivity).mockResolvedValue({ entries: [], nextCursor: null });
+
+    wrap(<MemberSheet chainId="00000000-0000-4000-8000-000000000020" onClose={() => {}} />);
+
+    const list = await screen.findByRole('list', { name: 'Pending invites' });
+    expect(within(list).getByText('carol')).toBeInTheDocument();
+    expect(within(list).getByText(/Invited by bob/)).toBeInTheDocument();
+    expect(
+      within(list).getByText(/The sender can no longer invite — this invite will be refused\./),
+    ).toBeInTheDocument();
+    expect(within(list).getByRole('button', { name: 'Cancel invite' })).toBeInTheDocument();
+    // No raw interpolation tokens escape into the rendered copy.
+    expect(list).not.toHaveTextContent('{{inviter}}');
+  });
+
   test('interpolates the target username in the confirmation title and body', async () => {
     vi.mocked(getMirrorMembers).mockResolvedValue({
       chainId: '00000000-0000-4000-8000-000000000020',
@@ -161,6 +211,7 @@ describe('MirrorchainPanel — member actions', () => {
           sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
         },
       ],
+      pendingInvites: [],
     });
     vi.mocked(getMirrorActivity).mockResolvedValue({ entries: [], nextCursor: null });
     const user = userEvent.setup();

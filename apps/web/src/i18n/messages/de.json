@@ -3756,6 +3756,14 @@
       "you": "du",
       "joined": "Beigetreten {{date}}"
     },
+    "pendingInvites": {
+      "title": "Offene Einladungen",
+      "body": "Alle, die zu diesem Gruppenportfolio eingeladen wurden und noch nicht geantwortet haben. Wer Verwaltungsrechte hat, kann jede davon zurückziehen — egal, wer sie gesendet hat.",
+      "sentBy": "Eingeladen von {{inviter}} · {{date}}",
+      "sentOn": "Eingeladen am {{date}}",
+      "senderNoLongerAuthorized": "Der Absender darf nicht mehr einladen — diese Einladung wird abgelehnt. Zieh sie zurück und sende eine neue.",
+      "revokeError": "Die Einladung konnte nicht zurückgezogen werden. Bitte versuche es erneut."
+    },
     "confirm": {
       "leave": {
         "title": "Dieses Gruppenportfolio verlassen?",
@@ -3794,6 +3802,7 @@
       "loadError": "Die Aktivitätsliste konnte nicht geladen werden. Bitte versuche es erneut."
     },
     "membersListAria": "Mitglieder",
+    "pendingInvitesListAria": "Offene Einladungen",
     "activityListAria": "Aktivität",
     "inviteListAria": "Freunde, die du einladen kannst",
     "invites": {

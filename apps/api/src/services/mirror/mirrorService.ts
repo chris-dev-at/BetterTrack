@@ -34,6 +34,7 @@ import {
   type MirrorActivityEntry,
   type MirrorActivityResponse,
   type MirrorAttribution,
+  type MirrorChainPendingInvite,
   type MirrorChainSummary,
   type MirrorInvite,
   type MirrorInviteListResponse,
@@ -1626,11 +1627,21 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
    * Ledger DTO overlay for one copy (M5, design §3/§10/§11). Returns per-kind
    * maps keyed by the copy-local row id, so ledger read paths (transactions /
    * dividends / cash movements / cash sources) can attach `mirror` cheaply by
-   * localId lookup. Non-synced portfolios short-circuit to empty maps —
-   * enrichment then no-ops and the DTOs stay byte-identical to today (design
-   * §1). `stripAttribution` (design §10): a non-member viewer of a shared/public
-   * copy sees every actor replaced with the generic "group member" chip — a
-   * member exposes their own book, never their co-members' identities.
+   * localId lookup. Portfolios that never belonged to a chain short-circuit to
+   * empty maps — enrichment then no-ops and the DTOs stay byte-identical to
+   * today (design §1).
+   *
+   * A FORK (severed membership, design §6) is NOT short-circuited (#1612): its
+   * `mirror_rows` survived, and §6's "What stays" binds that "added by alice"
+   * still renders in its history. It reads FROZEN, though — the stored
+   * attribution only, with no live profile icon and no chain op version, since
+   * §6 severs every live chain read along with the member list and the oplog.
+   *
+   * `stripAttribution` (design §10) is the ORTHOGONAL rule and applies to
+   * VIEWERS, not to copies: a non-member viewer of a shared/public copy sees
+   * every actor replaced with the generic "group member" chip — a member
+   * exposes their own book, never their co-members' identities. The holder of a
+   * copy, fork included, is never that third-party viewer.
    *
    * NOTE: no wire path exposes chain-copy ledger rows to non-members today —
    * `getSharedPortfolio` in the social service only ships holdings/history/
@@ -1653,11 +1664,19 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       cashMovements: new Map<string, MirrorRowInfo>(),
       cashSources: new Map<string, MirrorRowInfo>(),
     };
-    // Only synced copies have mirror-linked rows — skip the query for the
-    // steady-state non-chain portfolio (the vast majority).
-    const membership = await repo.findActiveMembershipByPortfolio(portfolioId);
+    // Only chain copies have mirror-linked rows — skip the query for the
+    // steady-state non-chain portfolio (the vast majority). A FORK counts: its
+    // membership is a tombstone, but `mirror_rows` survived the severance
+    // (§1 "Rows survive forks"; §6 "What stays … so 'added by alice' still
+    // renders in the fork's history"). Reading only ACTIVE memberships here is
+    // what used to blank every attribution chip the moment a member was kicked.
+    const membership = await repo.findMembershipByPortfolio(portfolioId);
     if (!membership) return result;
-    const rows = await repo.listMirrorRowInfoForPortfolio(portfolioId);
+    // A fork reads FROZEN: the attribution its own rows carry, never the live
+    // profile icon or the chain's still-advancing op version, both of which §6
+    // severs along with the member list and oplog access.
+    const frozen = membership.status !== 'active';
+    const rows = await repo.listMirrorRowInfoForPortfolio(portfolioId, { frozen });
     for (const row of rows) {
       const addedBy: MirrorAttribution = opts?.stripAttribution
         ? strippedMirrorAttribution
@@ -1862,6 +1881,54 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       direction,
       createdAt: row.createdAt.toISOString(),
     };
+  }
+
+  /**
+   * The chain's still-open invites for the member sheet (#1612, design §4
+   * "revocable by owner/managers" + §11 "that sheet is the entire management
+   * surface").
+   *
+   * The gap this closes: revocation was already open to any owner/manager for
+   * ANY pending invite on their chain, but the only listing was viewer-scoped
+   * (`from_user = me OR to_user = me`), so an owner could revoke an invite they
+   * did not send only if they could somehow guess its id. A severed inviter's
+   * invite therefore sat open until the invitee answered it or the 30-day
+   * horizon swept it.
+   *
+   * Authority: the list is EMPTY for a plain member. Read and revoke are the
+   * same §5 `invite` capability, so a caller never sees an invite they could
+   * not act on. `isAvailable` mirrors the roster's paranoid-principal filter —
+   * an invitee under quarantine drops out of the list entirely, and a
+   * quarantined inviter renders nameless rather than leaking a live read.
+   */
+  async function chainPendingInvites(
+    chainId: string,
+    callerRole: MirrorMemberRole,
+    activeMembers: MirrorChainMemberRow[],
+    isAvailable: (userId: string) => boolean,
+  ): Promise<MirrorChainPendingInvite[]> {
+    if (!roleCan(callerRole, 'invite')) return [];
+    const rows = await repo.listPendingInvitesForChainDetailed(chainId);
+    return rows
+      .filter((row) => !inviteExpired(row) && isAvailable(row.toUser))
+      .map((row) => {
+        const inviter = row.fromUser
+          ? (activeMembers.find((member) => member.userId === row.fromUser) ?? null)
+          : null;
+        const inviterVisible = row.fromUser !== null && isAvailable(row.fromUser);
+        return {
+          id: row.id,
+          toUsername: row.toUsername,
+          toProfileIcon: row.toProfileIcon,
+          fromUsername: inviterVisible ? row.fromUsername : null,
+          // The §5 predicate the accept path now re-checks at redemption — an
+          // invite whose issuer has been kicked or demoted is already dead, and
+          // the sheet says so instead of making the owner discover it by having
+          // a stranger walk through the door.
+          inviterStillAuthorized: inviter !== null && roleCan(inviter.role, 'invite'),
+          createdAt: row.createdAt.toISOString(),
+        };
+      });
   }
 
   /** Build + emit one mirror.* notification — fire-and-forget (design §11). */
@@ -2832,18 +2899,31 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         const requiredUserIds = [
           ...new Set([userId, ownerId].filter((id): id is string => id !== null)),
         ];
+        // The sheet also renders the chain's open invites for an invite-capable
+        // caller (#1612), so every invitee is an OPTIONAL principal: their name
+        // and icon must not move under a paranoid transition mid-read, and a
+        // quarantined invitee is handed back as unavailable and filtered.
+        const invitePrincipals = roleCan(caller.role, 'invite')
+          ? await repo.listPendingInvitePrincipalsForChain(chainId)
+          : [];
         return {
           requiredUserIds,
           optionalUserIds: [
             ...new Set(
-              principals
-                .map((principal) => principal.userId)
-                .filter((id): id is string => id !== null && !requiredUserIds.includes(id)),
+              [
+                ...principals.map((principal) => principal.userId),
+                ...invitePrincipals.flatMap((invite) => [invite.fromUser, invite.toUser]),
+              ].filter((id): id is string => id !== null && !requiredUserIds.includes(id)),
             ),
           ],
-          version: JSON.stringify(
-            principals.map(({ id, userId: principalUserId, role }) => [id, principalUserId, role]),
-          ),
+          version: JSON.stringify({
+            members: principals.map(({ id, userId: principalUserId, role }) => [
+              id,
+              principalUserId,
+              role,
+            ]),
+            invites: invitePrincipals.map(({ id, fromUser, toUser }) => [id, fromUser, toUser]),
+          }),
         };
       };
 
@@ -2879,6 +2959,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
                 allowedMemberIds.has(row.userId),
             )
             .map((row) => toMirrorMember(row, userId, chain.lastSeq)),
+          pendingInvites: await chainPendingInvites(
+            chainId,
+            caller.role,
+            activeMembers,
+            (id) => id === userId || id === ownerId || allowedMemberIds.has(id),
+          ),
         };
       });
     },
@@ -3143,6 +3229,30 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           if (existing?.portfolioId) {
             await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
             return { chainId: invite.chainId, portfolioId: existing.portfolioId };
+          }
+          // AUTHORITY re-checked at REDEMPTION (#1612, design §5). A pending
+          // invite is not a bearer token for the authority its issuer held when
+          // they sent it: the §5 matrix binds at the moment the membership row
+          // would be written, exactly as "Bob's kick after the revoke is refused
+          // at append by the role check" binds the sibling case. `members` is
+          // the chain's ACTIVE roster re-read under the chain lock by
+          // `withJoinPrincipalGuards`, so a kicked inviter has no row here and a
+          // demoted one no longer answers `roleCan(..., 'invite')`. Either way
+          // the invite is dead — retire it (freeing the pending-unique slot for
+          // a fresh, authorized send) rather than leaving a void row to sit out
+          // its 30-day horizon in the invitee's inbox.
+          const inviter = members.find((member) => member.userId === invite.fromUser);
+          if (!inviter || !roleCan(inviter.role, 'invite')) {
+            await repo.setInviteStatus(inviteId, 'revoked', new Date(now()));
+            // Same typed code every other §5 refusal uses; the message stays
+            // deliberately silent about WHICH way the inviter lost authority —
+            // the invitee is not a member and §10 gives her no sight of the
+            // chain's roles.
+            throw new ApiError(
+              403,
+              MIRROR_FORBIDDEN,
+              'This invite is no longer valid. Ask an owner or manager of the group portfolio for a new one.',
+            );
           }
           // Cap re-checked at accept under the same chain lock as insertion.
           if (members.length >= maxMembers) {

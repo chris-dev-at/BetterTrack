@@ -4218,7 +4218,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/mirrorchain/chains/{chainId}/members',
     tag: 'Mirrorchain',
-    summary: 'The member sheet: roster + roles + per-copy sync state.',
+    summary:
+      'The member sheet: roster + roles + per-copy sync state, plus (owner/manager only) every pending invite on the chain.',
     params: contracts.mirrorChainIdParamSchema,
     status: 200,
     response: R.MirrorMemberListResponse,
