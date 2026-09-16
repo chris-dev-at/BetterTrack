@@ -7,14 +7,22 @@ import type {
   UpdateAiSettingsRequest,
 } from '@bettertrack/contracts';
 
+import { ApiError } from '../../errors';
 import type { Logger } from '../../logger';
 import type { AiSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { auditFieldDiff } from '../audit/auditRedaction';
 import { userPrincipal } from '../featureFlags/featureFlagResolution';
 import type { FeatureFlagService } from '../featureFlags/featureFlagService';
+import { isOutboundPolicyRefusal, type OutboundUrlResolver } from '../security/outboundUrlGuard';
 import type { AiDailyCap } from './dailyCap';
-import { AiProviderError, AiUnavailableError } from './errors';
+import {
+  assertWritableLocalAiEndpoint,
+  providerErrorDetail,
+  redactEndpoint,
+  resolveLocalAiEndpoint,
+} from './endpointPolicy';
+import { AiEndpointNotLocalError, AiProviderError, AiUnavailableError } from './errors';
 import type { AiRegistry } from './registry';
 import type { AiCompletionRequest, AiCompletionResult } from './types';
 
@@ -40,17 +48,43 @@ export interface AiServiceDeps {
   featureFlags: Pick<FeatureFlagService, 'isEnabled'>;
   audit: AuditService;
   logger: Logger;
+  /**
+   * DNS resolver for the endpoint egress guard on the WRITE and PROBE paths
+   * (§13.5 V5-P12, #1656). Defaults to the system resolver; a test injects a
+   * stub so a rebinding hostname is deterministic and the suite stays offline.
+   */
+  resolver?: OutboundUrlResolver;
 }
 
 export interface AiService {
   /** User-facing: is AI available for this user + how much daily budget is left. */
   capability(userId: string): Promise<AiCapabilityResponse>;
   /**
+   * The availability half of {@link AiService.complete}, callable on its own.
+   *
+   * A feature that does substantive work before it generates must run THIS
+   * first, so an unconfigured install answers 503 `AI_UNAVAILABLE` rather than
+   * some statement about the caller's data it had to read to produce (#1656
+   * defect 5). Throws {@link AiUnavailableError}; costs no cap unit and makes no
+   * network call.
+   */
+  assertAvailable(userId: string): Promise<void>;
+  /**
    * The guarded completion path (consumed by 2/2): availability + feature-flag
    * check, cap enforcement, provider resolution + call. Throws the typed
    * `AiUnavailableError` / `AiCapExceededError` / `AiProviderError`.
    */
   complete(userId: string, request: AiCompletionRequest): Promise<AiCompletionResult>;
+  /**
+   * Hand back the cap unit a completed {@link AiService.complete} spent, when
+   * the caller finds its output unusable.
+   *
+   * ONE unit per consumed unit: `complete` already refunds every path on which
+   * it throws, so this is only ever correct after it RETURNED. Never throws —
+   * a cap backend that is down must not turn a feature-level refusal into a
+   * different error than the one the caller is about to raise.
+   */
+  refundCompletion(userId: string): Promise<void>;
   /** Admin: read the effective endpoint/model/cap (no secrets). */
   getSettings(): Promise<AiSettingsResponse>;
   /** Admin: set endpoint/model/cap (audit-logged; live on the next request). */
@@ -68,15 +102,6 @@ export interface AiService {
   testRequest(input: AiTestRequest): Promise<AiTestRequestResponse>;
 }
 
-/** Short, non-sensitive detail for a failed diagnostic (mirrors the health probe). */
-function errorDetail(err: unknown): string {
-  if (err instanceof Error) {
-    if (err.name === 'TimeoutError' || err.name === 'AbortError') return 'timeout';
-    return err.message || err.name || 'error';
-  }
-  return 'error';
-}
-
 /**
  * The three admin-settable AI fields, narrowed to the ones this request
  * addressed — so a save that only raises the daily cap records the cap, not the
@@ -87,7 +112,12 @@ function pickAiAudit(
   request: UpdateAiSettingsRequest,
 ): Record<string, unknown> {
   const picked: Record<string, unknown> = {};
-  if (request.endpoint !== undefined) picked.endpoint = settings.endpoint;
+  // `redactEndpoint`, not the raw value: `audit_log.meta` is durable for
+  // `BT_AUDIT_RETENTION_DAYS` (400 by default) and reaches backups and exports,
+  // so a credential smuggled in by a row written before the write path refused
+  // userinfo must not be the thing this records. The HOST is kept — "the local
+  // endpoint moved from A to B" is the fact the auditor needs (#1656 defect 2).
+  if (request.endpoint !== undefined) picked.endpoint = redactEndpoint(settings.endpoint);
   if (request.model !== undefined) picked.model = settings.model;
   if (request.dailyCap !== undefined) picked.dailyCap = settings.dailyCap;
   return picked;
@@ -95,6 +125,32 @@ function pickAiAudit(
 
 export function createAiService(deps: AiServiceDeps): AiService {
   const { appSettings, registry, cap, featureFlags, audit, logger } = deps;
+  const guardDeps = deps.resolver ? { resolver: deps.resolver } : {};
+
+  /**
+   * Run a daily-cap operation, mapping an infrastructure failure to the typed
+   * 503 (#1656 defect 5).
+   *
+   * The cap is a Redis counter, and `cap.consume` used to sit OUTSIDE the try —
+   * so an ioredis error escaped as a plain `Error` and the error handler turned
+   * it into a 500 INTERNAL, for a feature whose whole contract is that it goes
+   * quiet when it cannot run. Typed errors the cap itself raises
+   * (`AiCapExceededError` — any {@link ApiError}) are the answer, not the
+   * failure, and pass straight through.
+   *
+   * Fail-CLOSED: a cap backend that cannot be read cannot prove the caller has
+   * budget left, so nothing is generated. The alternative — generate anyway —
+   * is an unmetered AI endpoint for the length of a Redis outage.
+   */
+  async function throughCap<T>(op: () => Promise<T>, what: string): Promise<T> {
+    try {
+      return await op();
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      logger.warn({ err, op: what }, 'ai daily cap backend unavailable');
+      throw new AiUnavailableError('AI is temporarily unavailable.');
+    }
+  }
 
   /**
    * The `ai` feature flag (already in the registry as "AI insights & assistant").
@@ -113,7 +169,11 @@ export function createAiService(deps: AiServiceDeps): AiService {
 
   function serialize(settings: AiSettings): AiSettingsResponse {
     return {
-      endpoint: settings.endpoint,
+      // Never the raw stored string: a row written before the write path refused
+      // userinfo would otherwise hand `https://svc:s3cr3t@…` straight to the
+      // admin SPA in cleartext (#1656 defect 2). A row that is not a URL at all
+      // reads as unset rather than being echoed back unexamined.
+      endpoint: redactEndpoint(settings.endpoint),
       model: settings.model,
       dailyCap: settings.dailyCap,
       configured: settings.configured,
@@ -122,10 +182,23 @@ export function createAiService(deps: AiServiceDeps): AiService {
     };
   }
 
+  /**
+   * Deliberately its own settings read rather than a value threaded into
+   * {@link complete}: the two run at different moments (a feature calls this
+   * first, then does its work, then generates), and `complete` must re-check
+   * regardless because it is also called directly. The cost is one extra read of
+   * the small `app_settings` KV table on a path that then spends seconds in a
+   * local model.
+   */
+  async function assertAvailable(userId: string): Promise<void> {
+    const settings = await appSettings.getAiSettings();
+    if (!settings.configured || !(await featureEnabled(userId))) throw new AiUnavailableError();
+  }
+
   async function capability(userId: string): Promise<AiCapabilityResponse> {
     const settings = await appSettings.getAiSettings();
     const available = settings.configured && (await featureEnabled(userId));
-    const used = available ? await cap.usage(userId) : 0;
+    const used = available ? await throughCap(() => cap.usage(userId), 'usage') : 0;
     return {
       available,
       model: available ? settings.model : null,
@@ -146,17 +219,39 @@ export function createAiService(deps: AiServiceDeps): AiService {
 
     // Enforce the daily cap BEFORE spending a (slow, local) generation. A failed
     // provider call refunds the unit so a broken endpoint never burns quota.
-    await cap.consume(userId, settings.dailyCap);
+    await throughCap(() => cap.consume(userId, settings.dailyCap), 'consume');
     try {
       return await provider.complete(request);
     } catch (err) {
+      // The ONE refund site for a unit this call spent — see `AiDailyCap.refund`
+      // on why each consumed unit may have only one. Swallowed on purpose: a
+      // failed refund must not replace the provider error the caller needs.
       await cap.refund(userId).catch(() => undefined);
       // Already-typed unavailability propagates as-is; anything else is a
       // provider failure (timeout, non-2xx, bad payload) → typed 502.
       if (err instanceof AiUnavailableError) throw err;
-      logger.warn({ err }, 'ai completion failed');
+      // An endpoint the egress guard refuses is a CONFIGURATION state, not a
+      // provider fault: a row stored before #1656 (or a hostname that has since
+      // started resolving publicly) must take the feature quiet with the typed
+      // 503 the contract already defines, never a 502 that reads as "the local
+      // model is broken" and never an untyped 500. The admin sees the real
+      // reason on the settings page's probe.
+      if (isOutboundPolicyRefusal(err) || err instanceof AiEndpointNotLocalError) {
+        logger.warn(
+          { endpoint: redactEndpoint(settings.endpoint) },
+          'ai completion refused: endpoint is not on the internal network',
+        );
+        throw new AiUnavailableError();
+      }
+      logger.warn({ detail: providerErrorDetail(err) }, 'ai completion failed');
       throw new AiProviderError();
     }
+  }
+
+  async function refundCompletion(userId: string): Promise<void> {
+    await cap.refund(userId).catch((err: unknown) => {
+      logger.warn({ err }, 'ai cap refund failed');
+    });
   }
 
   async function getSettings(): Promise<AiSettingsResponse> {
@@ -167,6 +262,15 @@ export function createAiService(deps: AiServiceDeps): AiService {
     input: UpdateAiSettingsRequest,
     actor: AiServiceActor,
   ): Promise<AiSettingsResponse> {
+    // The egress guard BEFORE the write (#1656 defect 1): an endpoint outside
+    // the internal network is refused with the typed 400 and never reaches the
+    // store, so it can never be fetched, audited or rendered. The contracts
+    // schema has already settled scheme + credentials + syntax; what only the
+    // server can decide is where the host actually IS, which is why the address
+    // policy lives in the shared outbound guard and is applied here.
+    if (typeof input.endpoint === 'string') {
+      await assertWritableLocalAiEndpoint(input.endpoint, guardDeps);
+    }
     const previous = await appSettings.getAiSettings();
     const next = await appSettings.updateAiSettings(input, actor.id);
     // Endpoint/model/cap are non-secret, so recording them makes the change
@@ -194,6 +298,12 @@ export function createAiService(deps: AiServiceDeps): AiService {
     const settings = await appSettings.getAiSettings();
     const target = endpoint ?? settings.endpoint;
     if (!target) return { ok: false, models: [], error: 'no endpoint' };
+    // Vet BEFORE probing, and raise rather than fail soft (#1656 defect 1): a
+    // soft `{ ok: false, error }` for a refused target is still a scan result —
+    // it reports whether that address answered. The typed 400 reports only that
+    // the admin may not aim the probe there, which is the same answer for
+    // `169.254.169.254` as for a bridge-internal `redis:6379`.
+    await resolveLocalAiEndpoint(target, guardDeps);
     // The model is irrelevant to a list-models probe; pass the effective one (or
     // empty) so the adapter is well-formed. Only the given endpoint is reached.
     const provider = registry.resolveFor(target, settings.model ?? '');
@@ -208,6 +318,10 @@ export function createAiService(deps: AiServiceDeps): AiService {
     if (!endpoint)
       return { ok: false, model: null, reply: null, latencyMs: 0, error: 'no endpoint' };
     if (!model) return { ok: false, model: null, reply: null, latencyMs: 0, error: 'no model' };
+
+    // Same refusal as test-connection: a generation probe reaches further than a
+    // list-models probe, so it is vetted on the same terms before anything opens.
+    await resolveLocalAiEndpoint(endpoint, guardDeps);
 
     // Straight to the candidate provider — no cap consumption and no feature-flag
     // gate: this is the admin's way to verify a model (or trial an unsaved one)
@@ -225,16 +339,30 @@ export function createAiService(deps: AiServiceDeps): AiService {
         error: null,
       };
     } catch (err) {
-      logger.warn({ err, endpoint }, 'ai test request failed');
+      // Redacted endpoint + a closed-set detail, never the raw error: the
+      // message of a failed `fetch` can carry the request URL, credentials and
+      // all, and a `res.json()` SyntaxError carries a slice of the target's body
+      // (#1656 defects 2 + 3).
+      const detail = providerErrorDetail(err);
+      logger.warn({ detail, endpoint: redactEndpoint(endpoint) }, 'ai test request failed');
       return {
         ok: false,
         model,
         reply: null,
         latencyMs: Date.now() - startedAt,
-        error: errorDetail(err),
+        error: detail,
       };
     }
   }
 
-  return { capability, complete, getSettings, updateSettings, testConnection, testRequest };
+  return {
+    assertAvailable,
+    capability,
+    complete,
+    refundCompletion,
+    getSettings,
+    updateSettings,
+    testConnection,
+    testRequest,
+  };
 }

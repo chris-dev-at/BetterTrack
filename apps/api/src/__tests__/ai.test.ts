@@ -8,6 +8,8 @@ import {
   aiTestRequestResponseSchema,
 } from '@bettertrack/contracts';
 
+import * as schema from '../data/schema';
+import { AI_OLLAMA_ENDPOINT_KEY } from '../services/appSettings/appSettingsService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -16,9 +18,20 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * admin endpoint/model/cap settings, the auth boundaries, and that a switch takes
  * effect with no redeploy. No real Ollama runs — capability + settings never call
  * out, and test-connection targets a refused local port (fails soft).
+ *
+ * Every endpoint here is a LOOPBACK LITERAL (#1656). Two reasons, both load
+ * bearing: the egress guard short-circuits on a literal, so the suite needs no
+ * DNS and stays offline and deterministic; and loopback is the one local range
+ * that cannot collide with the deployment carve-out, which is DERIVED from the
+ * running machine's own private interfaces when the env var is unset — an
+ * RFC1918 endpoint here would pass on CI and fail on a laptop whose LAN happens
+ * to overlap it.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+/** Where a local Ollama actually lives, spelled so no resolver is involved. */
+const LOCAL_ENDPOINT = 'http://127.0.0.1:11434';
+const OTHER_LOCAL_ENDPOINT = 'http://127.0.0.1:11435';
 
 async function loginUser(app: Application, identifier: string, password: string) {
   const agent = request.agent(app);
@@ -60,7 +73,7 @@ describe('AI capability endpoint (regression: disabled unless configured)', () =
     beforeEach(async () => {
       harness = await createTestApp({
         env: {
-          BT_OLLAMA_ENDPOINT: 'http://ollama.test:11434',
+          BT_OLLAMA_ENDPOINT: LOCAL_ENDPOINT,
           BT_OLLAMA_MODEL: 'llama3.1:8b',
           BT_AI_DAILY_CAP: '9',
         },
@@ -110,11 +123,11 @@ describe('admin AI settings (§13.5 V5-P12)', () => {
     const patched = await adminAgent
       .patch('/api/v1/admin/ai/settings')
       .set(...XRW)
-      .send({ endpoint: 'http://ollama.local:11434', model: 'llama3.1:8b', dailyCap: 7 });
+      .send({ endpoint: OTHER_LOCAL_ENDPOINT, model: 'llama3.1:8b', dailyCap: 7 });
     expect(patched.status).toBe(200);
     const settings = aiSettingsResponseSchema.parse(patched.body);
     expect(settings).toMatchObject({
-      endpoint: 'http://ollama.local:11434',
+      endpoint: OTHER_LOCAL_ENDPOINT,
       model: 'llama3.1:8b',
       dailyCap: 7,
       configured: true,
@@ -138,6 +151,92 @@ describe('admin AI settings (§13.5 V5-P12)', () => {
       .set(...XRW)
       .send({ endpoint: 'not-a-url' });
     expect(res.status).toBe(400);
+  });
+
+  /**
+   * §16 2026-07-22 — "internal network only, never publicly exposed" — at the
+   * HTTP boundary (#1656 defect 1). The prompts this endpoint receives carry
+   * portfolio facts, so a public destination is an exfiltration channel that an
+   * admin could open with one PATCH and no redeploy.
+   */
+  it.each([
+    ['a public address', 'https://93.184.216.34:11434'],
+    ['the cloud-metadata address', 'http://169.254.169.254/'],
+    ['a non-http scheme', 'gopher://127.0.0.1:11434'],
+    ['embedded credentials', 'https://svc:s3cr3t@127.0.0.1:11434'],
+  ])('refuses to store %s with a 400, leaving the setting untouched', async (_label, endpoint) => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+
+    const res = await agent
+      .patch('/api/v1/admin/ai/settings')
+      .set(...XRW)
+      .send({ endpoint });
+    expect(res.status).toBe(400);
+
+    const settings = aiSettingsResponseSchema.parse(
+      (await agent.get('/api/v1/admin/ai/settings')).body,
+    );
+    expect(settings.endpoint).toBeNull();
+    expect(settings.configured).toBe(false);
+  });
+
+  it('still stores a genuine local endpoint (the refusals above are not a blanket 400)', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .patch('/api/v1/admin/ai/settings')
+      .set(...XRW)
+      .send({ endpoint: LOCAL_ENDPOINT });
+    expect(res.status).toBe(200);
+    expect(aiSettingsResponseSchema.parse(res.body).endpoint).toBe(LOCAL_ENDPOINT);
+  });
+
+  /**
+   * A row written before the validation above existed. It has to stay VISIBLE —
+   * an admin cannot fix what the page will not show — but the credential must
+   * not travel with it (#1656 defect 2).
+   */
+  it('strips credentials out of a pre-existing row on the admin read', async () => {
+    await harness.db
+      .insert(schema.appSettings)
+      .values({ key: AI_OLLAMA_ENDPOINT_KEY, value: 'http://svc:s3cr3t@127.0.0.1:11434' });
+
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent.get('/api/v1/admin/ai/settings');
+    expect(res.status).toBe(200);
+    const settings = aiSettingsResponseSchema.parse(res.body);
+    expect(settings.endpoint).toBe('http://127.0.0.1:11434/');
+    expect(JSON.stringify(res.body)).not.toContain('s3cr3t');
+    expect(JSON.stringify(res.body)).not.toContain('svc');
+  });
+
+  it('refuses to probe a target the guard rejects, and answers a refusal — not a scan result', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    for (const endpoint of ['http://169.254.169.254/', 'https://93.184.216.34:11434']) {
+      const res = await agent
+        .post('/api/v1/admin/ai/test-connection')
+        .set(...XRW)
+        .send({ endpoint });
+      expect(res.status).toBe(400);
+      // No `ok`, no `models`, no `error` string describing what that host did.
+      expect(res.body.ok).toBeUndefined();
+      expect(res.body.models).toBeUndefined();
+      expect(res.body.error.code).toBe('AI_ENDPOINT_NOT_LOCAL');
+    }
+  });
+
+  it('refuses a test-REQUEST against a rejected target the same way', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({ endpoint: 'http://169.254.169.254/', model: 'llama3.1:8b', prompt: 'ping' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('AI_ENDPOINT_NOT_LOCAL');
   });
 
   it('test-connection fails soft against an unreachable endpoint', async () => {
@@ -201,7 +300,7 @@ describe('admin AI test request (§13.5 V5-P12)', () => {
       .post('/api/v1/admin/ai/test-request')
       .set(...XRW)
       .send({
-        endpoint: 'http://ollama.test:11434',
+        endpoint: LOCAL_ENDPOINT,
         model: 'qwen2.5:14b',
         prompt: 'Reply with one word: ready',
       });
@@ -211,7 +310,7 @@ describe('admin AI test request (§13.5 V5-P12)', () => {
     expect(body.latencyMs).toBeGreaterThanOrEqual(0);
 
     // The candidate was reached (and only it) — nothing was saved.
-    expect(calls.map((c) => c.url)).toEqual(['http://ollama.test:11434/api/chat']);
+    expect(calls.map((c) => c.url)).toEqual([`${LOCAL_ENDPOINT}/api/chat`]);
     expect((calls[0]?.body as { model: string }).model).toBe('qwen2.5:14b');
     const settings = aiSettingsResponseSchema.parse(
       (await agent.get('/api/v1/admin/ai/settings')).body,

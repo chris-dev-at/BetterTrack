@@ -1,5 +1,13 @@
 import type { Logger } from '../../logger';
 import { retryOnce } from '../../providers/resilience';
+import type { OutboundUrlResolver } from '../security/outboundUrlGuard';
+import {
+  AiInvalidResponseError,
+  AiResponseStatusError,
+  providerErrorDetail,
+  redactEndpoint,
+  resolveLocalAiEndpoint,
+} from './endpointPolicy';
 import type {
   AiCallOptions,
   AiCompletionRequest,
@@ -14,6 +22,32 @@ import type {
  * and it only ever reaches the single admin-configured base URL — there is no
  * hardcoded or external host anywhere in this module (a test asserts it makes no
  * external calls).
+ *
+ * ## The endpoint is guarded on EVERY call, not once at construction (#1656)
+ *
+ * "Only ever reaches the configured endpoint" was true and insufficient: nothing
+ * constrained what the configured endpoint WAS. `assertSafeOutboundUrl` could
+ * not simply be dropped in — it demands https + a PUBLIC address, the exact
+ * inverse of a LAN Ollama — so the guard grew the local-only policy
+ * (`LOCAL_AI_ENDPOINT_URL_POLICY`) and this adapter applies it immediately
+ * before every single fetch, through `resolveLocalAiEndpoint`.
+ *
+ * Per-call, not per-construction, because a HOSTNAME's address is only knowable
+ * at resolution time: an endpoint that answered `10.0.0.5` when the admin saved
+ * it can answer a collector's public address on the next lookup, and a guard
+ * that ran once at save time would never see it. The cost is one resolver call
+ * per request (none at all for a literal address, which the guard short-circuits)
+ * against a completion that takes seconds on a local model.
+ *
+ * The residual, stated: the vetted address set is not pinned INTO the socket the
+ * way `createPinnedAgent` pins one for the webhook and OAuth-logo transports.
+ * Node's `fetch` exposes no lookup hook, and rewriting the request URL to the
+ * vetted literal is not an option — undici overwrites a caller-set `Host`
+ * header, which would silently break any endpoint served behind a
+ * name-based reverse proxy. What remains open is therefore a same-millisecond
+ * rebinding race between this module's resolution and undici's own, against an
+ * endpoint only an admin can set; everything a slower-changing record can do is
+ * closed. `redirect: 'error'` below closes the redirect pivot.
  *
  * Resilience follows `providers/resilience.ts`: a bounded per-call timeout
  * (aborting the socket) and retry-once on the cheap control calls
@@ -33,6 +67,12 @@ export interface CreateOllamaProviderDeps {
   model: string;
   /** Injectable fetch (tests + no-external-call enforcement). Defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * DNS resolver for the fetch-time egress guard. Defaults to the system
+   * resolver; a test injects a stub so a rebinding hostname is deterministic and
+   * the suite stays offline.
+   */
+  resolver?: OutboundUrlResolver;
   logger?: Logger;
 }
 
@@ -46,15 +86,6 @@ interface OllamaChatResponse {
   message?: { role?: string; content?: string };
 }
 
-/** Short, non-sensitive detail for a failed probe (mirrors the monitoring probe). */
-function errorDetail(err: unknown): string {
-  if (err instanceof Error) {
-    if (err.name === 'TimeoutError' || err.name === 'AbortError') return 'timeout';
-    return err.message || err.name || 'error';
-  }
-  return 'error';
-}
-
 function stripTrailingSlash(url: string): string {
   return url.endsWith('/') ? url.slice(0, -1) : url;
 }
@@ -63,18 +94,33 @@ export function createOllamaProvider(deps: CreateOllamaProviderDeps): AiProvider
   const fetchImpl = deps.fetchImpl ?? fetch;
   const base = stripTrailingSlash(deps.endpoint);
   const { model } = deps;
+  /** The only spelling of the endpoint allowed to reach a log line (#1656). */
+  const loggableEndpoint = redactEndpoint(base);
 
   /** One JSON call to the LOCAL endpoint, aborted on timeout. Never a redirect off-host. */
   async function callJson<T>(path: string, init: RequestInit, timeoutMs: number): Promise<T> {
-    const res = await fetchImpl(`${base}${path}`, {
+    const url = `${base}${path}`;
+    // The egress guard, immediately before the socket. Refuses a public,
+    // metadata, or deployment-internal destination even when the STORED string
+    // looked private — the address behind a hostname is only knowable here.
+    await resolveLocalAiEndpoint(url, { resolver: deps.resolver });
+    const res = await fetchImpl(url, {
       ...init,
       // Never follow a redirect: a well-behaved local Ollama never issues one,
       // and refusing keeps every request pinned to the configured host.
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) throw new Error(`http ${res.status}`);
-    return (await res.json()) as T;
+    if (!res.ok) throw new AiResponseStatusError(res.status);
+    // A 2xx is not a promise of JSON. `res.json()` rejects with a `SyntaxError`
+    // whose message quotes the first ~30 characters of whatever the target sent,
+    // and that message used to travel verbatim into the admin UI — so the parse
+    // failure is converted to an error that carries nothing from the body.
+    try {
+      return (await res.json()) as T;
+    } catch {
+      throw new AiInvalidResponseError();
+    }
   }
 
   async function listModels(opts?: AiCallOptions): Promise<string[]> {
@@ -92,8 +138,15 @@ export function createOllamaProvider(deps: CreateOllamaProviderDeps): AiProvider
       const models = await listModels(opts);
       return { ok: true, models, error: null };
     } catch (err) {
-      deps.logger?.warn({ err, endpoint: base }, 'ollama health probe failed');
-      return { ok: false, models: [], error: errorDetail(err) };
+      // The DETAIL, not the error: a fetch failure's message can carry the
+      // request URL (credentials and all, for a row written before the write
+      // path refused them), and the endpoint is logged only in its redacted
+      // form. `detail` is a closed set, so this line cannot grow a leak.
+      deps.logger?.warn(
+        { detail: providerErrorDetail(err), endpoint: loggableEndpoint },
+        'ollama health probe failed',
+      );
+      return { ok: false, models: [], error: providerErrorDetail(err) };
     }
   }
 
@@ -124,9 +177,19 @@ export function createOllamaProvider(deps: CreateOllamaProviderDeps): AiProvider
     );
 
     const text = body.message?.content;
-    if (typeof text !== 'string') throw new Error('ollama returned no message content');
+    if (typeof text !== 'string') throw new AiInvalidResponseError();
     return { text: text.trim(), model, provider: 'ollama' };
   }
 
-  return { name: 'ollama', endpoint: base, model, complete, listModels, health };
+  // The exposed `endpoint` is the redacted spelling (the raw one stays closed
+  // over inside this factory): it is a descriptive field, and a descriptive
+  // field is exactly what ends up in a diagnostic someone pastes somewhere.
+  return {
+    name: 'ollama',
+    endpoint: loggableEndpoint ?? base,
+    model,
+    complete,
+    listModels,
+    health,
+  };
 }
