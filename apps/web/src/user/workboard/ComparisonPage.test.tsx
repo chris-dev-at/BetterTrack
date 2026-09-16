@@ -122,15 +122,18 @@ function buildResponse(
  * window (`BACKTEST_UNAVAILABLE`), carrying the structured `details` the client
  * localizes from — never the English prose in `message` (#1659 defect 2).
  */
-function windowMismatchError(reason: 'clipped' | 'starts-late' | 'ends-early' = 'starts-late') {
+function windowMismatchError(
+  reason: 'clipped' | 'starts-late' | 'ends-early' = 'starts-late',
+  offender: { conglomerateId: string; name: string } = { conglomerateId: 'c3', name: 'Gamma' },
+) {
   return new ApiError(
     422,
     'BACKTEST_UNAVAILABLE',
     'Conglomerate Gamma does not cover the comparison window — its data starts 2025-08-01, after 2021-01-04.',
     {
       kind: 'comparison-window-mismatch',
-      conglomerateId: 'c3',
-      name: 'Gamma',
+      conglomerateId: offender.conglomerateId,
+      name: offender.name,
       reason,
       windowStart: '2021-01-04',
       windowEnd: '2026-01-05',
@@ -431,6 +434,30 @@ describe('ComparisonPage', () => {
     const clipped = await screen.findByRole('alert');
     expect(clipped).toHaveTextContent('Gamma');
     expect(clipped).not.toHaveTextContent('2025');
+  });
+
+  test('never leaves the window alert without an action when the named pick is not selected', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
+    });
+    // A refusal naming a basket this page does not hold (a stale error, an id
+    // the picker never had). There is nothing to drop, so the alert must fall
+    // back to the retry — which CAN succeed here, the next request differing.
+    vi.mocked(compareConglomerates).mockRejectedValueOnce(
+      windowMismatchError('starts-late', { conglomerateId: 'c9', name: 'Ghost' }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Beta']);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Ghost');
+    expect(screen.queryByRole('button', { name: /Remove .* from the comparison/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
   test('keeps the generic window copy and its retry for a 422 that carries no structured cause', async () => {

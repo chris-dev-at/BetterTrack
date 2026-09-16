@@ -233,6 +233,14 @@ function WhatIfSandbox({
       // at a weight chosen against a basket that no longer held this row — if the
       // owner adds the id back later.
       if (sharedNow === undefined) continue;
+      // The owner landed ON the value the viewer had chosen. Keeping the entry
+      // would satisfy the letter of "the baseline moved" and contradict the page
+      // it sits on: every cell agrees, `isPristine` is true and Reset is
+      // DISABLED, yet the notice would tell the reader to press it — and, being
+      // carried forward by the filter below, would never clear. A converged row
+      // is the same "not an opinion" state `setTweak` drops, so drop it here too
+      // and there is nothing left to warn about.
+      if (tweak.weight === sharedNow) continue;
       if (sharedNow !== tweak.sharedAt) moved.push(id);
       rebased[id] = { weight: tweak.weight, sharedAt: sharedNow };
     }
@@ -366,10 +374,16 @@ function WhatIfSandbox({
           </div>
 
           {supersededLabels.length > 0 ? (
-            <p className="bt-gold-note" style={{ fontSize: 12 }}>
-              {t('social.shared.sandbox.sharedWeightsMoved', {
-                names: supersededLabels.join(', '),
-              })}
+            // `role="status"` because this appears in response to a background
+            // refetch, not to anything the reader just did: without it the only
+            // signal that the ground moved under an edit is a silent repaint.
+            <p className="bt-gold-note" role="status" style={{ fontSize: 12 }}>
+              {t(
+                supersededLabels.length === 1
+                  ? 'social.shared.sandbox.sharedWeightsMovedOne'
+                  : 'social.shared.sandbox.sharedWeightsMovedOther',
+                { count: supersededLabels.length, names: supersededLabels.join(', ') },
+              )}
             </p>
           ) : null}
 

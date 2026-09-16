@@ -112,6 +112,33 @@ const reweightedDetail: SharedConglomerateDetailResponse = {
   ],
 };
 
+/**
+ * The owner re-weighted AAA to exactly the 80 the viewer had already tweaked to
+ * (and BBB to the 20 that balances it). Every cell on the page now agrees.
+ */
+const convergedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[0]!, weightPct: 80 },
+    { ...detail.positions[1]!, weightPct: 20 },
+  ],
+};
+
+/** The same converged basket again, as a distinct payload (the owner edited the blurb). */
+const convergedAgainDetail: SharedConglomerateDetailResponse = {
+  ...convergedDetail,
+  description: 'Rebalanced.',
+};
+
+/** The owner moved BOTH weights while the viewer held a tweak on each. */
+const bothMovedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  positions: [
+    { ...detail.positions[0]!, weightPct: 55 },
+    { ...detail.positions[1]!, weightPct: 45 },
+  ],
+};
+
 /** The owner moved a constituent the viewer did NOT tweak (BBB 40 → 45). */
 const bbbMovedDetail: SharedConglomerateDetailResponse = {
   ...detail,
@@ -462,6 +489,78 @@ describe('SharedConglomeratePage — the sandbox resyncs to refetched shared wei
     await waitFor(() => expect(weightInput('AAA').value).toBe('90'));
     expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
     expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+  });
+
+  test('an owner who lands ON the viewer’s value leaves nothing to warn about', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValueOnce(convergedDetail)
+      .mockResolvedValue(convergedAgainDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    const inputA = weightInput('AAA');
+    await user.clear(inputA);
+    await user.type(inputA, '80');
+    await waitFor(() => expect(lastPreviewPositions()).toContainEqual({ id: A_ID, weight: 80 }));
+
+    // The owner re-weights AAA to the very 80 the viewer chose. The baseline
+    // moved, but the viewer's opinion and the shared basket now AGREE — every
+    // cell matches, `isPristine` is true and Reset is disabled, so a notice
+    // telling the reader to press Reset would contradict the page it sits on.
+    await refetchShared(queryClient);
+    await waitFor(() => expect(weightInput('BBB').value).toBe('20'));
+    expect(weightInput('AAA').value).toBe('80');
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+
+    // …and it stays clean: a converged row holds no opinion to re-flag later.
+    await refetchShared(queryClient);
+    expect(await screen.findByText('Rebalanced.')).toBeInTheDocument();
+    expect(screen.queryByText(MOVED_NOTICE)).toBeNull();
+    expect(screen.getByRole('button', { name: /Reset to shared/i })).toBeDisabled();
+  });
+
+  test('the notice counts the rows it names — singular for one, plural for two', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValue(bothMovedDetail);
+    const user = userEvent.setup();
+    const { queryClient } = renderPage();
+    await screen.findByText('Duo');
+    await openSandbox(user);
+
+    await user.clear(weightInput('AAA'));
+    await user.type(weightInput('AAA'), '70');
+    await user.clear(weightInput('BBB'));
+    await user.type(weightInput('BBB'), '30');
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toEqual([
+        { id: A_ID, weight: 70 },
+        { id: B_ID, weight: 30 },
+      ]),
+    );
+
+    await refetchShared(queryClient);
+
+    // Two rows moved: the plural sentence, naming both, and counted.
+    const notice = await screen.findByRole('status');
+    expect(notice).toHaveTextContent('AAA');
+    expect(notice).toHaveTextContent('BBB');
+    expect(notice).toHaveTextContent('2');
+    expect(notice.textContent).toMatch(/weights/);
+    expect(notice.textContent).not.toMatch(/\bweight\b/);
+
+    // Acknowledging one of them leaves the singular sentence for the other.
+    await user.clear(weightInput('AAA'));
+    await user.type(weightInput('AAA'), '65');
+    const single = await screen.findByRole('status');
+    expect(single).toHaveTextContent('BBB');
+    expect(single).not.toHaveTextContent('AAA');
+    expect(single.textContent).toMatch(/\bweight\b/);
+    expect(single.textContent).not.toMatch(/weights/);
   });
 
   test('a constituent that leaves stops contributing, a new one joins at its shared weight, and a returning id does not resurrect the old tweak', async () => {

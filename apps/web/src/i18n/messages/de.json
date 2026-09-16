@@ -3568,7 +3568,8 @@
         "weightsPositiveHint": "Gib jeder Position eine Gewichtung über 0, um eine Vorschau zu sehen.",
         "previewError": "Diese Was-wäre-wenn-Analyse konnte nicht ausgeführt werden. Probiere einen anderen Zeitraum oder andere Gewichtungen.",
         "empty": "Keine Daten für diesen Zeitraum.",
-        "sharedWeightsMoved": "Der geteilte Blueprint hat sich geändert, während du experimentiert hast: {{names}} startet jetzt mit neuen geteilten Gewichtungen. Deine Werte bleiben erhalten – „Auf geteilt zurücksetzen“ übernimmt die neuen."
+        "sharedWeightsMovedOne": "Die geteilte Gewichtung wurde geändert, während du experimentiert hast: {{names}}. Dein Wert bleibt erhalten – „Auf geteilt zurücksetzen“ übernimmt die neue.",
+        "sharedWeightsMovedOther": "{{count}} geteilte Gewichtungen wurden geändert, während du experimentiert hast: {{names}}. Deine Werte bleiben erhalten – „Auf geteilt zurücksetzen“ übernimmt die neuen."
       }
     },
     "sharedIdea": {

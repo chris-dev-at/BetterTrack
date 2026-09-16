@@ -426,14 +426,16 @@ export function ComparisonPage() {
                       ? t('workboard.comparison.windowError')
                       : t('workboard.comparison.error')}
                 </Alert>
-                {windowMismatch ? (
-                  selected.includes(windowMismatch.conglomerateId) ? (
-                    <Button onClick={() => toggle(windowMismatch.conglomerateId)}>
-                      {t('workboard.comparison.windowMismatch.drop', {
-                        name: windowMismatch.name,
-                      })}
-                    </Button>
-                  ) : null
+                {/*
+                  The drop affordance needs a pick to drop. When the named
+                  basket is no longer in the selection the refusal is stale — the
+                  next request is a DIFFERENT one, so a retry can genuinely
+                  succeed and the alert never ends without an action.
+                */}
+                {windowMismatch && selected.includes(windowMismatch.conglomerateId) ? (
+                  <Button onClick={() => toggle(windowMismatch.conglomerateId)}>
+                    {t('workboard.comparison.windowMismatch.drop', { name: windowMismatch.name })}
+                  </Button>
                 ) : (
                   <Button onClick={() => void compareQuery.refetch()}>{t('common.retry')}</Button>
                 )}

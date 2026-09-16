@@ -2,6 +2,7 @@ import {
   backtestComparisonResponseSchema,
   backtestResponseSchema,
   MAX_NESTING_DEPTH,
+  parseComparisonWindowMismatch,
   sharedSandboxAggregateResponseSchema,
   sharedSandboxPreviewRequestSchema,
   sharedSandboxPreviewResponseSchema,
@@ -936,6 +937,16 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
           seriesEnd: null,
         },
       });
+
+      // …and the payload the SERVER sends really is the one the CLIENT parses.
+      // Both sides' own tests use hand-built fixtures, so without this the
+      // schema is only ever checked against itself: an extra server field would
+      // fail `.strict()` and silently demote every window refusal in the SPA to
+      // the generic "one of the selected blueprints" branch, with its retry.
+      const refusal = await run(longId, gapId).catch((err: unknown) => err);
+      expect(
+        parseComparisonWindowMismatch((refusal as { details?: unknown }).details),
+      ).not.toBeNull();
     }
   });
 
