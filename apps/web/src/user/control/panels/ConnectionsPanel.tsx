@@ -363,22 +363,26 @@ export interface DriveVaultMoveResult {
 }
 
 /**
- * The refusals of the §15 step-up on the acknowledged disconnect (#1632): a
- * missing or malformed credential, a wrong one, and the per-account progressive
- * throttle. Keyed on the stable codes rather than bare status so an unrelated
- * failure is not relabelled as a failed confirmation. The server never says
- * WHICH factor was wrong, and neither does the message these map to.
+ * The §15 credential refusals on the acknowledged disconnect (#1632): a missing
+ * or malformed credential, and a wrong one. Keyed on the stable codes rather
+ * than bare status so an unrelated failure is not relabelled as a failed
+ * confirmation. The server never says WHICH factor was wrong, and neither does
+ * the message these map to.
+ *
+ * `RATE_LIMITED` is deliberately NOT in this set. Two different limiters emit it
+ * on this very call — the §15 per-account step-up throttle and the module's own
+ * route limiter — and the surface cannot tell them apart without disclosing
+ * which one fired, which would itself say whether the credential path was
+ * reached. Both mean the same thing to the owner, so it gets its own honest
+ * "wait and retry" message below instead of being reported as a rejected
+ * confirmation. It also cannot fall through to the app-wide 429 banner: the
+ * gated call sets `suppressAuthRedirect`, which skips the response policy.
  */
-const STEP_UP_REFUSAL_CODES = new Set([
+const STEP_UP_CREDENTIAL_REFUSAL_CODES = new Set([
   'VALIDATION_ERROR',
   'INVALID_CREDENTIALS',
   'TWO_FACTOR_INVALID_CODE',
-  'RATE_LIMITED',
 ]);
-
-function isStepUpRefusal(error: ApiError): boolean {
-  return STEP_UP_REFUSAL_CODES.has(error.code);
-}
 
 /** Compact N-account registry and per-vault binding projection (E5). */
 function DriveAccountsSection({
@@ -526,7 +530,11 @@ function DriveAccountsSection({
       if (error instanceof ApiError && error.code === 'DRIVE_CONNECTION_BOUND' && !confirmed) {
         setAcknowledge(connection);
         setStepUpValue('');
-      } else if (confirmed && error instanceof ApiError && isStepUpRefusal(error)) {
+      } else if (
+        confirmed &&
+        error instanceof ApiError &&
+        STEP_UP_CREDENTIAL_REFUSAL_CODES.has(error.code)
+      ) {
         // The server refuses generically and never says which factor was wrong;
         // the surface says no more than it does, and keeps the acknowledgement
         // open so the owner can correct the entry.
@@ -534,6 +542,12 @@ function DriveAccountsSection({
         setMessage({
           tone: 'error',
           text: t('settings.connections.driveAccounts.acknowledgeStepUpError'),
+        });
+      } else if (confirmed && error instanceof ApiError && error.code === 'RATE_LIMITED') {
+        setStepUpValue('');
+        setMessage({
+          tone: 'error',
+          text: t('settings.connections.driveAccounts.acknowledgeThrottled'),
         });
       } else {
         setMessage({

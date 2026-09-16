@@ -478,6 +478,30 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     ).toBeInTheDocument();
   });
 
+  test('tells a throttled acknowledgement apart from a rejected credential', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const disconnect = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, 'DRIVE_CONNECTION_BOUND', 'bound'))
+      .mockRejectedValueOnce(new ApiError(429, 'RATE_LIMITED', 'slow down'));
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: registry(disconnect) }, 'paranoid');
+
+    await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    await user.type(screen.getByLabelText('Account confirmation'), 'maybe-right');
+    await user.click(screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }));
+
+    // Both the §15 step-up throttle and the module's own route limiter answer
+    // 429 here, and the surface cannot tell them apart without disclosing which
+    // fired — so a 429 says "wait", never "that confirmation was rejected".
+    expect(await screen.findByText(/Too many attempts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/That confirmation was not accepted/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }),
+    ).toBeInTheDocument();
+  });
+
   test('offers the first connection with its own copy, not "another"', async () => {
     vi.mocked(listDriveConnections).mockResolvedValue([]);
     renderPanel('/settings/connections', { driveRegistry: registry() }, 'paranoid');

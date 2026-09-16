@@ -224,6 +224,7 @@ const componentSchemas = {
   DriveConnectionListResponse: contracts.driveConnectionListResponseSchema,
   DriveConnectionDisconnectAcknowledgedRequest:
     contracts.driveConnectionDisconnectAcknowledgedRequestSchema,
+  DriveConnectionDisconnectRequest: contracts.driveConnectionDisconnectRequestSchema,
   CreateDriveConnectionRequest: contracts.createDriveConnectionRequestSchema,
   CreateDriveConnectionResponse: contracts.createDriveConnectionResponseSchema,
 
@@ -820,6 +821,15 @@ interface EndpointDef {
   params?: z.AnyZodObject;
   query?: z.AnyZodObject;
   body?: z.ZodTypeAny;
+  /**
+   * Marks `body` as OPTIONAL rather than the default `required: true`. Exactly
+   * one operation needs it today: `DELETE /drive-connections/{connectionId}`,
+   * where the body is required only alongside `acknowledgeBound=true` (the §15
+   * gated form) and is REFUSED without it, so a generated client that always
+   * sends one would break the bodyless discovery call (#1632). Leave it unset
+   * everywhere else — a body a route genuinely requires must stay required.
+   */
+  bodyOptional?: boolean;
   /** Additional request headers derived into OpenAPI parameters. */
   requestHeaders?: z.AnyZodObject;
   /**
@@ -4935,8 +4945,29 @@ const endpoints: EndpointDef[] = [
       'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that hold a VERIFIED server copy: media must contain server AND mediaAttestedAt must be set, because a selected-but-never-attested server medium is a declaration, not a copy. Anything else — a Drive-only vault, or a server+drive vault whose full doc set has never attested — is refused as the last medium (PROJECTPLAN §16, 2026-08-21 and 2026-08-22). The acknowledgement is a gated operation (paranoid design §15, #1632): acknowledgeBound=true MUST carry the in-body step-up credential {stepUp:{password|code|recoveryCode}}, verified inside the same account lock as the detach and refused generically onto a per-account progressive throttle. Without acknowledgeBound the request takes no body at all and a non-empty body is refused, so no method of this module accepts a Google token; the last-medium refusal is still decided before any credential is read.',
     params: contracts.driveConnectionIdParamSchema,
     query: contracts.driveConnectionDisconnectQuerySchema,
-    body: R.DriveConnectionDisconnectAcknowledgedRequest,
+    // The body is required ONLY alongside acknowledgeBound=true and is refused
+    // without it, so it is documented as optional across the two forms and as
+    // the union of what each accepts. A generated client that always sent the
+    // gated body would break the bodyless discovery call (#1632).
+    body: R.DriveConnectionDisconnectRequest,
+    bodyOptional: true,
     status: 204,
+    errorResponses: {
+      400: 'The acknowledged form arrived without the §15 credential, the bodyless form carried a body, or an unknown query parameter was sent (VALIDATION_ERROR).',
+      401: 'The §15 step-up credential on the acknowledged form was wrong (INVALID_CREDENTIALS / TWO_FACTOR_INVALID_CODE). Generic by design: the factor is never named.',
+      403: 'Drive identities are cookie-session-only; a bearer credential is refused outright (API_KEY_FORBIDDEN).',
+      404: 'No such caller-owned Drive connection (DRIVE_CONNECTION_NOT_FOUND).',
+      409: 'A vault is still bound and loss of reach was not acknowledged (DRIVE_CONNECTION_BOUND), or a bound vault holds no VERIFIED server copy so this Drive is its last medium (DRIVE_CONNECTION_LAST_MEDIUM) — the latter is decided before any credential is read.',
+      429: 'Too many wrong §15 credentials on this account, or the module rate limit (RATE_LIMITED).',
+    },
+    errorCodes: [
+      'API_KEY_FORBIDDEN',
+      'DRIVE_CONNECTION_NOT_FOUND',
+      'DRIVE_CONNECTION_BOUND',
+      'DRIVE_CONNECTION_LAST_MEDIUM',
+      'INVALID_CREDENTIALS',
+      'TWO_FACTOR_INVALID_CODE',
+    ],
   },
 
   // Per-vault paranoid storage (E1 #1411) — config plus the BLIND per-doc store.
@@ -5550,7 +5581,7 @@ for (const ep of endpoints) {
       ...(ep.body
         ? {
             body: {
-              required: true,
+              required: !ep.bodyOptional,
               content: { [ep.bodyContentType ?? 'application/json']: { schema: ep.body } },
             },
           }

@@ -502,6 +502,7 @@
         "acknowledgeAction": "Disconnect and leave files in Drive",
         "acknowledgeStepUp": "Confirm it is you before this connection loses reach: this is one of the two copies of your vault.",
         "acknowledgeStepUpError": "That confirmation was not accepted. Check your password or code and try again.",
+        "acknowledgeThrottled": "Too many attempts. Wait a moment, then confirm again.",
         "lastMedium": "A vault using this connection has no verified server copy, so Drive holds its only copy. Choosing the server medium is not enough — that vault must finish a verified server copy, or move to another Drive account, before you disconnect.",
         "error": "The Drive connection could not be changed.",
         "bindings": "Vault Drive bindings",

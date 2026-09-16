@@ -453,7 +453,12 @@ export type DriveConnectionDisconnectQuery = z.infer<typeof driveConnectionDisco
  * accepts a Google token" holds on EVERY method of the module, not only on the
  * one that happens to take a body.
  */
-export const driveConnectionEmptyBodySchema = z.union([z.undefined(), z.object({}).strict()]);
+const driveConnectionNoBodyObjectSchema = z.object({}).strict();
+
+export const driveConnectionEmptyBodySchema = z.union([
+  z.undefined(),
+  driveConnectionNoBodyObjectSchema,
+]);
 export type DriveConnectionEmptyBody = z.infer<typeof driveConnectionEmptyBodySchema>;
 
 /**
@@ -477,6 +482,24 @@ export const driveConnectionDisconnectAcknowledgedRequestSchema = z
   .strict();
 export type DriveConnectionDisconnectAcknowledgedRequest = z.infer<
   typeof driveConnectionDisconnectAcknowledgedRequestSchema
+>;
+
+/**
+ * DOCUMENTATION ONLY — the two body shapes `DELETE /drive-connections/:id`
+ * accepts across its two forms, so `/docs` and a generated client describe both
+ * instead of claiming the gated one is always required.
+ *
+ * It is deliberately NOT what the route validates with. Which member applies is
+ * decided by `acknowledgeBound`, and the route parses with that member alone:
+ * validating against the union would let a bare `{}` through on the
+ * acknowledged form, which is exactly the §15 refusal that must hold.
+ */
+export const driveConnectionDisconnectRequestSchema = z.union([
+  driveConnectionNoBodyObjectSchema,
+  driveConnectionDisconnectAcknowledgedRequestSchema,
+]);
+export type DriveConnectionDisconnectRequest = z.infer<
+  typeof driveConnectionDisconnectRequestSchema
 >;
 
 // ── Envelope v2 header (§5) ──────────────────────────────────────────────────
