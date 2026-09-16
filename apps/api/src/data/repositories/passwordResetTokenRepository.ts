@@ -27,16 +27,43 @@ export function createPasswordResetTokenRepository(db: Database) {
      * no-account branch. The per-address advisory lock equalizes concurrent
      * probes; the stable user-row lock still coordinates a real issue with
      * account mutations when no prior token row exists.
+     *
+     * `onIssued` runs on THIS transaction's executor, after the insert and
+     * before commit, and exists for exactly one caller: the known branch's
+     * success audit (§16 2026-09-16). Its contract is deliberately narrow,
+     * because the callback runs while the transaction still holds the
+     * per-address advisory lock and its pooled connection:
+     *
+     * - BOUNDED work only — a single statement on the `executor` it is handed.
+     *   It must never reach back to the pool (`db.…`), never await a network
+     *   call and never take another lock. Anything unbounded in here is
+     *   unbounded *inside the lock*, which is the one thing this repository
+     *   exists to keep predictable.
+     * - A throwing callback rolls the token insert back with it. That is the
+     *   intended atomicity, not an accident: the audit log must not be able to
+     *   claim a reset link was issued when none was, nor miss one that was.
+     *
+     * Both halves are pinned by `passwordResetIssueSeam.test.ts`, and there is
+     * exactly one call site (`authService.requestPasswordReset`).
      */
     async issueOrEqualize(
       input: CreatePasswordResetTokenInput | null,
       serializationKey: string,
+      onIssued?: (executor: Database) => Promise<void>,
     ): Promise<PasswordResetTokenRow | null> {
       return db.transaction(async (tx) => {
         // Both known and unknown addresses take the same per-address lock, so a
         // burst of concurrent probes queues identically on both branches. The
         // known branch still inserts/audits/sends; its residual write cost stays
         // behind the service's response floor rather than this serialization.
+        //
+        // The known branch's extra in-lock cost is one INSERT (the token) plus
+        // `onIssued`'s one INSERT (the audit row). That difference is amplified
+        // by the lock queue, but the queue is bounded: a transaction waiting
+        // here holds its pooled connection, so no more than `max` waiters can
+        // ever exist. The wait for a connection the known branch would take
+        // AFTER commit has no such ceiling — it is bounded only by request
+        // concurrency, which the caller chooses. See §16 2026-09-16.
         await tx.execute(
           sql`select pg_advisory_xact_lock(${PASSWORD_RESET_ISSUE_LOCK_CLASS}, hashtext(${serializationKey}))`,
         );
@@ -63,6 +90,7 @@ export function createPasswordResetTokenRepository(db: Database) {
           })
           .returning();
         if (!row) throw new Error('Failed to insert password reset token');
+        await onIssued?.(tx);
         return row;
       });
     },
