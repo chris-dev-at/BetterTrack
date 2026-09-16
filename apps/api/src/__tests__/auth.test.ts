@@ -485,6 +485,10 @@ describe('self-service password-reset concurrency', () => {
     harness = await createTestApp({ env: SMTP_ENV, emailTransport: blockingTransport });
     const user = await harness.seedUser();
 
+    // Every top-level pooled entry point the repositories use today. The list is a
+    // hand enumeration: `db.query.*`, `db.with(...)`, `db.batch(...)` and `db.$client`
+    // would also acquire a connection without hitting a spy — none is used under
+    // apps/api/src as of 2026-09-16; add it here the day one is.
     const POOLED = ['select', 'insert', 'update', 'delete', 'execute', 'transaction'] as const;
     const spies = POOLED.map((method) => vi.spyOn(harness.db, method));
     const countPooledOps = async (email: string) => {
