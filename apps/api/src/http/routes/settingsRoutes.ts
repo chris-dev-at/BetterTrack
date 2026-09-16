@@ -80,18 +80,34 @@ export const requireCookieSessionOrTaxYearDocumentationBearer: RequestHandler = 
  * checks the exact route, scope, credential kind and first-party marker so a
  * policy-table reshuffle or direct router mount cannot expose grant management
  * to a third-party token or personal key.
+ *
+ * Its refusals are split the same way the global rail splits them: a trusted
+ * first-party token that merely lacks `account:security` gets the actionable
+ * INSUFFICIENT_SCOPE answer naming the scope, and only a third-party token or
+ * personal key is told the route is first-party-only. Unreachable while the
+ * global policy answers first — but this fallback exists precisely for the case
+ * where that table regresses, and in that case it must not misdescribe the
+ * cause (#1365).
  */
 export const requireCookieSessionOrFirstPartyOAuthGrant: RequestHandler = (req, _res, next) => {
-  const bearerAllowed =
-    req.apiKey?.kind === 'oauth' &&
-    req.apiKey.firstParty &&
-    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-    oauthGrantRouteAcceptsBearer(
-      req.method,
-      `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
-    );
-  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
+  const routeAccepted = oauthGrantRouteAcceptsBearer(
+    req.method,
+    `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
+  );
+  const trustedClient = req.apiKey?.kind === 'oauth' && req.apiKey.firstParty;
+  const scoped =
+    req.apiKey !== undefined && scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE);
+  if ((!req.apiKey && req.sessionId) || (trustedClient && scoped && routeAccepted)) {
     next();
+    return;
+  }
+  if (trustedClient && routeAccepted && !scoped) {
+    next(
+      forbidden(
+        `API key is missing the required scope "${ACCOUNT_SECURITY_SCOPE}".`,
+        'INSUFFICIENT_SCOPE',
+      ),
+    );
     return;
   }
   next(
