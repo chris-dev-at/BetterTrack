@@ -29,9 +29,13 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  *    refresh token;
  *  - the grant is retired on the spot with an `oauth.grant_revoked` audit row,
  *    so the next refresh answers the terminal `INVALID_GRANT` instead;
- *  - retiring it destroys no live capability: the access token issued before the
- *    narrowing already authorized nothing (403 on every scoped route) and is
- *    merely 401 afterwards;
+ *  - what the revoke actually costs: the access token issued before the
+ *    narrowing is already refused by every scope-gated route (403), but it is
+ *    NOT inert — `/auth/me` and `/auth/logout` admit any valid bearer with no
+ *    scope at all (`bearerAuth.ts`, `resolveAuthPolicy`), so it still answered
+ *    `/auth/me` with 200 and the user's identity. The revoke ends that too
+ *    (401). Pinned here as a 403/401 pair AND a 200/401 pair so the trade-off
+ *    is measured in the suite rather than asserted in prose;
  *  - revocation is idempotent — a second refusal adds no second audit row;
  *  - a ceiling narrowed to a NON-EMPTY subset is untouched: it still refreshes,
  *    with the subset, and the grant survives (`oauthScopeCeilingAtToken.test.ts`
@@ -252,11 +256,19 @@ describe('a refresh under an emptied ceiling mints nothing and retires the grant
     // The admin removes every scope from the app.
     await setCeiling(client.clientId, []);
 
-    // The live access token already authorizes nothing: 403, not 200.
+    // The live access token is already refused by every scope-gated route...
     const scoped = await request(harness.app)
       .get('/api/v1/portfolios')
       .set(...bearer(tok.access_token));
     expect(scoped.status).toBe(403);
+    // ...but it is NOT inert: the no-scope `allow` routes still admit it, and
+    // `/auth/me` echoes the user's identity back. This is the capability the
+    // revocation below genuinely destroys — measured, not assumed.
+    const meBefore = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set(...bearer(tok.access_token));
+    expect(meBefore.status).toBe(200);
+    expect(meBefore.body).toMatchObject({ id: user.id, email: user.email });
 
     const refused = await redeemRefresh(client.clientId, tok.refresh_token);
     emptyScopeRefusal(refused, 'refresh under an emptied ceiling');
@@ -276,11 +288,22 @@ describe('a refresh under an emptied ceiling mints nothing and retires the grant
     expect(audits).toHaveLength(1);
     expect(audits[0]!.meta).toMatchObject({ clientId: client.clientId });
 
-    // Nothing was destroyed that still worked: the token was already powerless.
+    // What the revoke cost: the scoped routes went 403 -> 401 (nothing lost,
+    // they refused it either way), and the identity echo went 200 -> 401 (a
+    // real capability, deliberately given up — re-consent restores it).
     const dead = await request(harness.app)
       .get('/api/v1/portfolios')
       .set(...bearer(tok.access_token));
     expect(dead.status).toBe(401);
+    const meAfter = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set(...bearer(tok.access_token));
+    expect(meAfter.status).toBe(401);
+    const logoutAfter = await request(harness.app)
+      .post('/api/v1/auth/logout')
+      .set(...XRW)
+      .set(...bearer(tok.access_token));
+    expect(logoutAfter.status).toBe(401);
   });
 
   it('the next refresh is terminal (INVALID_GRANT) and adds no second audit row', async () => {
@@ -327,6 +350,35 @@ describe('a refresh under an emptied ceiling mints nothing and retires the grant
  * C — a NON-EMPTY narrowing is untouched (no over-revoking).
  * ═══════════════════════════════════════════════════════════════════════════ */
 describe('a ceiling narrowed to a non-empty subset still refreshes', () => {
+  it('a RAW-disjoint ceiling that still SATISFIES the consent does not revoke', async () => {
+    // The revoke triggers on "the ceiling permits none of the consented
+    // scopes", where permits is `scopeSatisfies` — NOT on raw set disjointness.
+    // Consent {portfolio:read} against ceiling {portfolio:write} has an empty
+    // raw intersection, yet write⇒read keeps the read alive, so this grant must
+    // refresh normally. The boundary of the new revocation, pinned.
+    const ownerAgent = await freshUserAgent();
+    const client = await registerThirdPartyClient(ownerAgent, ['portfolio:read']);
+    const user = await freshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const tok = await consentAndToken(agent, client.clientId, 'portfolio:read');
+    const grant = await grantRow(user.id);
+
+    await setCeiling(client.clientId, ['portfolio:write']);
+
+    const next = await redeemRefresh(client.clientId, tok.refresh_token);
+    expect(next.status).toBe(200);
+    const issued = oauthTokenResponseSchema.parse(next.body);
+    expect(issued.scope).toBe('portfolio:read');
+    expect((await grantRow(user.id)).revokedAt).toBeNull();
+    expect(await revocationAudits(grant.id)).toHaveLength(0);
+
+    // And the fresh token really works on the scoped route.
+    const scoped = await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set(...bearer(issued.access_token));
+    expect(scoped.status).toBe(200);
+  });
+
   it('mints the subset and leaves the grant active', async () => {
     const adminAgent = await freshAdminAgent();
     const client = await registerFirstPartyClient(adminAgent, [

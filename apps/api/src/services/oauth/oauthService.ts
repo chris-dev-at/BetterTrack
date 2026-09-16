@@ -273,7 +273,10 @@ function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): Api
  *    remain immutable snapshots and gain the scope only after refresh.
  *  - Narrowing the app (admin removes a scope, or a redirect URI) applies
  *    IMMEDIATELY — the removed scope drops out of every existing token/grant the
- *    next time it is used, without re-issuing or revoking anything.
+ *    next time it is used, without re-issuing or revoking anything. The ONE
+ *    exception is a narrowing that leaves the effective set EMPTY: that grant is
+ *    retired on its next refresh rather than kept alive with no scopes at all
+ *    (#1985, §16 2026-09-16 — see `retireEmptyScopeGrant`).
  *
  * Enforced at the token/resource layer ({@link OAuthService.authenticateToken})
  * so it holds for every bearer request, not merely in the admin UI.
@@ -342,27 +345,43 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   }
 
   /**
-   * Retire a grant whose effective scope set has clamped to EMPTY (#1985).
+   * Retire a grant whose effective scope set has clamped to EMPTY (#1985) — the
+   * app was narrowed to nothing, or to a ceiling that permits NONE of this
+   * user's consented scopes. "Permits" is `scopeSatisfies`, not raw set
+   * membership: a `portfolio:write` ceiling still permits a consented
+   * `portfolio:read`, so that grant refreshes normally and never reaches here.
    *
-   * Revoking is sound BECAUSE the set is empty. {@link OAuthService.authenticateToken}
-   * clamps every access token minted under this grant against the same ceiling,
-   * so all of them already resolve to zero scopes and authorize nothing; the
-   * refresh token can only ever mint another of those. Retiring the row destroys
-   * no live capability — it stops the client re-running an exchange that can
-   * never succeed, and drops the dead grant out of the user's authorized-apps
-   * list instead of leaving it there looking live. The §16 2026-08-19 narrowing
-   * rule ("applies immediately … without re-issuing or revoking anything") is
-   * untouched for every NON-empty narrowing, which still merely drops the
-   * removed scopes from the next token.
+   * What the revoke costs, measured rather than assumed. Every access token
+   * under this grant clamps to the same empty set at
+   * {@link OAuthService.authenticateToken}, so every scope-gated route refuses
+   * it (403) and the refresh token can only ever mint another of those. It is
+   * NOT inert, though: `/auth/me` and `/auth/logout` resolve `{ kind: 'allow' }`
+   * for any valid bearer with no scope at all (`bearerAuth.ts`,
+   * `resolveAuthPolicy`). Before the revoke that token still answered `/auth/me`
+   * with 200 and the user's id, email, username and role; after it, 401. So the
+   * revoke does destroy one real capability: a scopeless identity echo.
+   *
+   * That is the deliberate choice, not an oversight. An identity echo on a grant
+   * that can do nothing else is not worth preserving, the client cannot refresh
+   * it into anything more, and re-consent restores it in full. Both the 403/401
+   * scoped pair and the 200/401 `/auth/me` pair are pinned in
+   * `oauthRefreshZeroScope.test.ts`.
+   *
+   * Only the EMPTY case is retired. A non-empty narrowing still merely drops the
+   * removed scopes from the next token, exactly as {@link clampToAllowed} says.
    *
    * Accepted trade-off: an admin who empties a ceiling and later restores it
-   * does not resurrect these grants — the affected users re-consent. That is the
-   * conservative direction, and the only one that keeps the refusal terminal.
+   * does not resurrect these grants — the affected users re-consent (§16
+   * 2026-09-16). That is the conservative direction, and the only one that keeps
+   * the refusal terminal.
    *
    * IDEMPOTENCY KEY: the grant id. `repo.revokeGrant` matches only a row whose
    * `revoked_at IS NULL`, so two concurrent refreshes of the same dead grant
-   * produce exactly one revocation — one audit row, one invalidation fan-out —
-   * while both still answer {@link emptyEffectiveScope}.
+   * produce exactly one revocation — one audit row, one invalidation fan-out.
+   * The two callers do NOT answer alike, and nothing here promises they will:
+   * the winner refuses with {@link emptyEffectiveScope}, while the loser re-reads
+   * the now-revoked grant and is refused `INVALID_GRANT` earlier in the exchange.
+   * Both are terminal refusals that mint no token.
    */
   async function retireEmptyScopeGrant(input: {
     grant: OAuthGrantRow;
@@ -377,14 +396,30 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       credentialId: input.grant.id,
       exceptCredentialId: null,
     });
-    await audit.record({
-      actorId: input.grant.userId,
-      action: AuditAction.OAuthGrantRevoked,
-      targetType: 'oauth_grant',
-      targetId: input.grant.id,
-      ip: input.ip,
-      meta: { clientId: input.client.clientId, reason: 'scope_ceiling_empty' },
-    });
+    try {
+      await audit.record({
+        actorId: input.grant.userId,
+        action: AuditAction.OAuthGrantRevoked,
+        targetType: 'oauth_grant',
+        targetId: input.grant.id,
+        ip: input.ip,
+        meta: { clientId: input.client.clientId, reason: 'scope_ceiling_empty' },
+      });
+    } catch (err) {
+      // Swallowed on purpose, mirroring `publishInvalidation` above. The
+      // revocation is ALREADY committed at this point, so the security action
+      // succeeded and only its record failed; letting the write escape would
+      // turn the shared 400 into a 500 and break the one property this change
+      // exists to establish — that both exchanges answer an empty effective set
+      // identically. Emitted at warn because this service's logger dep is
+      // deliberately `Pick<Logger, 'warn'>`; a lost revocation record is a real
+      // audit gap, so the message says so explicitly rather than relying on a
+      // level this service is not wired to emit.
+      logger?.warn(
+        { err, userId: input.grant.userId, grantId: input.grant.id },
+        'oauth zero-scope grant revocation AUDIT GAP: grant revoked but audit write failed',
+      );
+    }
   }
 
   /** Fan out a client cascade to the exact OAuth grants it removed. */
