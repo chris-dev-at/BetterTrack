@@ -602,6 +602,7 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
       mirrorId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       version: 42,
       addedBy: {
+        state: 'shown',
         userId: '00000000-0000-4000-8000-000000000001',
         username: 'alice',
         profileIcon: null,

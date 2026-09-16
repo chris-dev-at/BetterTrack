@@ -3695,7 +3695,8 @@
     },
     "attribution": {
       "by": "Hinzugefügt von {{username}}",
-      "groupMember": "Gruppenmitglied"
+      "groupMember": "Gruppenmitglied",
+      "accountDeleted": "{{username}} (Konto gelöscht)"
     },
     "role": {
       "owner": "Besitzer",
