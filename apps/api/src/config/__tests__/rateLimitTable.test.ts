@@ -214,6 +214,13 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     importCreatePerMinute: 2,
     /** One bulk kind sweep over a statement's undecided rows (one PATCH each). */
     importRowResolvePerMinute: 20,
+    /**
+     * One press of "apply my rules now" (#1954). A deliberate act right after
+     * writing a rule — the endpoint takes no body, is additive and idempotent,
+     * and a second press honestly reports 0 — so it is not a poll and not a
+     * slider.
+     */
+    cashRulesApplyPerMinute: 1,
   };
 
   it('pins every weight, so a future edit is visible in a diff', () => {
@@ -267,6 +274,13 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       // instrument, hash and duplicate verdict against the portfolio. At the
       // same floor as `socialGroups`.
       importRowResolve: 7,
+      // The cash-rule re-run (#1954): a keyset walk over the caller's noted
+      // movements in every portfolio they own, matched against every enabled
+      // rule. Priced like `analyticsSeries` — one account's worth of rows — for
+      // the NORMAL press; the press at the #1743 bounds is dearer than a CSV
+      // upload and does not fit the modelled minute, which `config/env.ts`
+      // states in full at the weight.
+      cashRulesApply: 10,
     });
   });
 
@@ -283,10 +297,11 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       COST_BAR.socialThreadPerMinute * requestCosts.socialThread +
       COST_BAR.socialAudienceSetPerMinute * requestCosts.socialAudienceSet +
       COST_BAR.importCreatePerMinute * requestCosts.importCreate +
-      COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
+      COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve +
+      COST_BAR.cashRulesApplyPerMinute * requestCosts.cashRulesApply;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(1318);
+    expect(worstMinute).toBe(1328);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
   });
@@ -305,6 +320,9 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     // …and #1877 for the Invest Calculator, the last V5-P6 read whose fan-out
     // follows the 250-asset flatten while `general` was its only guard.
     expect(requestCosts.conglomerateAllocate).toBeGreaterThan(0);
+    // …and #1954 for the cash-rule re-run, whose walk `general` could not
+    // describe and whose bearer callers `general` does not meter at all.
+    expect(requestCosts.cashRulesApply).toBeGreaterThan(0);
     // A preview of a full flatten is priced as the five drafts' worth of work it
     // is, so it can never cost less than the comparison of two baskets that
     // resolve to the same assets.

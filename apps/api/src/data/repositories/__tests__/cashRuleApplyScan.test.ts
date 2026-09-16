@@ -82,10 +82,22 @@ function executor(rows: ReturnType<typeof ledger>): {
       }
       if (text.includes('FROM "portfolio_cash_movements"')) {
         scans.push({ text, params });
+        // Positions from the END, never from the front: the note ceiling is a
+        // bound parameter of its own since #1954, so counting forwards would
+        // make this fake agree with a scan that had lost its clip.
         const limit = Number(params.at(-1));
-        const cursorId = text.includes('("executed_at", "id") <') ? String(params[2]) : null;
-        const start = cursorId === null ? 0 : rows.findIndex((row) => row.id === cursorId) + 1;
-        expect(start, 'cursor names a row that exists').toBeGreaterThanOrEqual(0);
+        const cursorId = text.includes('("executed_at", "id") <') ? String(params.at(-2)) : null;
+        let start = 0;
+        if (cursorId !== null) {
+          const at = rows.findIndex((row) => row.id === cursorId);
+          // `findIndex` is the assertion, not `at + 1`: a cursor naming a row
+          // that does not exist returns -1, and -1 + 1 = 0 silently restarts the
+          // walk at the first page — which is exactly the bug a paging test is
+          // here to catch. The old form asserted `start >= 0`, which no cursor
+          // could ever fail.
+          expect(at, 'cursor names a row that exists').toBeGreaterThanOrEqual(0);
+          start = at + 1;
+        }
         return { rows: rows.slice(start, start + limit) };
       }
       throw new Error(`unexpected statement: ${text}`);
@@ -111,9 +123,31 @@ it('walks a ledger larger than one page in keyset pages, and reports a complete 
   // The first page is unanchored; every later one carries the previous page's
   // last row as its cursor, on both halves of the tie-break.
   expect(scans[0]!.text).not.toContain('("executed_at", "id") <');
-  expect(scans[1]!.params[2]).toBe(rows[499]!.id);
-  expect(scans[1]!.params[1]).toBe(rows[499]!.cursorExecutedAt);
-  expect(scans[2]!.params[2]).toBe(rows[999]!.id);
+  expect(scans[1]!.params.at(-2)).toBe(rows[499]!.id);
+  expect(scans[1]!.params.at(-3)).toBe(rows[499]!.cursorExecutedAt);
+  expect(scans[2]!.params.at(-2)).toBe(rows[999]!.id);
+});
+
+it('asks Postgres for a CLIPPED note, so one page is bounded in bytes too', async () => {
+  // #1954. The page had a LIMIT but selected `"note"` whole, so a 500-row page
+  // materialized 500 unbounded notes — and `note` is a `text` column that no
+  // lane writing one is obliged to clip (a restored vault row carries whatever
+  // the document held). Clipping in JS afterwards bounds MATCHING, never the
+  // fetch. What is pinned here is therefore the statement, not the outcome:
+  // every scan asks for the ceiling by name.
+  const { executor: exec, scans } = executor(ledger(600));
+
+  await applyCashRulesForOwner(exec, USER);
+
+  expect(scans.length).toBeGreaterThan(0);
+  for (const scan of scans) {
+    expect(scan.text).toContain('left("note"');
+    // The clip's argument is the contract's own ceiling, bound as a parameter —
+    // never an inlined number that could drift away from it.
+    expect(Number(scan.params[0])).toBe(CASH_MOVEMENT_NOTE_MAX);
+    // …and it is the SELECT that carries it, not a WHERE or an ORDER BY.
+    expect(scan.text.slice(0, scan.text.indexOf('FROM'))).toContain('left("note"');
+  }
 });
 
 it('stops at the scan bound and says the pass was partial', async () => {
