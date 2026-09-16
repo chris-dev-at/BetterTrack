@@ -12,6 +12,7 @@ export type OutboundUrlBlockReason =
   | 'invalid_protocol'
   | 'localhost'
   | 'blocked_address'
+  | 'public_address'
   | 'invalid_resolved_address';
 
 export interface OutboundUrlAddress {
@@ -60,6 +61,36 @@ export interface OutboundUrlGuardOptions {
    * deployment.
    */
   allowPrivateLan?: boolean;
+  /**
+   * Accept a loopback destination — `127.0.0.0/8` and `::1`, plus the
+   * `localhost` family of names that would otherwise be refused before DNS even
+   * runs. OFF by default and never combined with `allowPrivateLan` implicitly:
+   * the two are different trust statements ("a host on the operator's LAN" vs
+   * "a port on this very machine").
+   *
+   * Only a caller whose destination is by contract on the same host may set it.
+   * Today that is the local-AI endpoint ({@link LOCAL_AI_ENDPOINT_URL_POLICY}),
+   * because `http://localhost:11434` is the single most common way an Ollama is
+   * addressed and §16 2026-07-22 puts the provider on the internal network by
+   * definition. The cost is stated at that constant.
+   *
+   * The v4-in-v6 spellings stay blocked either way, so `::ffff:127.0.0.1` is
+   * still refused — the allowance is the two canonical forms, nothing else.
+   */
+  allowLoopback?: boolean;
+  /**
+   * INVERT the default policy: refuse every destination that is not local.
+   *
+   * Without it the guard is a denylist — public is the norm and the private
+   * ranges are carved out. With it the guard is an allowlist: an address must be
+   * one of the ranges this policy's other axes opened (private LAN, loopback) or
+   * it is refused as {@link OutboundUrlBlockReason.public_address}, whether it
+   * arrived as a literal or out of DNS. That is the shape a destination which is
+   * "internal network only, never publicly exposed" needs, and it is the axis
+   * that makes {@link LOCAL_AI_ENDPOINT_URL_POLICY} an egress guard rather than
+   * a relaxation.
+   */
+  requireLocal?: boolean;
 }
 
 /**
@@ -77,11 +108,54 @@ export const WEBHOOK_RECEIVER_URL_POLICY: Readonly<
   Pick<OutboundUrlGuardOptions, 'allowHttp' | 'allowPrivateLan'>
 > = Object.freeze({ allowHttp: true, allowPrivateLan: true });
 
+/**
+ * The egress policy for the admin-set **local-AI (Ollama) endpoint** (§13.5
+ * V5-P12, §16 2026-07-22 — LOCAL AI ONLY: "every AI feature runs on the local
+ * Ollama (internal network only, never publicly exposed)").
+ *
+ * This is the one policy that runs the guard as an ALLOWLIST
+ * ({@link OutboundUrlGuardOptions.requireLocal}): the prompts this endpoint
+ * receives carry portfolio facts, so a public destination is not a weaker
+ * destination, it is an exfiltration channel. Everything the other policies
+ * refuse stays refused — link-local/cloud-metadata (`169.254/16`, `fe80::/10`),
+ * CGNAT, multicast, reserved, the v4-in-v6 spellings, the unspecified and
+ * broadcast addresses, and the deployment's own service network
+ * ({@link deploymentNetworkSubnets}) — and on top of that every PUBLIC address
+ * is refused too. What remains is exactly: RFC1918 / unique-local, and loopback.
+ *
+ * ## Two costs, stated
+ *
+ * 1. `allowLoopback` lets an admin aim the endpoint (and the admin probes) at a
+ *    port on the API host itself. That is not closable while
+ *    `http://localhost:11434` remains the normal way to run Ollama, and the
+ *    residual is bounded: the surface is admin-only, every write is audit-logged
+ *    (§6.12), and the probe answers from a closed set of failure tokens rather
+ *    than anything the target said.
+ * 2. The deployment carve-out applies here as it does everywhere, so a
+ *    deployment whose API shares the operator's flat LAN (host networking,
+ *    bare metal) derives that LAN as "ours" and refuses an Ollama on it. That
+ *    fails closed, which is the right direction, and the remedy is the existing
+ *    deployment variable {@link DEPLOYMENT_SUBNETS_ENV} naming the real service
+ *    network. The refusal is typed and surfaced to the admin, never silent.
+ */
+export const LOCAL_AI_ENDPOINT_URL_POLICY: Readonly<
+  Pick<OutboundUrlGuardOptions, 'allowHttp' | 'allowPrivateLan' | 'allowLoopback' | 'requireLocal'>
+> = Object.freeze({
+  allowHttp: true,
+  allowPrivateLan: true,
+  allowLoopback: true,
+  requireLocal: true,
+});
+
 export class UnsafeOutboundUrlError extends Error {
   readonly code = OUTBOUND_URL_BLOCKED;
 
   constructor(readonly reason: OutboundUrlBlockReason) {
-    super('Outbound URL must target an allowed public destination.');
+    // Policy-neutral on purpose: the same error now covers a public destination
+    // refused by a public-only policy AND a public destination refused by the
+    // local-only one (`requireLocal`). The machine-readable `reason` is where a
+    // caller reads which it was.
+    super('Outbound URL must target a destination this policy allows.');
     this.name = 'UnsafeOutboundUrlError';
   }
 }
@@ -109,6 +183,35 @@ const LAN_ALLOWED_IPV4_SUBNETS: ReadonlySet<string> = new Set([
   '192.168.0.0/16',
 ]);
 const LAN_ALLOWED_IPV6_SUBNETS: ReadonlySet<string> = new Set(['fc00::/7']);
+
+/**
+ * The subnets {@link OutboundUrlGuardOptions.allowLoopback} drops from the block
+ * lists — the two canonical loopback spellings and nothing else. `0.0.0.0/8`
+ * (which routes to the local host on Linux) and the IPv4-mapped `::ffff:0:0/96`
+ * form deliberately stay blocked: an endpoint is written `http://localhost` or
+ * `http://127.0.0.1`, so refusing every other way of saying "this machine" costs
+ * nothing and keeps `::ffff:127.0.0.1` out.
+ */
+const LOOPBACK_ALLOWED_IPV4_SUBNETS: ReadonlySet<string> = new Set(['127.0.0.0/8']);
+const LOOPBACK_ALLOWED_IPV6_SUBNETS: ReadonlySet<string> = new Set(['::1/128']);
+
+/**
+ * `::1` sits INSIDE `::/96`, and a `BlockList` cannot punch a hole in a subnet.
+ *
+ * So a policy that allows IPv6 loopback drops that rule as a whole and re-adds
+ * the two pieces that surround `::1`: the unspecified address `::` on its own,
+ * and the rest of the range. Everything `::/96` refused is still refused — this
+ * is a re-spelling, not a relaxation — and it matters in practice rather than on
+ * paper: on a dual-stack host `localhost` resolves to `::1` FIRST, every
+ * returned address must pass, so without this split `http://localhost:11434`
+ * would be refused outright.
+ */
+const IPV6_LOOPBACK_BLOCKLIST_PATCH = {
+  /** Rules replaced by {@link IPV6_LOOPBACK_BLOCKLIST_PATCH.addresses}/`ranges`. */
+  skip: new Set(['::/96', '::1/128']),
+  addresses: ['::'] as const,
+  ranges: [['::2', '::ffff:ffff']] as const,
+} as const;
 
 // IPv4 addresses that are local, private, link-local, non-routable, multicast,
 // or reserved. Server-side outbound traffic has no legitimate reason to target
@@ -145,21 +248,31 @@ const BLOCKED_IPV6_SUBNETS = [
   ['ff00::', 8], // multicast
 ] as const;
 
+/** Rules a policy adds back after dropping a subnet it had to replace whole. */
+interface BlockListExtras {
+  addresses?: readonly string[];
+  ranges?: readonly (readonly [string, string])[];
+}
+
 // Keep the families in separate lists: Node intentionally treats IPv4 input as
 // IPv4-mapped IPv6 when a list contains mapped-v6 rules. A combined list would
 // therefore make the explicit `::ffff:0:0/96` rule block every public IPv4
-// address too. Each family gets a strict list and a LAN-policy list, the latter
-// built from the same subnets minus `LAN_ALLOWED_*`.
+// address too. Each family gets one list per (allowPrivateLan, allowLoopback)
+// combination, built from the same subnets minus what that combination allows
+// (see `blockListsByPolicy`).
 function buildBlockList(
   subnets: readonly (readonly [string, number])[],
   family: 'ipv4' | 'ipv6',
   allowed: ReadonlySet<string>,
+  extras: BlockListExtras = {},
 ): BlockList {
   const list = new BlockList();
   for (const [network, prefix] of subnets) {
     if (allowed.has(`${network}/${prefix}`)) continue;
     list.addSubnet(network, prefix, family);
   }
+  for (const address of extras.addresses ?? []) list.addAddress(address, family);
+  for (const [start, end] of extras.ranges ?? []) list.addRange(start, end, family);
   return list;
 }
 
@@ -244,6 +357,8 @@ export function parseDeploymentSubnets(raw: string): OutboundSubnetRule[] | null
 
 const lanAllowedIpv4Addresses = buildAllowedList(LAN_ALLOWED_IPV4_SUBNETS, 'ipv4');
 const lanAllowedIpv6Addresses = buildAllowedList(LAN_ALLOWED_IPV6_SUBNETS, 'ipv6');
+const loopbackAllowedIpv4Addresses = buildAllowedList(LOOPBACK_ALLOWED_IPV4_SUBNETS, 'ipv4');
+const loopbackAllowedIpv6Addresses = buildAllowedList(LOOPBACK_ALLOWED_IPV6_SUBNETS, 'ipv6');
 
 function buildAllowedList(subnets: ReadonlySet<string>, family: 'ipv4' | 'ipv6'): BlockList {
   const list = new BlockList();
@@ -258,6 +373,13 @@ function isPrivateLanAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return lanAllowedIpv4Addresses.check(address, 'ipv4');
   if (family === 6) return lanAllowedIpv6Addresses.check(address, 'ipv6');
+  return false;
+}
+
+function isLoopbackAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return loopbackAllowedIpv4Addresses.check(address, 'ipv4');
+  if (family === 6) return loopbackAllowedIpv6Addresses.check(address, 'ipv6');
   return false;
 }
 
@@ -349,18 +471,50 @@ function isDeploymentAddress(address: string, family: number): boolean {
   return family === 4 ? network.ipv4.check(address, 'ipv4') : network.ipv6.check(address, 'ipv6');
 }
 
-const blockedIpv4Addresses = buildBlockList(BLOCKED_IPV4_SUBNETS, 'ipv4', NOTHING_ALLOWED);
-const blockedIpv6Addresses = buildBlockList(BLOCKED_IPV6_SUBNETS, 'ipv6', NOTHING_ALLOWED);
-const lanBlockedIpv4Addresses = buildBlockList(
-  BLOCKED_IPV4_SUBNETS,
-  'ipv4',
-  LAN_ALLOWED_IPV4_SUBNETS,
+/** Union of the CIDR strings a policy's relaxations un-block. */
+function unionSubnets(...sets: readonly ReadonlySet<string>[]): ReadonlySet<string> {
+  const merged = new Set<string>();
+  for (const set of sets) for (const entry of set) merged.add(entry);
+  return merged;
+}
+
+/**
+ * One block-list pair per (allowPrivateLan, allowLoopback) combination, built
+ * once at module load. Two independent relaxations mean four lists, and
+ * enumerating them beats rebuilding a `BlockList` per call — the guard runs on
+ * every outbound request and on every AI completion.
+ */
+const blockListsByPolicy: ReadonlyMap<string, { ipv4: BlockList; ipv6: BlockList }> = new Map(
+  [false, true].flatMap((allowPrivateLan) =>
+    [false, true].map((allowLoopback) => {
+      const ipv4Allowed = unionSubnets(
+        allowPrivateLan ? LAN_ALLOWED_IPV4_SUBNETS : NOTHING_ALLOWED,
+        allowLoopback ? LOOPBACK_ALLOWED_IPV4_SUBNETS : NOTHING_ALLOWED,
+      );
+      const ipv6Allowed = unionSubnets(
+        allowPrivateLan ? LAN_ALLOWED_IPV6_SUBNETS : NOTHING_ALLOWED,
+        allowLoopback ? IPV6_LOOPBACK_BLOCKLIST_PATCH.skip : NOTHING_ALLOWED,
+      );
+      const ipv6Extras: BlockListExtras = allowLoopback
+        ? {
+            addresses: IPV6_LOOPBACK_BLOCKLIST_PATCH.addresses,
+            ranges: IPV6_LOOPBACK_BLOCKLIST_PATCH.ranges,
+          }
+        : {};
+      return [
+        policyKey(allowPrivateLan, allowLoopback),
+        {
+          ipv4: buildBlockList(BLOCKED_IPV4_SUBNETS, 'ipv4', ipv4Allowed),
+          ipv6: buildBlockList(BLOCKED_IPV6_SUBNETS, 'ipv6', ipv6Allowed, ipv6Extras),
+        },
+      ] as const;
+    }),
+  ),
 );
-const lanBlockedIpv6Addresses = buildBlockList(
-  BLOCKED_IPV6_SUBNETS,
-  'ipv6',
-  LAN_ALLOWED_IPV6_SUBNETS,
-);
+
+function policyKey(allowPrivateLan: boolean, allowLoopback: boolean): string {
+  return `${allowPrivateLan ? 'lan' : 'nolan'}:${allowLoopback ? 'loop' : 'noloop'}`;
+}
 
 const defaultResolver: OutboundUrlResolver = (hostname) =>
   lookup(hostname, { all: true, verbatim: true });
@@ -380,23 +534,48 @@ function isLocalhostName(hostname: string): boolean {
   );
 }
 
-function assertPublicAddress(
+/** The three address axes a policy is made of, resolved once per guard pass. */
+interface AddressPolicy {
+  allowPrivateLan: boolean;
+  allowLoopback: boolean;
+  requireLocal: boolean;
+}
+
+function addressPolicy(options: OutboundUrlGuardOptions): AddressPolicy {
+  return {
+    allowPrivateLan: options.allowPrivateLan === true,
+    allowLoopback: options.allowLoopback === true,
+    requireLocal: options.requireLocal === true,
+  };
+}
+
+function assertAllowedAddress(
   address: string,
   invalidReason: OutboundUrlBlockReason,
-  allowPrivateLan: boolean,
+  policy: AddressPolicy,
 ): OutboundUrlAddress {
   const family = isIP(address);
   if (family === 0) throw new UnsafeOutboundUrlError(invalidReason);
-  const [ipv4List, ipv6List] = allowPrivateLan
-    ? [lanBlockedIpv4Addresses, lanBlockedIpv6Addresses]
-    : [blockedIpv4Addresses, blockedIpv6Addresses];
-  const blocked = family === 4 ? ipv4List.check(address, 'ipv4') : ipv6List.check(address, 'ipv6');
+  const lists = blockListsByPolicy.get(policyKey(policy.allowPrivateLan, policy.allowLoopback))!;
+  const blocked =
+    family === 4 ? lists.ipv4.check(address, 'ipv4') : lists.ipv6.check(address, 'ipv6');
   // The deployment's own service network is refused under EVERY policy, not only
   // the strict one: it is the range `allowPrivateLan` would otherwise un-block,
   // and it is the one range where "the user picked the destination" means
   // "a registered user picked one of our internal services".
   if (blocked || isDeploymentAddress(address, family)) {
     throw new UnsafeOutboundUrlError('blocked_address');
+  }
+  // `requireLocal` flips the guard from denylist to allowlist: having survived
+  // every block above only proves the address is not one of the refused ranges,
+  // which for a public address is trivially true. A local-only destination must
+  // be positively inside one of the ranges this policy opened.
+  if (
+    policy.requireLocal &&
+    !(policy.allowPrivateLan && isPrivateLanAddress(address)) &&
+    !(policy.allowLoopback && isLoopbackAddress(address))
+  ) {
+    throw new UnsafeOutboundUrlError('public_address');
   }
   return { address, family };
 }
@@ -412,7 +591,7 @@ async function inspectOutboundUrl(
     throw new UnsafeOutboundUrlError('invalid_url');
   }
 
-  const allowPrivateLan = options.allowPrivateLan === true;
+  const policy = addressPolicy(options);
   const protocolAllowed =
     url.protocol === 'https:' || (options.allowHttp === true && url.protocol === 'http:');
   if (!protocolAllowed) {
@@ -421,13 +600,20 @@ async function inspectOutboundUrl(
 
   const hostname = normalizedHostname(url.hostname);
   if (!hostname) throw new UnsafeOutboundUrlError('invalid_url');
-  if (isLocalhostName(hostname)) throw new UnsafeOutboundUrlError('localhost');
+  // A `localhost` name is refused by NAME rather than by its resolved address,
+  // because the name is the whole intent. A policy that allows loopback wants
+  // exactly that intent, so it skips the shortcut and lets DNS answer — the
+  // address it resolves to still has to pass the block lists below, so
+  // `localhost` pointed at something else by /etc/hosts gains nothing.
+  if (!policy.allowLoopback && isLocalhostName(hostname)) {
+    throw new UnsafeOutboundUrlError('localhost');
+  }
 
   const literalFamily = isIP(hostname);
   if (literalFamily !== 0) {
     return {
       url,
-      addresses: [assertPublicAddress(hostname, 'blocked_address', allowPrivateLan)],
+      addresses: [assertAllowedAddress(hostname, 'blocked_address', policy)],
     };
   }
 
@@ -440,7 +626,7 @@ async function inspectOutboundUrl(
   return {
     url,
     addresses: addresses.map(({ address }) =>
-      assertPublicAddress(address, 'invalid_resolved_address', allowPrivateLan),
+      assertAllowedAddress(address, 'invalid_resolved_address', policy),
     ),
   };
 }
@@ -457,7 +643,10 @@ async function inspectOutboundUrl(
  */
 export function resolveSafeOutboundUrl(
   input: string,
-  options: Pick<OutboundUrlGuardOptions, 'resolver' | 'allowHttp' | 'allowPrivateLan'> = {},
+  options: Pick<
+    OutboundUrlGuardOptions,
+    'resolver' | 'allowHttp' | 'allowPrivateLan' | 'allowLoopback' | 'requireLocal'
+  > = {},
 ): Promise<ResolvedOutboundUrl> {
   return inspectOutboundUrl(input, options);
 }
@@ -526,10 +715,13 @@ export function createPinnedAgent(target: ResolvedOutboundUrl): HttpAgent | Http
 
 /**
  * Validate a destination before server-side egress. HTTPS-only and
- * public-only by default; {@link OutboundUrlGuardOptions.allowHttp} and
- * {@link OutboundUrlGuardOptions.allowPrivateLan} relax exactly those two axes
- * for callers whose product contract requires it (see
- * {@link WEBHOOK_RECEIVER_URL_POLICY}).
+ * public-only by default; {@link OutboundUrlGuardOptions.allowHttp},
+ * {@link OutboundUrlGuardOptions.allowPrivateLan} and
+ * {@link OutboundUrlGuardOptions.allowLoopback} relax exactly those axes for
+ * callers whose product contract requires it (see
+ * {@link WEBHOOK_RECEIVER_URL_POLICY}), and
+ * {@link OutboundUrlGuardOptions.requireLocal} inverts the default so only a
+ * local destination passes (see {@link LOCAL_AI_ENDPOINT_URL_POLICY}).
  *
  * The literal/localhost check is always performed. DNS resolution defaults on,
  * and every returned A/AAAA address must pass the policy; callers that persist a
