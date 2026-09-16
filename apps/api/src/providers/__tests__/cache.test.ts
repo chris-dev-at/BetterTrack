@@ -344,9 +344,9 @@ describe('MarketCache — cross-process coalescing (§5.3 Redis lock)', () => {
         return deferred.promise;
       },
     });
-    // Give the winner a beat to take the Redis lock before the loser arrives.
-    await new Promise((r) => setTimeout(r, 5));
-    expect(await redis.exists(loadLockKey(KEY))).toBe(1);
+    // The lock key appearing IS the completion the old 5 ms "beat" was guessing
+    // at — wait for it, and the loser cannot arrive early on any machine.
+    await vi.waitFor(async () => expect(await redis.exists(loadLockKey(KEY))).toBe(1));
 
     const loserResult = loser.getOrLoad({
       key: KEY,

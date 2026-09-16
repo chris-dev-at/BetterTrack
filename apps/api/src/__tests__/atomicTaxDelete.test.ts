@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as schema from '../data/schema';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
@@ -160,23 +160,26 @@ async function waitForDatabaseLock(
   predicate: (row: DatabaseLockWait) => boolean,
   description: string,
 ): Promise<DatabaseLockWait> {
-  const deadline = Date.now() + 5_000;
-  let observed: DatabaseLockWait[] = [];
-  while (Date.now() < deadline) {
-    observed = await observer<DatabaseLockWait[]>`
+  // `vi.waitFor` polls on a bounded schedule and rethrows the LAST failure at
+  // the deadline, so the diagnostic below still reaches the report — the loop
+  // this replaces bought the same thing with a sleep in the middle (#1622).
+  return vi.waitFor(
+    async () => {
+      const observed = await observer<DatabaseLockWait[]>`
       SELECT pid, query, wait_event AS "waitEvent"
       FROM pg_stat_activity
       WHERE datname = current_database()
         AND wait_event_type = 'Lock'
     `;
-    const match = observed.find(predicate);
-    if (match) return match;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(
-    `Timed out waiting for ${description}; observed ${JSON.stringify(
-      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
-    )}`,
+      const match = observed.find(predicate);
+      if (match) return match;
+      throw new Error(
+        `Timed out waiting for ${description}; observed ${JSON.stringify(
+          observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+        )}`,
+      );
+    },
+    { timeout: 5_000, interval: 10 },
   );
 }
 

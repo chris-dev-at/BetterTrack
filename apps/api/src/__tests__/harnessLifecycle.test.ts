@@ -102,13 +102,22 @@ async function countHarnessClients(redis: Redis): Promise<number> {
 
 /** Sample until two consecutive reads agree — connects land asynchronously. */
 async function stableClientCount(redis: Redis): Promise<number> {
-  const deadline = Date.now() + 2_000;
   let previous = await countHarnessClients(redis);
-  for (;;) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const next = await countHarnessClients(redis);
-    if (next === previous || Date.now() > deadline) return next;
-    previous = next;
+  try {
+    return await vi.waitFor(
+      async () => {
+        const next = await countHarnessClients(redis);
+        const agreed = next === previous;
+        previous = next;
+        if (!agreed) throw new Error(`client count still moving (now ${next})`);
+        return next;
+      },
+      { timeout: 2_000, interval: 50 },
+    );
+  } catch {
+    // Deadline reached: hand back the last reading, exactly as before. This
+    // helper never decides whether a number is acceptable — the caller does.
+    return previous;
   }
 }
 
@@ -119,13 +128,21 @@ async function stableClientCount(redis: Redis): Promise<number> {
  * the real number.
  */
 async function settledClientCount(redis: Redis, expected: number): Promise<number> {
-  const deadline = Date.now() + 2_000;
   let count = await countHarnessClients(redis);
-  while (count !== expected && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    count = await countHarnessClients(redis);
+  try {
+    return await vi.waitFor(
+      async () => {
+        count = await countHarnessClients(redis);
+        expect(count).toBe(expected);
+        return count;
+      },
+      { timeout: 2_000, interval: 25 },
+    );
+  } catch {
+    // Deadline reached: hand back the last reading so the caller's assertion —
+    // not this helper — reports the leak.
+    return count;
   }
-  return count;
 }
 
 describe.runIf(integrationMode)('harness lifecycle on real Redis (#1914)', () => {

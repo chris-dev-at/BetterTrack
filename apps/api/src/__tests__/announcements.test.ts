@@ -195,17 +195,28 @@ describe('announcements — publishing fans an inbox row out to every user', () 
     const enInbox = await enAgent.get('/api/v1/notifications');
     expect(enInbox.status).toBe(200);
     const enList = notificationListResponseSchema.parse(enInbox.body);
-    const enRow = enList.items.find((n) => n.type === ANNOUNCEMENT_NOTIFICATION_TYPE);
-    expect(enRow).toBeDefined();
-    expect(enRow!.title).toBe(BASE_BODY.titleEn);
+    const enRows = enList.items.filter((n) => n.type === ANNOUNCEMENT_NOTIFICATION_TYPE);
+    // Exactly one row, carrying the English title AND body: `toBeDefined()` on a
+    // `find()` would also pass with a second, duplicate row, or with a row whose
+    // body was localised the other way (#1622).
+    expect(enRows).toHaveLength(1);
+    expect(enRows[0]).toMatchObject({
+      type: ANNOUNCEMENT_NOTIFICATION_TYPE,
+      title: BASE_BODY.titleEn,
+      body: BASE_BODY.bodyEn,
+    });
 
     // DE user sees German content.
     const deAgent = await loginUserAgent(harness.app, de.email, de.password);
     const deInbox = await deAgent.get('/api/v1/notifications');
     const deList = notificationListResponseSchema.parse(deInbox.body);
-    const deRow = deList.items.find((n) => n.type === ANNOUNCEMENT_NOTIFICATION_TYPE);
-    expect(deRow).toBeDefined();
-    expect(deRow!.title).toBe(BASE_BODY.titleDe);
+    const deRows = deList.items.filter((n) => n.type === ANNOUNCEMENT_NOTIFICATION_TYPE);
+    expect(deRows).toHaveLength(1);
+    expect(deRows[0]).toMatchObject({
+      type: ANNOUNCEMENT_NOTIFICATION_TYPE,
+      title: BASE_BODY.titleDe,
+      body: BASE_BODY.bodyDe,
+    });
 
     // Re-publish (toggle off → on, then another sweep) is a per-user no-op: the
     // row is stamped, so it is not due, and the shared eventKey would collapse
@@ -490,13 +501,16 @@ describe('announcements — inbox entry contract', () => {
     const agent = await loginUserAgent(harness.app, user.email, user.password);
     const inbox = await agent.get('/api/v1/notifications');
     const list = notificationListResponseSchema.parse(inbox.body);
-    const row = list.items.find((n) => n.type === ANNOUNCEMENT_NOTIFICATION_TYPE);
-    expect(row).toBeDefined();
-    const payload = row!.payload as Record<string, unknown> | undefined;
-    expect(payload?.announcementId).toBe(announcement.id);
+    const rows = list.items.filter((n) => n.type === ANNOUNCEMENT_NOTIFICATION_TYPE);
+    // One row, and the deep-link payload is asserted as part of the row's shape.
     // Reuses the V4-P0c account.notice slot, so the bell deep-link resolver
     // takes it through the existing `/settings/notifications` mapping.
-    expect(row!.type).toBe(ANNOUNCEMENT_NOTIFICATION_TYPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      type: ANNOUNCEMENT_NOTIFICATION_TYPE,
+      title: BASE_BODY.titleEn,
+      payload: { announcementId: announcement.id },
+    });
   });
 });
 

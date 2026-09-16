@@ -37,6 +37,7 @@ import {
   type RealtimeAdmission,
 } from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import { waitForSocketAck, waitForSocketDisconnect, waitForSocketEvent } from '../../test/waitFor';
 import {
   createRealtimeGateway,
   REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
@@ -161,58 +162,65 @@ async function mintKey(userId: string, scopes: ApiKeyScope[] = ['chat:read']): P
   return token;
 }
 
-/** Resolve with the next `event` payload, or reject after `ms`. */
-function waitForEvent<T>(socket: ClientSocket, event: string, ms = 3000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event}`)), ms);
-    socket.once(event, (payload: T) => {
-      clearTimeout(timer);
-      resolve(payload);
-    });
-  });
-}
-
-/** Assert `event` does NOT arrive on `socket` within `ms`. */
-function expectSilence(socket: ClientSocket, event: string, ms = 300): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    socket.once(event, () => {
-      clearTimeout(timer);
-      reject(new Error(`unexpected ${event} received`));
-    });
-  });
-}
+/**
+ * A room subject no test ever joins — the barrier round-trip's payload. Leaving
+ * a room the socket is not in is a no-op the gateway still acks.
+ */
+const BARRIER_UUID = '018f6f00-0000-7000-8000-0000000000ba';
 
 /** Emit `room.join` / `room.leave` and await the ack. */
 function emitRoom(socket: ClientSocket, event: string, payload: unknown): Promise<RealtimeRoomAck> {
-  return new Promise<RealtimeRoomAck>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event} ack`)), 3000);
-    socket.emit(event, payload, (ack: RealtimeRoomAck) => {
-      clearTimeout(timer);
-      resolve(ack);
-    });
+  return waitForSocketAck<RealtimeRoomAck>(socket, event, payload);
+}
+
+/**
+ * A round-trip the gateway always answers on `socket` itself.
+ *
+ * `room.leave` is acked on every path — with `ok`, with a schema refusal, or
+ * with `RATE_LIMITED` from admission — for every principal kind this suite
+ * connects, and Socket.IO writes one connection's packets in order. So once the
+ * ack is back, every packet the server had already emitted to this socket has
+ * been delivered. That is what makes it a *barrier* rather than a guess.
+ */
+function socketRoundTrip(socket: ClientSocket): Promise<RealtimeRoomAck> {
+  return emitRoom(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+    room: { kind: 'asset', id: BARRIER_UUID },
   });
 }
 
-function emitAck<T>(socket: ClientSocket, event: string, payload: unknown): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event} ack`)), 3000);
-    socket.emit(event, payload, (ack: T) => {
-      clearTimeout(timer);
-      resolve(ack);
-    });
+/**
+ * Arm a "these events must NOT arrive on `socket`" check; `await confirm()`
+ * settles it.
+ *
+ * `confirm()` runs {@link socketRoundTrip} and only then inspects what landed,
+ * so the proof is ordering, not elapsed time (#1622). Arm it before the trigger
+ * and confirm it AFTER whatever positive delivery the test also expects: the
+ * server fans one domain event out to a room in a single synchronous `emit`
+ * pass, so observing the intended recipient's packet means a leaked packet for
+ * this socket was already written, and the round-trip then drains it into view.
+ *
+ * The old form waited a flat 300 ms, which proved nothing under load and cost
+ * 300 ms when it proved nothing.
+ */
+function expectSilence(socket: ClientSocket, ...events: string[]): () => Promise<void> {
+  const leaked: { event: string; payload: unknown }[] = [];
+  const listeners = events.map((event) => {
+    const record = (payload: unknown): void => {
+      leaked.push({ event, payload });
+    };
+    socket.on(event, record);
+    return { event, record };
   });
-}
-
-function waitForDisconnect(socket: ClientSocket, ms = 3000): Promise<void> {
-  if (!socket.connected) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for disconnect')), ms);
-    socket.once('disconnect', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+  return async () => {
+    try {
+      await socketRoundTrip(socket);
+    } finally {
+      for (const { event, record } of listeners) socket.off(event, record);
+    }
+    if (leaked.length > 0) {
+      throw new Error(`unexpected realtime delivery: ${JSON.stringify(leaked)}`);
+    }
+  };
 }
 
 const joinRoom = (socket: ClientSocket, kind: string, id: string) =>
@@ -720,11 +728,17 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         client.once('connect_error', reject);
       });
 
-      await waitForDisconnect(client, 1_000);
+      await waitForSocketDisconnect(client, 1_000);
       expect(renewConnection).toHaveBeenCalledTimes(1);
-      expect(releaseConnection).toHaveBeenCalledTimes(1);
-      await new Promise((resolve) => setTimeout(resolve, leaseTtlMs));
+      // The gateway's `disconnect` handler clears the admission heartbeat
+      // synchronously, in the same statement list that schedules the cleanup
+      // batch calling `releaseConnection`. So observing that release IS the
+      // proof no further renewal can ever be scheduled — which is all the old
+      // `sleep(leaseTtlMs)` was trying to establish, only without the machine's
+      // load being able to falsify it (#1622).
+      await vi.waitFor(() => expect(releaseConnection).toHaveBeenCalledTimes(1));
       expect(renewConnection).toHaveBeenCalledTimes(1);
+      expect(controlled.gateway.connectionCount()).toBe(0);
     } finally {
       await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
     }
@@ -777,13 +791,17 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       });
 
       await vi.waitFor(() => expect(renewWatchStart).toHaveBeenCalledTimes(1));
-      await waitForDisconnect(client, 1_000);
+      await waitForSocketDisconnect(client, 1_000);
+      // `workLease.release()` flips `released` and clears the renew interval
+      // synchronously *before* it calls `releaseWatchStart`, and the interval
+      // body returns early on `released` anyway. Observing the release is
+      // therefore proof the renewal loop is torn down — no quiet window can add
+      // anything to that, and a fixed one could only flake (#1622).
       await vi.waitFor(() => {
         expect(unwatch).toHaveBeenCalledTimes(1);
         expect(releaseWatch).toHaveBeenCalledTimes(1);
         expect(releaseWatchStart).toHaveBeenCalledTimes(1);
       });
-      await new Promise((resolve) => setTimeout(resolve, leaseTtlMs));
       expect(renewWatchStart).toHaveBeenCalledTimes(1);
     } finally {
       await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
@@ -869,8 +887,15 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       client.disconnect();
 
       const renewalsAtDisconnect = renewWatchStart.mock.calls.length;
-      await new Promise((resolve) => setTimeout(resolve, leaseTtlMs + 60));
-      expect(renewWatchStart.mock.calls.length).toBeGreaterThan(renewalsAtDisconnect);
+      // A renewal landing AFTER the disconnect is the completion this test is
+      // about: it is what pushes the Redis lease deadline past the original
+      // `leaseTtlMs`. Await that renewal instead of the interval it happens in
+      // — the seat still has to be held, and `releaseWatchStart` still must not
+      // have fired, both of which are asserted straight after.
+      await vi.waitFor(
+        () => expect(renewWatchStart.mock.calls.length).toBeGreaterThan(renewalsAtDisconnect),
+        { timeout: leaseTtlMs + 60 },
+      );
       expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(1);
       expect(releaseWatchStart).not.toHaveBeenCalled();
 
@@ -887,7 +912,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         replacement.once('connect_error', reject);
       });
       await expect(
-        emitAck<RealtimeLiveWatchAck>(replacement, REALTIME_CLIENT_EVENTS.liveWatch, {
+        waitForSocketAck<RealtimeLiveWatchAck>(replacement, REALTIME_CLIENT_EVENTS.liveWatch, {
           assetId: SOME_UUID,
           window: '10m',
         }),
@@ -956,14 +981,18 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         client.once('connect', () => resolve());
         client.once('connect_error', reject);
       });
-      const watchAck = emitAck<RealtimeLiveWatchAck>(client, REALTIME_CLIENT_EVENTS.liveWatch, {
-        assetId: SOME_UUID,
-        window: '10m',
-      });
+      const watchAck = waitForSocketAck<RealtimeLiveWatchAck>(
+        client,
+        REALTIME_CLIENT_EVENTS.liveWatch,
+        {
+          assetId: SOME_UUID,
+          window: '10m',
+        },
+      );
       await vi.waitFor(() => expect(liveMode.backfill).toHaveBeenCalledTimes(1));
 
       await expect(
-        emitAck<RealtimeRoomAck>(client, REALTIME_CLIENT_EVENTS.liveUnwatch, {
+        waitForSocketAck<RealtimeRoomAck>(client, REALTIME_CLIENT_EVENTS.liveUnwatch, {
           assetId: SOME_UUID,
         }),
       ).resolves.toEqual({ ok: true });
@@ -972,7 +1001,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         client.emit(REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId: arbitraryAssetId });
       }
       await expect(
-        emitAck<RealtimeRoomAck>(client, REALTIME_CLIENT_EVENTS.liveUnwatch, {
+        waitForSocketAck<RealtimeRoomAck>(client, REALTIME_CLIENT_EVENTS.liveUnwatch, {
           assetId: arbitraryAssetId,
         }),
       ).resolves.toEqual({ ok: true });
@@ -1039,7 +1068,7 @@ describe('realtime gateway — bearer handshake auth (mobile, §6.13/§14)', () 
 
     // A push addressed to alice reaches alice's notification-scoped bearer and
     // never bob's. The bearer never enters the undifferentiated user room.
-    const received = waitForEvent<RealtimeNotificationNew>(
+    const received = waitForSocketEvent<RealtimeNotificationNew>(
       aliceSocket,
       REALTIME_SERVER_EVENTS.notificationNew,
     );
@@ -1051,7 +1080,7 @@ describe('realtime gateway — bearer handshake auth (mobile, §6.13/§14)', () 
       occurredAt: new Date().toISOString(),
     });
     expect(await received).toEqual({ notificationId: SOME_UUID, occurredAt: expect.any(String) });
-    await silence;
+    await silence();
   });
 
   it('accepts a bearer via the Authorization: Bearer upgrade header', async () => {
@@ -1162,20 +1191,20 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
 
     // Chat presence is a chat read, not a generic authenticated command.
     await expect(
-      emitAck<RealtimeRoomAck>(chat, REALTIME_CLIENT_EVENTS.presenceEnter, {
+      waitForSocketAck<RealtimeRoomAck>(chat, REALTIME_CLIENT_EVENTS.presenceEnter, {
         surface: 'chat',
         id: SOME_UUID,
       }),
     ).resolves.toEqual({ ok: true });
     await expect(
-      emitAck<RealtimeRoomAck>(oauthChat, REALTIME_CLIENT_EVENTS.presenceEnter, {
+      waitForSocketAck<RealtimeRoomAck>(oauthChat, REALTIME_CLIENT_EVENTS.presenceEnter, {
         surface: 'chat',
         id: SOME_UUID,
       }),
     ).resolves.toEqual({ ok: true });
     for (const socket of [notifications, portfolio, market]) {
       await expect(
-        emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
+        waitForSocketAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
           surface: 'chat',
           id: SOME_UUID,
         }),
@@ -1186,47 +1215,75 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
     // market token reaches resolution and gets the ordinary no-leak NOT_FOUND.
     for (const socket of [notifications, portfolio, chat, oauthChat]) {
       await expect(
-        emitAck<RealtimeLiveWatchAck>(socket, REALTIME_CLIENT_EVENTS.liveWatch, {
+        waitForSocketAck<RealtimeLiveWatchAck>(socket, REALTIME_CLIENT_EVENTS.liveWatch, {
           assetId,
           window: '10m',
         }),
       ).resolves.toEqual({ ok: false, error: 'FORBIDDEN' });
     }
     await expect(
-      emitAck<RealtimeLiveWatchAck>(market, REALTIME_CLIENT_EVENTS.liveWatch, {
+      waitForSocketAck<RealtimeLiveWatchAck>(market, REALTIME_CLIENT_EVENTS.liveWatch, {
         assetId,
         window: '10m',
       }),
     ).resolves.toEqual({ ok: false, error: 'NOT_FOUND' });
 
-    const notification = waitForEvent<RealtimeNotificationNew>(
+    const notification = waitForSocketEvent<RealtimeNotificationNew>(
       notifications,
       REALTIME_SERVER_EVENTS.notificationNew,
     );
-    const portfolioChanged = waitForEvent<RealtimePortfolioChanged>(
+    const portfolioChanged = waitForSocketEvent<RealtimePortfolioChanged>(
       portfolio,
       REALTIME_SERVER_EVENTS.portfolioChanged,
     );
-    const chatMessage = waitForEvent<RealtimeChatMessage>(chat, REALTIME_SERVER_EVENTS.chatMessage);
-    const oauthChatMessage = waitForEvent<RealtimeChatMessage>(
+    const chatMessage = waitForSocketEvent<RealtimeChatMessage>(
+      chat,
+      REALTIME_SERVER_EVENTS.chatMessage,
+    );
+    const oauthChatMessage = waitForSocketEvent<RealtimeChatMessage>(
       oauthChat,
       REALTIME_SERVER_EVENTS.chatMessage,
     );
-    const quote = waitForEvent<RealtimeQuoteUpdated>(market, REALTIME_SERVER_EVENTS.quoteUpdated);
-    const deniedFamilies = Promise.all([
-      ...[portfolio, chat, oauthChat, market].map((socket) =>
-        expectSilence(socket, REALTIME_SERVER_EVENTS.notificationNew),
+    const quote = waitForSocketEvent<RealtimeQuoteUpdated>(
+      market,
+      REALTIME_SERVER_EVENTS.quoteUpdated,
+    );
+    // Each socket is armed against exactly the families its scope must NOT
+    // carry; confirming after the five positive deliveries below proves the
+    // fan-out already happened, and each confirm's own round-trip proves that
+    // socket's connection has drained.
+    const deniedFamilies = [
+      expectSilence(
+        notifications,
+        REALTIME_SERVER_EVENTS.portfolioChanged,
+        REALTIME_SERVER_EVENTS.chatMessage,
+        REALTIME_SERVER_EVENTS.quoteUpdated,
       ),
-      ...[notifications, chat, oauthChat, market].map((socket) =>
-        expectSilence(socket, REALTIME_SERVER_EVENTS.portfolioChanged),
+      expectSilence(
+        portfolio,
+        REALTIME_SERVER_EVENTS.notificationNew,
+        REALTIME_SERVER_EVENTS.chatMessage,
+        REALTIME_SERVER_EVENTS.quoteUpdated,
       ),
-      ...[notifications, portfolio, market].map((socket) =>
-        expectSilence(socket, REALTIME_SERVER_EVENTS.chatMessage),
+      expectSilence(
+        chat,
+        REALTIME_SERVER_EVENTS.notificationNew,
+        REALTIME_SERVER_EVENTS.portfolioChanged,
+        REALTIME_SERVER_EVENTS.quoteUpdated,
       ),
-      ...[notifications, portfolio, chat, oauthChat].map((socket) =>
-        expectSilence(socket, REALTIME_SERVER_EVENTS.quoteUpdated),
+      expectSilence(
+        oauthChat,
+        REALTIME_SERVER_EVENTS.notificationNew,
+        REALTIME_SERVER_EVENTS.portfolioChanged,
+        REALTIME_SERVER_EVENTS.quoteUpdated,
       ),
-    ]);
+      expectSilence(
+        market,
+        REALTIME_SERVER_EVENTS.notificationNew,
+        REALTIME_SERVER_EVENTS.portfolioChanged,
+        REALTIME_SERVER_EVENTS.chatMessage,
+      ),
+    ];
 
     const occurredAt = new Date().toISOString();
     await Promise.all([
@@ -1261,7 +1318,7 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
     await expect(chatMessage).resolves.toMatchObject({ conversationId: SOME_UUID });
     await expect(oauthChatMessage).resolves.toMatchObject({ conversationId: SOME_UUID });
     await expect(quote).resolves.toMatchObject({ assetId });
-    await deniedFamilies;
+    await Promise.all(deniedFamilies.map((confirm) => confirm()));
   });
 
   it('accepts matching write scopes as their implied realtime reads', async () => {
@@ -1281,15 +1338,18 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
 
     await expect(joinRoom(portfolioWrite, 'portfolio', portfolioId)).resolves.toEqual({ ok: true });
     await expect(
-      emitAck<RealtimeRoomAck>(chatWrite, REALTIME_CLIENT_EVENTS.presenceEnter, {
+      waitForSocketAck<RealtimeRoomAck>(chatWrite, REALTIME_CLIENT_EVENTS.presenceEnter, {
         surface: 'chat',
         id: SOME_UUID,
       }),
     ).resolves.toEqual({ ok: true });
 
-    const notification = waitForEvent(notificationWrite, REALTIME_SERVER_EVENTS.notificationNew);
-    const portfolio = waitForEvent(portfolioWrite, REALTIME_SERVER_EVENTS.portfolioChanged);
-    const chat = waitForEvent(chatWrite, REALTIME_SERVER_EVENTS.chatMessage);
+    const notification = waitForSocketEvent(
+      notificationWrite,
+      REALTIME_SERVER_EVENTS.notificationNew,
+    );
+    const portfolio = waitForSocketEvent(portfolioWrite, REALTIME_SERVER_EVENTS.portfolioChanged);
+    const chat = waitForSocketEvent(chatWrite, REALTIME_SERVER_EVENTS.chatMessage);
     const occurredAt = new Date().toISOString();
     await Promise.all([
       harness.ctx.events.publish({
@@ -1378,7 +1438,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
     expect(ack).toEqual({ ok: false, error: 'BAD_REQUEST' });
 
     // A push addressed to bob reaches bob's socket and never alice's.
-    const received = waitForEvent<RealtimeNotificationNew>(
+    const received = waitForSocketEvent<RealtimeNotificationNew>(
       bobSocket,
       REALTIME_SERVER_EVENTS.notificationNew,
     );
@@ -1390,7 +1450,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
       occurredAt: new Date().toISOString(),
     });
     expect(await received).toEqual({ notificationId: SOME_UUID, occurredAt: expect.any(String) });
-    await silence;
+    await silence();
   });
 
   it('quote updates push to asset:{id} subscribers only', async () => {
@@ -1403,7 +1463,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
     const assetId = SOME_UUID;
     expect(await joinRoom(subscriber, 'asset', assetId)).toEqual({ ok: true });
 
-    const received = waitForEvent<RealtimeQuoteUpdated>(
+    const received = waitForSocketEvent<RealtimeQuoteUpdated>(
       subscriber,
       REALTIME_SERVER_EVENTS.quoteUpdated,
     );
@@ -1414,7 +1474,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
       occurredAt: new Date().toISOString(),
     });
     expect(await received).toEqual({ assetId, occurredAt: expect.any(String) });
-    await silence;
+    await silence();
 
     // room.leave stops the stream.
     expect(
@@ -1422,13 +1482,27 @@ describe('realtime gateway — rooms (§4.5)', () => {
         room: { kind: 'asset', id: assetId },
       }),
     ).toEqual({ ok: true });
+    // Nothing else is in the room now, so there is no third-party delivery to
+    // use as the fan-out barrier. A re-join and a SECOND publish on the same
+    // channel supplies one: Redis pub/sub keeps per-channel order, so the
+    // delivery of the second frame proves the first was already dispatched —
+    // and the first must not have reached this socket.
     const silentAfterLeave = expectSilence(subscriber, REALTIME_SERVER_EVENTS.quoteUpdated);
     await harness.ctx.events.publish({
       type: 'quote.updated',
       assetId,
       occurredAt: new Date().toISOString(),
     });
-    await silentAfterLeave;
+    await silentAfterLeave();
+
+    expect(await joinRoom(subscriber, 'asset', assetId)).toEqual({ ok: true });
+    const afterRejoin = waitForSocketEvent<RealtimeQuoteUpdated>(
+      subscriber,
+      REALTIME_SERVER_EVENTS.quoteUpdated,
+    );
+    const rejoinedAt = new Date().toISOString();
+    await harness.ctx.events.publish({ type: 'quote.updated', assetId, occurredAt: rejoinedAt });
+    expect(await afterRejoin).toEqual({ assetId, occurredAt: rejoinedAt });
   });
 
   it('portfolio:{id} joins enforce owner-or-shared access (§6.9)', async () => {
@@ -1470,8 +1544,8 @@ describe('realtime gateway — rooms (§4.5)', () => {
 
     // portfolio.changed fans out to the owner's user room AND admitted viewers,
     // but not to the stranger.
-    const ownerGot = waitForEvent(aliceSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
-    const friendGot = waitForEvent(bobSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
+    const ownerGot = waitForSocketEvent(aliceSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
+    const friendGot = waitForSocketEvent(bobSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
     const strangerSilent = expectSilence(carolSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
     await harness.ctx.events.publish({
       type: 'portfolio.changed',
@@ -1481,7 +1555,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
     });
     expect(await ownerGot).toEqual({ portfolioId, occurredAt: expect.any(String) });
     expect(await friendGot).toEqual({ portfolioId, occurredAt: expect.any(String) });
-    await strangerSilent;
+    await strangerSilent();
 
     // Established sockets are REauthorized per frame under the viewer's account
     // lock — admission was taken against the owner's audience, so unsharing (or
@@ -1492,7 +1566,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
       .set(...XRW)
       .send({ visibility: 'private' })
       .expect(200);
-    const ownerStillGets = waitForEvent(aliceSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
+    const ownerStillGets = waitForSocketEvent(aliceSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
     const revokedSilent = expectSilence(bobSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
     await harness.ctx.events.publish({
       type: 'portfolio.changed',
@@ -1501,7 +1575,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
       occurredAt: new Date().toISOString(),
     });
     expect(await ownerStillGets).toEqual({ portfolioId, occurredAt: expect.any(String) });
-    await revokedSilent;
+    await revokedSilent();
     // …and the socket was evicted from the room, so a re-join has to re-earn it.
     expect(await joinRoom(bobSocket, 'portfolio', portfolioId)).toEqual({
       ok: false,
@@ -1726,7 +1800,7 @@ describe('realtime gateway — room and presence budgets (§13.5 V5-P1)', () => 
       // One refill quantum per command: this exercises the presence budget,
       // not the command bucket.
       commandClockMs = (commandClockMs ?? Date.now()) + 60;
-      return emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
+      return waitForSocketAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
         surface: 'chat',
         id: budgetUuid(index),
       });
@@ -1776,14 +1850,14 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     });
     const socket = await connectWith({ auth: { token } });
     await expect(
-      emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
+      waitForSocketAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
         surface: 'chat',
         id: SOME_UUID,
       }),
     ).resolves.toEqual({ ok: true });
     await expect(harness.ctx.presence.isPresent(user.id, 'chat', SOME_UUID)).resolves.toBe(true);
 
-    const disconnected = waitForDisconnect(socket);
+    const disconnected = waitForSocketDisconnect(socket);
     await harness.ctx.apiKeys.revoke({ userId: user.id, id: key.id });
     await disconnected;
     await vi.waitFor(async () => {
@@ -1798,7 +1872,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const loginState = await login(user.email, user.password);
     const socket = await connect(loginState.cookie);
 
-    const loggedOut = waitForDisconnect(socket);
+    const loggedOut = waitForSocketDisconnect(socket);
     await loginState.agent
       .post('/api/v1/auth/logout')
       .set(...XRW)
@@ -1809,7 +1883,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const renewedLogin = await login(user.email, user.password);
     const resetSocket = await connect(renewedLogin.cookie);
     const admin = await harness.seedAdmin();
-    const reset = waitForDisconnect(resetSocket);
+    const reset = waitForSocketDisconnect(resetSocket);
     await harness.ctx.admin.resetPassword(user.id, { id: admin.id });
     await reset;
   });
@@ -1820,7 +1894,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const loginState = await login(user.email, user.password);
     const socket = await connect(loginState.cookie);
 
-    const disconnected = waitForDisconnect(socket);
+    const disconnected = waitForSocketDisconnect(socket);
     await loginState.agent
       .delete('/api/v1/account')
       .set(...XRW)
@@ -1836,7 +1910,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const aliceLogin = await login(alice.email, alice.password);
     const aliceSocket = await connect(aliceLogin.cookie);
 
-    const disconnected = waitForDisconnect(aliceSocket);
+    const disconnected = waitForSocketDisconnect(aliceSocket);
     const switched = await aliceLogin.agent
       .post('/api/v1/auth/login')
       .set(...XRW)
@@ -1861,7 +1935,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     expect(challenge.status).toBe(200);
     expect(challenge.body.twoFactorRequired).toBe(true);
 
-    const disconnected = waitForDisconnect(aliceSocket);
+    const disconnected = waitForSocketDisconnect(aliceSocket);
     const verified = await aliceLogin.agent
       .post('/api/v1/auth/2fa/verify')
       .set(...XRW)
@@ -1880,7 +1954,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const { accessToken, grantId } = await mintOAuthToken(loginState.agent, user.id, ['chat:read']);
     const socket = await connectWith({ auth: { token: accessToken } });
 
-    const disconnected = waitForDisconnect(socket);
+    const disconnected = waitForSocketDisconnect(socket);
     await harness.ctx.oauth.revokeGrant({ userId: user.id, id: grantId });
     await disconnected;
   });
@@ -1908,7 +1982,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     );
     const socket = await connectWith({ auth: { token: accessToken } });
 
-    const disconnected = waitForDisconnect(socket);
+    const disconnected = waitForSocketDisconnect(socket);
     await ownerLogin.agent
       .delete(`/api/v1/settings/oauth-clients/${clientRowId}`)
       .set(...XRW)
@@ -1931,7 +2005,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     );
     const socket = await connectWith({ auth: { token: accessToken } });
 
-    const disconnected = waitForDisconnect(socket);
+    const disconnected = waitForSocketDisconnect(socket);
     await adminAgent
       .delete(`/api/v1/admin/oauth-clients/${clientRowId}`)
       .set(...XRW)
@@ -1953,8 +2027,8 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const keySocket = await connectWith({ auth: { token } });
     const admin = await harness.seedAdmin();
 
-    const cookieDisconnected = waitForDisconnect(cookieSocket);
-    const keyDisconnected = waitForDisconnect(keySocket);
+    const cookieDisconnected = waitForSocketDisconnect(cookieSocket);
+    const keyDisconnected = waitForSocketDisconnect(keySocket);
     await harness.ctx.admin.updateUser(
       user.id,
       { status: 'disabled', reason: 'Suspended pending review.' },
@@ -1986,7 +2060,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
       .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(accessToken)));
 
     const socket = await connectWith({ auth: { token: accessToken } });
-    await expect(waitForDisconnect(socket, 4000)).resolves.toBeUndefined();
+    await expect(waitForSocketDisconnect(socket, 4000)).resolves.toBeUndefined();
   });
 
   it('fails closed on bounded revalidation when a lifecycle publish is missed', async () => {
@@ -2004,7 +2078,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const socket = await connectWith({ auth: { token: accessToken } });
     await createOAuthRepository(harness.db).revokeGrant(user.id, grantId);
 
-    await expect(waitForDisconnect(socket, 4000)).resolves.toBeUndefined();
+    await expect(waitForSocketDisconnect(socket, 4000)).resolves.toBeUndefined();
   });
 
   it('times out one stuck resolver without suppressing later revalidation sweeps', async () => {
@@ -2124,11 +2198,11 @@ describe('realtime gateway — bell push end-to-end (§4.5 "done when")', () => 
     const aliceSocket = await connect(aliceLogin.cookie);
     const bobSocket = await connect(bobLogin.cookie);
 
-    const bellPush = waitForEvent<RealtimeNotificationNew>(
+    const bellPush = waitForSocketEvent<RealtimeNotificationNew>(
       bobSocket,
       REALTIME_SERVER_EVENTS.notificationNew,
     );
-    const aliceSilent = expectSilence(aliceSocket, REALTIME_SERVER_EVENTS.notificationNew, 500);
+    const aliceSilent = expectSilence(aliceSocket, REALTIME_SERVER_EVENTS.notificationNew);
 
     // Alice sends bob a friend request over plain HTTP — no socket involvement.
     await aliceLogin.agent
@@ -2144,7 +2218,7 @@ describe('realtime gateway — bell push end-to-end (§4.5 "done when")', () => 
     expect(list.status).toBe(200);
     const ids = (list.body.items as { id: string }[]).map((n) => n.id);
     expect(ids).toContain(push.notificationId);
-    await aliceSilent;
+    await aliceSilent();
   });
 });
 

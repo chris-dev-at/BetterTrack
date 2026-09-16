@@ -1718,7 +1718,9 @@ describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
       },
       400,
     );
-    expect(res.body.error.code).toBeDefined();
+    // The contract refuses the unknown key by name, so the reply is the generic
+    // validation code — asserting the code exists would pass on any 400 at all.
+    expect(res.body.error).toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 });
 
