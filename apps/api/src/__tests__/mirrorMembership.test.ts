@@ -223,6 +223,247 @@ describe('mirrorchain M3 — the §5 authority matrix (every capability × role)
   });
 });
 
+// ── The §5 authority matrix at invite REDEMPTION (#1612) ─────────────────────
+//
+// The matrix above answers "who may ISSUE an invite". This block answers the
+// question the server used to leave open: which role must the issuer hold when
+// the invite is REDEEMED. §5 binds the same answer it binds for the sibling
+// race — "Bob's kick after the revoke is refused at append by the role check" —
+// so authority is re-read at the moment the membership row would be written,
+// never trusted from the moment the token was minted. Anything else makes a
+// pending invite a bearer credential that outlives the authority behind it.
+
+/** How the inviter's standing changed between issuing and redemption. */
+type InviterFate =
+  | 'still owner'
+  | 'still manager'
+  | 'manage rights revoked'
+  | 'kicked from the chain'
+  | 'left the chain'
+  | 'handed ownership away';
+
+const REDEMPTION_MATRIX: Array<{ fate: InviterFate; expected: Outcome }> = [
+  { fate: 'still owner', expected: 'allow' },
+  { fate: 'still manager', expected: 'allow' },
+  { fate: 'manage rights revoked', expected: 'forbidden' },
+  { fate: 'kicked from the chain', expected: 'forbidden' },
+  { fate: 'left the chain', expected: 'forbidden' },
+  { fate: 'handed ownership away', expected: 'forbidden' },
+];
+
+/**
+ * Issue an invite from an authorized inviter, then move the inviter to `fate`.
+ * Returns the invitee and the still-pending invite id.
+ */
+async function inviteThenChangeInviter(h: TestHarness, fate: InviterFate) {
+  const { ownerId, chainId } = await ownerChain(h);
+  const inviterId =
+    fate === 'still owner' || fate === 'handed ownership away'
+      ? ownerId
+      : (await join(h, chainId, 'manager')).userId;
+
+  const carol = await h.seedUser(uu('carol'));
+  await makeFriends(h, inviterId, carol.id);
+  await h.ctx.mirror.inviteMember(inviterId, chainId, carol.id);
+  const inviteId = (await h.ctx.mirror.listInvites(carol.id)).incoming[0]!.id;
+
+  switch (fate) {
+    case 'still owner':
+    case 'still manager':
+      break;
+    case 'manage rights revoked':
+      await h.ctx.mirror.setMemberRole(ownerId, chainId, inviterId, 'member');
+      break;
+    case 'kicked from the chain':
+      await h.ctx.mirror.removeMember(ownerId, chainId, inviterId);
+      break;
+    case 'left the chain':
+      await h.ctx.mirror.leaveChain(inviterId, chainId);
+      break;
+    case 'handed ownership away': {
+      // Transfer demotes the old owner to a plain member (§5), so the invite
+      // they sent as owner is redeemed against a role that can no longer invite.
+      const heir = await join(h, chainId, 'member');
+      await h.ctx.mirror.transferOwnership(ownerId, chainId, heir.userId);
+      break;
+    }
+  }
+  return { chainId, inviterId, carolId: carol.id, inviteId };
+}
+
+describe('mirrorchain M3 — the §5 authority matrix at invite REDEMPTION (#1612)', () => {
+  let h: TestHarness;
+  beforeAll(async () => {
+    h = await createTestApp();
+  });
+
+  for (const { fate, expected } of REDEMPTION_MATRIX) {
+    it(`inviter ${fate} → accept ${expected}`, async () => {
+      const { chainId, carolId, inviteId } = await inviteThenChangeInviter(h, fate);
+      if (expected === 'allow') {
+        const accepted = await h.ctx.mirror.acceptInvite(carolId, inviteId);
+        expect(accepted.portfolioId).toBeTruthy();
+        expect(await repoOf(h).findActiveMembership(chainId, carolId)).not.toBeNull();
+        expect(await inviteStatus(h, inviteId)).toBe('accepted');
+      } else {
+        await expect(h.ctx.mirror.acceptInvite(carolId, inviteId)).rejects.toMatchObject({
+          statusCode: 403,
+          code: MIRROR_FORBIDDEN,
+        });
+        // No membership, no copy — the stranger never reached the shared book.
+        expect(await repoOf(h).findActiveMembership(chainId, carolId)).toBeNull();
+        // Retired, not left to rot: the dead row frees the pending-unique slot
+        // and leaves the invitee's inbox instead of sitting out its 30 days.
+        expect(await inviteStatus(h, inviteId)).toBe('revoked');
+        expect((await h.ctx.mirror.listInvites(carolId)).incoming).toHaveLength(0);
+      }
+    });
+  }
+
+  it('the crash-race idempotent replay still returns the existing copy, demoted inviter or not', async () => {
+    // Ordering decision (#1612): the authority gate guards the membership WRITE.
+    // A member row that already exists cannot be un-created by refusing, so the
+    // documented crash-race replay (member inserted, invite update lost) must
+    // still answer idempotently even though the sender has since been demoted.
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await join(h, chainId, 'manager');
+    const carol = await h.seedUser(uu('carol'));
+    await makeFriends(h, bob.userId, carol.id);
+    await h.ctx.mirror.inviteMember(bob.userId, chainId, carol.id);
+    const inviteId = (await h.ctx.mirror.listInvites(carol.id)).incoming[0]!.id;
+    const first = await h.ctx.mirror.acceptInvite(carol.id, inviteId);
+
+    // Replay the crash: the copy + membership landed, the invite row did not.
+    await h.db
+      .update(schema.mirrorChainInvites)
+      .set({ status: 'pending', respondedAt: null })
+      .where(eq(schema.mirrorChainInvites.id, inviteId));
+    await h.ctx.mirror.setMemberRole(ownerId, chainId, bob.userId, 'member');
+
+    const replay = await h.ctx.mirror.acceptInvite(carol.id, inviteId);
+    expect(replay.portfolioId).toBe(first.portfolioId);
+    expect(await inviteStatus(h, inviteId)).toBe('accepted');
+  });
+
+  it('a re-invite from a still-authorized sender works after the void one is retired', async () => {
+    const { chainId, carolId, inviteId } = await inviteThenChangeInviter(
+      h,
+      'kicked from the chain',
+    );
+    const owner = (await repoOf(h).listActiveMembers(chainId)).find((m) => m.role === 'owner')!;
+    await expect(h.ctx.mirror.acceptInvite(carolId, inviteId)).rejects.toMatchObject({
+      code: MIRROR_FORBIDDEN,
+    });
+
+    await makeFriends(h, owner.userId!, carolId);
+    await h.ctx.mirror.inviteMember(owner.userId!, chainId, carolId);
+    const fresh = (await h.ctx.mirror.listInvites(carolId)).incoming;
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]!.id).not.toBe(inviteId);
+    const accepted = await h.ctx.mirror.acceptInvite(carolId, fresh[0]!.id);
+    expect(accepted.portfolioId).toBeTruthy();
+  });
+});
+
+// ── Chain-scoped pending invites on the member sheet (#1612, design §4/§11) ──
+
+describe('mirrorchain M3 — the owner can discover and revoke an invite they did not send', () => {
+  it('the member sheet lists every open invite on the chain for owner + managers only', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await join(h, chainId, 'manager');
+    const plain = await join(h, chainId, 'member');
+    const carol = await h.seedUser(uu('carol'));
+    await makeFriends(h, bob.userId, carol.id);
+    await h.ctx.mirror.inviteMember(bob.userId, chainId, carol.id);
+
+    // The owner did not send it and it is not addressed to them, so the
+    // viewer-scoped inbox cannot see it at all — this is the discovery gap.
+    const ownerInbox = await h.ctx.mirror.listInvites(ownerId);
+    expect(ownerInbox.incoming).toHaveLength(0);
+    expect(ownerInbox.outgoing).toHaveLength(0);
+
+    const ownerSheet = await h.ctx.mirror.getMemberList(ownerId, chainId);
+    expect(ownerSheet.pendingInvites).toHaveLength(1);
+    expect(ownerSheet.pendingInvites[0]).toMatchObject({
+      toUsername: carol.username,
+      inviterStillAuthorized: true,
+    });
+    expect(ownerSheet.pendingInvites[0]!.fromUsername).toBeTruthy();
+    // No account ids ride the sheet — a face, a name and the id to revoke with.
+    expect(Object.keys(ownerSheet.pendingInvites[0]!).sort()).toEqual([
+      'createdAt',
+      'fromUsername',
+      'id',
+      'inviterStillAuthorized',
+      'toProfileIcon',
+      'toUsername',
+    ]);
+
+    // A manager holds the same §5 capability, so they see the same list.
+    const managerSheet = await h.ctx.mirror.getMemberList(bob.userId, chainId);
+    expect(managerSheet.pendingInvites).toHaveLength(1);
+
+    // A plain member holds neither invite nor revoke — the list is empty.
+    const memberSheet = await h.ctx.mirror.getMemberList(plain.userId, chainId);
+    expect(memberSheet.pendingInvites).toEqual([]);
+  });
+
+  it('the owner revokes the discovered invite by id and it closes', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await join(h, chainId, 'manager');
+    const carol = await h.seedUser(uu('carol'));
+    await makeFriends(h, bob.userId, carol.id);
+    await h.ctx.mirror.inviteMember(bob.userId, chainId, carol.id);
+
+    const [discovered] = (await h.ctx.mirror.getMemberList(ownerId, chainId)).pendingInvites;
+    await h.ctx.mirror.revokeInvite(ownerId, discovered!.id);
+
+    expect(await inviteStatus(h, discovered!.id)).toBe('revoked');
+    expect((await h.ctx.mirror.getMemberList(ownerId, chainId)).pendingInvites).toEqual([]);
+    await expect(h.ctx.mirror.acceptInvite(carol.id, discovered!.id)).rejects.toMatchObject({
+      code: MIRROR_INVITE_NOT_FOUND,
+    });
+  });
+
+  it('flags an invite whose sender lost the invite capability, and hides expired rows', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await join(h, chainId, 'manager');
+    const carol = await h.seedUser(uu('carol'));
+    const dana = await h.seedUser(uu('dana'));
+    await makeFriends(h, bob.userId, carol.id);
+    await makeFriends(h, bob.userId, dana.id);
+    await h.ctx.mirror.inviteMember(bob.userId, chainId, carol.id);
+    await h.ctx.mirror.inviteMember(bob.userId, chainId, dana.id);
+
+    // Dana's invite ages past the §4 horizon — never acceptable, never listed.
+    const danaInvite = (await h.ctx.mirror.listInvites(dana.id)).incoming[0]!.id;
+    await backdateInvite(h, danaInvite, 31);
+
+    await h.ctx.mirror.setMemberRole(ownerId, chainId, bob.userId, 'member');
+    const sheet = await h.ctx.mirror.getMemberList(ownerId, chainId);
+    expect(sheet.pendingInvites).toHaveLength(1);
+    expect(sheet.pendingInvites[0]!.toUsername).toBe(carol.username);
+    expect(sheet.pendingInvites[0]!.inviterStillAuthorized).toBe(false);
+  });
+
+  it('a severed member cannot read the sheet at all, invites included', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await join(h, chainId, 'manager');
+    const carol = await h.seedUser(uu('carol'));
+    await makeFriends(h, ownerId, carol.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, carol.id);
+
+    await h.ctx.mirror.removeMember(ownerId, chainId, bob.userId);
+    await expect(h.ctx.mirror.getMemberList(bob.userId, chainId)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+  });
+});
+
 // ── Create / convert ─────────────────────────────────────────────────────────
 
 describe('mirrorchain M3 — create + convert', () => {

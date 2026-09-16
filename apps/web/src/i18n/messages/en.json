@@ -3756,6 +3756,14 @@
       "you": "You",
       "joined": "Joined {{date}}"
     },
+    "pendingInvites": {
+      "title": "Pending invites",
+      "body": "Everyone who has been invited to this group portfolio and has not answered yet. Anyone with manage rights can cancel one, whoever sent it.",
+      "sentBy": "Invited by {{inviter}} · {{date}}",
+      "sentOn": "Invited {{date}}",
+      "senderNoLongerAuthorized": "The sender can no longer invite — this invite will be refused. Cancel it and send a new one.",
+      "revokeError": "Could not cancel the invite. Please try again."
+    },
     "confirm": {
       "leave": {
         "title": "Leave this group portfolio?",
@@ -3794,6 +3802,7 @@
       "loadError": "Could not load the activity feed. Please try again."
     },
     "membersListAria": "Members",
+    "pendingInvitesListAria": "Pending invites",
     "activityListAria": "Activity",
     "inviteListAria": "Friends you can invite",
     "invites": {
