@@ -15,7 +15,7 @@ import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, FAKE_GOOGLE_URL } from './support/config';
 import { dismissFirstRun, expectUserShellReady } from './support/flows';
 import { provisionUser } from './support/users';
-import en from '../apps/web/src/i18n/messages/en.json';
+import en from '../apps/web/src/i18n/messages/en.json' with { type: 'json' };
 
 /**
  * The Drive group's heading, read from the message bundle the app renders it
