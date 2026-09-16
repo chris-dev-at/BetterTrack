@@ -37,6 +37,7 @@ import {
   type LiveRegime,
   type LiveYearSettlement,
 } from './livingYear';
+import { correctionSourceForYear } from './correctionSource';
 import {
   activeCustomParams,
   PORTFOLIO_SETTING_KEY_TAX,
@@ -294,6 +295,10 @@ export async function replayRestoredTaxState(
             executedAt: input.now,
             note: correctionNote(regime),
             taxYear: settlement.year,
+            // The replayed rows keep their restored tags, so the correction is
+            // attributed exactly like the live reconciler's (V5-P0c, #1658) —
+            // without this it defaulted to `manual` on every restored vault.
+            source: correctionSourceForYear(settlement.year, transactions, dividends),
           } as const;
           if (movement.kind === 'tax_withholding') {
             try {

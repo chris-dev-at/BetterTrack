@@ -46,6 +46,37 @@ export const WEB_PORT = new URL(WEB_BASE_URL).port || '5273';
 export const ADMIN_PORT = new URL(ADMIN_BASE_URL).port || '5373';
 
 /**
+ * The ADDRESSES the e2e API and the worker wrapper's health endpoint LISTEN on
+ * (#2004), as opposed to the ports above.
+ *
+ * Until this existed the throwaway API bound every interface. Combined with the
+ * seed admin credentials in this repo and `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`
+ * in playwright.config.ts — which relaxes the guard's own-network carve-out so
+ * the webhook receiver on this box's LAN address is reachable — any host on the
+ * developer's /24 could drive the e2e API as a blind SSRF / port-scan probe for
+ * the minutes a suite ran. Nothing needs that reach: the browser, the harness
+ * and both Vite servers only ever talk to `localhost`.
+ *
+ * `127.0.0.1` and not `localhost`: a NAME makes Node resolve and bind the single
+ * address getaddrinfo returns first (on macOS `::1`), which would leave every
+ * IPv4-only client with nothing to connect to. The literal is deterministic and
+ * every client here reaches it — modern Node and Chromium both fall back from
+ * `::1` to `127.0.0.1` when resolving `localhost`.
+ *
+ * Derived from the URLs so an `E2E_API_BASE_URL` override that deliberately
+ * moves the stack onto a routable address moves the bind with it instead of
+ * silently making the API unreachable; `E2E_API_HOST` overrides that in turn.
+ * The capture RECEIVER is NOT covered here — it must stay on a non-loopback
+ * private interface or the webhook-URL guard refuses it (see e2e/support/e3.ts).
+ */
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+function bindHostFor(url: string): string {
+  const { hostname } = new URL(url);
+  return LOOPBACK_HOSTNAMES.has(hostname) ? '127.0.0.1' : hostname;
+}
+export const API_HOST = process.env.E2E_API_HOST ?? bindHostFor(API_BASE_URL);
+
+/**
  * The API's Prometheus listener (§13.5 V5-P2). Pinned here so the e2e API never
  * silently contends for the 9464 default with another BetterTrack process on the
  * same host (a dev stack's API binds it) — which means the value must NOT be
@@ -88,6 +119,9 @@ export const ACCOUNT_PASSWORD = 'Sup3rSecret!Passw0rd2';
 export const WORKER_HEALTH_PORT = process.env.E2E_WORKER_HEALTH_PORT ?? '3100';
 export const WORKER_HEALTH_URL =
   process.env.E2E_WORKER_HEALTH_URL ?? `http://localhost:${WORKER_HEALTH_PORT}`;
+/** Bind address for that health endpoint — loopback, for the reason on API_HOST. */
+export const WORKER_HEALTH_HOST =
+  process.env.E2E_WORKER_HEALTH_HOST ?? bindHostFor(WORKER_HEALTH_URL);
 
 /**
  * Fake Google IdP (issue #520). A tiny local OAuth/OIDC stand-in

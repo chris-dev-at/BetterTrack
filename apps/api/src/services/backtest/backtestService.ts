@@ -12,6 +12,8 @@ import type {
   BacktestResponse,
   BacktestStats as BacktestStatsDto,
   ComparisonMetrics,
+  ComparisonWindowMismatch,
+  ComparisonWindowMismatchReason,
   HistoryRange,
   PricePoint as ProviderPricePoint,
   RebalanceFrequency,
@@ -33,7 +35,7 @@ import {
   type BacktestStats,
 } from '../../domain/backtest';
 import { compareSeriesStats } from '../../domain/seriesStats';
-import { notFound, unprocessable } from '../../errors';
+import { ApiError, notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { flattenConglomerate, mapFlattened } from '../conglomerate/nesting';
@@ -1279,7 +1281,22 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     for (const { basket, result } of runs) {
       // A series that does not cover the window is not comparable over it, at
       // either end (#1755, #1811) — the same rule the benchmark path applies.
-      assertCoversWindow(`Conglomerate ${basket.name}`, 'the comparison window', result, covered);
+      assertCoversWindow(
+        `Conglomerate ${basket.name}`,
+        'the comparison window',
+        result,
+        covered,
+        (reason) => ({
+          kind: 'comparison-window-mismatch',
+          conglomerateId: basket.id,
+          name: basket.name,
+          reason,
+          windowStart: covered.start,
+          windowEnd: covered.end,
+          seriesStart: result.startDate,
+          seriesEnd: result.endCoverage?.date ?? null,
+        }),
+      );
     }
 
     const series: ComparisonCore['series'] = runs.map(({ basket, result }) => ({
@@ -1374,23 +1391,34 @@ function assertCoversWindow(
   windowLabel: string,
   result: BacktestResult,
   window: { start: string; end: string },
+  describe?: (reason: ComparisonWindowMismatchReason) => ComparisonWindowMismatch,
 ): void {
+  // The prose below is the operator-facing explanation and stays exactly as it
+  // was. `describe` additionally names the offending subject STRUCTURALLY so a
+  // client can localize its own sentence and offer an action, instead of echoing
+  // English into the page beside a retry that cannot succeed (#1659). Only the
+  // comparison path passes it: its subjects are the caller's OWN baskets, so the
+  // identity is one they already hold. The benchmark path leaves it undefined —
+  // a benchmark label may be a redacted subject, and nothing on that surface
+  // acts on the identity — so its refusal is byte-identical to before.
+  const refusal = (message: string, reason: ComparisonWindowMismatchReason): ApiError =>
+    describe === undefined
+      ? unprocessable(message, 'BACKTEST_UNAVAILABLE')
+      : new ApiError(422, 'BACKTEST_UNAVAILABLE', message, describe(reason));
+
   if (result.notice !== null) {
-    throw unprocessable(
-      `${subject} does not cover ${windowLabel} — ${result.notice}.`,
-      'BACKTEST_UNAVAILABLE',
-    );
+    throw refusal(`${subject} does not cover ${windowLabel} — ${result.notice}.`, 'clipped');
   }
   if (calendarDaysBetween(window.start, result.startDate) > COMPARISON_COVERAGE_GRACE_DAYS) {
-    throw unprocessable(
+    throw refusal(
       `${subject} does not cover ${windowLabel} — its data starts ${result.startDate}, after ${window.start}.`,
-      'BACKTEST_UNAVAILABLE',
+      'starts-late',
     );
   }
   if (coverageShortfallDays(result.endCoverage, window.end) > COMPARISON_COVERAGE_GRACE_DAYS) {
-    throw unprocessable(
+    throw refusal(
       `${subject} does not cover ${windowLabel} — its data ends ${result.endCoverage!.date}, before ${window.end}.`,
-      'BACKTEST_UNAVAILABLE',
+      'ends-early',
     );
   }
 }

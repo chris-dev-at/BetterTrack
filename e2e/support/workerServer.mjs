@@ -19,13 +19,19 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 
 const port = Number(process.env.E2E_WORKER_HEALTH_PORT ?? 3100);
+// Loopback by default (#2004). This endpoint exists only for Playwright's
+// readiness poll from the same box, and the worker process behind it has no
+// HTTP surface of its own, so nothing on the LAN has business reaching either.
+// See `API_HOST` in e2e/support/config.ts for why it is the literal and not
+// `localhost`.
+const host = process.env.E2E_WORKER_HEALTH_HOST ?? '127.0.0.1';
 
 const server = http.createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/plain' });
   res.end('ok');
 });
-server.listen(port, () => {
-  console.log(`[e2e worker wrapper] health endpoint on :${port}`);
+server.listen(port, host, () => {
+  console.log(`[e2e worker wrapper] health endpoint on ${host}:${port}`);
 });
 
 const child = spawn('pnpm', ['--filter', '@bettertrack/api', 'worker'], {

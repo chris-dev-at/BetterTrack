@@ -99,6 +99,31 @@ export const CASH_TAG_NAME_MAX = 60;
 export const CASH_RULE_PATTERN_MAX = 200;
 /** How many tags one movement or one rule may carry — a label set, not a taxonomy. */
 export const CASH_TAGS_PER_ITEM_MAX = 20;
+/**
+ * How many cash tags one ACCOUNT may hold (#1963).
+ *
+ * THE TAG TABLE IS THE OTHER UNCAPPED RESTORE SURFACE. `CASH_TAGS_PER_ITEM_MAX`
+ * bounds how many tags one rule or one movement carries, and #1954 restated it
+ * for the restore lane — but nothing bounded how many tags EXIST. A vault
+ * document is limited only by `VAULT_MAX_BYTES_DEFAULT` (16 MB), which is tens
+ * of thousands of `cashTag` rows, and those are exactly the rows that made
+ * 20 000 links to one rule reachable in the first place. Every tag is also a
+ * row in an unbounded read (`GET /cash/tags` returns the whole set, the picker
+ * renders it) and a cascade target of every tag delete.
+ *
+ * 1000 is a backstop, not a working limit: the app seeds nine system tags and a
+ * hand-written label set stops in the dozens, so no one reaches this by
+ * labelling their money. It sits deliberately FAR above the plausible ceiling
+ * because the same number gates the restore, and a cap that a pre-cap account
+ * could already be over would not refuse a write — it would refuse to give that
+ * account its data back. It is pinned by a test, so moving it is a deliberate
+ * edit.
+ *
+ * Lives here rather than beside `CASH_RULES_PER_USER_MAX` in the API service
+ * because the vault document schema enforces it too (`vault.ts`), and both
+ * seams must read ONE number.
+ */
+export const CASH_TAGS_PER_USER_MAX = 1000;
 /** Trailing-month window the trend endpoint will serve (same cap the expense trends had). */
 export const CASH_TREND_MONTHS_MAX = 24;
 

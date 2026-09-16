@@ -23,7 +23,7 @@ import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, PageHead } from '../../../ui/origin';
-import { SourceBadge } from '../SourceBadge';
+import { SourceBadge, sourceTagLabel } from '../SourceBadge';
 import { usePreservedSearch } from '../../components/LocalNav';
 import { useCreateIntent } from '../../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../../routeParams';
@@ -35,6 +35,15 @@ import { useActivePortfolio } from './useActivePortfolio';
 
 const UNTAGGED_FILTER = CASH_MOVEMENT_UNTAGGED_FILTER;
 const ALL_FILTER = 'all';
+
+/** Shared by the label and source pickers so the two read as one control strip. */
+const FILTER_SELECT_STYLE = {
+  minHeight: 28,
+  maxWidth: '100%',
+  padding: '2px 26px 2px 8px',
+  width: 'auto',
+  fontSize: 12,
+} as const;
 
 function kindLabel(t: TranslateFn, kind: CashMovement['kind']): string {
   return t(`portfolio.cashSources.kind.${kind}`);
@@ -62,6 +71,10 @@ export function CashMovementsPage() {
   const queryClient = useQueryClient();
   const { portfoliosQuery, portfolioId } = useActivePortfolio();
   const [tagFilter, setTagFilter] = useState<string>(ALL_FILTER);
+  // Source-tag filter (V5-P0c, #1658). This page already rendered the
+  // `SourceBadge`, so "Imported · Flatex" was readable here and actionable only
+  // on the older accounts page. The server applies it before paging.
+  const [sourceFilter, setSourceFilter] = useState<string>(ALL_FILTER);
   const [editing, setEditing] = useState<CashMovement | null>(null);
   const [tagging, setTagging] = useState<CashMovement | null>(null);
   const [recording, setRecording] = useState(false);
@@ -78,7 +91,7 @@ export function CashMovementsPage() {
   useCreateIntent(CREATE_INTENT.movement, () => setRecording(true));
 
   const movementsQuery = useInfiniteQuery({
-    queryKey: ['portfolio', portfolioId, 'cash', 'movements', tagFilter],
+    queryKey: ['portfolio', portfolioId, 'cash', 'movements', tagFilter, sourceFilter],
     queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) =>
       getCashMovements(
         portfolioId!,
@@ -86,6 +99,13 @@ export function CashMovementsPage() {
           cursor: pageParam,
           limit: CASH_MOVEMENTS_DEFAULT_LIMIT,
           tag: tagFilter === ALL_FILTER ? undefined : tagFilter,
+          source: sourceFilter === ALL_FILTER ? undefined : sourceFilter,
+          // The options come from the server's portfolio-wide facet, not from
+          // the rows this page happens to have paged in (V5-P0c, #1658). Only
+          // the first page asks for it — it is the only one read back, and an
+          // invalidation refetches page one anyway, so "load more" never pays
+          // for the facet a second time.
+          includeSourceTags: pageParam === undefined,
         },
         signal,
       ),
@@ -108,6 +128,15 @@ export function CashMovementsPage() {
   );
 
   const movements = movementsQuery.data?.pages.flatMap((page) => page.movements) ?? [];
+  const sourceTags = (() => {
+    const tags = new Set<string>(movementsQuery.data?.pages[0]?.sourceTags ?? []);
+    // An active selection stays selectable while its own response is in flight.
+    if (sourceFilter !== ALL_FILTER) tags.add(sourceFilter);
+    return [...tags].sort();
+  })();
+  // Anti-bloat (§13.5), the same rule the other two source filters use: a ledger
+  // that only ever saw hand entry never grows a picker.
+  const showSourceFilter = sourceTags.length > 1;
 
   function refetchAll() {
     void queryClient.invalidateQueries({ queryKey: ['portfolio', portfolioId, 'cash'] });
@@ -157,30 +186,56 @@ export function CashMovementsPage() {
         onRetry={() => void movementsQuery.refetch()}
       />
 
-      {tags.length > 1 ? (
-        <label className="bt-meta flex flex-wrap items-center gap-1.5">
-          {t('cashflow.movements.filterLabel')}
-          <select
-            className="bt-select"
-            onChange={(e) => setTagFilter(e.target.value)}
-            style={{
-              minHeight: 28,
-              maxWidth: '100%',
-              padding: '2px 26px 2px 8px',
-              width: 'auto',
-              fontSize: 12,
-            }}
-            value={tagFilter}
-          >
-            <option value={ALL_FILTER}>{t('cashflow.movements.filterAll')}</option>
-            <option value={UNTAGGED_FILTER}>{t('cashflow.untagged')}</option>
-            {tags.map((tag) => (
-              <option key={tag.id} value={tag.id}>
-                {tag.name}
-              </option>
-            ))}
-          </select>
-        </label>
+      {tags.length > 1 || showSourceFilter ? (
+        /*
+         * `min-w-0` on each picker is load-bearing, not decoration. As a direct
+         * child of the page COLUMN a label stretched to the column's width and
+         * its select's `max-width: 100%` clamped against that. Inside this ROW a
+         * label is a main-axis item, so its default `min-width: auto` sizes it
+         * to content — a long label name then pushed the phone viewport into a
+         * horizontal scroll (the `mobile-overflow` gate's LONG_TAG_NAME
+         * fixture). `min-w-0` lets it shrink back to the line, and `flex-wrap`
+         * gives a picker that still cannot fit a line of its own.
+         */
+        <div className="flex flex-wrap items-center gap-4">
+          {tags.length > 1 ? (
+            <label className="bt-meta flex min-w-0 flex-wrap items-center gap-1.5">
+              {t('cashflow.movements.filterLabel')}
+              <select
+                className="bt-select"
+                onChange={(e) => setTagFilter(e.target.value)}
+                style={FILTER_SELECT_STYLE}
+                value={tagFilter}
+              >
+                <option value={ALL_FILTER}>{t('cashflow.movements.filterAll')}</option>
+                <option value={UNTAGGED_FILTER}>{t('cashflow.untagged')}</option>
+                {tags.map((tag) => (
+                  <option key={tag.id} value={tag.id}>
+                    {tag.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {showSourceFilter ? (
+            <label className="bt-meta flex min-w-0 flex-wrap items-center gap-1.5">
+              {t('portfolio.sourceTag.filterLabel')}
+              <select
+                className="bt-select"
+                onChange={(e) => setSourceFilter(e.target.value)}
+                style={FILTER_SELECT_STYLE}
+                value={sourceFilter}
+              >
+                <option value={ALL_FILTER}>{t('portfolio.sourceTag.filterAll')}</option>
+                {sourceTags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {sourceTagLabel(t, tag) ?? t('portfolio.sourceTag.manual')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
       ) : null}
 
       {movements.length === 0 ? (
