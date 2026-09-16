@@ -8,7 +8,6 @@ import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contract
 const runtime = vi.hoisted(() => ({
   phase: 'locked' as 'locked' | 'unlocking' | 'unlocked',
   lock: vi.fn(async () => undefined),
-  unlockFromDevice: vi.fn(async () => false),
   unlockWithPassphrase: vi.fn(async () => ({})),
   unlockWithRecoveryKit: vi.fn(async () => ({})),
   cleanupAfterDisable: vi.fn(async () => undefined),

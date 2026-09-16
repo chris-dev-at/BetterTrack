@@ -4101,8 +4101,6 @@
       "title": "Tresor entsperren",
       "description": "Deine Finanzdaten bleiben verschlüsselt, bis dieses Gerät sie entsperrt.",
       "passphrase": "Tresor-Passphrase",
-      "keepUnlocked": "Auf diesem Gerät entsperrt lassen",
-      "keepUnlockedHint": "Manuelles Sperren, Abmelden oder deine bestehende PIN-Leerlaufsperre widerrufen diesen Geräteschlüssel.",
       "recoveryKit": "Wiederherstellungspaket verwenden",
       "recoveryKitHint": "Wähle bettertrack-recovery-kit.txt, anstatt die Passphrase einzugeben.",
       "driveGesture": "Google bittet dich möglicherweise um eine Anmeldung, damit dieses Gerät die verschlüsselte Drive-Kopie lesen kann.",
