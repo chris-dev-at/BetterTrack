@@ -4060,6 +4060,10 @@ const endpoints: EndpointDef[] = [
     body: R.SetAudienceRequest,
     status: 200,
     response: R.AudienceMutationResponse,
+    // Published because a client must be able to branch on it: a `group` write
+    // naming a circle the caller no longer owns is repairable (re-pick), unlike
+    // the generic 400 (#1978).
+    errorCodes: [contracts.GROUP_AUDIENCE_INVALID_ERROR_CODE],
   },
   {
     method: 'put',

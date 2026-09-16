@@ -10,7 +10,7 @@ vi.mock('../../lib/socialApi', () => ({
   setAudience: vi.fn(),
 }));
 
-import { FRIEND_GROUPS_MAX } from '@bettertrack/contracts';
+import { FRIEND_GROUPS_MAX, GROUP_AUDIENCE_INVALID_ERROR_CODE } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
@@ -862,7 +862,13 @@ describe('AudiencePicker — a share whose circle was deleted (#1899)', () => {
       .mockResolvedValueOnce({ groups: [FAMILY_ROW, WORK_ROW] })
       .mockResolvedValue({ groups: [WORK_ROW] });
     vi.mocked(setAudience).mockRejectedValue(
-      new ApiError(400, 'GROUP_AUDIENCE_INVALID', 'Sharing to a group requires one of your own.'),
+      new ApiError(
+        400,
+        // The contract constant, not a re-typed literal: if the server renames
+        // the code this test goes red instead of the repair UX going quiet.
+        GROUP_AUDIENCE_INVALID_ERROR_CODE,
+        'Sharing to a group requires one of your own.',
+      ),
     );
     const user = userEvent.setup();
     renderPicker();
