@@ -820,6 +820,19 @@ untouched** and is not part of this arc's diff.
   so sign-out, an account switch and the PIN idle lock reach the endpoint
   keystore; `ui/useEndpointVaultLock.ts` ships the "Lock vault" control in the
   account menu and in the shield chip's popover.
+  **One keystore instance per tab, and that is load-bearing (#2013).** An
+  endpoint is a device, so a second `EndpointVaultKeystore` in the same tab is a
+  second §12 session holder on one endpoint — sharing that endpoint's single
+  keystore IndexedDB, its account `BroadcastChannel`, its device-locked marker
+  and its one device-session record, and able to disagree with the first about
+  every one of them. The §13 transfer surfaces therefore mount the SAME
+  `endpointVaultKeystore` the manager, the shield chip and the locked stubs read
+  (`qr/runtime.ts`), and the account is bound through `bindEndpointKeystoreAccount`
+  for all of them. The defect this rule was written from: the transfer runtime
+  owned a private keystore nothing ever bound to an account, and every session
+  edge inside the keystore is guarded on a bound account — so a phrase received
+  on a second device established no session at all, and the device whose
+  password the user had just proven came back LOCKED.
 - **A session belongs to the ENDPOINT, not to one tab (ruled 2026-09-01, §16;
   binding).** "Unlocks ALL wrapped phrases on that endpoint" is read the way it
   is written: an endpoint is a device. A newly opened tab therefore asks the
