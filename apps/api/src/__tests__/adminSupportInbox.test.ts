@@ -420,6 +420,14 @@ describe('admin support inbox — W3 filters and thread state', () => {
     // The contrast that makes the assertion above discriminating: newest-first
     // is the branch `sort: 'status'` falls through to if the lifecycle CASE is
     // removed, and it produces a different order for six of the eight rows.
+    //
+    // What it does NOT discriminate (#1969) is the CASE's result TYPE. Six
+    // statuses means ranks '0'…'5', which sort identically as text and as int,
+    // so this file stays green even when every rank is an unknown-typed bind
+    // that Postgres resolves to text. The eleventh rank is where that starts
+    // reordering the queue, and proving it needs more ranks than the live
+    // partition has: see feedbackLifecycleRankOrder.test.ts, which drives the
+    // same builder with twelve.
     const newest = await list({ sort: 'newest' });
     expect(newest.submissions.map((row) => row.subject)).toEqual([
       'Chart tooltip lags on a phone',
