@@ -4908,7 +4908,7 @@ const endpoints: EndpointDef[] = [
     summary:
       'Public token endpoint: exchange an authorization code (+ PKCE / client secret) or rotate a refresh token.',
     description:
-      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set disjoint from this consent — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot, because a grant with no effective scope authorizes nothing and every token under it is already powerless; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT.',
+      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set none of whose entries satisfies any consented scope (write⇒read counts as satisfying) — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot: with no effective scope the grant can reach no scoped route, and the only thing its tokens could still do — read the caller’s own identity via /auth/me — is not worth keeping a dead grant alive for; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT.',
     public: true,
     body: R.OAuthTokenRequest,
     status: 200,
