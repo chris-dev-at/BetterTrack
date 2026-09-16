@@ -115,6 +115,8 @@ export const AuditAction = {
    *  same row, never a second registration. */
   DriveConnectionRefreshed: 'drive_connection.refreshed',
   DriveConnectionDeleted: 'drive_connection.deleted',
+  /** A failed §15 step-up on the acknowledged disconnect-with-loss (#1632). */
+  DriveConnectionDisconnectReauthFail: 'drive_connection.disconnect_reauth_fail',
   /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
@@ -228,6 +230,7 @@ export const AUDIT_PRESET_ACTIONS = {
     AuditAction.VaultDeleteReauthFail,
     AuditAction.PortfolioVaultMoveInReauthFail,
     AuditAction.PortfolioVaultMoveOutReauthFail,
+    AuditAction.DriveConnectionDisconnectReauthFail,
   ],
   /**
    * What the CONSOLE did, as opposed to what accounts did — the admin-only

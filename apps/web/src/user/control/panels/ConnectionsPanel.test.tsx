@@ -417,11 +417,88 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     expect(
       await screen.findByText(/encrypted files remain your property in Google Drive/i),
     ).toBeInTheDocument();
+    // The unacknowledged probe is what DISCOVERS the binding, so it carries no
+    // credential (paranoid design §15, #1632).
+    expect(disconnect).toHaveBeenLastCalledWith(y, false, undefined);
+
+    await user.type(screen.getByLabelText('Account confirmation'), 'correct horse battery staple');
     await user.click(screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }));
 
-    await waitFor(() => expect(disconnect).toHaveBeenLastCalledWith(y, true));
+    await waitFor(() =>
+      expect(disconnect).toHaveBeenLastCalledWith(y, true, {
+        password: 'correct horse battery staple',
+      }),
+    );
     expect(
       await screen.findByText('Drive account disconnected. Its files remain in Google Drive.'),
+    ).toBeInTheDocument();
+  });
+
+  test('step-up gates the acknowledgement: no credential, no disconnect (§15)', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const disconnect = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, 'DRIVE_CONNECTION_BOUND', 'bound'))
+      .mockRejectedValueOnce(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'))
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: registry(disconnect) }, 'paranoid');
+
+    await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    const confirm = await screen.findByRole('button', {
+      name: 'Disconnect and leave files in Drive',
+    });
+
+    // An empty credential cannot even be submitted: the loss-of-reach button is
+    // shut until the §15 credential is entered.
+    expect(confirm).toBeDisabled();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+
+    // A refused credential keeps the acknowledgement open, says no more than the
+    // server does, and disconnects nothing.
+    await user.type(screen.getByLabelText('Account confirmation'), 'wrong-password');
+    await user.click(confirm);
+    expect(await screen.findByText(/That confirmation was not accepted/i)).toBeInTheDocument();
+    expect(disconnect).toHaveBeenLastCalledWith(y, true, { password: 'wrong-password' });
+    expect(
+      screen.queryByText('Drive account disconnected. Its files remain in Google Drive.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }),
+    ).toBeInTheDocument();
+
+    // A second factor is accepted in the same control, and the retry proceeds.
+    await user.selectOptions(screen.getByLabelText('Confirmation method'), 'code');
+    await user.type(screen.getByLabelText('Account confirmation'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }));
+    await waitFor(() => expect(disconnect).toHaveBeenLastCalledWith(y, true, { code: '123456' }));
+    expect(
+      await screen.findByText('Drive account disconnected. Its files remain in Google Drive.'),
+    ).toBeInTheDocument();
+  });
+
+  test('tells a throttled acknowledgement apart from a rejected credential', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const disconnect = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, 'DRIVE_CONNECTION_BOUND', 'bound'))
+      .mockRejectedValueOnce(new ApiError(429, 'RATE_LIMITED', 'slow down'));
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: registry(disconnect) }, 'paranoid');
+
+    await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    await user.type(screen.getByLabelText('Account confirmation'), 'maybe-right');
+    await user.click(screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }));
+
+    // Both the §15 step-up throttle and the module's own route limiter answer
+    // 429 here, and the surface cannot tell them apart without disclosing which
+    // fired — so a 429 says "wait", never "that confirmation was rejected".
+    expect(await screen.findByText(/Too many attempts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/That confirmation was not accepted/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }),
     ).toBeInTheDocument();
   });
 

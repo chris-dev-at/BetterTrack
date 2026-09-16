@@ -1,4 +1,8 @@
-import { isValidRedirectUri, type ApiKeyScope } from '@bettertrack/contracts';
+import {
+  isValidRedirectUri,
+  withImpliedReadScopes,
+  type ApiKeyScope,
+} from '@bettertrack/contracts';
 
 import type { OAuthRepository } from '../../data/repositories/oauthRepository';
 
@@ -117,6 +121,19 @@ function unionPreservingOrder<T>(existing: readonly T[], additions: readonly T[]
 }
 
 /**
+ * `scopes` plus every `:read` its `:write` entries imply, APPENDED where missing
+ * (#1740, V5-P0b). Deliberately not `withImpliedReadScopes` on its own: that
+ * returns the canonical order and only known scopes, which would reorder an
+ * admin's ceiling and drop an admin-added scope outside {@link API_KEY_SCOPES}.
+ * Routed through the same additive union as everything else in this seed, so the
+ * never-drop / never-reorder contract still holds and an already-closed ceiling
+ * comes back byte-identical.
+ */
+function withImpliedReadsAppended(scopes: readonly ApiKeyScope[]): ApiKeyScope[] {
+  return unionPreservingOrder(scopes, withImpliedReadScopes(scopes));
+}
+
+/**
  * Idempotently upsert every {@link FIRST_PARTY_CLIENTS} definition:
  *
  *  - Row MISSING → create it exactly as defined: system-owned (no user, so it
@@ -158,7 +175,7 @@ export async function seedFirstPartyClients(
         name: def.name,
         clientSecretHash: null, // public client — PKCE, never a secret
         redirectUris: [...def.redirectUris],
-        scopes: [...def.scopeCeiling],
+        scopes: withImpliedReadsAppended(def.scopeCeiling),
         isPublic: def.public,
         isFirstParty: true,
         logoUrl: null, // first-party apps render the BetterTrack mark
@@ -172,7 +189,12 @@ export async function seedFirstPartyClients(
       continue;
     }
 
-    const mergedScopes = unionPreservingOrder(existing.scopes as ApiKeyScope[], def.scopeCeiling);
+    // Write⇒read at this write path too (#1740, V5-P0b): a `:read` implied by a
+    // `:write` in the merged ceiling is appended when missing, which heals a row
+    // stored before the rule reached the write paths.
+    const mergedScopes = withImpliedReadsAppended(
+      unionPreservingOrder(existing.scopes as ApiKeyScope[], def.scopeCeiling),
+    );
     const mergedUris = unionPreservingOrder(existing.redirectUris, def.redirectUris);
     // A union can only add entries, so a length change is exactly "something was
     // missing" — cheap and sufficient to decide whether a write is needed.

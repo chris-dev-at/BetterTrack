@@ -453,8 +453,54 @@ export type DriveConnectionDisconnectQuery = z.infer<typeof driveConnectionDisco
  * accepts a Google token" holds on EVERY method of the module, not only on the
  * one that happens to take a body.
  */
-export const driveConnectionEmptyBodySchema = z.union([z.undefined(), z.object({}).strict()]);
+const driveConnectionNoBodyObjectSchema = z.object({}).strict();
+
+export const driveConnectionEmptyBodySchema = z.union([
+  z.undefined(),
+  driveConnectionNoBodyObjectSchema,
+]);
 export type DriveConnectionEmptyBody = z.infer<typeof driveConnectionEmptyBodySchema>;
+
+/**
+ * `DELETE /drive-connections/:connectionId?acknowledgeBound=true` — the ONE
+ * Drive-registry request that loses something. The acknowledgement IS the
+ * loss-of-reach assertion (§15 names it a gated operation next to vault
+ * deletion and the two portfolio moves), so that body carries the same in-body
+ * step-up credential those three carry, on the same
+ * {@link vaultStepUpCredentialSchema}.
+ *
+ * The UNACKNOWLEDGED disconnect keeps {@link driveConnectionEmptyBodySchema}:
+ * it is the call that DISCOVERS the binding, so asking for a password before
+ * telling an owner that a vault is bound would gate a read. A connection with
+ * nothing bound to it loses nothing and stays bodyless with it.
+ *
+ * Still `.strict()` with exactly one member, so the module-wide rule holds:
+ * no Drive route accepts a Google token on any method.
+ */
+export const driveConnectionDisconnectAcknowledgedRequestSchema = z
+  .object({ stepUp: vaultStepUpCredentialSchema })
+  .strict();
+export type DriveConnectionDisconnectAcknowledgedRequest = z.infer<
+  typeof driveConnectionDisconnectAcknowledgedRequestSchema
+>;
+
+/**
+ * DOCUMENTATION ONLY — the two body shapes `DELETE /drive-connections/:id`
+ * accepts across its two forms, so `/docs` and a generated client describe both
+ * instead of claiming the gated one is always required.
+ *
+ * It is deliberately NOT what the route validates with. Which member applies is
+ * decided by `acknowledgeBound`, and the route parses with that member alone:
+ * validating against the union would let a bare `{}` through on the
+ * acknowledged form, which is exactly the §15 refusal that must hold.
+ */
+export const driveConnectionDisconnectRequestSchema = z.union([
+  driveConnectionNoBodyObjectSchema,
+  driveConnectionDisconnectAcknowledgedRequestSchema,
+]);
+export type DriveConnectionDisconnectRequest = z.infer<
+  typeof driveConnectionDisconnectRequestSchema
+>;
 
 // ── Envelope v2 header (§5) ──────────────────────────────────────────────────
 
