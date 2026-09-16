@@ -10,6 +10,7 @@ import { useAuth } from '../../AuthContext';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert, AuthCard, Button, TextField } from '../../components/ui';
 import { VaultCryptoError } from '../errors';
+import { stepUpFailureCopy } from './stepUpFailureCopy';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
 import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 
@@ -211,7 +212,12 @@ function StuckFold({
   const [code, setCode] = useState('');
   const [useCode, setUseCode] = useState(false);
   const [working, setWorking] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // The key the failure renders, not a bare flag: the §15 throttle's 429 must
+  // not reach the owner in the words of a refused password (#2028 — see
+  // {@link stepUpFailureCopy}). This fold is the one place a stuck owner CAN
+  // still act, so telling them to re-type a credential that was never judged is
+  // how they drive the progressive throttle deeper while locked out.
+  const [failureKey, setFailureKey] = useState<string | null>(null);
   const confirmed =
     username != null && typed.trim().toLowerCase() === username.trim().toLowerCase();
 
@@ -230,14 +236,19 @@ function StuckFold({
   async function startFresh() {
     if (!confirmed || !credentialEntered || working) return;
     setWorking(true);
-    setFailed(false);
+    setFailureKey(null);
     try {
       await onStartFresh({
         confirmUsername: typed.trim(),
         ...(useCode && codeAvailable ? { code: code.trim() } : { password }),
       });
-    } catch {
-      setFailed(true);
+    } catch (cause) {
+      setFailureKey(
+        stepUpFailureCopy(cause, {
+          refused: 'vault.unlock.stuck.error',
+          throttled: 'vault.unlock.stuck.throttled',
+        }),
+      );
       setWorking(false);
     }
   }
@@ -302,7 +313,7 @@ function StuckFold({
             {t(useCode ? 'vault.unlock.stuck.usePassword' : 'vault.unlock.stuck.useCode')}
           </OriginButton>
         ) : null}
-        {failed ? <Alert tone="error">{t('vault.unlock.stuck.error')}</Alert> : null}
+        {failureKey ? <Alert tone="error">{t(failureKey)}</Alert> : null}
         <OriginButton
           disabled={!confirmed || !credentialEntered || working}
           onClick={() => void startFresh()}

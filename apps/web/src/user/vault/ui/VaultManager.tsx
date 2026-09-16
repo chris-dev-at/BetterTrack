@@ -53,6 +53,7 @@ import {
   vaultStateTone,
 } from '../vaultStateAffordance';
 import { vaultRetryTimeLabel } from './retryTime';
+import { stepUpFailureCopy } from './stepUpFailureCopy';
 import { StepUpCredentialFields } from './StepUpCredentialFields';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
@@ -413,7 +414,15 @@ function VaultManagerRow({
       setErrorKey(
         error instanceof ApiError && error.code === PER_VAULT_ERROR_CODES.deleteReferenced
           ? 'vault.manager.deleteReferenced'
-          : 'vault.manager.deleteError',
+          : // A 429 never reached the credential (or never got judged on it), so
+            // it is a wait rather than a refusal — see {@link stepUpFailureCopy}
+            // for why the two must read differently and why neither may name the
+            // limiter. The entry is deliberately left in place: unlike a refusal,
+            // a throttle says nothing about whether what was typed is wrong.
+            stepUpFailureCopy(error, {
+              refused: 'vault.manager.deleteError',
+              throttled: 'vault.manager.deleteThrottled',
+            }),
       );
     } finally {
       setWorking(false);

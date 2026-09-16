@@ -62,6 +62,8 @@ vi.mock('../VaultRuntimeProvider', () => ({
   }),
 }));
 
+import de from '../../../i18n/messages/de.json';
+import en from '../../../i18n/messages/en.json';
 import { setAuthResponsePolicy } from '../../../lib/apiClient';
 import { submitPortfolioMoveIn, submitPortfolioMoveOut } from '../portfolioVaultMove';
 import type { PortfolioVaultMoveCapture } from '../portfolioVaultMove';
@@ -109,6 +111,46 @@ function refusedCredential(): Response {
     { status: 401, headers: { 'Content-Type': 'application/json' } },
   );
 }
+
+/**
+ * #2028 — the OTHER §15 answer these dialogs can get: the 429 emitted by the
+ * per-account progressive step-up throttle AND by the module's route limiter,
+ * indistinguishably. `Retry-After` is present because the server sends it; no
+ * surface is allowed to render it (see the §15 gate at the bottom of this file).
+ */
+function throttled(): Response {
+  return new Response(
+    JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'Too many requests.' } }),
+    {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
+    },
+  );
+}
+
+/**
+ * The two answers, verbatim from the EN catalog, per dialog. Pinned as literals
+ * rather than read through `t()` so that a catalog edit which collapses the two
+ * back into one string fails here instead of passing a test that compares a
+ * value to itself.
+ */
+const REFUSAL_COPY = {
+  delete: 'The vault could not be deleted. Nothing changed.',
+  moveIn: 'The portfolio was not moved. Its server data is unchanged.',
+  moveOut:
+    'The portfolio could not be restored completely. It remains locked in the vault; retry resumes the same move.',
+  discard:
+    'The vault could not be discarded. Nothing changed — try again when the connection is available.',
+} as const;
+
+const THROTTLE_COPY = {
+  delete: 'Too many attempts. Wait a moment, then try the deletion again. Nothing changed.',
+  moveIn:
+    'Too many attempts. Wait a moment, then try again. The portfolio was not moved and its server data is unchanged.',
+  moveOut:
+    'Too many attempts. Wait a moment, then try again. The portfolio stays locked in the vault until it succeeds.',
+  discard: 'Too many attempts. Wait a moment, then try the discard again. Nothing changed.',
+} as const;
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -221,9 +263,8 @@ describe('a wrong §15 step-up credential never logs the user out', () => {
       await user.type(screen.getByLabelText('Account confirmation'), 'mistyped-password');
       await user.click(screen.getByRole('button', { name: 'Delete empty vault' }));
 
-      expect(
-        await screen.findByText('The vault could not be deleted. Nothing changed.'),
-      ).toBeInTheDocument();
+      expect(await screen.findByText(REFUSAL_COPY.delete)).toBeInTheDocument();
+      expect(screen.queryByText(THROTTLE_COPY.delete)).not.toBeInTheDocument();
       // The dialog is still standing, with the credential field the owner can
       // correct — not a login screen.
       expect(screen.getByLabelText('Account confirmation')).toBeInTheDocument();
@@ -271,9 +312,8 @@ describe('a wrong §15 step-up credential never logs the user out', () => {
       await user.type(screen.getByLabelText('Account confirmation'), '000000');
       await user.click(screen.getByRole('button', { name: 'Move into vault' }));
 
-      expect(
-        await screen.findByText('The portfolio was not moved. Its server data is unchanged.'),
-      ).toBeInTheDocument();
+      expect(await screen.findByText(REFUSAL_COPY.moveIn)).toBeInTheDocument();
+      expect(screen.queryByText(THROTTLE_COPY.moveIn)).not.toBeInTheDocument();
       expectSessionIntact(policy);
     } finally {
       dispose();
@@ -306,9 +346,8 @@ describe('a wrong §15 step-up credential never logs the user out', () => {
       await user.type(screen.getByLabelText('Account confirmation'), 'mistyped-password');
       await user.click(screen.getByRole('button', { name: 'Move into vault' }));
 
-      expect(
-        await screen.findByText('The portfolio was not moved. Its server data is unchanged.'),
-      ).toBeInTheDocument();
+      expect(await screen.findByText(REFUSAL_COPY.moveIn)).toBeInTheDocument();
+      expect(screen.queryByText(THROTTLE_COPY.moveIn)).not.toBeInTheDocument();
       // Nothing was captured and nothing was committed: the pre-verify is the
       // whole point of #1528 F1.
       expect(CAPTURE.captureMoveIn).not.toHaveBeenCalled();
@@ -357,7 +396,8 @@ describe('a wrong §15 step-up credential never logs the user out', () => {
       await user.type(screen.getByLabelText('Account confirmation'), 'mistyped-password');
       await user.click(screen.getByRole('button', { name: 'Restore as a normal portfolio' }));
 
-      expect(await screen.findByText(/It remains locked in the vault/i)).toBeInTheDocument();
+      expect(await screen.findByText(REFUSAL_COPY.moveOut)).toBeInTheDocument();
+      expect(screen.queryByText(THROTTLE_COPY.moveOut)).not.toBeInTheDocument();
       expectSessionIntact(policy);
     } finally {
       dispose();
@@ -382,10 +422,285 @@ describe('a wrong §15 step-up credential never logs the user out', () => {
       await user.type(screen.getByLabelText('Current account password'), 'mistyped-password');
       await user.click(screen.getByRole('button', { name: 'Discard the vault and start fresh' }));
 
-      expect(await screen.findByText(/The vault could not be discarded/i)).toBeInTheDocument();
+      expect(await screen.findByText(REFUSAL_COPY.discard)).toBeInTheDocument();
+      expect(screen.queryByText(THROTTLE_COPY.discard)).not.toBeInTheDocument();
       expectSessionIntact(policy);
     } finally {
       dispose();
     }
   });
+});
+
+/**
+ * #2028 — the SAME four dialogs, answering the other §15 refusal. Before this
+ * change every one of them rendered its credential-refusal line for a 429, so
+ * an owner holding a CORRECT password was told it was wrong and re-entered it,
+ * driving the per-account progressive throttle deeper on every attempt.
+ *
+ * Each case asserts both halves: the throttle line is shown AND the refusal
+ * line is not. Asserting only the first would pass on a dialog that stacked the
+ * new copy on top of the old, which is the failure mode that matters here — the
+ * owner must not be told "wrong credential" at all.
+ *
+ * `expectSessionIntact` carries the rest of the acceptance for free: it is the
+ * app-wide policy's own `onRateLimited` (the toast #2025 stopped firing on gated
+ * calls), `onUnauthorized` and the logout seam.
+ */
+describe('a throttled §15 step-up says "wait", never "wrong credential"', () => {
+  it('delete vault: the 429 is a wait, and the dialog stays open on the entry', async () => {
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({
+        'GET /api/v1/vaults': () => json({ vaults: [VAULT] }),
+        [`DELETE /api/v1/vaults/${VAULT_ID}`]: throttled,
+      });
+      const user = userEvent.setup();
+      renderIn(<VaultManager operations={{ provision: vi.fn(), fetchHeader: vi.fn() }} />);
+
+      await user.click(await screen.findByRole('button', { name: 'Delete' }));
+      await user.type(screen.getByLabelText('Account confirmation'), 'the-correct-password');
+      await user.click(screen.getByRole('button', { name: 'Delete empty vault' }));
+
+      expect(await screen.findByText(THROTTLE_COPY.delete)).toBeInTheDocument();
+      expect(screen.queryByText(REFUSAL_COPY.delete)).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Account confirmation')).toBeInTheDocument();
+      expect(seenPath).toBe('/control/privacy');
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('move-in: a 429 from the COMMIT is a wait, not a refused authenticator code', async () => {
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({
+        [`GET /api/v1/portfolios/${PORTFOLIO_ID}/vault/revision`]: () =>
+          json({ portfolioDataRevision: 'rev-1', importBatchCount: 0 }),
+        [`POST /api/v1/portfolios/${PORTFOLIO_ID}/vault/move-in`]: throttled,
+      });
+      const user = userEvent.setup();
+      renderIn(
+        <PortfolioVaultMoveWizard
+          mode="in"
+          onCancel={vi.fn()}
+          onSubmit={({ vaultId, stepUp }) =>
+            submitPortfolioMoveIn({
+              portfolio: PORTFOLIO,
+              vault: { ...VAULT, id: vaultId },
+              stepUp,
+              capture: CAPTURE,
+            }).then(() => undefined)
+          }
+          portfolioName="Retirement"
+          vaults={[{ id: VAULT_ID, name: VAULT.name }]}
+        />,
+      );
+
+      await user.selectOptions(screen.getByLabelText('Target vault'), VAULT_ID);
+      await user.selectOptions(screen.getByLabelText('Confirmation method'), 'code');
+      await user.type(screen.getByLabelText('Account confirmation'), '000000');
+      await user.click(screen.getByRole('button', { name: 'Move into vault' }));
+
+      expect(await screen.findByText(THROTTLE_COPY.moveIn)).toBeInTheDocument();
+      expect(screen.queryByText(REFUSAL_COPY.moveIn)).not.toBeInTheDocument();
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('move-in: a 429 from the PRE-VERIFY (#1528 F1) reads the same, and captures nothing', async () => {
+    // `/auth/reauth` throttles on its own namespace, so this 429 and the commit's
+    // are two different limiters reaching one surface. §15 requires them to be
+    // indistinguishable there, which is exactly what asserting the same string
+    // in both cases pins.
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({ 'POST /api/v1/auth/reauth': throttled });
+      const user = userEvent.setup();
+      renderIn(
+        <PortfolioVaultMoveWizard
+          mode="in"
+          onCancel={vi.fn()}
+          onSubmit={({ vaultId, stepUp }) =>
+            submitPortfolioMoveIn({
+              portfolio: PORTFOLIO,
+              vault: { ...VAULT, id: vaultId },
+              stepUp,
+              capture: CAPTURE,
+            }).then(() => undefined)
+          }
+          portfolioName="Retirement"
+          vaults={[{ id: VAULT_ID, name: VAULT.name }]}
+        />,
+      );
+
+      await user.selectOptions(screen.getByLabelText('Target vault'), VAULT_ID);
+      await user.type(screen.getByLabelText('Account confirmation'), 'the-correct-password');
+      await user.click(screen.getByRole('button', { name: 'Move into vault' }));
+
+      expect(await screen.findByText(THROTTLE_COPY.moveIn)).toBeInTheDocument();
+      expect(screen.queryByText(REFUSAL_COPY.moveIn)).not.toBeInTheDocument();
+      expect(CAPTURE.captureMoveIn).not.toHaveBeenCalled();
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("move-out: the commit's 429 is a wait, and the portfolio is still in the vault", async () => {
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({
+        [`POST /api/v1/portfolios/${PORTFOLIO_ID}/vault/move-out/challenge`]: () =>
+          json({
+            portfolioId: PORTFOLIO_ID,
+            vaultId: VAULT_ID,
+            lifecycleGeneration: 1,
+            documentDigest: 'D'.repeat(43),
+            documentSetHash: 'E'.repeat(43),
+            challenge: 'C'.repeat(64),
+            expiresAt: '2026-09-16T12:00:00.000Z',
+          }),
+        [`POST /api/v1/portfolios/${PORTFOLIO_ID}/vault/move-out`]: throttled,
+      });
+      const user = userEvent.setup();
+      renderIn(
+        <PortfolioVaultMoveWizard
+          mode="out"
+          onCancel={vi.fn()}
+          onSubmit={({ stepUp }) =>
+            submitPortfolioMoveOut({
+              portfolio: PORTFOLIO,
+              vault: VAULT,
+              stepUp,
+              capture: CAPTURE,
+            }).then(() => undefined)
+          }
+          portfolioName="Retirement"
+          unlocked
+          vaultName={VAULT.name}
+        />,
+      );
+
+      await user.click(screen.getByRole('checkbox', { name: /becomes server-readable again/i }));
+      await user.type(screen.getByLabelText('Account confirmation'), 'the-correct-password');
+      await user.click(screen.getByRole('button', { name: 'Restore as a normal portfolio' }));
+
+      expect(await screen.findByText(THROTTLE_COPY.moveOut)).toBeInTheDocument();
+      expect(screen.queryByText(REFUSAL_COPY.moveOut)).not.toBeInTheDocument();
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('start fresh: the stuck fold asks for a wait rather than a re-typed password', async () => {
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({ 'POST /api/v1/account/paranoid/disable': throttled });
+      const user = userEvent.setup();
+      renderIn(
+        <VaultUnlockGate
+          mediaSet={['server']}
+          onStartFresh={(credential) =>
+            discardLockedVault(ACCOUNT_ID, credential).then(() => undefined)
+          }
+        />,
+      );
+
+      await user.type(await screen.findByLabelText('Type your username (ada) to confirm'), 'ada');
+      await user.type(screen.getByLabelText('Current account password'), 'the-correct-password');
+      await user.click(screen.getByRole('button', { name: 'Discard the vault and start fresh' }));
+
+      expect(await screen.findByText(THROTTLE_COPY.discard)).toBeInTheDocument();
+      expect(screen.queryByText(REFUSAL_COPY.discard)).not.toBeInTheDocument();
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+/**
+ * §15's actual requirement, stated over the catalogs rather than over one
+ * render: the per-account progressive throttle and the route limiter must be
+ * INDISTINGUISHABLE in copy, because naming which one fired discloses whether
+ * the credential path was reached at all.
+ *
+ * So no throttle string may name a limiter, a window, a countdown or the factor
+ * that was being checked — and all five say the same thing, in the same words,
+ * for whichever limiter fired.
+ */
+describe('the §15 throttle copy discloses nothing about which limiter fired', () => {
+  const THROTTLE_KEYS = [
+    ['vault', 'manager', 'deleteThrottled'],
+    ['vault', 'portfolioMove', 'moveIn', 'throttled'],
+    ['vault', 'portfolioMove', 'moveOut', 'throttled'],
+    ['vault', 'unlock', 'stuck', 'throttled'],
+    ['settings', 'connections', 'driveAccounts', 'acknowledgeThrottled'],
+  ] as const;
+
+  /**
+   * Terms that would betray the limiter (which one, how long, how many left) or
+   * the factor being verified. `attempt`/`Versuch` is deliberately absent: the
+   * copy has to say what happened, and "too many attempts" is true of both
+   * limiters.
+   */
+  const DISCLOSING = [
+    /\bpassword\b/i,
+    /\bpasswort\b/i,
+    /\bcode\b/i,
+    /\bcredential/i,
+    /\brate.?limit/i,
+    /\bthrottl/i,
+    /\bdrossel/i,
+    /\broute\b/i,
+    /\bendpoint\b/i,
+    /\baccount\b/i,
+    /\bkonto\b/i,
+    /\b\d+\s*(?:s|sec|second|seconds|min|minute|minutes|Sekunde|Sekunden|Minute|Minuten)\b/i,
+  ];
+
+  function read(catalog: unknown, path: readonly string[]): string {
+    let node: unknown = catalog;
+    for (const segment of path) {
+      expect(node, `missing before ${segment} in ${path.join('.')}`).toBeTypeOf('object');
+      node = (node as Record<string, unknown>)[segment];
+    }
+    expect(node, `${path.join('.')} is not a string`).toBeTypeOf('string');
+    return node as string;
+  }
+
+  it('the disclosure probe is not vacuous', () => {
+    const bad = 'Account rate limit reached — wrong password, retry in 30 seconds.';
+    expect(DISCLOSING.filter((pattern) => pattern.test(bad))).toHaveLength(4);
+    // …and it does not fire on the copy's own vocabulary.
+    expect(DISCLOSING.some((pattern) => pattern.test('Too many attempts. Wait a moment.'))).toBe(
+      false,
+    );
+  });
+
+  for (const [code, catalog] of [
+    ['en', en],
+    ['de', de],
+  ] as const) {
+    it(`${code}: every §15 throttle line names no limiter, factor or countdown`, () => {
+      for (const path of THROTTLE_KEYS) {
+        const value = read(catalog, path);
+        const leaked = DISCLOSING.filter((pattern) => pattern.test(value)).map(String);
+        expect(leaked, `${code}.${path.join('.')} leaks: ${value}`).toEqual([]);
+      }
+    });
+
+    it(`${code}: all five open with the same sentence, whichever limiter fired`, () => {
+      // Only the opening is shared. What follows says which ceremony did not
+      // happen — dialog identity, which the owner already knows and which
+      // discloses nothing about the limiter.
+      const openings = THROTTLE_KEYS.map((path) => read(catalog, path).split('.')[0]);
+      expect(new Set(openings).size, `openings drifted: ${openings.join(' | ')}`).toBe(1);
+      expect(openings[0]).toBe(code === 'en' ? 'Too many attempts' : 'Zu viele Versuche');
+    });
+  }
 });
