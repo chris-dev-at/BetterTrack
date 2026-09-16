@@ -4069,67 +4069,15 @@
       }
     },
     "enable": {
-      "title": "Enable Paranoid mode",
-      "step": "Step {{current}} of {{total}}",
-      "steps": {
-        "1": {
-          "title": "What changes"
-        },
-        "2": {
-          "title": "Choose encrypted storage"
-        },
-        "3": {
-          "title": "Protect your vault"
-        },
-        "4": {
-          "title": "Moving your data"
-        }
-      },
-      "changesIntro": "BetterTrack will move your money data into a client-encrypted vault. These server-powered features turn off:",
-      "killList": {
-        "sharing": "Sharing, shared items, comments, reactions and Mirrorchain",
-        "serverReads": "Server portfolio analytics, tax exports, Live Mode and AI insights",
-        "imports": "Broker and bank CSV imports",
-        "automation": "Server standing-order execution and portfolio jobs",
-        "publicProfile": "Your public profile and portfolio-scoped API access"
-      },
-      "keptSummary": "Manual portfolio work, client analytics and tax, Forecast, private watchlists, assets, alerts, friendships and chat remain available.",
       "media": {
-        "server": {
-          "title": "BetterTrack encrypted storage",
-          "body": "Encrypted on BetterTrack; only you can read it."
-        },
-        "driveCopy": "Also keep a verified copy in my Google Drive",
-        "driveAuthorizationRequired": "Connect Google Drive before continuing, so you can resolve any sign-in or popup problem before creating your vault passphrase and recovery kit.",
-        "driveConnected": "Google Drive is connected and ready for the encrypted copy.",
-        "preparingDrive": "Preparing Google sign-in…",
-        "connectDrive": "Connect Google Drive",
-        "reconnectDrive": "Reconnect Google Drive",
-        "retryDrivePreparation": "Retry Google Drive setup",
-        "connectingDrive": "Connecting Google Drive…",
-        "advanced": "Advanced",
         "driveOnly": {
-          "title": "Google Drive only",
           "body": "Nothing is kept on BetterTrack servers — not even encrypted. This setup writes to Drive only; later, moving a portfolio into or out of this vault does leave its encrypted staging copy on the server, so a Drive write that never landed can still be recovered. That copy expires by itself after up to {{minutes}} minutes and is never served as vault storage."
         }
       },
-      "passphraseDistinct": "Create a new vault passphrase. It must be different from your BetterTrack login password and never goes to the server.",
-      "passphrase": "Vault passphrase",
-      "passphraseConfirm": "Confirm vault passphrase",
-      "passphraseMismatch": "Choose a strong vault passphrase and enter it the same way twice.",
-      "downloadRecoveryKit": "Download recovery kit",
-      "downloadAgain": "Download recovery kit again",
-      "kitStored": "I have stored my recovery kit safely.",
       "lostKeyAcknowledgment": "If I lose my vault passphrase and my recovery kit, my data is gone forever. BetterTrack cannot recover it.",
-      "action": "Enable Paranoid mode",
       "done": "Paranoid mode is on. Your encrypted vault is ready.",
       "progress": {
-        "preparing": "Preparing the protected migration…",
         "migrate": "Collecting your complete portfolio data on this device…",
-        "captureRequests": {
-          "one": "1 data section collected safely.",
-          "other": "{{count}} data sections collected safely."
-        },
         "validate": "Checking that the prepared vault opens and restores…",
         "encrypt": "Encrypting your vault on this device…",
         "write-server": "Saving the encrypted BetterTrack copy…",
@@ -4139,10 +4087,6 @@
         "commit": "Finalizing Paranoid mode…"
       },
       "errors": {
-        "drivePreparation": "Google Drive could not be prepared. Check your connection and try again. Your account has not changed.",
-        "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so it cannot be used as vault storage here. Your connection is fine — choose BetterTrack encrypted storage, or ask the person running this deployment to configure Drive. Your account has not changed.",
-        "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
-        "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
         "validate": "The prepared vault failed its safety check, so BetterTrack stopped before writing anything. Nothing was changed and your normal account is unchanged.",
         "encrypt": "This browser could not encrypt the vault. Nothing was changed.",
@@ -4150,17 +4094,7 @@
         "write-drive": "The encrypted Google Drive copy could not be saved. Check your Google sign-in and retry.",
         "verify-server": "The BetterTrack copy could not be verified. Your normal account is unchanged.",
         "verify-drive": "The Google Drive copy could not be verified. Your normal account is unchanged.",
-        "commit": "BetterTrack did not switch modes. Your normal account remains usable; resolve any transition warning and retry.",
-        "mirrorchainActive": "Leave your MIRRORCHAIN group portfolio and keep its fork before enabling Paranoid mode.",
-        "importInFlight": "Finish or cancel the active import before enabling Paranoid mode.",
-        "exportInFlight": "Wait for the account export to finish, then enable Paranoid mode.",
-        "mediaNotReady": "The selected encrypted copy was not ready for the final switch. Verify the storage locations and retry.",
-        "transitionConflict": "Another privacy transition is still finishing. Wait a moment and retry.",
-        "normalDataChanged": "Your account changed while the encrypted copy was being prepared, so BetterTrack stopped before deleting anything. Nothing was lost — start the switch again to include the newest data.",
-        "captureUnstable": "Your account kept changing while BetterTrack was collecting it, so no complete copy could be taken and nothing was changed. Close BetterTrack in other tabs and on other devices, then start the switch again.",
-        "rateLimited": "The switch reached BetterTrack’s request limit before anything was changed. Wait {{seconds}} seconds, then start the switch again.",
-        "rateLimitedUnknown": "The switch reached BetterTrack’s request limit before anything was changed. Wait for the request window to reset, then start the switch again.",
-        "unknown": "Paranoid mode could not be enabled. Your normal account is unchanged."
+        "commit": "BetterTrack did not switch modes. Your normal account remains usable; resolve any transition warning and retry."
       }
     },
     "unlock": {

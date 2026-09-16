@@ -163,10 +163,13 @@ test('registers copy for every btvault transfer payload outcome in EN and DE', (
 });
 
 test('registers progress + error copy for every paranoid enable stage in EN and DE', () => {
-  // `ParanoidEnableWizard` builds both keys with a template literal, so a stage
-  // missing from BOTH catalogs is parity-clean and still paints its raw
-  // dot-path — on the happy path of a one-way, irreversible flow. Iterate the
-  // stage tuple instead so the union and the catalogs stay bound.
+  // `ParanoidEnableWizard`, which built both keys with a template literal, was
+  // deleted (#1648) once its entry point had been gone long enough to make
+  // the file dead weight. The `enable.ts` stage machinery it drove survives
+  // it, and a stage missing from BOTH catalogs is parity-clean and still
+  // paints its raw dot-path, so the plain orphan-key gate cannot see the gap
+  // this guards against. Iterate the stage tuple instead so the union and
+  // the catalogs stay bound for whatever renders these keys next.
   for (const stage of VAULT_ENABLE_STAGES) {
     for (const locale of Object.values(LOCALES)) {
       for (const key of [`vault.enable.progress.${stage}`, `vault.enable.errors.${stage}`]) {
