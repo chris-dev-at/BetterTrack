@@ -25,14 +25,15 @@ import { serializeRecoveryKit, type RecoveryKitDownload } from '../recovery';
 import type { NormalVaultCapture } from './migration';
 
 /**
- * Every stage the wizard can report, as a value — the union below is derived
- * from it, so the two cannot drift. The wizard renders both
- * `vault.enable.progress.<stage>` and `vault.enable.errors.<stage>` as
- * template-literal keys, which the EN⇄DE parity test cannot see (a key absent
- * from *both* catalogs is parity-clean and still renders the raw dot-path).
- * `i18n/registry.test.ts` iterates this tuple instead — same drift-guard shape
- * as `WEBHOOK_EVENT_TYPES` on the API side. Adding a stage without its two
- * strings in both locales fails that test.
+ * Every stage the enable pipeline can report, as a value — the union below is
+ * derived from it, so the two cannot drift. The `ParanoidEnableWizard` that
+ * rendered `vault.enable.progress.<stage>` / `vault.enable.errors.<stage>` as
+ * template-literal keys was deleted in #1648; the strings stay in both
+ * catalogs for a future account-level entry (§19 of docs/paranoid-design.md)
+ * and `i18n/registry.test.ts` still iterates this tuple as the drift guard —
+ * same shape as `WEBHOOK_EVENT_TYPES` on the API side — because a key absent
+ * from *both* catalogs is parity-clean and would render the raw dot-path.
+ * Adding a stage without its two strings in both locales fails that test.
  */
 export const VAULT_ENABLE_STAGES = [
   'migrate',
