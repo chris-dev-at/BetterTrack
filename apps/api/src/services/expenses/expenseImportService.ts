@@ -31,6 +31,14 @@ import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
  * `error` flag + the rule engine's suggested category) → an explicit apply that
  * books the rows into `expense_transactions`, stamped `import:<bank>`.
  *
+ * NOTHING HERE IS REACHABLE. The expense area is write-retired (§6.8.3, §16
+ * 2026-07-31) and the whole `/expenses/import/*` lane answers 410 for every verb
+ * — `listBanks` included, since #1660 — so no request reaches `preview`/`apply`
+ * or the mappers behind them. The module stays in the tree with the rest of the
+ * unreachable import lane because deleting it is an owner-visible call, not a
+ * fence repair; treat every description below as a record of what it DID, and
+ * do not take the surface as evidence that bank import is available.
+ *
  * STATELESS by design — P9 owns no import staging table (a column would need a
  * migration this issue must not add). The preview persists nothing; apply
  * re-parses the same re-uploaded file (so amounts/dates stay server-authoritative,
@@ -64,7 +72,11 @@ export interface ExpenseImportApplyInput extends ExpenseImportPreviewInput {
 }
 
 export interface ExpenseImportService {
-  /** The supported bank mappers, for the manual picker. */
+  /**
+   * The registered bank mappers. NO CALLER: the route that served it now answers
+   * 410 with the rest of the import lane (#1660), so this reports what the tree
+   * still contains, never what the API offers.
+   */
   listBanks(): ExpenseBankListResponse;
   /** Parse + normalize + auto-categorize + flag duplicates — persists nothing. */
   preview(userId: string, input: ExpenseImportPreviewInput): Promise<ExpenseImportPreviewResponse>;
@@ -79,8 +91,13 @@ const CATEGORY_REF_INVALID = () =>
  * Cent-canonical decimal so `5`, `5.0` and `5.00` hash identically (mirrors the
  * broker `contentHash.canonicalAmount`, kept LOCAL so the strictly-separate
  * expense area never imports the domain money-math `contentHash.ts` pulls in).
+ *
+ * EXPORTED AS A PINNING SEAM, not as API (#1660). The copy exists only to
+ * satisfy the separation fence, so `__tests__/expensesSeparation.test.ts` holds
+ * it against `contentHash.canonicalAmount(value, 2)` and the two cannot drift
+ * apart unnoticed. Exporting it changes no behaviour.
  */
-function canonicalAmount(value: number): string {
+export function canonicalAmount(value: number): string {
   const fixed = value.toFixed(2);
   const trimmed = fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed;
   return trimmed === '-0' ? '0' : trimmed;
