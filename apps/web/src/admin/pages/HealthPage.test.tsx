@@ -214,7 +214,11 @@ test('shows the backup and restore-drill evidence the Overview links to', async 
   renderPage();
 
   const panel = await screen.findByRole('region', { name: 'Backup & restore drill' });
-  expect(within(panel).getByText('Ready')).toBeInTheDocument();
+  // The region renders while its queries are still in flight (`aria-busy`), so
+  // the FIRST read inside it has to wait for the data, not merely for the
+  // region — a sync `getByText` here raced the fetch on a loaded CI runner
+  // (2026-09-16, run 35037493776).
+  expect(await within(panel).findByText('Ready')).toBeInTheDocument();
   expect(
     within(panel).getByText('A recent dump exists and a recent restore drill proved it.'),
   ).toBeInTheDocument();
