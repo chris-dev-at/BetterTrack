@@ -333,7 +333,10 @@ export interface PortfolioService {
   getCashMovements(
     userId: string,
     portfolioId: string,
-    opts?: CashMovementsQuery,
+    // `Partial`, not the bare query type: `includeSourceTags` carries a schema
+    // default, so the parsed query type makes it required while every internal
+    // caller (the import preview, the vault export) legitimately omits it.
+    opts?: Partial<CashMovementsQuery>,
   ): Promise<CashMovementsResponse>;
   /** The portfolio's cash sources with balances, Main first (V3-P3). */
   listCashSources(
@@ -2361,7 +2364,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Materialise Main so even an untouched portfolio answers with its
       // default source (V3-P3) — mirrors listPortfolios' behavior.
       await cashSourceRepo.getOrCreateMain(portfolioId);
-      const [page, balances, sources] = await Promise.all([
+      const [page, balances, sources, sourceTags] = await Promise.all([
         cashMovementRepo.listPageForPortfolio(portfolioId, {
           cursor: opts?.cursor,
           limit: opts?.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT,
@@ -2372,6 +2375,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         // Archived sources are included here so every historical movement can
         // resolve its source's name; active listings use listCashSources.
         cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
+        // The portfolio-wide source facet (V5-P0c, #1658) — opt-in, and
+        // deliberately computed over the whole ledger, not the filtered page.
+        opts?.includeSourceTags
+          ? cashMovementRepo.listSourceTagsByPortfolio(portfolioId)
+          : Promise.resolve(undefined),
       ]);
       const balanceBySource = new Map(
         balances.map((row) => [row.sourceId, floorCents(row.balanceEur)]),
@@ -2389,6 +2397,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         movements: page.items.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
         sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
         nextCursor: page.nextCursor,
+        ...(sourceTags === undefined ? {} : { sourceTags }),
       };
     },
 

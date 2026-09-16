@@ -192,9 +192,15 @@ async function seedEngineFixture(
 
 async function seedUntaxedOpenFixture(
   userId: string,
-  options: { mainFundingEur?: number; otherSourceFundingEur?: number } = {},
+  options: {
+    mainFundingEur?: number;
+    otherSourceFundingEur?: number;
+    /** Source tag on the restored TRADE rows (V5-P0c, #1658). */
+    rowSource?: string;
+  } = {},
 ): Promise<{ portfolioId: string; sourceId: string }> {
   const mainFundingEur = options.mainFundingEur ?? 1000;
+  const rowSource = options.rowSource ?? 'manual';
   const otherSourceFundingEur = options.otherSourceFundingEur ?? 0;
   const portfolioId = newId();
   const sourceId = newId();
@@ -232,7 +238,7 @@ async function seedUntaxedOpenFixture(
       fee: '0',
       executedAt: new Date('2026-01-10T10:00:00.000Z'),
       taxMode: null,
-      source: 'manual',
+      source: rowSource,
     },
     {
       id: newId(),
@@ -244,7 +250,7 @@ async function seedUntaxedOpenFixture(
       fee: '0',
       executedAt: new Date('2026-02-10T10:00:00.000Z'),
       taxMode: 'none',
-      source: 'manual',
+      source: rowSource,
     },
   ]);
   if (mainFundingEur > 0) {
@@ -460,6 +466,51 @@ describe('transaction-bound restored tax replay', () => {
         taxYear: 2026,
         note: 'Live tax correction (AT)',
       });
+    });
+  });
+
+  /**
+   * V5-P0c, issue #1658. A vault restore replays the year and posts its
+   * corrections; the restored rows keep their original tags, so the correction
+   * takes the year's tag too. It used to build the movement literal with no
+   * `source` at all, which stamped `manual` on every restored vault — the same
+   * lie as on the live read path, but permanent.
+   */
+  it('tags a replayed correction with the restored rows tag, not `manual`', async () => {
+    const user = await harness.seedUser();
+    await setAtUserDefault(user.id);
+    const imported = await seedUntaxedOpenFixture(user.id, {
+      rowSource: 'import:trade_republic',
+    });
+    const handEntered = await seedUntaxedOpenFixture(user.id);
+
+    await harness.db.transaction(async (tx) => {
+      const executor = tx as unknown as Database;
+      await replayRestoredTaxState(executor, {
+        userId: user.id,
+        portfolioIds: [imported.portfolioId, handEntered.portfolioId],
+        now: NOW,
+        toEur,
+      });
+
+      const corrections = await executor
+        .select()
+        .from(schema.portfolioCashMovements)
+        .where(
+          and(
+            inArray(schema.portfolioCashMovements.portfolioId, [
+              imported.portfolioId,
+              handEntered.portfolioId,
+            ]),
+            inArray(schema.portfolioCashMovements.kind, ['tax_withholding', 'tax_refund']),
+          ),
+        );
+      expect(corrections).toHaveLength(2);
+      const sourceByPortfolio = new Map(corrections.map((row) => [row.portfolioId, row.source]));
+      expect(sourceByPortfolio.get(imported.portfolioId)).toBe('import:trade_republic');
+      // Negative space: the hand-entered portfolio's correction stays `manual`,
+      // so the two never bleed into each other's filter.
+      expect(sourceByPortfolio.get(handEntered.portfolioId)).toBe('manual');
     });
   });
 

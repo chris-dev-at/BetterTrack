@@ -280,7 +280,9 @@ export interface VaultPortfolioStore {
   ): Promise<CashSource>;
   getCashMovements(
     portfolioId: string,
-    params?: CashMovementsQuery,
+    // `Partial`: `includeSourceTags` carries a schema default, so the parsed
+    // query type makes it required while most callers omit it (#1658).
+    params?: Partial<CashMovementsQuery>,
     signal?: AbortSignal,
   ): Promise<CashMovementsResponse>;
   previewCash(
@@ -978,9 +980,17 @@ export function createVaultPortfolioStore(
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
       const parsedParams = cashMovementsQuerySchema.parse(params);
-      const all = liveEntities(document, 'cashMovement')
+      const portfolioMovements = liveEntities(document, 'cashMovement')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
-        .map(cashMovementFromEntity)
+        .map(cashMovementFromEntity);
+      // The portfolio-wide source facet, computed before the row filters and
+      // before paging — the twin of the server's
+      // `cashMovementRepository.listSourceTagsByPortfolio` (V5-P0c, #1658), so a
+      // vaulted ledger's source picker behaves exactly like a plain one's.
+      const sourceTags = parsedParams.includeSourceTags
+        ? [...new Set(portfolioMovements.map((movement) => movement.source))].sort()
+        : undefined;
+      const all = portfolioMovements
         .filter((movement) => {
           if (parsedParams.source != null && movement.source !== parsedParams.source) return false;
           if (parsedParams.tag == null) return true;
@@ -1014,6 +1024,7 @@ export function createVaultPortfolioStore(
         movements: page,
         sources,
         nextCursor: start + page.length < all.length ? (page.at(-1)?.id ?? null) : null,
+        ...(sourceTags === undefined ? {} : { sourceTags }),
       });
     },
 

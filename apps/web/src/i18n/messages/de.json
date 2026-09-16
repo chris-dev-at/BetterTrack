@@ -2797,6 +2797,13 @@
       "needTwo": "Wähle mindestens {{min}} Blueprints zum Vergleich.",
       "error": "Der Vergleich konnte nicht berechnet werden. Bitte versuche es erneut.",
       "windowError": "Einer der ausgewählten Blueprints hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne ihn.",
+      "windowMismatch": {
+        "startsLate": "{{name}} deckt das Vergleichsfenster nicht ab: Die Kurshistorie beginnt erst am {{seriesStart}}, nach dem Fensterstart am {{windowStart}}.",
+        "endsEarly": "{{name}} deckt das Vergleichsfenster nicht ab: Die Kurshistorie endet am {{seriesEnd}}, vor dem Fensterende am {{windowEnd}}.",
+        "clipped": "{{name}} deckt das Vergleichsfenster nicht ab – der Blueprint teilt zu wenig Kurshistorie mit den anderen Auswahlen.",
+        "hint": "Entferne ihn aus dem Vergleich oder wähle einen kürzeren Zeitraum.",
+        "drop": "{{name}} aus dem Vergleich entfernen"
+      },
       "chartAriaLabel": "Vergleichschart der Blueprints",
       "baselineLabel": "Basis",
       "setBaseline": "{{name}} als Basis verwenden",
@@ -3566,7 +3573,9 @@
         "chartAriaLabel": "Was-wäre-wenn-Wertentwicklung über die Zeit",
         "weightsPositiveHint": "Gib jeder Position eine Gewichtung über 0, um eine Vorschau zu sehen.",
         "previewError": "Diese Was-wäre-wenn-Analyse konnte nicht ausgeführt werden. Probiere einen anderen Zeitraum oder andere Gewichtungen.",
-        "empty": "Keine Daten für diesen Zeitraum."
+        "empty": "Keine Daten für diesen Zeitraum.",
+        "sharedWeightsMovedOne": "Die geteilte Gewichtung wurde geändert, während du experimentiert hast: {{names}}. Dein Wert bleibt erhalten – „Auf geteilt zurücksetzen“ übernimmt die neue.",
+        "sharedWeightsMovedOther": "{{count}} geteilte Gewichtungen wurden geändert, während du experimentiert hast: {{names}}. Deine Werte bleiben erhalten – „Auf geteilt zurücksetzen“ übernimmt die neuen."
       }
     },
     "sharedIdea": {
@@ -6506,6 +6515,7 @@
         "namePlaceholder": "z. B. Lebensmittel",
         "nameRequired": "Gib einen Namen ein.",
         "nameTaken": "Du hast bereits einen Tag mit diesem Namen.",
+        "limitReached": "Du hast bereits die maximale Anzahl an Tags. Lösche einen, um einen neuen anzulegen.",
         "color": "Farbe",
         "saveError": "Tag konnte nicht gespeichert werden. Bitte versuche es erneut."
       }

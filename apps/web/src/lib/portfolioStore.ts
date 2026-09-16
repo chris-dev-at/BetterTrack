@@ -132,7 +132,9 @@ export interface PortfolioStore {
   ): Promise<CashSource>;
   getCashMovements(
     portfolioId: string,
-    params?: CashMovementsQuery,
+    // `Partial`: `includeSourceTags` carries a schema default, so the parsed
+    // query type makes it required while most callers omit it (#1658).
+    params?: Partial<CashMovementsQuery>,
     signal?: AbortSignal,
   ): Promise<CashMovementsResponse>;
   previewCash(

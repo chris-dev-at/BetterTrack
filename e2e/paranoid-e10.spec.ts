@@ -1498,8 +1498,16 @@ test.describe('PARANOID E10 per-vault gate', () => {
       };
 
       await test.step('MOVE-IN carries the import batch and the manual asset', async () => {
-        const access = await attemptUnlock(page, vault.vaultId, DEVICE_PASSWORD);
-        await expect(access).toBeHidden({ timeout: 60_000 });
+        // The ceremony's device password IS this device's session, and since
+        // §12's 2026-09-03 amendment it survives every navigation below — so the
+        // endpoint is already open here, exactly as [E10-A10] pins for the plain
+        // portfolio. Re-entering the password is not merely redundant, it is
+        // UNREACHABLE: `unlock` is not among the actions the ready state offers,
+        // so the access deep link is answered with the "moved past" notice and
+        // renders no password field at all (`vaultStateOffersAction` →
+        // `VaultManager.tsx`). Waiting on that field is what burned the arc's
+        // whole 8-minute budget on one locator.
+        await openPrivacyPanel(page);
         await expectVaultState(page, name, 'Ready on this device');
         await page.getByRole('button', { name: 'Close', exact: true }).click();
         await page.getByRole('link', { name: 'Portfolio', exact: true }).first().click();
@@ -1521,16 +1529,23 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
 
       await test.step('LOCK, UNLOCK, MOVE-OUT restores every row and point identically', async () => {
+        // The step's own LOCK, performed through the product's lock gesture. A
+        // navigation stopped being one on 2026-09-03, so without this the
+        // portfolio below renders UNLOCKED and no stub ever appears.
+        await lockVaults(page);
         await page.goto(`/portfolio?portfolio=${encodeURIComponent(portfolioId)}`);
         const stub = page.getByTestId('locked-portfolio-stub');
         await expect(stub).toBeVisible({ timeout: 30_000 });
-        await stub.getByRole('link', { name: 'Unlock', exact: true }).click();
-        const access = page.getByRole('region', { name: /access$/ });
-        await expect(access).toBeVisible({ timeout: 30_000 });
-        await access.locator(`#vault-access-secret-${vault.vaultId}`).fill(DEVICE_PASSWORD);
-        await access.getByRole('button', { name: 'Continue', exact: true }).click();
-        await expect(access).toBeHidden({ timeout: 60_000 });
-        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        // The stub prompts IN PLACE (#1416/#1707): "Unlock" is a button opening
+        // a dialog over the page the user is already on, not a link into the
+        // Control Center's access surface. [E10-A10] pins the same seam.
+        await expect(stub.getByRole('link', { name: 'Unlock', exact: true })).toHaveCount(0);
+        await stub.getByRole('button', { name: 'Unlock', exact: true }).click();
+        const prompt = page.getByRole('dialog', { name: /^Unlock/u });
+        await expect(prompt).toBeVisible({ timeout: 30_000 });
+        await prompt.getByLabel('Device password').fill(DEVICE_PASSWORD);
+        await prompt.getByRole('button', { name: 'Unlock vault', exact: true }).click();
+        await expect(prompt).toBeHidden({ timeout: 60_000 });
         await expect(stub).toBeHidden({ timeout: 60_000 });
         const opened = page.getByTestId('unlocked-vault-portfolio');
         await expect(opened).toBeVisible({ timeout: 60_000 });
