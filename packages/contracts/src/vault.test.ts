@@ -748,9 +748,10 @@ describe('a restored rule→tag link is UNIQUE per pair (#1963)', () => {
     );
     expect(parsed.success).toBe(false);
     expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('custom');
-    expect(parsed.success === false && parsed.error.issues[0]?.params?.code).toBe(
-      'CASH_RULE_TAG_DUPLICATE',
-    );
+    expect(
+      parsed.success === false &&
+        (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code,
+    ).toBe('CASH_RULE_TAG_DUPLICATE');
     expect(parsed.success === false && parsed.error.issues[0]?.path).toEqual(['entities']);
     expect(parsed.success === false && parsed.error.issues).toHaveLength(1);
   });
@@ -800,8 +801,9 @@ describe('a restored rule→tag link is UNIQUE per pair (#1963)', () => {
     );
     expect(parsed.success).toBe(false);
     expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('custom');
-    expect(parsed.success === false && parsed.error.issues[0]?.params?.code).toBe(
-      'CASH_RULE_TAG_DUPLICATE',
-    );
+    expect(
+      parsed.success === false &&
+        (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code,
+    ).toBe('CASH_RULE_TAG_DUPLICATE');
   });
 });
