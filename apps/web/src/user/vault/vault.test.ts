@@ -25,7 +25,7 @@ import {
   unwrapVaultKey,
   wrapVaultKey,
 } from './crypto';
-import { createIndexedDbVaultCustody } from './custody';
+import { purgeRetiredDeviceCustody, RETIRED_CUSTODY_DATABASE } from './custody';
 import {
   decodeVaultEnvelope,
   encodeVaultEnvelope,
@@ -707,7 +707,7 @@ describe('recovery kit and custody lock core', () => {
     expect(() => importRecoveryKit(new TextEncoder().encode('bad'))).toThrow(VaultCryptoError);
   });
 
-  it('stays locked on failures, supports manual/PIN-seam locking, and persists only non-extractable IDB keys', async () => {
+  it('stays locked on failures and supports manual/PIN-seam locking', async () => {
     const original = await fixture();
     const core = new VaultLockCore();
     expect(core.state).toEqual({ status: 'locked' });
@@ -716,48 +716,64 @@ describe('recovery kit and custody lock core', () => {
     expect(core.state).toEqual({ status: 'unlocked', keyId: VECTOR_KEY_ID });
     await core.handleIdle(true);
     expect(core.state).toEqual({ status: 'locked' });
+    await expect(core.withVaultKey(() => 'nope')).rejects.toMatchObject({ code: 'locked' });
 
-    const custody = createIndexedDbVaultCustody();
-    const deviceCore = new VaultLockCore({ custody });
-    await deviceCore.unlockWithPassphrase(
-      original.envelope,
-      'correct horse battery staple',
-      undefined,
-      true,
-      VECTOR_DEVICE_ID,
-    );
-    expect(await custody.read(VECTOR_DEVICE_ID)).toMatchObject({
-      extractable: false,
-      type: 'secret',
-    });
-    await deviceCore.lock();
-    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+    // A PIN idle-lock with the preference OFF is not a lock (one timer, one
+    // mental model — §12 has no second setting).
+    await core.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
+    await core.handleIdle(false);
+    expect(core.state).toEqual({ status: 'unlocked', keyId: VECTOR_KEY_ID });
+    await core.lock();
+    expect(core.state).toEqual({ status: 'locked' });
+  });
 
-    await custody.persist(VECTOR_DEVICE_ID, original.vaultKey);
-    await deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope);
-    expect(
-      await deviceCore.withVaultKey((key) => decryptVaultDocument(original.envelope, key)),
-    ).toMatchObject({
-      document: vaultVectorDocument,
-    });
+  /**
+   * §12's retirement, executed (#1640 residue 3). The v1 "keep unlocked on this
+   * device" convenience persisted the VAULT KEY as a non-extractable CryptoKey
+   * in `bettertrack-vault-custody` and re-opened the vault from it with no
+   * passphrase. §12 called that retired for as long as the note has existed; the
+   * code only performed the retirement here.
+   *
+   * The two halves that matter are both pinned below: nothing can WRITE such a
+   * key any more (the lock core has no custody seam at all), and what an older
+   * build already wrote is ERASED from the device rather than orphaned — leaving
+   * it would keep "the vault key exists only in volatile process memory" false
+   * on exactly the devices the retirement was for.
+   */
+  it('retires v1 keep-unlocked custody: no write path, and the old store is erased', async () => {
+    const original = await fixture();
 
-    await deviceCore.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
-    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
-    await expect(
-      deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope),
-    ).rejects.toMatchObject({ code: 'locked' });
-    await deviceCore.lock();
-    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+    // A device carrying the retired store, exactly as an older build left it.
+    await writeRetiredCustodyKey(original.vaultKey);
+    expect(await retiredCustodyDatabaseExists()).toBe(true);
 
-    await custody.persist(VECTOR_DEVICE_ID, original.vaultKey);
-    await deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope);
-    await deviceCore.handleIdle(true);
-    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
-    await expect(
-      deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope),
-    ).rejects.toMatchObject({
-      code: 'locked',
-    });
+    purgeRetiredDeviceCustody(VECTOR_DEVICE_ID);
+    await waitForRetiredCustodyGone();
+    expect(await retiredCustodyDatabaseExists()).toBe(false);
+
+    // Idempotent: the second call is a no-op, not an error.
+    purgeRetiredDeviceCustody(VECTOR_DEVICE_ID);
+    await waitForRetiredCustodyGone();
+    expect(await retiredCustodyDatabaseExists()).toBe(false);
+
+    // …and the account-scoped litter goes with it.
+    localStorage.setItem(`bettertrack:vault-custody-device:${VECTOR_DEVICE_ID}`, 'device');
+    localStorage.setItem(`bettertrack:vault-device-locked:${VECTOR_DEVICE_ID}`, '1');
+    purgeRetiredDeviceCustody(VECTOR_DEVICE_ID);
+    expect(localStorage.getItem(`bettertrack:vault-custody-device:${VECTOR_DEVICE_ID}`)).toBeNull();
+    expect(localStorage.getItem(`bettertrack:vault-device-locked:${VECTOR_DEVICE_ID}`)).toBeNull();
+
+    // THE WRITE PATH IS GONE. An unlock cannot be asked to keep anything, and
+    // the retired store stays absent across a full unlock/lock cycle.
+    const core = new VaultLockCore();
+    await core.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
+    expect(core.state).toEqual({ status: 'unlocked', keyId: VECTOR_KEY_ID });
+    await core.lock();
+    expect(await retiredCustodyDatabaseExists()).toBe(false);
+    // The seam itself, not just its effect: there is no device-unlock method
+    // left to call. (The custody option is gone from the type, which the
+    // repo-wide `pnpm typecheck` is what enforces.)
+    expect('unlockFromDevice' in core).toBe(false);
   });
 
   it('keeps every delayed unlock path locked after manual and PIN idle locks', async () => {
@@ -773,14 +789,7 @@ describe('recovery kit and custody lock core', () => {
     ]) {
       const passphraseKdfStarted = deferred<void>();
       const passphraseKdf = deferred<Uint8Array>();
-      const passphrasePersisted = new Set<string>();
-      const passphraseCore = new VaultLockCore({
-        custody: {
-          persist: async (deviceId) => void passphrasePersisted.add(deviceId),
-          read: async () => null,
-          clear: async (deviceId) => void passphrasePersisted.delete(deviceId),
-        },
-      });
+      const passphraseCore = new VaultLockCore();
       const passphraseUnlock = passphraseCore.unlockWithPassphrase(
         original.envelope,
         'correct horse battery staple',
@@ -790,8 +799,6 @@ describe('recovery kit and custody lock core', () => {
             return passphraseKdf.promise;
           },
         },
-        true,
-        VECTOR_DEVICE_ID,
       );
       await passphraseKdfStarted.promise;
       const passphraseLock = lock(passphraseCore);
@@ -800,91 +807,23 @@ describe('recovery kit and custody lock core', () => {
       await passphraseLock;
       await expect(passphraseUnlock).rejects.toMatchObject({ code: 'locked' });
       expect(passphraseCore.state).toEqual({ status: 'locked' });
-      expect(passphrasePersisted).toEqual(new Set());
       await expect(passphraseCore.withVaultKey(() => 'unavailable')).rejects.toMatchObject({
         code: 'locked',
       });
 
-      const recoveryPersistStarted = deferred<void>();
-      const releaseRecoveryPersist = deferred<void>();
-      const recoveryPersisted = new Set<string>();
-      const recoveryCore = new VaultLockCore({
-        custody: {
-          persist: async (deviceId) => {
-            recoveryPersistStarted.resolve();
-            await releaseRecoveryPersist.promise;
-            recoveryPersisted.add(deviceId);
-          },
-          read: async () => null,
-          clear: async (deviceId) => void recoveryPersisted.delete(deviceId),
-        },
-      });
-      const recoveryUnlock = recoveryCore.unlockWithRecoveryKit(
-        original.envelope,
-        recoveryKit,
-        true,
-        VECTOR_DEVICE_ID,
-      );
-      await recoveryPersistStarted.promise;
+      // The recovery-kit path has no KDF to hold, so the race window is the
+      // envelope decrypt: lock while the unlock is suspended inside it.
+      const recoveryCore = new VaultLockCore();
+      const recoveryUnlock = recoveryCore.unlockWithRecoveryKit(original.envelope, recoveryKit);
       const recoveryLock = lock(recoveryCore);
       expect(recoveryCore.state).toEqual({ status: 'locked' });
-      releaseRecoveryPersist.resolve();
       await recoveryLock;
       await expect(recoveryUnlock).rejects.toMatchObject({ code: 'locked' });
       expect(recoveryCore.state).toEqual({ status: 'locked' });
-      expect(recoveryPersisted).toEqual(new Set());
       await expect(recoveryCore.withVaultKey(() => 'unavailable')).rejects.toMatchObject({
         code: 'locked',
       });
-
-      const deviceReadStarted = deferred<void>();
-      const deviceRead = deferred<CryptoKey | null>();
-      const devicePersisted = new Set([VECTOR_DEVICE_ID]);
-      const deviceCore = new VaultLockCore({
-        custody: {
-          persist: async (deviceId) => void devicePersisted.add(deviceId),
-          read: async () => {
-            deviceReadStarted.resolve();
-            return deviceRead.promise;
-          },
-          clear: async (deviceId) => void devicePersisted.delete(deviceId),
-        },
-      });
-      const deviceUnlock = deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope);
-      await deviceReadStarted.promise;
-      const deviceLock = lock(deviceCore);
-      expect(deviceCore.state).toEqual({ status: 'locked' });
-      deviceRead.resolve(
-        await globalThis.crypto.subtle.importKey(
-          'raw',
-          original.vaultKey,
-          { name: 'AES-GCM' },
-          false,
-          ['encrypt', 'decrypt'],
-        ),
-      );
-      await deviceLock;
-      await expect(deviceUnlock).rejects.toMatchObject({ code: 'locked' });
-      expect(deviceCore.state).toEqual({ status: 'locked' });
-      expect(devicePersisted).toEqual(new Set());
-      await expect(deviceCore.withVaultKey(() => 'unavailable')).rejects.toMatchObject({
-        code: 'locked',
-      });
     }
-  });
-
-  it('fails closed when device-key persistence is unsupported', async () => {
-    const original = await fixture();
-    const custody = createIndexedDbVaultCustody();
-    const originalIndexedDb = globalThis.indexedDB;
-    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
-    await expect(custody.persist(VECTOR_DEVICE_ID, original.vaultKey)).rejects.toMatchObject({
-      code: 'custody-failed',
-    });
-    Object.defineProperty(globalThis, 'indexedDB', {
-      configurable: true,
-      value: originalIndexedDb,
-    });
   });
 
   it('clears an existing unlock when every replacement unlock path fails', async () => {
@@ -930,21 +869,6 @@ describe('recovery kit and custody lock core', () => {
       core.unlockWithRecoveryKit(original.envelope, new TextEncoder().encode('invalid kit')),
     ).rejects.toThrow(VaultCryptoError);
     await expectLocked();
-
-    const failingCustody = {
-      persist: async () => undefined,
-      read: async () => Promise.reject(new Error('IndexedDB read failed')),
-      clear: async () => undefined,
-    };
-    const custodyCore = new VaultLockCore({ custody: failingCustody });
-    await custodyCore.unlockWithRecoveryKit(original.envelope, recoveryKit);
-    await expect(custodyCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope)).rejects.toThrow(
-      'IndexedDB read failed',
-    );
-    expect(custodyCore.state).toEqual({ status: 'locked' });
-    await expect(custodyCore.withVaultKey(() => 'still unlocked')).rejects.toMatchObject({
-      code: 'locked',
-    });
   });
 
   it('does not unlock after a wrong passphrase', async () => {
@@ -956,3 +880,47 @@ describe('recovery kit and custody lock core', () => {
     expect(core.state).toEqual({ status: 'locked' });
   });
 });
+
+/** The store the retired v1 keep-unlocked custody wrote to (`custody.ts`). */
+const RETIRED_CUSTODY_STORE = 'keys';
+
+/** Recreate exactly what an older build left on a device, to prove it is erased. */
+async function writeRetiredCustodyKey(vaultKey: Uint8Array): Promise<void> {
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    vaultKey,
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = indexedDB.open(RETIRED_CUSTODY_DATABASE, 1);
+    open.onupgradeneeded = () => open.result.createObjectStore(RETIRED_CUSTODY_STORE);
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(RETIRED_CUSTODY_STORE, 'readwrite');
+      transaction.objectStore(RETIRED_CUSTODY_STORE).put(key, VECTOR_DEVICE_ID);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/** Non-invasive: it must not create the database it is asked about. */
+async function retiredCustodyDatabaseExists(): Promise<boolean> {
+  const databases = await indexedDB.databases();
+  return databases.some((entry) => entry.name === RETIRED_CUSTODY_DATABASE);
+}
+
+/** The purge is fire-and-forget by design, so the test waits for it to land. */
+async function waitForRetiredCustodyGone(): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (!(await retiredCustodyDatabaseExists())) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}

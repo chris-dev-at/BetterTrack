@@ -162,6 +162,18 @@ export interface MirrorInviteDetailRow extends MirrorChainInviteRow {
   toProfileIcon: string | null;
 }
 
+/**
+ * A chain-scoped pending invite enriched with both usernames + the invitee's
+ * icon (#1612, design §4 revocability). Unlike {@link MirrorInviteDetailRow}
+ * this is NOT viewer-scoped — it is every open invite on one chain, which is
+ * what lets an owner/manager revoke one they did not send.
+ */
+export interface MirrorChainInviteDetailRow extends MirrorChainInviteRow {
+  fromUsername: string | null;
+  toUsername: string;
+  toProfileIcon: string | null;
+}
+
 /** Identity-only active member row used before any chain/profile enrichment. */
 export interface MirrorMemberPrincipalRow {
   id: string;
@@ -566,6 +578,28 @@ export function createMirrorchainRepository(db: Database) {
       return row ?? null;
     },
 
+    /**
+     * The membership a portfolio belongs to, ACTIVE OR ENDED — the "is this a
+     * chain copy or a fork?" lookup (#1612, design §6). A portfolio carries at
+     * most one active membership (the §1 partial unique index) and, once
+     * severed, exactly one tombstone; a re-invite always mints a brand-new
+     * copy (§6), so the two never pile up on one portfolio. Active first,
+     * newest tombstone next, so a caller can read `status` to tell the cases
+     * apart in one round trip.
+     */
+    async findMembershipByPortfolio(portfolioId: string): Promise<MirrorChainMemberRow | null> {
+      const [row] = await db
+        .select()
+        .from(mirrorChainMembers)
+        .where(eq(mirrorChainMembers.portfolioId, portfolioId))
+        .orderBy(
+          sql`case when ${mirrorChainMembers.status} = 'active' then 0 else 1 end`,
+          desc(mirrorChainMembers.endedAt),
+        )
+        .limit(1);
+      return row ?? null;
+    },
+
     /** A user's active membership in a given chain (role/authority checks, §5). */
     async findActiveMembership(
       chainId: string,
@@ -856,6 +890,66 @@ export function createMirrorchainRepository(db: Database) {
       }));
     },
 
+    /**
+     * Identity-only pending invites for ONE CHAIN (#1612) — the discovery half
+     * of the §4 revocability rule. Every open invite on the chain, whoever sent
+     * it, so the principal guards can lock the invitees before any name or icon
+     * is joined.
+     */
+    async listPendingInvitePrincipalsForChain(
+      chainId: string,
+    ): Promise<MirrorInvitePrincipalRow[]> {
+      return db
+        .select({
+          id: mirrorChainInvites.id,
+          chainId: mirrorChainInvites.chainId,
+          fromUser: mirrorChainInvites.fromUser,
+          toUser: mirrorChainInvites.toUser,
+          createdAt: mirrorChainInvites.createdAt,
+        })
+        .from(mirrorChainInvites)
+        .where(
+          and(eq(mirrorChainInvites.chainId, chainId), eq(mirrorChainInvites.status, 'pending')),
+        )
+        .orderBy(desc(mirrorChainInvites.createdAt));
+    },
+
+    /**
+     * Every pending invite on ONE CHAIN with both usernames + the invitee's
+     * icon (#1612, design §4) — the member sheet's revocation list. Chain-
+     * scoped rather than viewer-scoped, which is exactly what
+     * {@link listInvitesForUserDetailed} cannot answer: without this an owner
+     * can revoke an invite they never sent but has no way to learn its id.
+     * The paranoid-principal filter is applied by the caller against the same
+     * allowed set it filters the roster with, so no id filter is threaded here.
+     */
+    async listPendingInvitesForChainDetailed(
+      chainId: string,
+    ): Promise<MirrorChainInviteDetailRow[]> {
+      const fromU = alias(users, 'chain_invite_from_u');
+      const toU = alias(users, 'chain_invite_to_u');
+      const rows = await db
+        .select({
+          invite: mirrorChainInvites,
+          fromUsername: fromU.username,
+          toUsername: toU.username,
+          toProfileIcon: toU.profileIcon,
+        })
+        .from(mirrorChainInvites)
+        .leftJoin(fromU, eq(fromU.id, mirrorChainInvites.fromUser))
+        .innerJoin(toU, eq(toU.id, mirrorChainInvites.toUser))
+        .where(
+          and(eq(mirrorChainInvites.chainId, chainId), eq(mirrorChainInvites.status, 'pending')),
+        )
+        .orderBy(desc(mirrorChainInvites.createdAt));
+      return rows.map((r) => ({
+        ...r.invite,
+        fromUsername: r.fromUsername ?? null,
+        toUsername: r.toUsername,
+        toProfileIcon: r.toProfileIcon ?? null,
+      }));
+    },
+
     /** Pending invite identities only — no chain or profile names are joined. */
     async listInvitePrincipalsForUser(userId: string): Promise<MirrorInvitePrincipalRow[]> {
       return db
@@ -959,7 +1053,10 @@ export function createMirrorchainRepository(db: Database) {
      * correlated MAX(seq) from `mirror_chain_ops`. Called by the mirror-service
      * enrichment helpers that populate the DTO `mirror` field on ledger reads.
      */
-    async listMirrorRowInfoForPortfolio(portfolioId: string): Promise<
+    async listMirrorRowInfoForPortfolio(
+      portfolioId: string,
+      options?: { frozen?: boolean },
+    ): Promise<
       Array<{
         kind: MirrorRowKind;
         mirrorId: string;
@@ -971,6 +1068,25 @@ export function createMirrorchainRepository(db: Database) {
         latestSeq: number;
       }>
     > {
+      // `frozen` is the FORK read (#1612, design §6): a severed copy keeps the
+      // attribution stored on its own `mirror_rows` — `created_by` +
+      // `created_by_username` — but loses every LIVE chain read §6 severs. So
+      // the `users` join (a co-member's current icon, which would otherwise go
+      // on tracking them forever) and the oplog MAX(seq) scan (which would keep
+      // ticking as the remaining members edit the shared book) are both skipped.
+      if (options?.frozen === true) {
+        const frozenRows = await db
+          .select({
+            kind: mirrorRows.kind,
+            mirrorId: mirrorRows.mirrorId,
+            localId: mirrorRows.localId,
+            createdBy: mirrorRows.createdBy,
+            createdByUsername: mirrorRows.createdByUsername,
+          })
+          .from(mirrorRows)
+          .where(eq(mirrorRows.portfolioId, portfolioId));
+        return frozenRows.map((r) => ({ ...r, profileIcon: null, latestSeq: 0 }));
+      }
       const rows = await db
         .select({
           kind: mirrorRows.kind,

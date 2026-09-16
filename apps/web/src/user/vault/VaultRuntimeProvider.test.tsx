@@ -89,53 +89,17 @@ function memoryTokenClient(): GoogleDriveTokenClient {
 
 /**
  * §12 is binding: after logout, an explicit lock or the PIN idle-lock, the NEXT
- * vault read prompts again. `unlockFromDevice` decides that from one persisted
- * marker, and nothing pinned that marker until this block — which is exactly
- * how a released `lock()` refactor could stop writing it unnoticed.
+ * vault read prompts again — and since #1640 that is the ONLY behaviour, because
+ * the v1 "keep unlocked on this device" custody that could reopen a vault
+ * without a passphrase is retired. So this block pins two things that replaced
+ * the old device-lock marker: the cross-tab lock signal a released `lock()`
+ * refactor could stop broadcasting unnoticed, and the erasure of what the
+ * retired custody left on the device.
  */
-describe('VaultRuntimeProvider §12 device-lock marker', () => {
+describe('VaultRuntimeProvider §12 lock signal and the retired v1 custody', () => {
   const userId = '018f0000-0000-7000-8000-0000000000d4';
-  const markerKey = `bettertrack:vault-device-locked:${userId}`;
-
-  it('records the marker when the shared lock signal fires', async () => {
-    render(
-      <VaultRuntimeProvider
-        authenticated
-        userId={userId}
-        dependencies={{ clientId: null, tokens: memoryTokenClient() }}
-      >
-        <TrustedDeviceHarness />
-      </VaultRuntimeProvider>,
-    );
-    expect(localStorage.getItem(markerKey)).toBeNull();
-
-    await act(async () => {
-      globalThis.dispatchEvent(new Event(VAULT_LOCK_REQUEST_EVENT));
-    });
-
-    expect(localStorage.getItem(markerKey)).toBe('1');
-  });
-
-  it('refuses the trusted-device unlock afterwards without reading any medium', async () => {
-    const readEnvelope = vi.fn(async () => envelope);
-    render(
-      <VaultRuntimeProvider
-        authenticated
-        userId={userId}
-        dependencies={{ clientId: null, tokens: memoryTokenClient(), readEnvelope }}
-      >
-        <TrustedDeviceHarness />
-      </VaultRuntimeProvider>,
-    );
-
-    await act(async () => {
-      globalThis.dispatchEvent(new Event(VAULT_LOCK_REQUEST_EVENT));
-    });
-    await userEvent.setup().click(screen.getByRole('button', { name: 'trusted unlock' }));
-
-    expect(await screen.findByText('device unlock refused', undefined, UNLOCK_WAIT)).toBeVisible();
-    expect(readEnvelope).not.toHaveBeenCalled();
-  });
+  const retiredMarkerKey = `bettertrack:vault-device-locked:${userId}`;
+  const retiredDeviceKey = `bettertrack:vault-custody-device:${userId}`;
 
   it('keeps broadcasting the account-scoped cross-tab lock from the relocated seam', async () => {
     render(
@@ -144,7 +108,7 @@ describe('VaultRuntimeProvider §12 device-lock marker', () => {
         userId={userId}
         dependencies={{ clientId: null, tokens: memoryTokenClient() }}
       >
-        <TrustedDeviceHarness />
+        <ManualLockHarness />
       </VaultRuntimeProvider>,
     );
 
@@ -153,7 +117,45 @@ describe('VaultRuntimeProvider §12 device-lock marker', () => {
     });
 
     expect(localStorage.getItem(vaultLockSignalStorageKey(userId))).not.toBeNull();
-    expect(localStorage.getItem(markerKey)).toBe('1');
+  });
+
+  it('erases what the retired keep-unlocked custody left on this device', async () => {
+    localStorage.setItem(retiredMarkerKey, '1');
+    localStorage.setItem(retiredDeviceKey, 'a-device-id');
+
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId={userId}
+        dependencies={{ clientId: null, tokens: memoryTokenClient() }}
+      >
+        <ManualLockHarness />
+      </VaultRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(localStorage.getItem(retiredDeviceKey)).toBeNull());
+    expect(localStorage.getItem(retiredMarkerKey)).toBeNull();
+  });
+
+  it('writes no device-lock marker of its own any more — a lock is memory-only', async () => {
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId={userId}
+        dependencies={{ clientId: null, tokens: memoryTokenClient() }}
+      >
+        <ManualLockHarness />
+      </VaultRuntimeProvider>,
+    );
+
+    await act(async () => {
+      globalThis.dispatchEvent(new Event(VAULT_LOCK_REQUEST_EVENT));
+    });
+
+    // The v1 marker existed ONLY to keep a persisted vault key from reopening
+    // the vault. With no key at rest there is nothing for it to gate, and a
+    // marker nobody reads is exactly the residue #1640 was opened about.
+    expect(localStorage.getItem(retiredMarkerKey)).toBeNull();
   });
 });
 
@@ -654,29 +656,6 @@ function RuntimeConsumer({ onRender }: { onRender(): void }) {
   useVaultRuntime();
   onRender();
   return null;
-}
-
-/** Drives the trusted-device ("keep unlocked on this device") unlock path. */
-function TrustedDeviceHarness() {
-  const runtime = useVaultRuntime();
-  const [result, setResult] = useState('device unlock idle');
-  return (
-    <>
-      <button
-        onClick={() => {
-          void runtime
-            .unlockFromDevice({ authorizeDrive: false, driveOnly: false })
-            .then((unlocked) =>
-              setResult(unlocked ? 'device unlock accepted' : 'device unlock refused'),
-            );
-        }}
-        type="button"
-      >
-        trusted unlock
-      </button>
-      <span>{result}</span>
-    </>
-  );
 }
 
 function ManualLockHarness() {

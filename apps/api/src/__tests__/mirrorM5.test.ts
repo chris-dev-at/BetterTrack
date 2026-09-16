@@ -202,6 +202,184 @@ describe('mirrorchain M5 — baseSeq wired end-to-end (design §3)', () => {
   });
 });
 
+/** The overlay reduced to what the chip renders, per kind: localId → username. */
+function attributionOf(overlay: {
+  transactions: Map<string, { addedBy: { username: string } }>;
+  dividends: Map<string, { addedBy: { username: string } }>;
+  cashMovements: Map<string, { addedBy: { username: string } }>;
+  cashSources: Map<string, { addedBy: { username: string } }>;
+}) {
+  const names = (m: Map<string, { addedBy: { username: string } }>) =>
+    [...m.entries()].map(([localId, info]) => `${localId}:${info.addedBy.username}`).sort();
+  return {
+    transactions: names(overlay.transactions),
+    dividends: names(overlay.dividends),
+    cashMovements: names(overlay.cashMovements),
+    cashSources: names(overlay.cashSources),
+  };
+}
+
+describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', () => {
+  /**
+   * Design §6 "What stays" is verbatim: `mirror_rows` attribution links survive
+   * a fork "so 'added by alice' still renders in the fork's history". The
+   * overlay used to short-circuit on `findActiveMembershipByPortfolio`, so the
+   * moment a member was kicked every "added by …" chip on their transactions,
+   * dividends, cash movements and cash sources went blank.
+   *
+   * The §10 sentence "attribution renders only to viewers who are themselves
+   * active members" is the ORTHOGONAL rule, resolved in the design note by this
+   * issue: it binds THIRD-PARTY VIEWERS of a shared/public copy, never the
+   * holder of the copy itself.
+   */
+  async function chainWithOneOfEach() {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 20,
+        fee: 0,
+        executedAt: '2026-02-01T10:00:00.000Z',
+      },
+    ]);
+    await harness.ctx.mirror.submitDividendRecord(alice.id, aPid, {
+      assetId: asset.id,
+      grossAmountEur: 12,
+    });
+    await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 250 });
+    await harness.ctx.mirror.submitSourceCreate(bob.id, bPid, {
+      name: 'Broker cash',
+      type: 'bank',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+    return { alice, bob, asset, aPid, bPid, chain };
+  }
+
+  it('a kicked member keeps "added by …" on all four kinds, and the chip survives the HTTP read', async () => {
+    const { alice, bob, aPid, bPid, chain } = await chainWithOneOfEach();
+
+    const beforeKick = attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid));
+    // Non-empty on every kind, or the assertion below is vacuous.
+    expect(beforeKick.transactions.length).toBeGreaterThan(0);
+    expect(beforeKick.dividends.length).toBeGreaterThan(0);
+    expect(beforeKick.cashMovements.length).toBeGreaterThan(0);
+    expect(beforeKick.cashSources.length).toBeGreaterThan(0);
+
+    await harness.ctx.mirror.removeMember(alice.id, chain.id, bob.id);
+
+    // The whole pre-fork history is attributed exactly as it was, localId for
+    // localId — Alice's rows still say Alice, Bob's still say Bob.
+    const afterKick = attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid));
+    expect(afterKick).toEqual(beforeKick);
+    expect(afterKick.transactions.some((row) => row.endsWith(':aliceM5'))).toBe(true);
+    expect(afterKick.cashSources.some((row) => row.endsWith(':bobM5'))).toBe(true);
+
+    // Identical on the branch that stayed: the fork is not a degraded copy.
+    const onTheChain = attributionOf(await harness.ctx.mirror.overlayForPortfolio(aPid));
+    const kinds = ['transactions', 'dividends', 'cashMovements'] as const;
+    for (const kind of kinds) {
+      const forkNames = afterKick[kind].map((row) => row.split(':')[1]).sort();
+      const chainNames = onTheChain[kind].map((row) => row.split(':')[1]).sort();
+      expect(forkNames).toEqual(chainNames);
+    }
+
+    // And it reaches the wire the UI reads, not just the service.
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    const txRes = await bobAgent.get(`/api/v1/portfolios/${bPid}/transactions`).set(...XRW);
+    expect(txRes.status).toBe(200);
+    expect(txRes.body.items[0].mirror.addedBy.username).toBe('aliceM5');
+    const cashRes = await bobAgent.get(`/api/v1/portfolios/${bPid}/cash`).set(...XRW);
+    expect(cashRes.status).toBe(200);
+    expect(
+      cashRes.body.movements.some(
+        (m: { mirror?: { addedBy: { username: string } } }) =>
+          m.mirror?.addedBy.username === 'aliceM5',
+      ),
+    ).toBe(true);
+    expect(
+      cashRes.body.sources.some(
+        (src: { mirror?: { addedBy: { username: string } } }) =>
+          src.mirror?.addedBy.username === 'bobM5',
+      ),
+    ).toBe(true);
+  });
+
+  it('a member who leaves keeps it too, and the fork reads FROZEN — no live icon, no chain version', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await chainWithOneOfEach();
+    await harness.ctx.mirror.leaveChain(bob.id, chain.id);
+
+    const fork = await harness.ctx.mirror.overlayForPortfolio(bPid);
+    const forkRows = [...fork.transactions.values()];
+    expect(forkRows.length).toBeGreaterThan(0);
+    for (const info of forkRows) {
+      // The identity stored on the fork's own rows still renders …
+      expect(info.addedBy.username).toBe('aliceM5');
+      expect(info.addedBy.userId).toBe(alice.id);
+      // … but §6 severs every LIVE chain read: no co-member's current icon, and
+      // no chain op version that would keep ticking as the others edit.
+      expect(info.addedBy.profileIcon).toBeNull();
+      expect(info.version).toBe(0);
+    }
+
+    // The still-active copy is unaffected — it keeps the live version.
+    const active = [...(await harness.ctx.mirror.overlayForPortfolio(aPid)).transactions.values()];
+    expect(active.every((info) => info.version > 0)).toBe(true);
+
+    // No cross-fork leakage in either direction after the severance.
+    const forkKeysBefore = attributionOf(fork);
+    await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 30,
+        fee: 0,
+        executedAt: '2026-03-01T10:00:00.000Z',
+      },
+    ]);
+    await harness.ctx.mirror.replicateChain(chain.id);
+    expect(attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid))).toEqual(
+      forkKeysBefore,
+    );
+
+    // Bob's own post-fork write is a plain local row: his fork is an ordinary
+    // portfolio again, so it carries no chain attribution at all.
+    const [bobTx] = await harness.ctx.mirror.submitTransactionsCreate(bob.id, bPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 2,
+        price: 15,
+        fee: 0,
+        executedAt: '2026-03-02T10:00:00.000Z',
+      },
+    ]);
+    const afterOwnWrite = await harness.ctx.mirror.overlayForPortfolio(bPid);
+    expect(afterOwnWrite.transactions.has(bobTx!.id)).toBe(false);
+    // …and it never reaches the chain's copy.
+    await harness.ctx.mirror.replicateChain(chain.id);
+    const aliceAfter = await harness.ctx.mirror.overlayForPortfolio(aPid);
+    expect([...aliceAfter.transactions.keys()]).not.toContain(bobTx!.id);
+  });
+
+  it('a portfolio that never belonged to a chain still short-circuits to empty maps', async () => {
+    const stranger = await harness.seedUser({
+      email: 'stranger-m5@bettertrack.test',
+      username: 'strangerM5',
+    });
+    const pid = await harness.ctx.portfolio.getDefaultPortfolioId(stranger.id);
+    const overlay = await harness.ctx.mirror.overlayForPortfolio(pid);
+    expect(attributionOf(overlay)).toEqual({
+      transactions: [],
+      dividends: [],
+      cashMovements: [],
+      cashSources: [],
+    });
+  });
+});
+
 describe('mirrorchain M5 — attribution stripping (design §10)', () => {
   it('overlayForPortfolio({ stripAttribution }) replaces every actor with the generic chip', async () => {
     const { alice, aPid, chain, asset } = await setupChain();
