@@ -21,7 +21,8 @@ import {
   type CashTag,
 } from '@bettertrack/contracts';
 
-import { cashBudgetFires, cashTags } from '../data/schema';
+import { cashBudgetFires, cashTags, expenseCategories, expenseTransactions } from '../data/schema';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -42,6 +43,9 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 /** Fixed clock so "the current period" is deterministic. */
 const NOW = new Date('2026-07-15T12:00:00.000Z');
 const PERIOD = '2026-07';
+/** The retired area's mount, and a syntactically valid id that owns nothing. */
+const EXPENSES_PREFIX = '/api/v1/expenses';
+const MISSING_ID = '00000000-0000-4000-8000-000000000000';
 
 let harness: TestHarness;
 
@@ -1516,5 +1520,134 @@ describe('the expense area is no longer writable', () => {
     // diagnosis path while the fused surfaces bed in.
     const read = await agent.get('/api/v1/expenses/categories');
     expect(read.status).toBe(200);
+  });
+
+  /**
+   * #1660 part 1. The gate used to inspect the VERB only, which left
+   * `GET /expenses/import/banks` as the one endpoint in the feature that still
+   * said yes: it answered 200 with all four mappers while `POST /import/preview`
+   * and `/import/apply` — the only things a caller could do with that answer —
+   * answered 410. Import is retired WITH the area (§6.8.3, issue #964), so the
+   * whole lane refuses.
+   */
+  it('reports no usable import path anywhere in /expenses/import while apply refuses', async () => {
+    const agent = await newUserAgent('imp@bettertrack.test', 'impuser');
+
+    const banks = await agent.get('/api/v1/expenses/import/banks');
+    expect(banks.status).toBe(410);
+    expect(banks.body.error.code).toBe('EXPENSE_AREA_RETIRED');
+    // Not merely the status: the mapper metadata itself is off the wire, so a
+    // client cannot read a bank id out of an error body and carry on.
+    expect(JSON.stringify(banks.body)).not.toMatch(
+      /erste_george|raiffeisen_elba|revolut|n26|"banks"/i,
+    );
+
+    // The Express router is case-insensitive, so the gate has to be: otherwise
+    // `/IMPORT/banks` reaches the very same handler around a case-sensitive
+    // path check and answers 200.
+    const shouty = await agent.get('/api/v1/expenses/IMPORT/banks');
+    expect(shouty.status).toBe(410);
+    expect(shouty.body.error.code).toBe('EXPENSE_AREA_RETIRED');
+
+    // The siblings that were already refused, asserted in the same breath —
+    // this consistency is the whole point: no endpoint in the lane says yes.
+    for (const path of ['/api/v1/expenses/import/preview', '/api/v1/expenses/import/apply']) {
+      const res = await agent
+        .post(path)
+        .set(...XRW)
+        .field('bankId', 'erste_george')
+        .attach('file', Buffer.from('Datum;Betrag\n2026-07-01;10,00\n', 'utf8'), 'statement.csv');
+      expect(res.status, path).toBe(410);
+      expect(res.body.error.code, path).toBe('EXPENSE_AREA_RETIRED');
+    }
+  });
+
+  /**
+   * #1660 part 1, generalized: the invariant is pinned for EVERY route the
+   * expenses router exposes, read off the real Express mount table rather than a
+   * list someone has to remember to extend. A new GET under `/expenses` either
+   * serves the rollback data the vault restore still needs, or reports the
+   * retirement — never a third thing.
+   */
+  it('exposes no route that advertises a capability the area refuses', async () => {
+    const user = await harness.seedUser({ email: 'inv@bettertrack.test', username: 'invuser' });
+    const agent = request.agent(harness.app);
+    expect(
+      (
+        await agent
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: user.email, password: user.password })
+      ).status,
+    ).toBe(200);
+
+    // Rollback data, written the only way it can be now: straight into the
+    // retired tables, exactly as the paranoid vault restore does. Without it a
+    // "200" below would prove only that the handler answers, not that it still
+    // serves what the rollback path depends on.
+    const [category] = await harness.db
+      .insert(expenseCategories)
+      .values({ userId: user.id, name: 'Rollback groceries', direction: 'expense' })
+      .returning();
+    await harness.db.insert(expenseTransactions).values({
+      userId: user.id,
+      categoryId: category!.id,
+      direction: 'expense',
+      amount: '12.34',
+      currency: 'EUR',
+      bookedOn: '2026-07-02',
+      description: 'Rollback row',
+      source: 'manual',
+    });
+
+    const surfaces = buildRouteTable().filter(
+      (surface): surface is Extract<MountedSurface, { kind: 'route' }> =>
+        surface.kind === 'route' &&
+        (surface.path === EXPENSES_PREFIX || surface.path.startsWith(`${EXPENSES_PREFIX}/`)),
+    );
+    // Non-vacuity: the walker really found the surface it is judging.
+    const inventory = surfaces.map((s) => `${s.method} ${s.path}`);
+    expect(inventory).toContain('GET /api/v1/expenses/import/banks');
+    expect(inventory).toContain('POST /api/v1/expenses/import/apply');
+    expect(inventory).toContain('GET /api/v1/expenses/transactions');
+    expect(surfaces.length).toBeGreaterThanOrEqual(20);
+
+    const served: string[] = [];
+    for (const surface of surfaces) {
+      const method = surface.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete';
+      const url = surface.path.replace(/\{[^}]+\}/g, MISSING_ID);
+      const label = `${surface.method} ${surface.path}`;
+      const res = await agent[method](url)
+        .set(...XRW)
+        .send();
+
+      const retired = surface.path.startsWith(`${EXPENSES_PREFIX}/import`);
+      if (retired || surface.method !== 'GET') {
+        // Every write, and the whole import lane, reports the retirement.
+        expect(res.status, label).toBe(410);
+        expect(res.body.error.code, label).toBe('EXPENSE_AREA_RETIRED');
+        continue;
+      }
+      // Every other GET is a genuine read: it answers from the retired tables
+      // (200) or misses the owner-scoped row (404 for the all-zero id). A 410
+      // here would take the vault rollback path down with the write retirement.
+      expect([200, 404], `${label} -> ${res.status}`).toContain(res.status);
+      if (res.status === 200) {
+        served.push(label);
+        // And it does not smuggle the retired import capability into a read.
+        expect(JSON.stringify(res.body), label).not.toMatch(
+          /erste_george|raiffeisen_elba|revolut|"banks"/i,
+        );
+      }
+    }
+
+    // The seeded rollback row is actually reachable through the read surface —
+    // "200" alone would be satisfied by a handler that answers an empty list.
+    expect(served.length).toBeGreaterThanOrEqual(5);
+    const transactions = await agent.get('/api/v1/expenses/transactions');
+    expect(transactions.status).toBe(200);
+    expect(JSON.stringify(transactions.body)).toContain('Rollback row');
+    const categories = await agent.get('/api/v1/expenses/categories');
+    expect(JSON.stringify(categories.body)).toContain('Rollback groceries');
   });
 });
