@@ -357,6 +357,29 @@ function omittedInFlightCaptures(
   return prospective.map((doc) => doc.portfolioId).sort();
 }
 
+/**
+ * §7 rule 2, the Drive half (#1987). A `drive`-kind readback proves a
+ * verified-fresh copy only on the connection it was taken FROM, so it may
+ * authorise a transition only when it names the Drive connection the
+ * post-state KEEPS. `perVaultMediaTransitionRequestSchema` refuses the
+ * mismatch on the wire against `next.driveConnectionId`; the repository is the
+ * boundary that actually retires the bytes and starts the 7-day purge clock,
+ * so every branch that consumes an attestation re-checks the same edge for a
+ * caller that never passed the schema. One definition, two call sites:
+ * the ordinary transition passes `next.driveConnectionId`, while a
+ * same-selection refresh passes `vault.driveConnectionId` — the CAS directly
+ * above it has already pinned the two to the same value. Non-`drive` kinds
+ * carry no connection id and are decided by their own required-kind gate.
+ */
+function driveAttestationNamesConnection(
+  verification: PerVaultMediaTransitionRequest['verification'],
+  survivingDriveConnectionId: string | null,
+): boolean {
+  return (
+    verification.kind !== 'drive' || verification.driveConnectionId === survivingDriveConnectionId
+  );
+}
+
 function attestationRosterEqual(
   supplied: readonly PerVaultMediaDocAttestation[],
   roster: readonly ExpectedDoc[],
@@ -1339,8 +1362,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               const requiredKind = vault.media.includes('drive') ? 'drive' : 'server';
               if (
                 verification.kind !== requiredKind ||
-                (verification.kind === 'drive' &&
-                  verification.driveConnectionId !== vault.driveConnectionId)
+                !driveAttestationNamesConnection(verification, vault.driveConnectionId)
               ) {
                 return { status: 'verification_failed', current } as const;
               }
@@ -1361,7 +1383,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               }
               if (
                 verification.kind !== 'drive' ||
-                verification.driveConnectionId !== vault.driveConnectionId ||
+                !driveAttestationNamesConnection(verification, vault.driveConnectionId) ||
                 !attestationsEqual(verification.docs, refreshCandidates)
               ) {
                 return { status: 'verification_failed', current } as const;
@@ -1457,7 +1479,10 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               if (current.server.candidates.length > 0 || activeRows.length > 0) {
                 return { status: 'state_conflict', current } as const;
               }
-              if (verification.kind !== 'drive') {
+              if (
+                verification.kind !== 'drive' ||
+                !driveAttestationNamesConnection(verification, input.request.next.driveConnectionId)
+              ) {
                 return { status: 'verification_failed', current } as const;
               }
               if (!attestationRosterEqual(verification.docs, roster)) {
@@ -1467,6 +1492,14 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               return { status: 'partial_set', current } as const;
             } else if (
               (verification.kind !== 'drive' && verification.kind !== 'server') ||
+              // A drive readback authorises this edge only from the connection
+              // the post-state keeps (#1987): removing `server` while attesting
+              // from a DIFFERENT Drive account proves nothing about the copy the
+              // user is left with, and it is this branch that retires the bytes.
+              !driveAttestationNamesConnection(
+                verification,
+                input.request.next.driveConnectionId,
+              ) ||
               // §7 rule 2 (#1637): "remove a medium only while ANOTHER medium
               // holds a verified-fresh copy". A readback of the medium being
               // retired proves nothing about the copy the user keeps, so on a
