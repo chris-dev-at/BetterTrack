@@ -4907,10 +4907,16 @@ const endpoints: EndpointDef[] = [
     tag: 'OAuth',
     summary:
       'Public token endpoint: exchange an authorization code (+ PKCE / client secret) or rotate a refresh token.',
+    description:
+      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set disjoint from this consent — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot, because a grant with no effective scope authorizes nothing and every token under it is already powerless; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT.',
     public: true,
     body: R.OAuthTokenRequest,
     status: 200,
     response: R.OAuthTokenResponse,
+    errorResponses: {
+      400: 'authorization_code: unknown/expired/replayed code, redirect_uri mismatch or failed PKCE (INVALID_GRANT); unknown client or wrong client secret (INVALID_CLIENT). refresh_token: unknown, expired, already-rotated or revoked-grant token (INVALID_GRANT). BOTH forms: an effective scope set that clamps to empty (INVALID_SCOPE) — the refresh form revokes the grant as it refuses.',
+    },
+    errorCodes: ['INVALID_CLIENT', 'INVALID_GRANT', 'INVALID_SCOPE'],
   },
 
   // Separately-authenticated browser-only Google Drive identities (E5 #1415).
