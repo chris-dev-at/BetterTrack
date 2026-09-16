@@ -60,11 +60,31 @@ const VAULT_SENSITIVE_ASSET_SEGMENTS = new Set(['assets', 'custom-assets']);
  * `/custom-assets/:id…`, `/assets/:id…` and the batch reads `/assets/quotes`
  * and `/assets/sparklines` all do.
  *
- * Accepted trade: the literal sub-routes that name no id — `/custom-assets/
- * recategorization`, `/custom-assets/vault-snapshots` — are suppressed too.
- * That costs a vaulted account's feature counter a few hits; carving them out
- * would mean maintaining a route allow-list, which is the fragile shape this
- * classification deliberately replaced.
+ * TWO callers, and the price is NOT the same in each. What this predicate marks
+ * is dropped as a WHOLE SIGNAL, never as "the row minus its id":
+ *
+ *  - `usageCapture` (§13.5 V5-P2) — the account contributes NOTHING to the
+ *    `assets` feature counter for these requests, not merely an id-less hit. A
+ *    bare `feature='assets'` row would still fold a `hits` counter that tracks
+ *    how many private assets were touched, which is the same roster by another
+ *    name. So for a vault owner the literal sub-routes that name no id —
+ *    `/custom-assets/recategorization`, `/custom-assets/vault-snapshots` —
+ *    contribute nothing at all, not "a few hits".
+ *  - `apiKeyRequestLog` (§13.5 V5-P10) — the cost is an AUDIT one, and larger.
+ *    `apiKeyRequestLogRepository.record` drops the entire `api_key_request_log`
+ *    row (see its `suppressIfAnyVault` branch), so for an account owning any
+ *    vault a personal-API-key `PATCH`/`DELETE /custom-assets/:id` — and every
+ *    write under `/assets/…` — leaves NO line in the per-key request log at
+ *    all: not a redacted line, not a line with the path stripped. Nothing.
+ *    Deliberate, and the right way round: that log persists `path` verbatim, so
+ *    keeping the line would keep the private uuid in a second table. But it
+ *    means "no audit line" is evidence of suppression here, never of a lost
+ *    write, and an operator reading a vault owner's key audit is reading an
+ *    incomplete trail by design.
+ *
+ * Carving the id-less sub-routes back out would mean maintaining a route
+ * allow-list, which is the fragile shape this classification deliberately
+ * replaced — so both costs are accepted rather than trimmed.
  */
 export function isVaultSensitiveUnattributedAssetRequest(path: string): boolean {
   const segments = policySegments(path);
