@@ -6,9 +6,11 @@ import {
   BACKTEST_PREVIEW_RANGES,
   COMPARISON_MAX_SERIES,
   COMPARISON_MIN_SERIES,
+  parseComparisonWindowMismatch,
   type BacktestPreviewRange,
   type ComparisonMetricKey,
   type ComparisonSeries,
+  type ComparisonWindowMismatch,
   type ConglomerateSummary,
 } from '@bettertrack/contracts';
 
@@ -295,6 +297,33 @@ function ComparisonGrid({
   );
 }
 
+/**
+ * The page's OWN sentence for a comparison-window refusal (#1659). The server's
+ * `message` is operator-facing English prose; what reaches the reader is built
+ * here from the structured cause, so it is localized, names the one basket that
+ * broke the window, and quotes only dates the payload actually carries.
+ */
+function windowMismatchMessage(t: TranslateFn, mismatch: ComparisonWindowMismatch): string {
+  switch (mismatch.reason) {
+    case 'starts-late':
+      return t('workboard.comparison.windowMismatch.startsLate', {
+        name: mismatch.name,
+        seriesStart: formatDate(mismatch.seriesStart),
+        windowStart: formatDate(mismatch.windowStart),
+      });
+    case 'ends-early':
+      return t('workboard.comparison.windowMismatch.endsEarly', {
+        name: mismatch.name,
+        seriesEnd: formatDate(mismatch.seriesEnd),
+        windowEnd: formatDate(mismatch.windowEnd),
+      });
+    // The engine's clip notice is prose, not a field: there is no honest date of
+    // this series' own to quote, so the copy names the basket and stops.
+    case 'clipped':
+      return t('workboard.comparison.windowMismatch.clipped', { name: mismatch.name });
+  }
+}
+
 export function ComparisonPage() {
   const t = useT();
   const [selected, setSelected] = useState<string[]>([]);
@@ -342,7 +371,17 @@ export function ComparisonPage() {
   });
 
   const data = compareQuery.data;
-  const errorCode = compareQuery.error instanceof ApiError ? compareQuery.error.code : null;
+  const apiError = compareQuery.error instanceof ApiError ? compareQuery.error : null;
+  const errorCode = apiError?.code ?? null;
+  // A window refusal is DETERMINISTIC — the identical request fails identically
+  // for as long as the basket's history does — so when the server names the
+  // offending basket we drop the retry and offer the one action that can change
+  // the outcome instead. Without the structured cause (an older API, or another
+  // 422 that shares the code) nothing here can tell which basket, or even
+  // whether it is the window at all, so that branch keeps its generic copy and
+  // its retry.
+  const windowMismatch =
+    errorCode === 'BACKTEST_UNAVAILABLE' ? parseComparisonWindowMismatch(apiError?.details) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -381,11 +420,23 @@ export function ComparisonPage() {
             ) : compareQuery.isError ? (
               <div className="flex flex-col items-start gap-2">
                 <Alert tone="error">
-                  {errorCode === 'BACKTEST_UNAVAILABLE'
-                    ? t('workboard.comparison.windowError')
-                    : t('workboard.comparison.error')}
+                  {windowMismatch
+                    ? `${windowMismatchMessage(t, windowMismatch)} ${t('workboard.comparison.windowMismatch.hint')}`
+                    : errorCode === 'BACKTEST_UNAVAILABLE'
+                      ? t('workboard.comparison.windowError')
+                      : t('workboard.comparison.error')}
                 </Alert>
-                <Button onClick={() => void compareQuery.refetch()}>{t('common.retry')}</Button>
+                {windowMismatch ? (
+                  selected.includes(windowMismatch.conglomerateId) ? (
+                    <Button onClick={() => toggle(windowMismatch.conglomerateId)}>
+                      {t('workboard.comparison.windowMismatch.drop', {
+                        name: windowMismatch.name,
+                      })}
+                    </Button>
+                  ) : null
+                ) : (
+                  <Button onClick={() => void compareQuery.refetch()}>{t('common.retry')}</Button>
+                )}
               </div>
             ) : !data ? null : (
               <>
