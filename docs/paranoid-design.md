@@ -1051,8 +1051,11 @@ account family in `vaultRoutes.ts`), `users.privacy_mode` + the paranoid media
 columns + the `users_paranoid_media_state` CHECK, the account-wide
 `PARANOID_MODE` kill rail (`bearerAuth.ts`), `MeResponse.privacyMode` as a
 mode signal, the v1 app-wide unlock gate (`VaultUnlockGate.tsx`), the
-account-level wizard (`ParanoidEnableWizard.tsx`) + recovery-kit flow
-(`recovery.ts`), and v1's persisted-VK "keep unlocked" custody (`custody.ts`).
+recovery-kit flow (`recovery.ts`), and v1's persisted-VK "keep unlocked"
+custody (`custody.ts`). The account-level wizard (`ParanoidEnableWizard.tsx`)
+jumped the train early: #1648 deleted the client component outright once it
+had sat unreferenced long enough to be dead weight, ahead of the rest of this
+list.
 Drops ship as append-only migrations after an owner-authorized external
 ciphertext backup for any straggler accounts (§17); the
 `zz_paranoid_v1_backup_*` quarantine is dropped by the same train, never by
