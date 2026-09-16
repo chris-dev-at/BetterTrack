@@ -287,23 +287,29 @@ describe('CSRF exemption', () => {
 /**
  * #1730 — the key list is a credential-review surface, so it must not understate
  * what a key can reach. `scopeSatisfies` lets a held `:write` satisfy its
- * `:read` at request time; the summary now says so, exactly as the OAuth consent
- * screen already does. Storage is untouched — this is display-time expansion.
+ * `:read` at request time; the summary says so, exactly as the OAuth consent
+ * screen already does.
+ *
+ * #1740 (V5-P0b) then moved the rule to the WRITE path as well, so the stored
+ * row now carries the pair too and the display expansion is the healing step for
+ * rows stored before that — see `oauthScopeWriteImpliesRead.test.ts`, which pins
+ * both halves.
  */
 describe('the API-key summary reports the EFFECTIVE scope set', () => {
-  it('expands an implied read without rewriting the stored scopes', async () => {
+  it('expands an implied read, and (since #1740) stores it too', async () => {
     const { agent, id } = await mintKey(['portfolio:write']);
 
     const created = await agent.get('/api/v1/settings/api-keys');
     const { keys } = apiKeyListResponseSchema.parse(created.body);
     expect(keys.find((k) => k.id === id)!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
 
-    // The row itself still holds exactly what was granted (no backfill).
+    // #1740 superseded the original "no backfill" assertion here: create now
+    // normalizes, so the stored row holds the pair rather than the half-set.
     const [row] = await harness.db
       .select({ scopes: schema.apiKeys.scopes })
       .from(schema.apiKeys)
       .where(eq(schema.apiKeys.id, id));
-    expect(row!.scopes).toEqual(['portfolio:write']);
+    expect(row!.scopes).toEqual(['portfolio:read', 'portfolio:write']);
   });
 
   it('leaves a scope set with no implied partner exactly as granted', async () => {

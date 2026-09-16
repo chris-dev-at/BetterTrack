@@ -11,6 +11,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   ACCOUNT_PARANOID_DISCARD_NAMESPACE,
   ACCOUNT_VAULT_DELETE_NAMESPACE,
+  DRIVE_CONNECTION_DISCONNECT_NAMESPACE,
   PORTFOLIO_VAULT_MOVE_IN_NAMESPACE,
   PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE,
 } from '../auth/loginThrottle';
@@ -46,7 +47,12 @@ export interface ParanoidDiscardReauth {
   }): Promise<void>;
 }
 
-/** The additional same-lock verifier used by R5's per-vault delete. */
+/**
+ * The same-lock §15 verifiers. One definition serves every gated operation in
+ * the arc — per-vault delete, the two portfolio moves, and the acknowledged
+ * Drive disconnect-with-loss — so none of them can drift into a second, weaker
+ * freshness rule of its own.
+ */
 export interface VaultDeleteReauth {
   /**
    * §15 step-up while the caller owns the users-row lock. Keeping the
@@ -75,6 +81,22 @@ export interface VaultDeleteReauth {
   }): Promise<void>;
   /** Persist a wrong transition credential only after its transaction rolls back. */
   recordPortfolioVaultTransitionFailure(error: unknown): Promise<boolean>;
+  /**
+   * §15 step-up for the acknowledged Drive disconnect-with-loss (#1632). Same
+   * same-lock discipline as its three siblings: the caller already holds the
+   * users-row lock, so the password/factor state this verifies is exactly the
+   * state the detach commits against.
+   */
+  verifyDriveConnectionDisconnect(input: {
+    userId: string;
+    connectionId: string;
+    body: VaultDeleteCredential;
+    ip?: string | null;
+    auth: LockedVaultDeleteAuth;
+    db: Database;
+  }): Promise<void>;
+  /** Persist a wrong disconnect credential only after its transaction rolls back. */
+  recordDriveConnectionDisconnectFailure(error: unknown): Promise<boolean>;
 }
 
 export interface VaultDeleteCredential {
@@ -127,6 +149,11 @@ export function createParanoidDiscardReauth(
     PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+  const driveDisconnectThrottle = createProgressiveLimiter(
+    redis,
+    DRIVE_CONNECTION_DISCONNECT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
 
   class VaultDeleteReauthFailure extends ApiError {
     constructor(
@@ -159,6 +186,22 @@ export function createParanoidDiscardReauth(
     ) {
       super(response.statusCode, response.code, response.message, response.details);
       this.name = 'PortfolioVaultTransitionReauthFailure';
+    }
+  }
+
+  class DriveConnectionDisconnectReauthFailure extends ApiError {
+    constructor(
+      response: ApiError,
+      readonly auditMeta: {
+        userId: string;
+        connectionId: string;
+        ip?: string | null;
+        kind: string;
+        locked: boolean;
+      },
+    ) {
+      super(response.statusCode, response.code, response.message, response.details);
+      this.name = 'DriveConnectionDisconnectReauthFailure';
     }
   }
 
@@ -332,6 +375,66 @@ export function createParanoidDiscardReauth(
         throw unauthorized('Re-authentication is required.', 'INVALID_CREDENTIALS');
       }
       await transitionThrottle.reset(userId);
+    },
+    async verifyDriveConnectionDisconnect({ userId, connectionId, body, ip, auth, db }) {
+      const cooling = await driveDisconnectThrottle.peek(userId);
+      if (cooling > 0) {
+        throw tooManyRequests(cooling, 'Too many attempts. Please wait and retry.');
+      }
+
+      const fail = async (kind: string): Promise<never> => {
+        const decision = await driveDisconnectThrottle.consume(userId);
+        const response = !decision.allowed
+          ? tooManyRequests(decision.retryAfterSec, 'Too many attempts. Please wait and retry.')
+          : kind === 'password'
+            ? unauthorized('Current password is incorrect.', 'INVALID_CREDENTIALS')
+            : unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+        throw new DriveConnectionDisconnectReauthFailure(response, {
+          userId,
+          connectionId,
+          ip,
+          kind,
+          locked: !decision.allowed,
+        });
+      };
+
+      const factorState = {
+        secret: auth.twoFactorSecret,
+        enabled: auth.twoFactorEnabled,
+        emailEnabled: auth.twoFactorEmailEnabled,
+      };
+      if (body.password !== undefined) {
+        if (!(await passwordHasher.verify(auth.passwordHash, body.password))) {
+          await fail('password');
+        }
+      } else if (body.recoveryCode !== undefined) {
+        const ok = await twoFactor.consumeRecoveryCode(
+          userId,
+          body.recoveryCode,
+          factorState,
+          createTwoFactorRepository(db),
+        );
+        if (!ok) await fail('recovery_code');
+      } else if (body.code !== undefined) {
+        const ok = await twoFactor.verifyTotpCode(userId, body.code, factorState);
+        if (!ok) await fail('totp');
+      } else {
+        // Direct service calls stay fail-closed if contract validation is bypassed.
+        throw unauthorized('Re-authentication is required.', 'INVALID_CREDENTIALS');
+      }
+      await driveDisconnectThrottle.reset(userId);
+    },
+    async recordDriveConnectionDisconnectFailure(error) {
+      if (!(error instanceof DriveConnectionDisconnectReauthFailure)) return false;
+      await audit.record({
+        actorId: error.auditMeta.userId,
+        action: AuditAction.DriveConnectionDisconnectReauthFail,
+        targetType: 'drive_connection',
+        targetId: error.auditMeta.connectionId,
+        ip: error.auditMeta.ip,
+        meta: { kind: error.auditMeta.kind, locked: error.auditMeta.locked },
+      });
+      return true;
     },
     async recordPortfolioVaultTransitionFailure(error) {
       if (!(error instanceof PortfolioVaultTransitionReauthFailure)) return false;

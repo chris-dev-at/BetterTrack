@@ -783,6 +783,26 @@ describe('OpenAPI document', () => {
     expect(JSON.stringify(second)).toBe(JSON.stringify(first));
   });
 
+  it('marks exactly one request body optional — the disconnect whose body depends on its query', () => {
+    // `EndpointDef.bodyOptional` exists for one route: DELETE /drive-connections/:id
+    // takes no body without `acknowledgeBound` and a §15 step-up body with it.
+    // Pin the set in both directions — deleting the flag re-documents that route
+    // as always requiring a body the server refuses (#1999 review), and marking
+    // any other body optional would understate a real requirement.
+    const doc = buildOpenApiDocument() as unknown as {
+      paths?: Record<string, Record<string, { requestBody?: { required?: boolean } }>>;
+    };
+    const optional: string[] = [];
+    for (const [path, ops] of Object.entries(doc.paths ?? {})) {
+      for (const [method, op] of Object.entries(ops)) {
+        if (op?.requestBody && op.requestBody.required === false) {
+          optional.push(`${method.toUpperCase()} ${path}`);
+        }
+      }
+    }
+    expect(optional).toEqual(['DELETE /drive-connections/{connectionId}']);
+  });
+
   it('serves the interactive /docs page publicly', async () => {
     const { app } = await createTestApp();
 

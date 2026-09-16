@@ -11,7 +11,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
-import { emailLog, passwordResetTokens, users, vaults } from '../data/schema';
+import { auditLog, emailLog, passwordResetTokens, users, vaults } from '../data/schema';
 import { PASSWORD_RESET_RESPONSE_FLOOR_MS } from '../services/auth/authService';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
@@ -438,6 +438,82 @@ describe('self-service password-reset concurrency', () => {
         .from(passwordResetTokens)
         .where(eq(passwordResetTokens.userId, user.id)),
     ).toHaveLength(1);
+
+    // The success audit now commits with the token it describes rather than as a
+    // second pooled write on the response path (§16 2026-09-16). Exactly one
+    // token survives, but BOTH accepted requests must still be answerable in the
+    // audit log — moving the row must not have cost one.
+    expect(
+      await harness.db
+        .select()
+        .from(auditLog)
+        .where(
+          and(eq(auditLog.action, 'password.reset_requested'), eq(auditLog.targetId, user.id)),
+        ),
+    ).toHaveLength(2);
+  });
+
+  it('makes the same awaited pooled operations on the known and unknown branches', async () => {
+    // #1645's answer, pinned as a COUNT rather than a stopwatch.
+    //
+    // The oracle §6.1 forbids is produced by the known branch doing awaited work
+    // the unknown branch does not. Under a saturated pool that work is dominated
+    // by the wait to ACQUIRE a connection, which is bounded only by request
+    // concurrency — the caller's choice — so it can outgrow the fixed response
+    // floor that is supposed to hide the branch difference. Measured on
+    // postgres:17 with the audit as a second pooled write, 48 requests in flight
+    // against a 3-connection pool: paired |known − unknown| p50 239–266 ms, p90
+    // 267–336 ms, against a 250 ms floor.
+    //
+    // The COUNT is what turns into that time, and unlike the time it is exact on
+    // any hardware and on either engine. Every top-level call on the pooled `db`
+    // handle is one acquisition; statements issued on a transaction's executor
+    // ride the connection that transaction already holds and cost nothing extra.
+    // So this asserts the mechanism directly: two acquisitions per request on
+    // both branches — `findByEmail`, then `issueOrEqualize`'s transaction.
+    //
+    // It is also the GENERAL form of the guard. Any future awaited known-branch
+    // write trips it, not only the audit row this issue was about.
+    //
+    // The transport below never resolves, which keeps the detached reset email —
+    // and the `email_log` write behind it — out of the window. That send is
+    // deliberately fire-and-forget (§6.10) and is not on the awaited response
+    // path; counting it would measure the wrong thing.
+    const blockingTransport: MailTransport = {
+      send: () => new Promise<void>(() => {}),
+    };
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: blockingTransport });
+    const user = await harness.seedUser();
+
+    // Every top-level pooled entry point the repositories use today. The list is a
+    // hand enumeration: `db.query.*`, `db.with(...)`, `db.batch(...)` and `db.$client`
+    // would also acquire a connection without hitting a spy — none is used under
+    // apps/api/src as of 2026-09-16; add it here the day one is.
+    const POOLED = ['select', 'insert', 'update', 'delete', 'execute', 'transaction'] as const;
+    const spies = POOLED.map((method) => vi.spyOn(harness.db, method));
+    const countPooledOps = async (email: string) => {
+      for (const spy of spies) spy.mockClear();
+      const response = await requestPasswordReset(harness, email);
+      expect(response.status).toBe(200);
+      return POOLED.map(
+        (method, index) => [method, spies[index]!.mock.calls.length] as const,
+      ).filter(([, calls]) => calls > 0);
+    };
+
+    // Sequential on purpose: the count is the invariant, and a pooled call
+    // cannot be attributed to one of two concurrent requests by spying.
+    const known = await countPooledOps(user.email);
+    const unknown = await countPooledOps('nobody-here@test.dev');
+    for (const spy of spies) spy.mockRestore();
+
+    const total = (ops: readonly (readonly [string, number])[]) =>
+      ops.reduce((sum, [, calls]) => sum + calls, 0);
+    const observed = `known ${JSON.stringify(known)} vs unknown ${JSON.stringify(unknown)}`;
+    // Pin the absolute number too: without it, a refactor that moved BOTH
+    // branches off the pooled handle would leave this asserting 0 === 0.
+    expect(total(unknown), observed).toBe(2);
+    expect(total(known), observed).toBe(total(unknown));
+    expect(known, observed).toEqual(unknown);
   });
 
   // The waves below are sequential and every one of them is gated by the
@@ -524,25 +600,30 @@ describe('self-service password-reset concurrency', () => {
       // it was the burst SHAPE. Launching all 24 pairs together puts 48 requests
       // on a pool of INTEGRATION_DB_POOL_MAX (3) connections, and a transaction
       // parked on the per-address advisory lock holds its connection for the
-      // whole wait. Worse, the branches do not demand the pool equally: the known
-      // branch takes a SECOND pooled acquisition per probe — the awaited
-      // `password_reset.requested` audit insert, which the unknown branch never
-      // makes — so its audit write queues behind the entire backlog, roughly
-      // in-flight/pool deep. The paired delta then reports connection hand-off
-      // order, which is anti-correlated between the branches and so is exactly
-      // what pairing cannot cancel. That is how it failed CI at p50 = 91 ms
-      // against the 75 ms bound, in four flat plateaus (seven pairs at ~15 ms,
-      // eight at ~91 ms, two at ~157 ms, seven at ~201 ms) on a commit that
-      // touched no code on this path: plateaus are pool rounds, not a branch
+      // whole wait. Worse, at the time the branches did not demand the pool
+      // equally: the known branch took a SECOND pooled acquisition per probe —
+      // the awaited `password_reset.requested` audit insert, which the unknown
+      // branch never makes — so its audit write queued behind the entire
+      // backlog, roughly in-flight/pool deep. The paired delta then reports
+      // connection hand-off order, which is anti-correlated between the branches
+      // and so is exactly what pairing cannot cancel. That is how it failed CI at
+      // p50 = 91 ms against the 75 ms bound, in four flat plateaus (seven pairs
+      // at ~15 ms, eight at ~91 ms, two at ~157 ms, seven at ~201 ms) on a commit
+      // that touched no code on this path: plateaus are pool rounds, not a branch
       // difference, which shifts every pair smoothly. Consistent with that, the
       // same statistic sat near 11 ms back when the burst was 16 requests deep.
       //
-      // That second acquisition is an INPUT to the measurement here, not a
-      // verdict on it: whether the `password_reset.requested` audit insert
-      // belongs inside the per-address advisory lock at all is the question open
-      // issue #1645 owns, and this test deliberately takes no position on it. It
-      // only stops the pool queue in FRONT of that insert from being reported as
-      // a branch timing leak. If #1645 moves the insert, this test keeps passing.
+      // #1645 HAS SINCE ANSWERED the question this comment used to leave open
+      // (§16 2026-09-16): that second acquisition was a real oracle, not only a
+      // measurement input, and the `password.reset_requested` audit now commits
+      // INSIDE the issue transaction. Both branches make exactly two awaited
+      // pooled operations per request, which is pinned deterministically — by
+      // count, not by clock — in 'makes the same awaited pooled operations on the
+      // known and unknown branches' above, and the same-transaction placement is
+      // pinned by `passwordResetIssueSeam.test.ts`. Those are the guards; this
+      // test stays what it always was, the end-to-end equalization check, and its
+      // wave shape is kept because oversubscribing the pool measures hand-off
+      // order on ANY shape.
       //
       // So the 24 pairs are now sampled in waves of `pairsPerWave` instead of one
       // 48-deep burst. Nothing about the measurement is weakened: the count, both
@@ -555,8 +636,10 @@ describe('self-service password-reset concurrency', () => {
       // requests were in flight; the other 44 were queued for a CONNECTION, in
       // front of the lock rather than on it. Waves of two put four requests
       // against three connections, which is the deepest genuine lock contention
-      // this harness can produce. What is gone is only the twenty-deep connection
-      // queue in front of the known branch's audit write. A real leak —
+      // this harness can produce — and it is the shape under which #1645
+      // measured the in-lock audit insert to cost 2–7 ms p50, two orders of
+      // magnitude under the acquisition it replaced. What is gone is only the
+      // twenty-deep connection queue in front of the response path. A real leak —
       // known-branch work that outgrows PASSWORD_RESET_RESPONSE_FLOOR_MS — shifts
       // every pair and still trips both bounds; it never depended on the pool
       // being oversubscribed.
@@ -575,9 +658,10 @@ describe('self-service password-reset concurrency', () => {
 
       // Guard the guard, part two: if `pairsPerWave` is ever raised (or the pool
       // shrunk) far enough that probes start queueing for a connection, this must
-      // fail here rather than silently decay back into timing the pool. One
-      // request over the ceiling is the known branch's audit write, which is
-      // serial with its own issue transaction, not concurrent with it.
+      // fail here rather than silently decay back into timing the pool. The `+ 1`
+      // is head-room for one incidental pooled read, not for a known-branch
+      // write: since §16 2026-09-16 both branches make the same two awaited
+      // pooled operations, and that is asserted by count above.
       expect(
         pairsPerWave * 2,
         'in-flight probes must not oversubscribe the harness connection pool',

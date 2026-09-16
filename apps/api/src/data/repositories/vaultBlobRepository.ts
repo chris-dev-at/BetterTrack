@@ -1467,6 +1467,17 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               return { status: 'partial_set', current } as const;
             } else if (
               (verification.kind !== 'drive' && verification.kind !== 'server') ||
+              // §7 rule 2 (#1637): "remove a medium only while ANOTHER medium
+              // holds a verified-fresh copy". A readback of the medium being
+              // retired proves nothing about the copy the user keeps, so on a
+              // removing edge the attestation must name a SURVIVING medium —
+              // `next.media` is exactly the set that survives, because `removed`
+              // is `expected \ next`. Removing `server` therefore takes a
+              // drive-kind readback and removing `drive` a server-kind one.
+              // With nothing removed there is no surviving-copy question and
+              // either readback kind stands, as before; the wire contract
+              // narrows those edges further on its own.
+              (removed.length > 0 && !input.request.next.media.includes(verification.kind)) ||
               !attestationsEqual(verification.docs, activeRows)
             ) {
               return { status: 'verification_failed', current } as const;

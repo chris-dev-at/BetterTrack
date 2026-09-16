@@ -27,16 +27,20 @@ import {
   deleteGroup,
   listFriends,
   listGroups,
+  removeGroupMember,
+  renameGroup,
 } from '../../lib/socialApi';
 import { FriendGroupsSection } from './FriendGroupsSection';
 
+const ALICE = '00000000-0000-0000-0000-0000000000a1';
 const BOB = '00000000-0000-0000-0000-0000000000b2';
 const GROUP = '00000000-0000-0000-0000-0000000000f1';
 
-function renderSection() {
-  const queryClient = new QueryClient({
+function renderSection(
+  queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
+  }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <FriendGroupsSection />
@@ -287,5 +291,174 @@ describe('FriendGroupsSection — the friend-group ceilings', () => {
 
     expect(await screen.findByText(/could not update the group/i)).toBeInTheDocument();
     expect(screen.queryByText(/this group is full/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * #1899 — "editing a group updates its reach" (§6.9, Audiences bullet) is a
+ * claim about the SURFACES that report reach, not only about the circle list.
+ * These five mutations invalidated `['social','groups']` alone, so My items'
+ * badges (`['social','my-shared']`) and every open share dialog's audience read
+ * (`['social','audience',kind,subjectId]`) kept serving pre-mutation reach for
+ * the whole 30 s stale window — the owner deletes a circle four items point at
+ * and all four rows still name it.
+ *
+ * The fix is ONE definition (`invalidateReachQueries`) taking the same
+ * `['social']` prefix the AudiencePicker's own write already takes: every
+ * reach-bearing read in the app lives under it, and hand-listing dependents is
+ * exactly what drifted. These tests pin both halves — the prefix IS invalidated,
+ * and the sweep stops there: no cache-wide invalidation, nothing outside
+ * `['social']`.
+ */
+describe('FriendGroupsSection — a circle edit reaches every surface that reports reach (#1899)', () => {
+  const OTHER_SUBJECT = '00000000-0000-0000-0000-0000000000d1';
+  const FAMILY = {
+    id: GROUP,
+    name: 'Family',
+    memberCount: 1,
+    members: [{ id: BOB, username: 'bob', profileIcon: null }],
+    shareCount: 4,
+  };
+  /** Caches a circle edit has no business touching. */
+  const UNRELATED_KEYS = [
+    ['workboard'],
+    ['portfolios'],
+    ['conglomerates'],
+    ['ideas'],
+    ['chat', 'conversations'],
+    ['alerts', 'sharing'],
+  ] as const;
+  /**
+   * Caches that state reach and therefore MUST hear the edit. Only queries with
+   * no observer are asserted on: the section's own `['social','groups']` read
+   * is invalidated too, but it refetches immediately and clears the flag again,
+   * so asserting it would be a race. The call-argument check below covers it.
+   */
+  const REACH_KEYS = [
+    ['social', 'my-shared'],
+    ['social', 'audience', 'portfolio', OTHER_SUBJECT],
+    ['social', 'shared-with-me'],
+  ] as const;
+
+  function renderWithCaches() {
+    const queryClient = new QueryClient({
+      // The app's real default (`UserApp.tsx`): without an invalidation these
+      // reads stay fresh — and wrong — for 30 s.
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    for (const key of [...UNRELATED_KEYS, ...REACH_KEYS]) {
+      queryClient.setQueryData([...key], { seeded: true });
+    }
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    return { queryClient, invalidateQueries, ...renderSection(queryClient) };
+  }
+
+  function expectReachInvalidatedAndNothingElse(
+    queryClient: QueryClient,
+    calls: readonly (readonly unknown[])[],
+  ) {
+    for (const key of REACH_KEYS) {
+      expect(
+        queryClient.getQueryState([...key])?.isInvalidated,
+        `reach-bearing ${JSON.stringify(key)} must hear the circle edit`,
+      ).toBe(true);
+    }
+    // Negative space: the widening stops at the `['social']` prefix. A
+    // cache-wide `invalidateQueries()` (no key) would also turn every assertion
+    // above green, so pin the argument of every call too.
+    for (const key of UNRELATED_KEYS) {
+      expect(
+        queryClient.getQueryState([...key])?.isInvalidated,
+        `${JSON.stringify(key)} does not derive reach from a circle`,
+      ).toBe(false);
+    }
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [options] of calls) {
+      expect(options).toEqual({ queryKey: ['social'] });
+    }
+  }
+
+  beforeEach(() => {
+    vi.mocked(listGroups).mockResolvedValue({ groups: [FAMILY] });
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        { user: { id: ALICE, username: 'alice' }, createdAt: '2026-01-01T00:00:00.000Z' },
+        { user: { id: BOB, username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+  });
+
+  test('creating a circle', async () => {
+    vi.mocked(createGroup).mockResolvedValue({ ...FAMILY, name: 'Investors' });
+    const user = userEvent.setup();
+    const { queryClient, invalidateQueries } = renderWithCaches();
+
+    await waitFor(() => expect(listGroups).toHaveBeenCalled());
+    await user.type(screen.getByLabelText(/new group name/i), 'Investors');
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+
+    await waitFor(() => expect(createGroup).toHaveBeenCalledWith('Investors'));
+    await waitFor(() =>
+      expectReachInvalidatedAndNothingElse(queryClient, invalidateQueries.mock.calls),
+    );
+  });
+
+  test('renaming a circle', async () => {
+    vi.mocked(renameGroup).mockResolvedValue({ ...FAMILY, name: 'Close family' });
+    const user = userEvent.setup();
+    const { queryClient, invalidateQueries } = renderWithCaches();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.clear(screen.getByLabelText('Group name'));
+    await user.type(screen.getByLabelText('Group name'), 'Close family');
+    await user.click(screen.getByRole('button', { name: /^rename$/i }));
+
+    await waitFor(() => expect(renameGroup).toHaveBeenCalledWith(GROUP, 'Close family'));
+    await waitFor(() =>
+      expectReachInvalidatedAndNothingElse(queryClient, invalidateQueries.mock.calls),
+    );
+  });
+
+  test('deleting a circle', async () => {
+    vi.mocked(deleteGroup).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const { queryClient, invalidateQueries } = renderWithCaches();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(screen.getByRole('button', { name: /delete group/i }));
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => expect(deleteGroup).toHaveBeenCalledWith(GROUP));
+    await waitFor(() =>
+      expectReachInvalidatedAndNothingElse(queryClient, invalidateQueries.mock.calls),
+    );
+  });
+
+  test('adding a member', async () => {
+    vi.mocked(addGroupMember).mockResolvedValue({ ...FAMILY, memberCount: 2 });
+    const user = userEvent.setup();
+    const { queryClient, invalidateQueries } = renderWithCaches();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(await screen.findByRole('button', { name: /^add$/i }));
+
+    await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(GROUP, ALICE));
+    await waitFor(() =>
+      expectReachInvalidatedAndNothingElse(queryClient, invalidateQueries.mock.calls),
+    );
+  });
+
+  test('removing a member', async () => {
+    vi.mocked(removeGroupMember).mockResolvedValue({ ...FAMILY, memberCount: 0, members: [] });
+    const user = userEvent.setup();
+    const { queryClient, invalidateQueries } = renderWithCaches();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(await screen.findByRole('button', { name: /^remove$/i }));
+
+    await waitFor(() => expect(removeGroupMember).toHaveBeenCalledWith(GROUP, BOB));
+    await waitFor(() =>
+      expectReachInvalidatedAndNothingElse(queryClient, invalidateQueries.mock.calls),
+    );
   });
 });

@@ -784,6 +784,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/ParanoidSurfaceGate.tsx',
       'user/vault/ui/PortfolioVaultMoveWizard.tsx',
       'user/vault/ui/PortfolioVaultSection.tsx',
+      'user/vault/ui/StepUpCredentialFields.tsx',
       'user/vault/ui/VaultCreationCeremony.tsx',
       'user/vault/ui/VaultManager.tsx',
       'user/vault/ui/VaultRestorePicker.tsx',

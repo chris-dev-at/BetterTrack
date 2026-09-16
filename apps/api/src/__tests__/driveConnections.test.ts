@@ -381,9 +381,13 @@ describe('Drive connection registry', () => {
       .expect(409);
     expect(refused.body.error.code).toBe('DRIVE_CONNECTION_BOUND');
 
+    // §15: the acknowledgement is the loss assertion and carries the credential
+    // (#1632). Gating is proved in its own vector below; here it only has to be
+    // satisfied so the detach behaviour stays under test.
     await agent
       .delete(`/api/v1/drive-connections/${replicatedConnection.id}?acknowledgeBound=true`)
       .set(...XRW)
+      .send({ stepUp: { password: user.password } })
       .expect(204);
     const [detached] = await h.db
       .select()
@@ -439,6 +443,7 @@ describe('Drive connection registry', () => {
     const acknowledged = await agent
       .delete(`/api/v1/drive-connections/${driveOnlyConnection.id}?acknowledgeBound=true`)
       .set(...XRW)
+      .send({ stepUp: { password: user.password } })
       .expect(409);
     expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
   });
@@ -471,18 +476,23 @@ describe('Drive connection registry', () => {
     }) as Database;
     const repository = createDriveConnectionRepository(failAtCommit);
     const originalDelete = h.ctx.driveConnections.delete;
-    h.ctx.driveConnections.delete = (userId, connectionId, acknowledgeBound) =>
-      repository.delete(
+    h.ctx.driveConnections.delete = ({ userId, connectionId, acknowledgeBound }) =>
+      repository.delete({
         userId,
         connectionId,
         acknowledgeBound,
-        new Date('2026-08-22T10:00:00.000Z'),
-      );
+        now: new Date('2026-08-22T10:00:00.000Z'),
+        // This vector is about the deferred FK at COMMIT, not about §15; the
+        // credential the route required is accepted here so the commit boundary
+        // is the only thing under test.
+        verifyStepUp: async () => {},
+      });
 
     try {
       const refused = await agent
         .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
         .set(...XRW)
+        .send({ stepUp: { password: user.password } })
         .expect(409);
       expect(refused.body.error.code).toBe('DRIVE_CONNECTION_BOUND');
       expect(refused.body.error.details).toEqual({ vaults: [] });
@@ -608,6 +618,7 @@ describe('Drive connection registry', () => {
     const acknowledged = await agent
       .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
       .set(...XRW)
+      .send({ stepUp: { password: user.password } })
       .expect(409);
     expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
 
@@ -631,6 +642,7 @@ describe('Drive connection registry', () => {
     await agent
       .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
       .set(...XRW)
+      .send({ stepUp: { password: user.password } })
       .expect(204);
     const [detached] = await h.db.select().from(vaults).where(eq(vaults.id, vault.body.vault.id));
     expect(detached).toMatchObject({
@@ -638,5 +650,219 @@ describe('Drive connection registry', () => {
       driveConnectionId: null,
       mediaAttestedAt: null,
     });
+  });
+
+  it('gates the acknowledged Drive disconnect-with-loss behind the §15 step-up credential', async () => {
+    const user = await h.seedUser({ email: 'drive-stepup@bt.test', username: 'drive_stepup' });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'stepup-drive',
+      email: 'stepup@example.test',
+    });
+    const vault = await createVault(
+      agent,
+      connection.id,
+      ['server', 'drive'],
+      'Step-up replicated vault',
+    );
+    await attestFullDocSet(vault.body.vault.id, connection.id);
+
+    // The unacknowledged probe is what DISCOVERS the loss, so it must keep its
+    // bodyless contract: an owner is never asked for a password to be told that
+    // a vault is bound at all.
+    const bound = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .expect(409);
+    expect(bound.body.error.code).toBe('DRIVE_CONNECTION_BOUND');
+
+    // §15: the acknowledgement IS the loss assertion, so it carries the
+    // credential. A bare acknowledgement is a schema refusal, exactly as a
+    // `DELETE /vaults/:id` with no `stepUp` member is.
+    const bare = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW);
+    expect(bare.status).toBe(400);
+
+    const unenrolledFactor = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .send({ stepUp: { code: '123456' } });
+    expect(unenrolledFactor.status).toBe(401);
+    expect(unenrolledFactor.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+
+    const wrong = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .send({ stepUp: { password: 'definitely-wrong' } });
+    expect(wrong.status).toBe(401);
+    expect(wrong.body.error.code).toBe('INVALID_CREDENTIALS');
+
+    // Nothing disconnected, nothing detached, no copy lost reach.
+    const [stillBound] = await h.db.select().from(vaults).where(eq(vaults.id, vault.body.vault.id));
+    expect(stillBound).toMatchObject({
+      media: ['server', 'drive'],
+      driveConnectionId: connection.id,
+      mediaAttestedDriveConnectionId: connection.id,
+    });
+    expect(stillBound?.mediaAttestedAt).not.toBeNull();
+    expect(
+      await h.db.select().from(driveConnections).where(eq(driveConnections.id, connection.id)),
+    ).toHaveLength(1);
+
+    const failures = await h.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'drive_connection.disconnect_reauth_fail'));
+    expect(failures).toHaveLength(2);
+    expect(failures.map(({ targetId }) => targetId)).toEqual([connection.id, connection.id]);
+    expect(failures.map(({ targetType }) => targetType)).toEqual([
+      'drive_connection',
+      'drive_connection',
+    ]);
+    // Generic failure trail only — never the submitted secret.
+    expect(JSON.stringify(failures)).not.toMatch(/definitely-wrong|123456/);
+
+    // The correct credential proceeds exactly as the ungated route did.
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } })
+      .expect(204);
+    const [detached] = await h.db.select().from(vaults).where(eq(vaults.id, vault.body.vault.id));
+    expect(detached).toMatchObject({
+      media: ['server'],
+      driveConnectionId: null,
+      mediaAttestedAt: null,
+      mediaAttestedDriveConnectionId: null,
+    });
+    expect(
+      await h.db.select().from(driveConnections).where(eq(driveConnections.id, connection.id)),
+    ).toHaveLength(0);
+    const connectionAudit = await h.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, connection.id));
+    expect(connectionAudit.map(({ action }) => action).sort()).toEqual([
+      'drive_connection.created',
+      'drive_connection.deleted',
+      'drive_connection.disconnect_reauth_fail',
+      'drive_connection.disconnect_reauth_fail',
+    ]);
+  });
+
+  it('decides DRIVE_CONNECTION_LAST_MEDIUM before the credential is ever read', async () => {
+    const user = await h.seedUser({ email: 'drive-lastmed@bt.test', username: 'drive_lastmed' });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'lastmed-drive',
+      email: 'lastmed@example.test',
+    });
+    await createVault(agent, connection.id, ['drive'], 'Drive-only vault');
+
+    const first = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .expect(409);
+    expect(first.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+
+    // Even a WRONG credential is never read on this path: the refusal that held
+    // all along is decided first, so no throttle budget is spent, no recovery
+    // code is burned, and no re-auth failure is audited.
+    const acknowledged = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .send({ stepUp: { password: 'definitely-wrong' } });
+    expect(acknowledged.status).toBe(409);
+    expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+    expect(
+      await h.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, 'drive_connection.disconnect_reauth_fail')),
+    ).toHaveLength(0);
+    expect(
+      await h.db.select().from(driveConnections).where(eq(driveConnections.id, connection.id)),
+    ).toHaveLength(1);
+  });
+
+  it('leaves the lossless disconnect ungated and still bodyless', async () => {
+    const user = await h.seedUser({ email: 'drive-lossless@bt.test', username: 'drive_lossless' });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'lossless-drive',
+      email: 'lossless@example.test',
+    });
+
+    // No vault is bound, so nothing loses reach and §15 does not apply. The
+    // module's "no route accepts a body it does not consume" rule still holds
+    // for the step-up member itself.
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } })
+      .expect(400);
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .expect(204);
+    expect(await h.db.select().from(driveConnections)).toHaveLength(0);
+    expect(
+      await h.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, 'drive_connection.disconnect_reauth_fail')),
+    ).toHaveLength(0);
+  });
+
+  it('progressively throttles wrong disconnect credentials on its own budget', async () => {
+    const user = await h.seedUser({
+      email: 'drive-throttle@bt.test',
+      username: 'drive_throttle',
+    });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'throttle-drive',
+      email: 'throttle@example.test',
+    });
+    const vault = await createVault(
+      agent,
+      connection.id,
+      ['server', 'drive'],
+      'Throttled replicated vault',
+    );
+    await attestFullDocSet(vault.body.vault.id, connection.id);
+
+    // The verifier closes over this schedule object; lowering the test-only
+    // allowance exercises the production progressive limiter cheaply.
+    h.ctx.config.rateLimits.loginAccount.limit = 2;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await agent
+        .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+        .set(...XRW)
+        .send({ stepUp: { password: 'wrong-password' } });
+      expect(response.status).toBe(401);
+    }
+    const tripped = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .send({ stepUp: { password: 'wrong-password' } });
+    expect(tripped.status).toBe(429);
+
+    // A correct credential does not ride through a cooling account.
+    const correctWhileCooling = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
+    expect(correctWhileCooling.status).toBe(429);
+    expect(
+      await h.db.select().from(driveConnections).where(eq(driveConnections.id, connection.id)),
+    ).toHaveLength(1);
+    expect(
+      await h.db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.action, 'drive_connection.disconnect_reauth_fail')),
+    ).toHaveLength(3);
   });
 });

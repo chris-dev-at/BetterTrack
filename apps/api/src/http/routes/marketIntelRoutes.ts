@@ -2,10 +2,15 @@ import { Router } from 'express';
 
 import {
   assetIdParamSchema,
+  dividendCalendarQuerySchema,
   fundamentalsQuerySchema,
   projectedDividendIncomeQuerySchema,
 } from '@bettertrack/contracts';
-import type { FundamentalsQuery, ProjectedDividendIncomeQuery } from '@bettertrack/contracts';
+import type {
+  DividendCalendarQuery,
+  FundamentalsQuery,
+  ProjectedDividendIncomeQuery,
+} from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
 import { validateParams, validateQuery } from '../middleware/validate';
@@ -41,10 +46,23 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
     res.json(await ctx.marketIntel.earningsCalendar(req.authUser!.id));
   });
 
-  // GET /assets/portfolio/dividend-calendar — upcoming ex/pay across held + watched.
-  router.get('/portfolio/dividend-calendar', async (req, res) => {
-    res.json(await ctx.portfolioMarketIntel.dividendCalendar(req.authUser!.id));
-  });
+  // GET /assets/portfolio/dividend-calendar[?portfolioId=…] — upcoming ex/pay.
+  // Unscoped it spans held + watched across every active portfolio (the Home
+  // widget's cross-portfolio view); the optional id narrows it to that
+  // portfolio's holdings, which is what the portfolio page's block needs to make
+  // its own "this portfolio" copy true (#1898). The id is a NARROWING hint, not
+  // an authorization claim: it is passed to the user-scoped repository read, so
+  // a portfolio the caller does not own matches nothing and the answer is an
+  // empty calendar — the same answer an unknown id gets, so the response never
+  // reveals that another account's portfolio exists.
+  router.get(
+    '/portfolio/dividend-calendar',
+    validateQuery(dividendCalendarQuerySchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.query as DividendCalendarQuery;
+      res.json(await ctx.portfolioMarketIntel.dividendCalendar(req.authUser!.id, { portfolioId }));
+    },
+  );
 
   // GET /assets/portfolio/dividend-projection[?portfolioId=…] — projected income
   // (monthly/yearly, in the caller's base currency). Unscoped it spans every

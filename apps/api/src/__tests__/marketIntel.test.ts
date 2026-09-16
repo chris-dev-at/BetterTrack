@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createApiKeyResponseSchema,
+  dividendCalendarResponseSchema,
   dividendsResponseSchema,
   earningsCalendarResponseSchema,
   earningsResponseSchema,
@@ -15,6 +16,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../services/marketIntel/rollupBudget';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import {
   cachedIntel,
@@ -553,6 +555,218 @@ describe('GET /api/v1/assets/portfolio/dividend-projection — scope (V5-P6b, #1
       .query({ portfolioId: 'not-a-uuid' });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+/**
+ * #1898 — the portfolio page renders the projection and the calendar side by
+ * side under copy that names "this portfolio". Both roll-ups therefore take the
+ * SAME optional `portfolioId`, and scoped means scoped on both: the calendar's
+ * watchlist half is a user-wide set that belongs to no portfolio, so a scoped
+ * read covers that portfolio's holdings alone. Unscoped stays byte-for-byte
+ * what the Home widgets (`DividendsWidget`) already read.
+ */
+describe('portfolio dividend roll-ups — per-portfolio scope (#1898)', () => {
+  /** A date the display-day boundary will still call upcoming, whenever this runs. */
+  const soon = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
+  /**
+   * Every asset pays €1/share a year and announces one upcoming event, so a
+   * portfolio's yearly income is its share count and every held/watched asset
+   * contributes exactly one calendar row.
+   */
+  const oneEventPerAsset = () =>
+    createStubMarketData({
+      dividends: () =>
+        cachedIntel(
+          sampleDividendEvents({
+            currency: 'EUR',
+            trailingAmount: 1,
+            history: [],
+            upcoming: [{ exDate: soon(3), payDate: soon(10), amount: 0.5, currency: 'EUR' }],
+          }),
+        ),
+    });
+
+  /** A portfolio holding `quantity` shares of one freshly-seeded EUR payer. */
+  async function seedPortfolio(h: TestHarness, userId: string, tag: string, quantity: number) {
+    const [portfolio] = await h.db
+      .insert(schema.portfolios)
+      .values({ userId, name: `P-${tag}` })
+      .returning();
+    const asset = await seedGlobalAsset(h, {
+      providerRef: tag,
+      symbol: tag,
+      name: `${tag} plc`,
+      currency: 'EUR',
+    });
+    await h.db.insert(schema.transactions).values({
+      portfolioId: portfolio!.id,
+      assetId: asset.id,
+      side: 'buy',
+      quantity: String(quantity),
+      price: '10',
+      executedAt: new Date('2026-01-05T00:00:00.000Z'),
+    });
+    return { portfolioId: portfolio!.id, assetId: asset.id, symbol: tag };
+  }
+
+  /** Put `assetId` on the user's (user-wide, portfolio-less) default watchlist. */
+  async function watch(h: TestHarness, userId: string, assetId: string) {
+    const [wl] = await h.db
+      .insert(schema.watchlists)
+      .values({ userId, name: 'General', isDefault: true })
+      .returning({ id: schema.watchlists.id });
+    await h.db
+      .insert(schema.workboardItems)
+      .values({ userId, watchlistId: wl!.id, assetId, sortOrder: 0 });
+  }
+
+  it('scopes the calendar to one portfolio, and stays held+watched without an id', async () => {
+    const h = await createTestApp({ marketData: oneEventPerAsset() });
+    const user = await h.seedUser();
+    const retirement = await seedPortfolio(h, user.id, 'RETI', 10);
+    const trading = await seedPortfolio(h, user.id, 'TRAD', 5);
+    const watched = await seedGlobalAsset(h, {
+      providerRef: 'WATCH',
+      symbol: 'WATCH',
+      name: 'Watched plc',
+      currency: 'EUR',
+    });
+    await watch(h, user.id, watched.id);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    // Unscoped: the user-wide held + watched forward calendar the Home widget
+    // reads. Pinned so the page's scoping cannot narrow that surface.
+    const all = await agent.get('/api/v1/assets/portfolio/dividend-calendar');
+    expect(all.status).toBe(200);
+    const allParsed = dividendCalendarResponseSchema.safeParse(all.body);
+    expect(allParsed.success).toBe(true);
+    if (!allParsed.success) return;
+    expect(allParsed.data.available).toBe(true);
+    expect([...allParsed.data.entries].map((entry) => entry.symbol).sort()).toEqual([
+      'RETI',
+      'TRAD',
+      'WATCH',
+    ]);
+
+    // Scoped: the shown portfolio's holdings ALONE — not the sibling portfolio,
+    // and not the watchlist, which belongs to the account rather than to any
+    // portfolio. This is what the block's "this portfolio" copy asserts.
+    const scoped = await agent
+      .get('/api/v1/assets/portfolio/dividend-calendar')
+      .query({ portfolioId: trading.portfolioId });
+    expect(scoped.status).toBe(200);
+    const scopedParsed = dividendCalendarResponseSchema.safeParse(scoped.body);
+    expect(scopedParsed.success).toBe(true);
+    if (!scopedParsed.success) return;
+    expect(scopedParsed.data.available).toBe(true);
+    expect(scopedParsed.data.entries.map((entry) => entry.symbol)).toEqual(['TRAD']);
+    expect(scopedParsed.data.entries[0]?.source).toBe('holding');
+    expect(scopedParsed.data.entries[0]?.assetId).toBe(trading.assetId);
+
+    const other = await agent
+      .get('/api/v1/assets/portfolio/dividend-calendar')
+      .query({ portfolioId: retirement.portfolioId });
+    expect(other.body.entries.map((entry: { symbol: string }) => entry.symbol)).toEqual(['RETI']);
+  });
+
+  it("another user's portfolio id yields an empty calendar, never their holdings", async () => {
+    const h = await createTestApp({ marketData: oneEventPerAsset() });
+    const owner = await h.seedUser({ email: 'dc-owner@a.test', username: 'dcowner' });
+    const other = await h.seedUser({ email: 'dc-other@a.test', username: 'dcother' });
+    const ownerPortfolio = await seedPortfolio(h, owner.id, 'OWNED', 10);
+    // The stranger has a book of their own, so an unscoped read would answer
+    // with rows — an empty response here is the scoping, not an empty account.
+    await seedPortfolio(h, other.id, 'MINE', 7);
+    const otherAgent = await loginAgent(h.app, other.email, other.password);
+
+    const res = await otherAgent
+      .get('/api/v1/assets/portfolio/dividend-calendar')
+      .query({ portfolioId: ownerPortfolio.portfolioId });
+    expect(res.status).toBe(200);
+    // Same answer shape a nonexistent id gets: the repository filter is the
+    // owner check, so "not yours" and "not a portfolio" are indistinguishable
+    // and the response never confirms that another account's portfolio exists.
+    expect(res.body).toEqual({ available: true, entries: [] });
+
+    const unknown = await otherAgent
+      .get('/api/v1/assets/portfolio/dividend-calendar')
+      .query({ portfolioId: NONEXISTENT });
+    expect(unknown.status).toBe(200);
+    expect(unknown.body).toEqual(res.body);
+  });
+
+  it('rejects a malformed portfolioId on the calendar (400)', async () => {
+    const h = await createTestApp({ marketData: oneEventPerAsset() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent
+      .get('/api/v1/assets/portfolio/dividend-calendar')
+      .query({ portfolioId: 'not-a-uuid' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('applies the projection ceiling to the SCOPED set, so a small book still totals', async () => {
+    // A user with one book over the per-request fan-out cap and one well under
+    // it. Unscoped, the projection refuses the whole thing before spending any
+    // provider budget — and the five-asset portfolio's page used to print that
+    // refusal as its own ("You hold more assets than we project in one pass").
+    const h = await createTestApp({ marketData: oneEventPerAsset() });
+    const user = await h.seedUser();
+    const small = await seedPortfolio(h, user.id, 'SMALL', 4);
+
+    const [big] = await h.db
+      .insert(schema.portfolios)
+      .values({ userId: user.id, name: 'P-BIG' })
+      .returning();
+    const bigAssets = await h.db
+      .insert(schema.assets)
+      .values(
+        Array.from({ length: MARKET_INTEL_ROLLUP_MAX_ASSETS + 1 }, (_unused, index) => ({
+          providerId: 'yahoo',
+          providerRef: `BIG${index}`,
+          ownerId: null,
+          type: 'stock' as const,
+          symbol: `BIG${index}`,
+          name: `Big ${index}`,
+          exchange: 'NASDAQ',
+          currency: 'EUR',
+        })),
+      )
+      .returning({ id: schema.assets.id });
+    await h.db.insert(schema.transactions).values(
+      bigAssets.map((asset) => ({
+        portfolioId: big!.id,
+        assetId: asset.id,
+        side: 'buy' as const,
+        quantity: '1',
+        price: '10',
+        executedAt: new Date('2026-01-05T00:00:00.000Z'),
+      })),
+    );
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const all = await agent.get('/api/v1/assets/portfolio/dividend-projection');
+    expect(all.status).toBe(200);
+    expect(all.body.available).toBe(false);
+    expect(all.body.truncated).toBe(true);
+
+    // Scoped to the small portfolio the cap is measured on four holdings, so the
+    // total exists: 4 shares × €1/share.
+    const scoped = await agent
+      .get('/api/v1/assets/portfolio/dividend-projection')
+      .query({ portfolioId: small.portfolioId });
+    expect(scoped.status).toBe(200);
+    const parsed = projectedDividendIncomeResponseSchema.safeParse(scoped.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.available).toBe(true);
+    expect(parsed.data.truncated).toBeUndefined();
+    expect(parsed.data.yearlyTotalBase).toBe(4);
+    expect(parsed.data.holdings.map((holding) => holding.symbol)).toEqual(['SMALL']);
   });
 });
 
