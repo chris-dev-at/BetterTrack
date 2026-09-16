@@ -98,8 +98,12 @@ export function PrivacyPanel() {
         CLIENT ENTRY POINT ONLY. `POST /vault/enable` stays alive per §19 and
         every EXISTING account-level user keeps everything: the unlock gate,
         the management section below, disable, restore. This removes the way to
-        newly opt IN from the UI — nothing else. Restoring it is one revert of
-        this block plus its `ParanoidEnableWizard` import.
+        newly opt IN from the UI — nothing else. `ParanoidEnableWizard` itself
+        was deleted (#1648) once its entry point had been gone long enough to
+        make the revert path stale; its step 1 promised the account-wide kill
+        the 2026-08-19 redefinition above already replaced, so reviving this
+        row would mean rebuilding the wizard against the current per-portfolio
+        model, not reverting a commit.
       */}
       {privacy.privacyMode === 'paranoid' && privacy.mediaState != null && runtime != null ? (
         <Suspense fallback={<SkeletonBlock height={240} />}>
