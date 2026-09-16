@@ -1009,14 +1009,23 @@ describe('one definition of an active friend holds at every seam (#1897)', () =>
     expect(audience.body.friendIds).toEqual([carol.id]);
   });
 
-  it('sends no `*.shared` notice to a disabled account on any rung', async () => {
+  /**
+   * Each rung gets a POSITIVE CONTROL beside its negative one (#1949). "Bob got
+   * nothing" is satisfied just as well by a fan-out that reaches nobody at all,
+   * so every rung also proves an active friend on the SAME write did hear about
+   * it. Carol's count is asserted after each rung rather than once at the end, so
+   * a rung that silently stopped emitting cannot hide behind another's notice.
+   */
+  it('sends no `*.shared` notice to a disabled account on any rung, and still reaches active ones', async () => {
     const { aliceAgent, bob, carol, pid } = await scenario();
     const groupId = await createGroup(aliceAgent, 'Family');
     await addMember(aliceAgent, groupId, bob.id);
+    await addMember(aliceAgent, groupId, carol.id);
     const namedPid = await newPortfolio(aliceAgent, 'Named');
     const circlePid = await newPortfolio(aliceAgent, 'Circle');
     await disableAccount(bob.id);
 
+    // ── all_friends ──────────────────────────────────────────────────────────
     expect(
       (
         await aliceAgent
@@ -1025,14 +1034,26 @@ describe('one definition of an active friend holds at every seam (#1897)', () =>
           .send({ audience: 'all_friends', confirmWiden: true })
       ).status,
     ).toBe(200);
-    expect((await shareToFriends(aliceAgent, namedPid, [bob.id])).status).toBe(200);
-    expect((await shareToGroup(aliceAgent, circlePid, groupId)).status).toBe(200);
-
-    // `group` already behaved; `all_friends` and `specific_friends` now do too.
-    expect(await sharedNotifications(bob.id)).toHaveLength(0);
-    // …and the fan-out itself still works: carol, an active friend, heard about
-    // the all-friends share.
     expect(await sharedNotifications(carol.id)).toHaveLength(1);
+
+    // ── specific_friends ─────────────────────────────────────────────────────
+    // Naming the disabled account is now refused outright (#1949), so this rung
+    // can no longer reach him even as a filtered-away name…
+    const refused = await shareToFriends(aliceAgent, namedPid, [bob.id]);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe('GROUP_MEMBER_NOT_FRIEND');
+    // …while naming an active friend on the same rung still emits.
+    expect((await shareToFriends(aliceAgent, namedPid, [carol.id])).status).toBe(200);
+    expect(await sharedNotifications(carol.id)).toHaveLength(2);
+
+    // ── group ────────────────────────────────────────────────────────────────
+    // One circle holding BOTH: the roster filter must drop exactly one of them.
+    expect((await shareToGroup(aliceAgent, circlePid, groupId)).status).toBe(200);
+    expect(await sharedNotifications(carol.id)).toHaveLength(3);
+
+    // Three writes, three rungs, not one notice to the account that cannot sign
+    // in — and none of the three was vacuously empty.
+    expect(await sharedNotifications(bob.id)).toHaveLength(0);
   });
 
   it('keeps rows the roster will not return out of the member budget', async () => {
@@ -1054,5 +1075,183 @@ describe('one definition of an active friend holds at every seam (#1897)', () =>
     expect(added.body.memberCount).toBe(FRIEND_GROUP_MEMBERS_MAX);
     // The ceiling still binds on members the owner can see and remove.
     expect(await storedRosterSize(groupId)).toBe(FRIEND_GROUP_MEMBERS_MAX);
+  });
+});
+
+/**
+ * #1949 — the three remaining places where the one definition of an active
+ * friend was not yet what the seam actually read.
+ */
+describe('one definition of an active friend, at the last three seams (#1949)', () => {
+  async function myPortfolio(agent: Agent, portfolioId: string) {
+    const res = await agent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    return mySharedResponseSchema
+      .parse(res.body)
+      .portfolios.find((p) => p.portfolioId === portfolioId);
+  }
+
+  function putAudience(agent: Agent, portfolioId: string, body: Record<string, unknown>) {
+    return agent
+      .put(`/api/v1/social/audience/portfolio/${portfolioId}`)
+      .set(...XRW)
+      .send(body);
+  }
+
+  /**
+   * `PUT /social/audience` NAMES its recipients, so a name that does not resolve
+   * to an active friend is refused by name — the same `GROUP_MEMBER_NOT_FRIEND`
+   * the add path returns, because both answer the same question with the same
+   * definition. It used to filter the name away and return 200: an audience
+   * reaching nobody, reported to the owner as saved, for a request the circle
+   * surface refuses outright.
+   */
+  describe('naming a recipient who does not count is refused, not filtered', () => {
+    it('refuses a disabled friend by name and stores nothing', async () => {
+      const { aliceAgent, bob, pid } = await scenario();
+      await disableAccount(bob.id);
+
+      const refused = await putAudience(aliceAgent, pid, {
+        audience: 'specific_friends',
+        friendIds: [bob.id],
+        confirmWiden: true,
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error.code).toBe('GROUP_MEMBER_NOT_FRIEND');
+
+      // A 200 over an audience that reaches nobody is what made the owner
+      // surface disagree with itself; the subject must stay exactly as private
+      // as it was, with no membership row banked for a later re-enable.
+      const state = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);
+      expect(state.status).toBe(200);
+      expect(state.body.audience).toBe('private');
+      expect(state.body.friendIds).toEqual([]);
+      expect(
+        await harness.db
+          .select()
+          .from(schema.shareAudienceMembers)
+          .where(eq(schema.shareAudienceMembers.friendId, bob.id)),
+      ).toEqual([]);
+    });
+
+    it('refuses the mixed set whole, rather than saving the half that resolves', async () => {
+      const { aliceAgent, bob, carol, carolAgent, pid } = await scenario();
+      await disableAccount(bob.id);
+
+      const refused = await putAudience(aliceAgent, pid, {
+        audience: 'specific_friends',
+        friendIds: [carol.id, bob.id],
+        confirmWiden: true,
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error.code).toBe('GROUP_MEMBER_NOT_FRIEND');
+      // Carol is a perfectly good recipient — but the owner asked for a set she
+      // cannot have, so nothing is written and she gains no access.
+      expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+    });
+
+    it('answers a stranger, an unknown id and a disabled friend identically (no oracle)', async () => {
+      const { aliceAgent, bob, dave, pid } = await scenario();
+      await disableAccount(bob.id);
+
+      const name = (userId: string) =>
+        putAudience(aliceAgent, pid, {
+          audience: 'specific_friends',
+          friendIds: [userId],
+          confirmWiden: true,
+        });
+      // Three DIFFERENT truths about the named account: bob is a real friend
+      // whose account was disabled, dave exists but is no friend, MISSING_ID is
+      // nobody at all. §6.9 says the caller may learn none of that, so the
+      // refusal is asserted as a three-way equality of status AND body — not
+      // merely "all three are 400", which any pair of distinct messages would
+      // still satisfy.
+      const disabled = await name(bob.id);
+      const stranger = await name(dave.id);
+      const unknown = await name(MISSING_ID);
+
+      expect(disabled.status).toBe(400);
+      expect([stranger.status, unknown.status]).toEqual([disabled.status, disabled.status]);
+      expect([stranger.body, unknown.body]).toEqual([disabled.body, disabled.body]);
+      expect(disabled.body.error.code).toBe('GROUP_MEMBER_NOT_FRIEND');
+    });
+
+    it('still saves a set of active friends, duplicates and all', async () => {
+      const { aliceAgent, bob, carol, bobAgent, pid } = await scenario();
+      const saved = await putAudience(aliceAgent, pid, {
+        audience: 'specific_friends',
+        // The same friend twice is a client quirk, not a name that failed to
+        // resolve. It is also what used to 500 on the membership unique index,
+        // long before the refusal existed — a named set is a SET (#1949).
+        friendIds: [bob.id, carol.id, bob.id],
+        confirmWiden: true,
+      });
+      expect(saved.status).toBe(200);
+      expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+      expect((await myPortfolio(aliceAgent, pid))?.friendCount).toBe(2);
+    });
+
+    it('lets the owner keep editing after a friend is disabled (no dead end)', async () => {
+      const { aliceAgent, bob, carol, pid } = await scenario();
+      expect(
+        (
+          await putAudience(aliceAgent, pid, {
+            audience: 'specific_friends',
+            friendIds: [bob.id, carol.id],
+            confirmWiden: true,
+          })
+        ).status,
+      ).toBe(200);
+      await disableAccount(bob.id);
+
+      // The owner-facing read already stopped naming bob (#1897), so the picker
+      // re-submits what it can render — which must still save. The refusal must
+      // not strand an item whose stored set contains a disabled account.
+      const audience = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);
+      expect(audience.body.friendIds).toEqual([carol.id]);
+      const resaved = await putAudience(aliceAgent, pid, {
+        audience: 'specific_friends',
+        friendIds: audience.body.friendIds,
+      });
+      expect(resaved.status).toBe(200);
+      expect((await myPortfolio(aliceAgent, pid))?.friendCount).toBe(1);
+    });
+  });
+
+  /**
+   * The `group` reach count derived its friendship side from
+   * `share_audiences.owner_id` while every other group seam reads
+   * `friend_groups.owner_id`. They agree only because `setAudience` validates
+   * `ownsGroup` in a different file — an unstated cross-file dependency, and the
+   * kind of near-miss #1780 already had to fix once on this very count.
+   *
+   * Nothing the API offers can pull the two apart, so the divergence is written
+   * directly, exactly as the #1780 test deletes a friendship row: this is the
+   * state a restore, a repair or a future writer can produce, and the count must
+   * be right in it rather than right by coincidence.
+   */
+  it('counts the circle through friend_groups.owner_id, not the audience row', async () => {
+    const { aliceAgent, alice, bob, dave, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(1);
+
+    // Point the AUDIENCE row at someone who is not the circle's owner and has no
+    // friendship with bob. The circle is still alice's and still holds her
+    // friend, so its reach is still 1 — reading the audience row's owner would
+    // report 0 here.
+    await harness.db
+      .update(schema.shareAudiences)
+      .set({ ownerId: dave.id })
+      .where(eq(schema.shareAudiences.subjectId, pid));
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(1);
+
+    // And the count is genuinely derived, not hard-wired to the roster size: drop
+    // the friendship the roster row stands on and it falls to 0 (#1780).
+    await harness.db
+      .delete(schema.friendships)
+      .where(or(eq(schema.friendships.userA, alice.id), eq(schema.friendships.userB, alice.id)));
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(0);
   });
 });

@@ -295,6 +295,51 @@ describe('mirrorchain M3 — invite flow (design §4)', () => {
     });
   });
 
+  /**
+   * The friends-only gate reads `areFriends`, which until #1949 trusted a bare
+   * friendship row with no account-status filter — while every seam that feeds a
+   * circle had already agreed (#1897) that a `disabled` account is nobody's
+   * reachable friend. A disabled invitee can never authenticate to accept, so the
+   * invite was a pending row that could only rot; a §4 gate that admits it is the
+   * same split, one seam further out.
+   *
+   * The accept half is the argument-order case, and the reason the definition is
+   * applied SYMMETRICALLY here: the re-check reads
+   * `areFriends(invite.fromUser, userId)`, so the account disabled between send
+   * and accept is the FIRST argument. A one-sided check would have passed it.
+   */
+  it('refuses a disabled invitee at send, and a disabled inviter at accept (#1949)', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const disable = (userId: string) =>
+      h.db.update(schema.users).set({ status: 'disabled' }).where(eq(schema.users.id, userId));
+
+    const bob = await h.seedUser(uu('bob'));
+    await makeFriends(h, ownerId, bob.id);
+    await disable(bob.id);
+    await expect(h.ctx.mirror.inviteMember(ownerId, chainId, bob.id)).rejects.toMatchObject({
+      code: MIRROR_NOT_FRIENDS,
+    });
+    // Refused means NOTHING stored — no pending row to rot, no slot consumed.
+    expect(await h.ctx.mirror.listInvites(bob.id)).toMatchObject({ incoming: [] });
+
+    // Positive control: the gate still admits an active friend, so the refusal
+    // above is about bob's status and not about the gate closing on everyone.
+    const carol = await h.seedUser(uu('carol'));
+    await makeFriends(h, ownerId, carol.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, carol.id);
+    const pending = await h.ctx.mirror.listInvites(carol.id);
+    expect(pending.incoming).toHaveLength(1);
+
+    // Now disable the INVITER between send and accept. Voided exactly like an
+    // unfriend voids it — and the invite is retired, not left pending.
+    await disable(ownerId);
+    await expect(
+      h.ctx.mirror.acceptInvite(carol.id, pending.incoming[0]!.id),
+    ).rejects.toMatchObject({ code: MIRROR_NOT_FRIENDS });
+    expect(await h.ctx.mirror.listInvites(carol.id)).toMatchObject({ incoming: [] });
+  });
+
   it('accept materializes a copy + notifies the owner; the member cap is enforced at accept', async () => {
     const events: DispatchableEvent[] = [];
     const h = await createTestApp({
