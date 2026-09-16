@@ -20,6 +20,7 @@ import {
 import {
   forgetEndpointDeviceLocked,
   isEndpointDeviceLocked,
+  readEndpointDeviceLockMarker,
   rememberEndpointDeviceLocked,
   type EndpointDeviceKeyMaterial,
 } from './deviceLock';
@@ -248,7 +249,13 @@ export class EndpointVaultKeystore {
           },
         };
       }
+      // #1640 residue 1: the §12 marker, on the hot path. Read AFTER the awaits
+      // above and with nothing awaited between here and the decision below, so
+      // it reflects the latest moment this tab can observe. It ends the session
+      // itself, so the `sessionMatches` terms below already see the teardown.
+      const deviceLocked = this.endSessionIfDeviceLocked();
       const sessionMatches =
+        !deviceLocked &&
         this.deviceKey != null &&
         this.devicePasswordMetadata != null &&
         this.sessionRevision === stable.revision &&
@@ -573,6 +580,44 @@ export class EndpointVaultKeystore {
       this.accountId === accountId &&
       !isEndpointDeviceLocked(accountId)
     );
+  }
+
+  /**
+   * The §12 marker on the HOT read path — `stateFor` and `readMnemonic` (#1640).
+   *
+   * Those two are every surface state read and every plaintext hand-out, and a
+   * tab whose session is live served both purely from memory. So the guarantee
+   * "a lock on this device revokes this tab" rested on two EVENT paths that can
+   * both be missing at once: the `session-lock` message (no `BroadcastChannel`,
+   * a transport that returned null, a wedged channel) and the account-scoped
+   * `storage` twin (no `localStorage` in that tab, a private-mode context, a
+   * `broadcastVaultLock` that threw). The marker is written synchronously before
+   * any await by whichever tab locked, so reading it here closes that gap
+   * deterministically rather than probabilistically.
+   *
+   * IDEMPOTENT: the teardown key is the session itself. A second call finds
+   * `deviceKey == null`, ends nothing and still reports `true`, so a surface
+   * that polls `stateFor` cannot fire a session-end storm.
+   *
+   * NO CACHE, deliberately. The whole point of this marker is to be FRESHER
+   * than the two message paths, and every cache bounds that freshness by its own
+   * window — a guarantee back on something other than the marker. The cost is
+   * one synchronous `localStorage.getItem` per call, pinned at exactly one by
+   * test H4, in a method that has already awaited at least two IndexedDB round
+   * trips (`readStableEntries`); the read is not measurable beside them.
+   *
+   * `'unreadable'` is NOT a lock here, unlike in `sessionStillCurrent`. See the
+   * note on `readEndpointDeviceLockMarker`: a store that cannot be read cannot
+   * have been written either, and failing closed would revoke every unlock on
+   * the next read forever, because `unlock()` clears the marker through the same
+   * broken store. That is a permanent denial of the vault, not one password.
+   */
+  private endSessionIfDeviceLocked(): boolean {
+    const accountId = this.accountId;
+    if (accountId == null) return false;
+    if (readEndpointDeviceLockMarker(accountId) !== 'locked') return false;
+    if (this.deviceKey != null) this.endSession();
+    return true;
   }
 
   private requestSessionGrant(
@@ -934,8 +979,15 @@ export class EndpointVaultKeystore {
     }
     const entry = parseStoredPhraseEntry(record.value, record.vaultId);
     if (entry.custody === 'wrapped') {
+      // #1640 residue 1. BEFORE the entropy is taken out of the map, never
+      // after: `endSession()` zeroes those bytes in place, and a reference
+      // captured first would hand back a mnemonic derived from zeroed entropy.
+      // Plain custody is deliberately untouched — it is not device-password
+      // custody, has no session to revoke and no unlock action to offer (§12).
+      const deviceLocked = this.endSessionIfDeviceLocked();
       const entropy = this.wrappedEntropy.get(vaultId);
       if (
+        deviceLocked ||
         this.deviceKey == null ||
         this.devicePasswordMetadata == null ||
         entropy == null ||

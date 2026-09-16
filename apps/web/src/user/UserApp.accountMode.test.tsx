@@ -29,10 +29,10 @@ vi.mock('../lib/workboardApi', () => ({
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
 }));
-// The locked gate tries the trusted-device custody path once on mount. It reads
-// the encrypted envelope through this seam; failing it keeps the runtime at
-// phase 'locked' without a real request (`unlockFromDevice` swallows the error
-// by contract), which is exactly the state under test.
+// The vault runtime reads the encrypted envelope through this seam. It is
+// stubbed so the runtime stays at phase 'locked' with no real request, which is
+// exactly the state under test. (The gate itself starts no unlock at all since
+// #1640 retired the trusted-device custody path.)
 vi.mock('./vault/serverBlobDataHome', () => ({
   createServerBlobDataHome: vaultRuntimeMocks.createServerBlobDataHome,
   serverBlobDataHome: () => {
@@ -119,13 +119,14 @@ test('paranoid + locked replaces the whole authenticated subtree with the unlock
   renderAt('/portfolio');
 
   expect(await waitForColdStart(() => screen.getByText('Unlock your vault'))).toBeInTheDocument();
-  // The real lazy vault runtime is mounted and reaching for custody, rather than
-  // deferred until something first needs it: the gate's own mount effect starts
-  // the trusted-device unlock, which is what reads the envelope through this seam.
-  // That effect is passive, so React flushes it *after* the commit that painted
-  // the card above — the call is not yet on the books at the moment the heading
-  // becomes findable. Wait for it instead of reading it off that commit.
-  await waitFor(() => expect(vaultRuntimeMocks.createServerBlobDataHome).toHaveBeenCalled());
+  // The real lazy vault runtime is mounted, not deferred: `VaultUnlockGate`
+  // calls `useVaultRuntime()`, which THROWS without a provider, so the gate
+  // painting at all is the proof. It used to be read off the envelope seam
+  // instead — the gate's mount effect started a trusted-device unlock and that
+  // read the envelope — but #1640 retired that custody, so nothing touches a
+  // medium until the user submits a passphrase. Which is also asserted here:
+  await waitFor(() => expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled());
+  expect(screen.getByLabelText('Vault passphrase')).toBeInTheDocument();
   // No app chrome either — the gate replaces the shell, not just the page.
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
   expect(listPortfolios).not.toHaveBeenCalled();

@@ -7,7 +7,6 @@ import { VaultCryptoError } from '../errors';
 
 const runtime = vi.hoisted(() => ({
   phase: 'locked' as 'locked' | 'unlocking' | 'unlocked',
-  unlockFromDevice: vi.fn(async () => false),
   unlockWithPassphrase: vi.fn(async () => ({})),
   unlockWithRecoveryKit: vi.fn(async () => ({})),
   prepareDriveStorage: vi.fn(async () => undefined),
@@ -43,7 +42,6 @@ function renderGate(props: Parameters<typeof VaultUnlockGate>[0]) {
 beforeEach(() => {
   vi.clearAllMocks();
   runtime.phase = 'locked';
-  runtime.unlockFromDevice.mockResolvedValue(false);
   runtime.unlockWithPassphrase.mockResolvedValue({});
   runtime.prepareDriveStorage.mockResolvedValue(undefined);
   auth.user = { username: 'ada' };
@@ -64,26 +62,27 @@ describe('VaultUnlockGate', () => {
     expect(screen.getByLabelText('Current account password')).toBeInTheDocument();
   });
 
-  it('tries trusted-device custody once, then authenticates Drive-only with the explicit choice', async () => {
+  /**
+   * #1640 residue 3: §12's retirement of v1's persisted-VK convenience, on the
+   * surface that shipped it. The checkbox is gone, so is the silent
+   * trusted-device attempt this gate used to fire at mount, and an unlock can no
+   * longer be asked to keep anything — the passphrase is required every session.
+   */
+  it('offers no keep-unlocked choice and never unlocks from a persisted key', async () => {
     const user = userEvent.setup();
     renderGate({ mediaSet: ['drive'] });
 
-    await waitFor(() =>
-      expect(runtime.unlockFromDevice).toHaveBeenCalledWith({
-        authorizeDrive: false,
-        driveOnly: false,
-      }),
-    );
+    expect(screen.queryByRole('checkbox', { name: /keep unlocked/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/keep unlocked/i)).not.toBeInTheDocument();
+    expect('unlockFromDevice' in runtime).toBe(false);
 
     await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple');
-    await user.click(screen.getByRole('checkbox', { name: /Keep unlocked on this device/i }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Unlock vault' }));
 
     expect(runtime.unlockWithPassphrase).toHaveBeenCalledWith('correct horse battery staple', {
       authorizeDrive: true,
       driveOnly: true,
-      keepUnlocked: true,
     });
   });
 
@@ -110,7 +109,6 @@ describe('VaultUnlockGate', () => {
     expect(runtime.unlockWithPassphrase).toHaveBeenCalledWith('correct horse battery staple', {
       authorizeDrive: true,
       driveOnly: true,
-      keepUnlocked: false,
     });
   });
 
@@ -255,8 +253,10 @@ describe('VaultUnlockGate', () => {
     renderGate({ mediaSet: ['server'] });
 
     expect(screen.getByText('Paranoid mode is on. Your encrypted vault is ready.')).toBeVisible();
-    // An unlock owned by the wizard must not be joined by a second attempt.
-    await waitFor(() => expect(runtime.unlockFromDevice).not.toHaveBeenCalled());
+    // An unlock owned by the wizard must not be joined by a second attempt —
+    // and this gate now starts none at all (#1640).
+    expect(runtime.unlockWithPassphrase).not.toHaveBeenCalled();
+    expect(runtime.unlockWithRecoveryKit).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Unlocking…' })).toBeDisabled();
   });
 

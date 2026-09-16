@@ -772,8 +772,33 @@ untouched** and is not part of this arc's diff.
   only after the wrap-check proves it was derived from this endpoint's
   password. There is still NO "keep unlocked" checkbox — the device session is
   the default and the only mode; the convenience path without any password
-  remains plain custody, below. v1's persisted-VK `custody.ts` keep-unlocked
-  stays retired.
+  remains plain custody, below. v1's persisted-VK `custody.ts` keep-unlocked is
+  retired **in the code as well as here, since #1640**: the checkbox
+  (`ui/VaultUnlockGate.tsx`), the write path (`lock.ts` keep-unlocked) and the
+  read path (`unlockFromDevice`) were deleted together, and what remains of
+  `custody.ts` is the eraser that removes the `bettertrack-vault-custody`
+  database — plus its two account-scoped localStorage keys — from devices an
+  older build wrote to. That is user-visible for the straggler v1 accounts §17
+  has not wiped yet: the vault passphrase (or the recovery kit) is required once
+  per session, every session. No data is lost by it — the ciphertext, the
+  passphrase and the recovery kit are untouched.
+  **Where the device-locked marker is read (#1640).** It is not only a resume
+  guard: `stateFor()` and `readMnemonic()` — every surface state read and every
+  plaintext hand-out — consult it too, so a tab whose session is live serves
+  from memory only while the marker is clear. Without that, the guarantee "a
+  lock on this device revokes every tab" rested on two EVENT paths that can both
+  be absent at once (no `BroadcastChannel`/a wedged channel, and no account-scoped
+  `storage` twin), while the marker is written synchronously before any await by
+  whichever tab locked. There is no cache — the marker exists to be fresher than
+  those messages, and a cache would bound exactly that; the cost is one
+  synchronous `localStorage` read per call, beside IndexedDB round trips the
+  same call already makes. One asymmetry is deliberate: an UNREADABLE
+  `localStorage` reads as locked for the resume and the grant responder (they
+  install or hand out a session this tab has not proven) but NOT on the hot path,
+  because `unlock()` clears the marker through the same broken store, so failing
+  closed there would revoke every unlock forever rather than cost one password.
+  Plain custody is untouched by the marker: it is not device-password custody
+  and has no unlock action to offer.
   Shipped: the device key is a private field zeroed by `clearSessionSecrets()`
   (`keystore/core.ts`), the keystore's own IndexedDB holds only KDF
   parameters, the wrap-check and lockout metadata (`keystore/storage.ts`), and
@@ -1052,12 +1077,15 @@ all still exported from `schema.ts`; `GET/PUT /vault` and the `/vault/media*`
 account family in `vaultRoutes.ts`), `users.privacy_mode` + the paranoid media
 columns + the `users_paranoid_media_state` CHECK, the account-wide
 `PARANOID_MODE` kill rail (`bearerAuth.ts`), `MeResponse.privacyMode` as a
-mode signal, the v1 app-wide unlock gate (`VaultUnlockGate.tsx`), the
-recovery-kit flow (`recovery.ts`), and v1's persisted-VK "keep unlocked"
-custody (`custody.ts`). The account-level wizard (`ParanoidEnableWizard.tsx`)
-jumped the train early: #1648 deleted the client component outright once it
-had sat unreferenced long enough to be dead weight, ahead of the rest of this
-list.
+mode signal, the v1 app-wide unlock gate (`VaultUnlockGate.tsx`) and the
+recovery-kit flow (`recovery.ts`). Two client-side items jumped the train
+early, both because leaving them was worse than removing them: the
+account-level wizard (`ParanoidEnableWizard.tsx`), which #1648 deleted outright
+once it had sat unreferenced long enough to be dead weight; and v1's
+persisted-VK "keep unlocked" custody (`custody.ts`), which #1640 retired
+because §12 had claimed that retirement for as long as the note existed — what
+is left of that file is the eraser for the key material older builds already
+wrote, and it dies with the rest of this list.
 Drops ship as append-only migrations after an owner-authorized external
 ciphertext backup for any straggler accounts (§17); the
 `zz_paranoid_v1_backup_*` quarantine is dropped by the same train, never by
