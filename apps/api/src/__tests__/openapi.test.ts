@@ -789,7 +789,7 @@ describe('OpenAPI document', () => {
     // Pin the set in both directions — deleting the flag re-documents that route
     // as always requiring a body the server refuses (#1999 review), and marking
     // any other body optional would understate a real requirement.
-    const doc = buildOpenApiDocument() as {
+    const doc = buildOpenApiDocument() as unknown as {
       paths?: Record<string, Record<string, { requestBody?: { required?: boolean } }>>;
     };
     const optional: string[] = [];
