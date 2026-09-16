@@ -100,9 +100,21 @@ async function countHarnessClients(redis: Redis): Promise<number> {
   return raw.split('\n').filter((line) => line.includes(marker)).length;
 }
 
-/** Sample until two consecutive reads agree — connects land asynchronously. */
+/**
+ * Sample until two consecutive reads agree — connects land asynchronously.
+ *
+ * `previous` starts as NaN ON PURPOSE. `vi.waitFor` runs its callback
+ * immediately, so seeding it with a live read would make the first two
+ * "consecutive reads" microseconds apart and the helper would return whatever
+ * the very first sample happened to be — where the loop this replaced always
+ * waited one 50 ms interval before its first comparison. NaN never equals
+ * anything, so the first pass can only record a baseline, and the earliest a
+ * number can be called stable is one full interval later. That matters: these
+ * counts are the baselines the #1914/#1485 socket-leak assertions are measured
+ * against, and a baseline taken mid-connect hides the leak it exists to catch.
+ */
 async function stableClientCount(redis: Redis): Promise<number> {
-  let previous = await countHarnessClients(redis);
+  let previous = Number.NaN;
   try {
     return await vi.waitFor(
       async () => {

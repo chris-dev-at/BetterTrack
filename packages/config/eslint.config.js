@@ -83,6 +83,13 @@ const NO_SLEEP_GATED_SOURCES = [
   'apps/web/src/**/*.test.{ts,tsx}',
   'packages/*/src/**/*.test.ts',
   'e2e/**/*.spec.ts',
+  // The test-support modules themselves. A sleep helper written HERE would be
+  // invisible to the gate at every call site — `await sleep(30)` names no timer
+  // — so the one place it could be introduced is covered directly. The shared
+  // deadline helpers in `apps/api/src/test/waitFor.ts` pass: each uses the
+  // two-parameter `(resolve, reject)` executor the rule does not match.
+  'apps/api/src/test/**/*.ts',
+  'apps/api/src/testing/**/*.ts',
 ];
 
 /**
@@ -94,14 +101,9 @@ const NO_SLEEP_GATED_SOURCES = [
  * says what completion is missing.
  */
 const NO_SLEEP_GATE_PENDING = [
-  // TODO(after #2008) — mirrorchain invite-authority lane owns the mirror suites.
+  // TODO(after #2017, #2005, #1649) — three open PRs still edit the mirror
+  // replication suite; #2008 landed but did not take its three waits with it.
   'apps/api/src/__tests__/mirrorReplication.test.ts',
-  // TODO(after #1997) — admin session-flake lane owns this file.
-  'apps/api/src/__tests__/admin.test.ts',
-  // TODO(after #1979) — write⇒read scope lane owns the oauth/apiKeys suites.
-  'apps/api/src/__tests__/oauth.test.ts',
-  // TODO(after #1999) — Drive disconnect step-up lane owns this file.
-  'apps/api/src/__tests__/driveConnections.test.ts',
   // TODO(after #1569) — vault lanes A/B own the paranoid/vault account suites.
   'apps/api/src/services/account/__tests__/**',
   // TODO(after #1568) — import re-stage lane owns the import suites.
@@ -109,9 +111,9 @@ const NO_SLEEP_GATE_PENDING = [
   // TODO(after #1569) — vault lanes A/B own the web vault keystore/store tests.
   'apps/web/src/user/vault/**',
   // The web suites #1622 did not reach (its scope was the API's realtime/event
-  // families). Nine waits across five files, each needing the same
+  // families). Five waits across four files, each needing the same
   // completion-or-fake-timers treatment.
-  // TODO(follow-up to #1622) — convert these, then delete the five entries.
+  // TODO(follow-up to #1622) — convert these, then delete the four entries.
   'apps/web/src/user/components/AssetSearchBox.test.tsx',
   'apps/web/src/user/control/panels/AccountPanel.test.tsx',
   'apps/web/src/user/workboard/ConglomerateBuilderPage.test.tsx',

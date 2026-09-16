@@ -19,9 +19,12 @@ import type { Socket as ClientSocket } from 'socket.io-client';
  * is a timer) does not — and should not — fire on them.
  *
  * NOTE ON LOCATION: the API's other test doubles live in `src/testing/`. That
- * directory is owned by an in-flight lane while this one lands, so these two
- * helpers get their own module; folding `src/test/` into `src/testing/` is a
- * pure move once that lane merges.
+ * directory is owned by in-flight lanes (#1998, #2019) while this one lands, so
+ * these helpers get their own module. Folding `src/test/` into `src/testing/`
+ * is a pure move once those merge — tracked as #2035, which also carries the
+ * one thing that must survive the move: `eslint.config.js` gates BOTH
+ * directories with `tests/no-sleep`, so a `sleep()` helper cannot be introduced
+ * in the one place where every call site would hide it.
  */
 
 /** Vitest's default `testTimeout` is 20 s; stay well inside it. */

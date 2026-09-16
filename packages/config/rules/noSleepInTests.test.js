@@ -50,6 +50,17 @@ test('no-sleep flags a promise whose whole body is a timer', () => {
           scheduler.run(() => setTimeout(resolve, 10));
         });`,
       },
+      // The DOCUMENTED false negative, pinned rather than implied away: an IIFE
+      // between the executor and the timer is the nearest enclosing function,
+      // so this sleep is not matched. Widening the walk would flag the case
+      // directly above, which is legitimate. See the rule's Known limits.
+      {
+        code: `new Promise((resolve) => {
+          void (async () => {
+            setTimeout(resolve, 30);
+          })();
+        });`,
+      },
     ],
     invalid: [
       // The exact 33 shapes #1622 removed.

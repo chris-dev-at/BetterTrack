@@ -1483,26 +1483,48 @@ describe('realtime gateway — rooms (§4.5)', () => {
       }),
     ).toEqual({ ok: true });
     // Nothing else is in the room now, so there is no third-party delivery to
-    // use as the fan-out barrier. A re-join and a SECOND publish on the same
-    // channel supplies one: Redis pub/sub keeps per-channel order, so the
-    // delivery of the second frame proves the first was already dispatched —
-    // and the first must not have reached this socket.
-    const silentAfterLeave = expectSilence(subscriber, REALTIME_SERVER_EVENTS.quoteUpdated);
-    await harness.ctx.events.publish({
-      type: 'quote.updated',
-      assetId,
-      occurredAt: new Date().toISOString(),
-    });
-    await silentAfterLeave();
+    // act as the fan-out barrier, and the `room.leave` round-trip alone would
+    // not be one: on real Redis the publish reaches the gateway on a SEPARATE
+    // subscriber connection, so an ack on this socket says nothing about
+    // whether the frame has been dispatched yet.
+    //
+    // A re-join and a SECOND publish on the same channel supply a real barrier.
+    // Redis delivers one channel's messages to a subscriber in publish order,
+    // so the arrival of the second frame proves the first was already
+    // dispatched. The recorder below therefore stays armed ACROSS the re-join
+    // and is keyed on `occurredAt`: the out-of-room frame showing up is a
+    // failure no matter when it lands, and the two stamps are literals so they
+    // can never collide inside one millisecond.
+    const whileOutOfRoom = '2026-06-15T00:00:00.000Z';
+    const afterRejoin = '2026-06-15T00:00:01.000Z';
+    const framesSeen: RealtimeQuoteUpdated[] = [];
+    const recordFrame = (frame: RealtimeQuoteUpdated): void => {
+      framesSeen.push(frame);
+    };
+    subscriber.on(REALTIME_SERVER_EVENTS.quoteUpdated, recordFrame);
+    try {
+      await harness.ctx.events.publish({
+        type: 'quote.updated',
+        assetId,
+        occurredAt: whileOutOfRoom,
+      });
 
-    expect(await joinRoom(subscriber, 'asset', assetId)).toEqual({ ok: true });
-    const afterRejoin = waitForSocketEvent<RealtimeQuoteUpdated>(
-      subscriber,
-      REALTIME_SERVER_EVENTS.quoteUpdated,
-    );
-    const rejoinedAt = new Date().toISOString();
-    await harness.ctx.events.publish({ type: 'quote.updated', assetId, occurredAt: rejoinedAt });
-    expect(await afterRejoin).toEqual({ assetId, occurredAt: rejoinedAt });
+      expect(await joinRoom(subscriber, 'asset', assetId)).toEqual({ ok: true });
+      await harness.ctx.events.publish({
+        type: 'quote.updated',
+        assetId,
+        occurredAt: afterRejoin,
+      });
+
+      await vi.waitFor(() =>
+        expect(framesSeen.map((frame) => frame.occurredAt)).toContain(afterRejoin),
+      );
+      // Exactly the re-joined frame: the one published while this socket was
+      // out of the room was dispatched first and never reached it.
+      expect(framesSeen).toEqual([{ assetId, occurredAt: afterRejoin }]);
+    } finally {
+      subscriber.off(REALTIME_SERVER_EVENTS.quoteUpdated, recordFrame);
+    }
   });
 
   it('portfolio:{id} joins enforce owner-or-shared access (§6.9)', async () => {

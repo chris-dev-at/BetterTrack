@@ -64,10 +64,25 @@
  * rather than implied away.
  *
  * ── Known limits ───────────────────────────────────────────────────────────
- * `Promise` is matched by name, so a renamed binding defeats it; a sleep hidden
- * behind a helper in another module (`await sleep(30)`) is invisible here, which
- * is why the repo has no such helper and should not grow one. This is a lint,
- * not a proof.
+ * `Promise` is matched by name, so a renamed binding (`const P = Promise`) or a
+ * re-export defeats it.
+ *
+ * Only the executor ITSELF is examined. A timer nested one function deeper —
+ * `new Promise((resolve) => { void (async () => setTimeout(resolve, 30))(); })`
+ * — has an IIFE as its nearest enclosing function, not the executor, and is a
+ * false negative. Widening the walk would flag the legitimate shape where an
+ * executor hands a callback containing a timer to something else (a scheduler,
+ * a retry helper), so the narrow rule is the deliberate trade: this catches the
+ * pattern people actually write, not every pattern expressible.
+ *
+ * A sleep hidden behind a helper in another module (`await sleep(30)`) names no
+ * timer at the call site and is invisible there. That is why
+ * `NO_SLEEP_GATED_SOURCES` in `eslint.config.js` covers `apps/api/src/test/**`
+ * and `apps/api/src/testing/**` as well as the suites: the one place such a
+ * helper could be written is itself linted, so the loophole has to be opened
+ * deliberately rather than by accident.
+ *
+ * This is a lint, not a proof.
  */
 
 const TIMER_NAMES = new Set(['setTimeout', 'setInterval']);
