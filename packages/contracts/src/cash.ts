@@ -124,6 +124,39 @@ export const CASH_TAGS_PER_ITEM_MAX = 20;
  * seams must read ONE number.
  */
 export const CASH_TAGS_PER_USER_MAX = 1000;
+/**
+ * How many cash tags one RESTORE may install (#1973 addendum).
+ *
+ * THE CREATE CAP CANNOT ALSO BE THE EXIT CAP, because two writers put tags into
+ * `cash_tags` without passing `createTag` at all: `cashTagRepository.
+ * ensureSystemTags` (the app-owned seed, nine keys today) and
+ * `cashFusionCatchUpRepository`'s bare `onConflictDoNothing` insert. Neither
+ * consults {@link CASH_TAGS_PER_USER_MAX}, and neither can — a system tag that
+ * refused to seed would leave auto-tagging for that kind silently doing nothing
+ * forever.
+ *
+ * So an account sitting EXACTLY on the create cap is one release away from being
+ * over it through no act of its own: add a tenth `CASH_SYSTEM_TAGS` key and that
+ * account holds 1001 tags on its next seed. If the document schema gating the
+ * paranoid exit read the create cap, that account's vault would then be
+ * unrestorable — the mode where the server holds no second copy would refuse to
+ * give the account its data back, with no operator override. That is the exact
+ * failure {@link CASH_TAGS_PER_USER_MAX}'s own docblock says the cap must never
+ * cause ("a cap that a pre-cap account could already be over would not refuse a
+ * write — it would refuse to give that account its data back").
+ *
+ * The restore ceiling is therefore the create cap PLUS the whole app-owned seed:
+ * every tag the user could legitimately create, plus every tag the app can
+ * legitimately add behind them. It is derived, never a second hand-written
+ * number, so a tenth system key moves both sides at once.
+ *
+ * WHY NOT RESERVE THE HEADROOM IN `createTag` INSTEAD (the other option the
+ * issue offered): reserving would lower the user-visible cap to 991 while the
+ * 409 still says 1000, and — decisively — it would do nothing for accounts that
+ * are ALREADY at 1000 from before the reserve existed. It fixes the future and
+ * leaves the trap standing for exactly the accounts the trap is about.
+ */
+export const CASH_TAGS_RESTORE_MAX = CASH_TAGS_PER_USER_MAX + CASH_SYSTEM_TAGS.length;
 /** Trailing-month window the trend endpoint will serve (same cap the expense trends had). */
 export const CASH_TREND_MONTHS_MAX = 24;
 

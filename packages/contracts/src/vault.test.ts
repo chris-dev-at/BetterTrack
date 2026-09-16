@@ -2,7 +2,13 @@ import { generateKeyPairSync } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import { CASH_RULE_PATTERN_MAX, CASH_TAGS_PER_ITEM_MAX, CASH_TAGS_PER_USER_MAX } from './cash';
+import {
+  CASH_RULE_PATTERN_MAX,
+  CASH_SYSTEM_TAGS,
+  CASH_TAGS_PER_ITEM_MAX,
+  CASH_TAGS_PER_USER_MAX,
+  CASH_TAGS_RESTORE_MAX,
+} from './cash';
 import { EXPENSE_RULE_PATTERN_MAX } from './expenses';
 import {
   decodeVaultEnvelope,
@@ -651,15 +657,15 @@ describe('a restored account’s TAG SET (#1963)', () => {
 
   it('accepts a document landing EXACTLY on the cap', () => {
     const parsed = vaultStrictDocumentV1Schema.safeParse(
-      documentWith(...tags(CASH_TAGS_PER_USER_MAX)),
+      documentWith(...tags(CASH_TAGS_RESTORE_MAX)),
     );
     expect(parsed.success).toBe(true);
-    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_PER_USER_MAX);
+    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_RESTORE_MAX);
   });
 
   it('refuses the WHOLE document one tag past the cap — never a bounded prefix', () => {
     const parsed = vaultStrictDocumentV1Schema.safeParse(
-      documentWith(...tags(CASH_TAGS_PER_USER_MAX + 1)),
+      documentWith(...tags(CASH_TAGS_RESTORE_MAX + 1)),
     );
     expect(parsed.success).toBe(false);
     expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('too_big');
@@ -679,19 +685,19 @@ describe('a restored account’s TAG SET (#1963)', () => {
   it('counts LIVE tags only — a tombstone is not a tag the account holds', () => {
     const parsed = vaultStrictDocumentV1Schema.safeParse(
       documentWith(
-        ...tags(CASH_TAGS_PER_USER_MAX),
+        ...tags(CASH_TAGS_RESTORE_MAX),
         ...tags(500, 100_000, '2026-02-01T00:00:00.000Z'),
       ),
     );
     expect(parsed.success).toBe(true);
     // Carried, not dropped: §4's merge rules key off tombstones.
-    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_PER_USER_MAX + 500);
+    expect(parsed.success && parsed.data.entities).toHaveLength(CASH_TAGS_RESTORE_MAX + 500);
 
     // …and the live count is still what decides.
     expect(
       vaultStrictDocumentV1Schema.safeParse(
         documentWith(
-          ...tags(CASH_TAGS_PER_USER_MAX + 1),
+          ...tags(CASH_TAGS_RESTORE_MAX + 1),
           ...tags(500, 100_000, '2026-02-01T00:00:00.000Z'),
         ),
       ).success,
@@ -805,5 +811,364 @@ describe('a restored rule→tag link is UNIQUE per pair (#1963)', () => {
       parsed.success === false &&
         (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code,
     ).toBe('CASH_RULE_TAG_DUPLICATE');
+  });
+});
+
+/**
+ * EVERY RESTORE-REACHABLE UNIQUE KEY (#1973).
+ *
+ * #1963 closed one of them (`cash_rule_tags_rule_tag_unique`, pinned above).
+ * Each of the rest was, until this refinement, a Postgres `23505` raised by an
+ * INSERT inside the OPEN rehydration transaction — a 500 for a client-authored
+ * document, after the graph had been proved and most of the account had been
+ * written, and on the paranoid exit a dead end with no code to show.
+ *
+ * One test per key, each in three parts, because all three are load-bearing:
+ *
+ *  - the violating document is REFUSED, with the key's own stable code;
+ *  - the near-miss is ACCEPTED, so the check is precise and not merely eager
+ *    (a gate that refuses the legal shape too would lock the exit);
+ *  - a TOMBSTONE beside a live twin is ACCEPTED (#1961/#1972) — delete then
+ *    recreate is an ordinary edit, and the exit pushes tombstones through this
+ *    same schema.
+ */
+describe('every restore-reachable unique key is a document invariant (#1973)', () => {
+  const PORTFOLIO = '018f0000-0000-7000-8000-0000000001a1';
+  const OTHER_PORTFOLIO = '018f0000-0000-7000-8000-0000000001a2';
+  const TAG = '018f0000-0000-7000-8000-0000000001b1';
+  const OTHER_TAG = '018f0000-0000-7000-8000-0000000001b2';
+  const MOVEMENT = '018f0000-0000-7000-8000-0000000001c1';
+  const OTHER_MOVEMENT = '018f0000-0000-7000-8000-0000000001c2';
+  const TOMBSTONED = '2026-02-01T00:00:00.000Z';
+  const AT = '2026-01-01T00:00:00.000Z';
+
+  const row = <K extends string, D>(index: number, kind: K, data: D, deletedAt: string | null) => ({
+    id: `018f0000-0000-7000-8000-9${index.toString(16).padStart(11, '0')}`,
+    rev: 1,
+    editedAt: AT,
+    editedBy: UUID_A,
+    deletedAt,
+    kind,
+    data,
+  });
+
+  const cashTag = (
+    index: number,
+    name: string,
+    systemKey: string | null = null,
+    deletedAt: string | null = null,
+  ) =>
+    row(
+      index,
+      'cashTag',
+      {
+        userId: UUID_A,
+        name,
+        color: '#64748b',
+        system: systemKey !== null,
+        systemKey,
+        createdAt: AT,
+        updatedAt: AT,
+      },
+      deletedAt,
+    );
+
+  const cashMovement = (
+    index: number,
+    portfolioId: string,
+    dedupHash: string | null,
+    deletedAt: string | null = null,
+  ) =>
+    row(
+      index,
+      'cashMovement',
+      {
+        portfolioId,
+        sourceId: '018f0000-0000-7000-8000-0000000001d1',
+        kind: 'deposit',
+        amountEur: '10.00',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+        dedupHash,
+        originalCurrency: null,
+        createdAt: AT,
+      },
+      deletedAt,
+    );
+
+  const movementTag = (
+    index: number,
+    movementId: string,
+    tagId: string,
+    deletedAt: string | null = null,
+  ) => row(index, 'cashMovementTag', { movementId, tagId, createdAt: AT }, deletedAt);
+
+  const cashBudget = (
+    index: number,
+    portfolioId: string,
+    tagId: string,
+    periodKey: string | null,
+    deletedAt: string | null = null,
+  ) =>
+    row(
+      index,
+      'cashBudget',
+      {
+        portfolioId,
+        tagId,
+        periodKey,
+        amount: '100.00',
+        currency: 'EUR',
+        createdAt: AT,
+        updatedAt: AT,
+      },
+      deletedAt,
+    );
+
+  const documentWith = (...entities: unknown[]) => ({
+    schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+    entities,
+    mergeLog: [],
+    mirrorProvenance: [],
+  });
+
+  /** The stable code on the refusal, or `null` when the document parsed. */
+  function refusalCode(...entities: unknown[]): string | null {
+    const parsed = vaultStrictDocumentV1Schema.safeParse(documentWith(...entities));
+    if (parsed.success) return null;
+    expect(parsed.error.issues).toHaveLength(1);
+    expect(parsed.error.issues[0]?.path).toEqual(['entities']);
+    expect(parsed.error.issues[0]?.code).toBe('custom');
+    return (
+      (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code ?? null
+    );
+  }
+
+  it('cash_tags_user_name_lower_unique — one tag per name, CASE-INSENSITIVELY', () => {
+    // The index is on `lower(name)`, so two names a user cannot tell apart are
+    // one row to Postgres — and would silently split every budget counting them.
+    expect(refusalCode(cashTag(1, 'Groceries'), cashTag(2, 'GROCERIES'))).toBe(
+      'CASH_TAG_NAME_DUPLICATE',
+    );
+    expect(refusalCode(cashTag(1, 'Groceries'), cashTag(2, 'Groceries'))).toBe(
+      'CASH_TAG_NAME_DUPLICATE',
+    );
+
+    // Precision: different names are ordinary, and so is the same name on a
+    // DIFFERENT account — the key is (user_id, lower(name)), not lower(name).
+    expect(refusalCode(cashTag(1, 'Groceries'), cashTag(2, 'Fuel'))).toBeNull();
+    const foreign = cashTag(2, 'Groceries');
+    expect(
+      refusalCode(cashTag(1, 'Groceries'), {
+        ...foreign,
+        data: { ...foreign.data, userId: UUID_B },
+      }),
+    ).toBeNull();
+
+    // A tombstoned twin: renaming a tag away and back leaves both rows.
+    expect(
+      refusalCode(cashTag(1, 'Groceries', null, TOMBSTONED), cashTag(2, 'Groceries')),
+    ).toBeNull();
+  });
+
+  it('cash_tags_user_system_key_unique — one tag per built-in key, NULLs distinct', () => {
+    expect(refusalCode(cashTag(1, 'Fees', 'fees'), cashTag(2, 'Fees (built-in)', 'fees'))).toBe(
+      'CASH_TAG_SYSTEM_KEY_DUPLICATE',
+    );
+
+    // NULLs are distinct in a Postgres unique index, which is the entire reason
+    // this key constrains system tags only: any number of USER tags carry no key
+    // at all and can never collide on it.
+    expect(refusalCode(cashTag(1, 'Groceries'), cashTag(2, 'Fuel'))).toBeNull();
+    expect(refusalCode(cashTag(1, 'Fees', 'fees'), cashTag(2, 'Tax', 'tax'))).toBeNull();
+    expect(
+      refusalCode(cashTag(1, 'Fees', 'fees', TOMBSTONED), cashTag(2, 'Fees again', 'fees')),
+    ).toBeNull();
+  });
+
+  it('portfolio_cash_movements_dedup_unique — one movement per import hash, per portfolio', () => {
+    // The hash is the import idempotency key: two rows carrying it are the
+    // duplicate a re-imported bank statement would otherwise book twice.
+    expect(refusalCode(cashMovement(1, PORTFOLIO, 'h1'), cashMovement(2, PORTFOLIO, 'h1'))).toBe(
+      'CASH_MOVEMENT_DEDUP_DUPLICATE',
+    );
+
+    // NULL hashes are distinct — every hand-entered movement carries none, and
+    // a ledger full of them must stay restorable.
+    expect(
+      refusalCode(
+        cashMovement(1, PORTFOLIO, null),
+        cashMovement(2, PORTFOLIO, null),
+        cashMovement(3, PORTFOLIO, null),
+      ),
+    ).toBeNull();
+    // Scoped by portfolio: the same statement imported into two ledgers is legal.
+    expect(
+      refusalCode(cashMovement(1, PORTFOLIO, 'h1'), cashMovement(2, OTHER_PORTFOLIO, 'h1')),
+    ).toBeNull();
+    expect(
+      refusalCode(cashMovement(1, PORTFOLIO, 'h1', TOMBSTONED), cashMovement(2, PORTFOLIO, 'h1')),
+    ).toBeNull();
+  });
+
+  it('cash_movement_tags_movement_tag_unique — a movement carries a tag once', () => {
+    expect(refusalCode(movementTag(1, MOVEMENT, TAG), movementTag(2, MOVEMENT, TAG))).toBe(
+      'CASH_MOVEMENT_TAG_DUPLICATE',
+    );
+
+    // A PAIR, not an id: two tags on one movement and one tag on two movements
+    // are how multi-tagging works.
+    expect(
+      refusalCode(
+        movementTag(1, MOVEMENT, TAG),
+        movementTag(2, MOVEMENT, OTHER_TAG),
+        movementTag(3, OTHER_MOVEMENT, TAG),
+      ),
+    ).toBeNull();
+    // Untag then retag.
+    expect(
+      refusalCode(movementTag(1, MOVEMENT, TAG, TOMBSTONED), movementTag(2, MOVEMENT, TAG)),
+    ).toBeNull();
+  });
+
+  it('cash_budgets_portfolio_tag_period_unique — one single-month override per tag', () => {
+    expect(
+      refusalCode(
+        cashBudget(1, PORTFOLIO, TAG, '2026-01'),
+        cashBudget(2, PORTFOLIO, TAG, '2026-01'),
+      ),
+    ).toBe('CASH_BUDGET_PERIOD_DUPLICATE');
+
+    // Different months, different tags and different portfolios are all the
+    // ordinary shape of a budget set.
+    expect(
+      refusalCode(
+        cashBudget(1, PORTFOLIO, TAG, '2026-01'),
+        cashBudget(2, PORTFOLIO, TAG, '2026-02'),
+        cashBudget(3, PORTFOLIO, OTHER_TAG, '2026-01'),
+        cashBudget(4, OTHER_PORTFOLIO, TAG, '2026-01'),
+      ),
+    ).toBeNull();
+    expect(
+      refusalCode(
+        cashBudget(1, PORTFOLIO, TAG, '2026-01', TOMBSTONED),
+        cashBudget(2, PORTFOLIO, TAG, '2026-01'),
+      ),
+    ).toBeNull();
+  });
+
+  it('cash_budgets_portfolio_tag_recurring_unique — and the NULL period is its OWN key', () => {
+    // The three-column index cannot see this pair at all: `period_key` is NULL
+    // and NULLs are distinct, which is exactly why the partial index exists. A
+    // document repeating a recurring budget must name THAT index, not the other.
+    expect(
+      refusalCode(cashBudget(1, PORTFOLIO, TAG, null), cashBudget(2, PORTFOLIO, TAG, null)),
+    ).toBe('CASH_BUDGET_RECURRING_DUPLICATE');
+
+    // The recurring target and a single-month override for the same tag are the
+    // designed shape ("December is different"), not a duplicate.
+    expect(
+      refusalCode(cashBudget(1, PORTFOLIO, TAG, null), cashBudget(2, PORTFOLIO, TAG, '2026-12')),
+    ).toBeNull();
+    expect(
+      refusalCode(
+        cashBudget(1, PORTFOLIO, TAG, null),
+        cashBudget(2, PORTFOLIO, OTHER_TAG, null),
+        cashBudget(3, OTHER_PORTFOLIO, TAG, null),
+      ),
+    ).toBeNull();
+    expect(
+      refusalCode(
+        cashBudget(1, PORTFOLIO, TAG, null, TOMBSTONED),
+        cashBudget(2, PORTFOLIO, TAG, null),
+      ),
+    ).toBeNull();
+  });
+
+  it('names the first offender and stops — one issue, never one per row', () => {
+    // A malformed document must not be able to make the server build a report
+    // proportional to its own size.
+    const many = Array.from({ length: 50 }, (_unused, i) => cashTag(100 + i, 'Groceries'));
+    expect(refusalCode(...many)).toBe('CASH_TAG_NAME_DUPLICATE');
+  });
+
+  it('leaves a document carrying none of these kinds alone', () => {
+    expect(vaultStrictDocumentV1Schema.safeParse(documentWith()).success).toBe(true);
+  });
+});
+
+describe('the restore ceiling leaves room for the app-owned seed (#1973 addendum)', () => {
+  /**
+   * THE HEADROOM TRAP. `cash_tags` has two writers that never pass `createTag`:
+   * `cashTagRepository.ensureSystemTags` and `cashFusionCatchUpRepository`'s bare
+   * `onConflictDoNothing` insert. Neither consults the create cap, and neither
+   * can — a system tag that refused to seed would leave auto-tagging for that
+   * kind silently doing nothing forever.
+   *
+   * So an account sitting EXACTLY on the create cap is one release away from
+   * being over it through no act of its own: add a tenth `CASH_SYSTEM_TAGS` key
+   * and it holds 1001 tags on its next seed. Were the exit gate reading the
+   * create cap, that account's vault would then be unrestorable — the one mode
+   * where the server holds no second copy would refuse to hand the data back,
+   * with no operator override.
+   */
+  const tag = (index: number) => ({
+    id: `018f0000-0000-7000-8000-a${index.toString(16).padStart(11, '0')}`,
+    rev: 1,
+    editedAt: '2026-01-01T00:00:00.000Z',
+    editedBy: UUID_A,
+    deletedAt: null,
+    kind: 'cashTag' as const,
+    data: {
+      userId: UUID_A,
+      name: `tag-${index}`,
+      color: '#64748b',
+      system: false,
+      systemKey: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+  });
+
+  const documentWith = (count: number) => ({
+    schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+    entities: Array.from({ length: count }, (_unused, i) => tag(i)),
+    mergeLog: [],
+    mirrorProvenance: [],
+  });
+
+  it('derives the ceiling from the create cap and the whole seed', () => {
+    // Pinned, so a tenth system key moves the ceiling with it rather than
+    // silently eating the headroom this constant exists to provide.
+    expect(CASH_TAGS_RESTORE_MAX).toBe(CASH_TAGS_PER_USER_MAX + CASH_SYSTEM_TAGS.length);
+    expect(CASH_TAGS_RESTORE_MAX).toBeGreaterThan(CASH_TAGS_PER_USER_MAX);
+  });
+
+  it('accepts an account at the create cap that the app has since re-seeded', () => {
+    // The trap, exactly: 1000 tags the user created, plus one more system tag a
+    // future release added. Its paranoid exit must still be accepted.
+    expect(
+      vaultStrictDocumentV1Schema.safeParse(documentWith(CASH_TAGS_PER_USER_MAX)).success,
+    ).toBe(true);
+    expect(
+      vaultStrictDocumentV1Schema.safeParse(documentWith(CASH_TAGS_PER_USER_MAX + 1)).success,
+    ).toBe(true);
+    // …and the whole seed's worth of headroom, not just one.
+    expect(vaultStrictDocumentV1Schema.safeParse(documentWith(CASH_TAGS_RESTORE_MAX)).success).toBe(
+      true,
+    );
+  });
+
+  it('is still a ceiling: one past it refuses the WHOLE document', () => {
+    const parsed = vaultStrictDocumentV1Schema.safeParse(documentWith(CASH_TAGS_RESTORE_MAX + 1));
+    expect(parsed.success).toBe(false);
+    expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('too_big');
+    expect(parsed.success === false && parsed.error.issues).toHaveLength(1);
   });
 });

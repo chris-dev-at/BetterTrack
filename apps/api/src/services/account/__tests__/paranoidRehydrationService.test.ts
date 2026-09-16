@@ -11,6 +11,8 @@ import { createAssetRepository } from '../../../data/repositories/assetRepositor
 import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
 import { createCustomAssetRepository } from '../../../data/repositories/customAssetRepository';
+import { driverError, isDriverErrorCode, UNIQUE_VIOLATION } from '../../../data/driverError';
+import { createParanoidRehydrationSourceRepository } from '../../../data/repositories/paranoidRehydrationRepository';
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createStandingOrderRepository } from '../../../data/repositories/standingOrderRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
@@ -18,6 +20,8 @@ import {
   alerts,
   assetIdentities,
   assets,
+  cashBudgets,
+  cashMovementTags,
   cashRuleTags,
   cashTags,
   conglomeratePositions,
@@ -4234,5 +4238,227 @@ describe('restored cash tags and rule links', () => {
     expect(
       await db.select().from(cashRuleTags).where(eq(cashRuleTags.ruleId, CASH_RULE_ID)),
     ).toHaveLength(CASH_TAGS_PER_ITEM_MAX);
+  });
+});
+
+/**
+ * EVERY RESTORE-REACHABLE UNIQUE KEY, END TO END (#1973).
+ *
+ * #1963 closed `cash_rule_tags_rule_tag_unique` (above). Each key below was, at
+ * HEAD before this suite, a Postgres `23505 duplicate key value violates unique
+ * constraint` raised by an INSERT inside the OPEN rehydration transaction — a
+ * 500 for a client-authored document, thrown after the whole graph had been
+ * proved and most of the account had already been written. On the paranoid exit
+ * that is a dead end: the one mode where the server holds no second copy,
+ * answering with no code the client can show.
+ *
+ * Each case proves the same three things: the restore is REFUSED, NOTHING is
+ * written, and the account is still exactly where it was — ciphertext intact,
+ * still paranoid — so the user can fix the document and come back.
+ */
+describe('restored documents cannot reach a unique index', () => {
+  const TAG_A = '018f0000-0000-7000-8000-a00000000001';
+  const TAG_B = '018f0000-0000-7000-8000-a00000000002';
+  const SECOND_MOVEMENT_ID = '018f0000-0000-7000-8000-a00000000003';
+
+  const tagEntity = (id: string, name: string, systemKey: string | null = null) =>
+    entity(id, 'cashTag', {
+      userId: restoreUserId,
+      name,
+      color: '#112233',
+      system: systemKey !== null,
+      systemKey,
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    });
+
+  const depositEntity = (id: string, dedupHash: string | null) =>
+    entity(id, 'cashMovement', {
+      dedupHash,
+      originalCurrency: null,
+      portfolioId: PORTFOLIO_ID,
+      sourceId: CASH_SOURCE_ID,
+      kind: 'deposit',
+      amountEur: '25.000000',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt: editedAt,
+      createdAt: editedAt,
+      note: null,
+      source: 'manual',
+    });
+
+  const movementTagEntity = (id: string, movementId: string, tagId: string) =>
+    entity(id, 'cashMovementTag', { movementId, tagId, createdAt: editedAt });
+
+  const budgetEntity = (id: string, tagId: string, periodKey: string | null) =>
+    entity(id, 'cashBudget', {
+      portfolioId: PORTFOLIO_ID,
+      tagId,
+      periodKey,
+      amount: '100.00',
+      currency: 'EUR',
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    });
+
+  /**
+   * One document per key: the rows that would meet the index, on top of the
+   * ordinary graph `request()` builds. Every one of them is otherwise VALID —
+   * references resolve, the ledger is solvent, the portfolio is active — so the
+   * only thing wrong with it is the key, and nothing else can be what refuses it.
+   */
+  const OFFENDERS: readonly {
+    readonly index: string;
+    readonly rows: () => readonly StrictEntity[];
+  }[] = [
+    {
+      index: 'cash_tags_user_name_lower_unique',
+      // Case-insensitively: two tags the user cannot tell apart would silently
+      // split every budget counting them.
+      rows: () => [tagEntity(TAG_A, 'Groceries'), tagEntity(TAG_B, 'GROCERIES')],
+    },
+    {
+      index: 'cash_tags_user_system_key_unique',
+      rows: () => [tagEntity(TAG_A, 'Fees', 'fees'), tagEntity(TAG_B, 'Fees (built-in)', 'fees')],
+    },
+    {
+      index: 'portfolio_cash_movements_dedup_unique',
+      // The import idempotency key: two rows carrying it are the duplicate a
+      // re-imported bank statement would otherwise book twice.
+      rows: () => [depositEntity(SECOND_MOVEMENT_ID, 'statement-row-7')],
+      // (the first carrier is installed by `withDedupHash` below)
+    },
+    {
+      index: 'cash_movement_tags_movement_tag_unique',
+      rows: () => [
+        tagEntity(TAG_A, 'Groceries'),
+        movementTagEntity('018f0000-0000-7000-8000-a00000000011', MOVEMENT_ID, TAG_A),
+        movementTagEntity('018f0000-0000-7000-8000-a00000000012', MOVEMENT_ID, TAG_A),
+      ],
+    },
+    {
+      index: 'cash_budgets_portfolio_tag_period_unique',
+      rows: () => [
+        tagEntity(TAG_A, 'Groceries'),
+        budgetEntity('018f0000-0000-7000-8000-a00000000021', TAG_A, '2026-01'),
+        budgetEntity('018f0000-0000-7000-8000-a00000000022', TAG_A, '2026-01'),
+      ],
+    },
+    {
+      index: 'cash_budgets_portfolio_tag_recurring_unique',
+      // NULLs are distinct, so the three-column index above cannot see this pair
+      // at all — the partial index is the one that would have raised.
+      rows: () => [
+        tagEntity(TAG_A, 'Groceries'),
+        budgetEntity('018f0000-0000-7000-8000-a00000000031', TAG_A, null),
+        budgetEntity('018f0000-0000-7000-8000-a00000000032', TAG_A, null),
+      ],
+    },
+  ];
+
+  /** The dedup case needs its first carrier to be the document's own movement. */
+  function withDedupHash(input: ParanoidDisableRehydrationRequest): void {
+    for (const row of input.document.entities) {
+      if (row.kind === 'cashMovement' && row.id === MOVEMENT_ID) {
+        (row as StrictCashMovementEntity).data.dedupHash = 'statement-row-7';
+      }
+    }
+  }
+
+  it.each(OFFENDERS)('refuses $index before it writes a row', async ({ index, rows }) => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    if (index === 'portfolio_cash_movements_dedup_unique') withDedupHash(input);
+    input.document.entities.push(...rows());
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+
+    // Non-destructive, exactly as a refused restore must be: nothing written,
+    // the ciphertext still there, the account still paranoid.
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(cashTags).where(eq(cashTags.userId, user.id))).toEqual([]);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(1);
+    const [account] = await db
+      .select({ mode: users.privacyMode })
+      .from(users)
+      .where(eq(users.id, user.id));
+    expect(account?.mode).toBe('paranoid');
+  });
+
+  it('restores the same rows once the keys are distinct', async () => {
+    // The negative space of all six refusals in one document: a tag set, an
+    // import hash, a movement label, a recurring budget and a monthly override
+    // are all ordinary, and a restore that refused them would be the worse bug.
+    const { db, user } = await makeParanoid();
+    const input = request();
+    withDedupHash(input);
+    input.document.entities.push(
+      tagEntity(TAG_A, 'Groceries'),
+      tagEntity(TAG_B, 'Fees', 'fees'),
+      depositEntity(SECOND_MOVEMENT_ID, 'statement-row-8'),
+      movementTagEntity('018f0000-0000-7000-8000-a00000000041', MOVEMENT_ID, TAG_A),
+      movementTagEntity('018f0000-0000-7000-8000-a00000000042', MOVEMENT_ID, TAG_B),
+      movementTagEntity('018f0000-0000-7000-8000-a00000000043', SECOND_MOVEMENT_ID, TAG_A),
+      budgetEntity('018f0000-0000-7000-8000-a00000000051', TAG_A, null),
+      budgetEntity('018f0000-0000-7000-8000-a00000000052', TAG_A, '2026-01'),
+      budgetEntity('018f0000-0000-7000-8000-a00000000053', TAG_B, null),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+
+    expect(await db.select().from(cashTags).where(eq(cashTags.userId, user.id))).toHaveLength(2);
+    expect(
+      await db.select().from(cashMovementTags).where(eq(cashMovementTags.tagId, TAG_A)),
+    ).toHaveLength(2);
+    expect(
+      await db.select().from(cashBudgets).where(eq(cashBudgets.portfolioId, PORTFOLIO_ID)),
+    ).toHaveLength(3);
+  });
+
+  it('leaves the index itself as the last word: the repository insert still has no onConflict', async () => {
+    /**
+     * THE GATE MUST NOT BE VACUOUS. Everything above proves a document is turned
+     * away before the transaction — which is worth nothing unless the thing it
+     * is standing in front of is real. So: hand the repository the very rows the
+     * gate refuses, inside its own transaction, and watch
+     * `cash_tags_user_name_lower_unique` raise the `23505` this issue exists to
+     * stop reaching a client.
+     *
+     * It also pins the deliberate absence of `onConflictDoNothing` on those
+     * inserts (#1963): absorbing a duplicate would silently accept a document
+     * nothing legitimate wrote. A conflict here is now an INVARIANT BREAK, and
+     * it must stay loud.
+     */
+    const { db, user } = await makeParanoid();
+    restoreUserId = user.id;
+
+    let raised: unknown;
+    try {
+      await db.transaction(async (tx) => {
+        await createParanoidRehydrationSourceRepository(tx).restoreCashTags([
+          tagEntity(TAG_A, 'Groceries'),
+          tagEntity(TAG_B, 'GROCERIES'),
+        ]);
+      });
+    } catch (err) {
+      raised = err;
+    }
+
+    // Unwrapped, because drizzle hangs the driver error off `cause` — and the
+    // CONSTRAINT is named, so this cannot pass on some other unique violation.
+    expect(isDriverErrorCode(raised, UNIQUE_VIOLATION)).toBe(true);
+    expect(driverError(raised)).toMatchObject({
+      constraint: 'cash_tags_user_name_lower_unique',
+    });
   });
 });
