@@ -177,7 +177,11 @@ test('webhooks: a dead receiver retries, auto-disables, and re-enables from Sett
     // which is precisely the shape that must NOT kill a receiver (five events
     // during one five-minute outage), so the harness clock carries them past
     // the span instead — which is what a receiver that is genuinely down looks
-    // like. No sleeping: the dispatcher reads the harness clock.
+    // like. No sleeping: the dispatcher reads the harness clock. Note the
+    // signature timestamp is that same clock, so the receiver in THIS test sees
+    // stamps up to an hour ahead of wall time — harmless while the capture
+    // receiver enforces no freshness tolerance; if one is ever added, this test
+    // must advance the receiver's clock too.
     const step = Math.ceil(WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS / (WEBHOOK_AUTO_DISABLE_THRESHOLD - 1));
     let lastOutcome = '';
     for (let failure = 2; failure <= WEBHOOK_AUTO_DISABLE_THRESHOLD; failure += 1) {

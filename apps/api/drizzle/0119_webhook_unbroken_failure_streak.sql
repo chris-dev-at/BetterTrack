@@ -39,13 +39,22 @@ SET "unbroken_failure_streak" = "consecutive_failures",
 WHERE "consecutive_failures" > 0;
 --> statement-breakpoint
 -- The invariant both anchors have carried in comments since 0118, now enforced.
--- These come AFTER the backfill above on purpose: added before it, the legacy
--- rows this migration has not yet populated (`unbroken_streak_started_at` still
--- null while `consecutive_failures` > 0) would fail validation and take the
--- deploy down.
+-- These come AFTER the backfill above. Strictly the order does not matter for
+-- the rows this migration sees: before the backfill every row is (0, null) on
+-- the unbroken pair, which already satisfies the constraint. It is kept
+-- backfill-first defensively, so a future change to the backfill's shape cannot
+-- make the constraint refuse a row it is about to correct.
 --
--- The windowed pair is declared here rather than in 0118 because 0118 is
--- already released; a released migration is never edited (`check:migrations-immutable`).
+-- The ordering hazard that DOES exist is the deploy gap: `infra/live/updater.sh`
+-- runs `migrate` while the PREVIOUS release's api/worker are still serving. A
+-- pre-0118 writer landing a webhook success or failure between 0118's backfill
+-- and these ADD CONSTRAINTs would produce a violating row, fail the constraint,
+-- fail the deploy, and the updater would retry until someone repaired the row by
+-- hand. On a table this small the window is sub-second and the risk accepted;
+-- this comment exists so that whoever hits it knows where to look.
+--
+-- The windowed pair is declared here rather than in 0118 because 0118 lands
+-- first (#1980) and a landed migration is never edited (`check:migrations-immutable`).
 ALTER TABLE "webhook_subscriptions"
 ADD CONSTRAINT "webhook_subscriptions_failure_window_anchor"
 CHECK (("consecutive_failures" = 0) = ("failure_window_started_at" IS NULL));

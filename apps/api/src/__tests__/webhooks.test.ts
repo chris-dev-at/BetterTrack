@@ -1370,8 +1370,10 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
   // five-attempt cycle sharing one delivery id, then failures #2…#N as
   // immediate-terminal deliveries. #1646 made the SHAPE of that sequence
   // load-bearing — back-to-back it is a burst and must not disable — so the
-  // arithmetic the spec now depends on is pinned here too. If someone re-packs
-  // those deliveries, this fails in the fast suite instead of overnight.
+  // arithmetic the spec now depends on is pinned here too. This pins the RULE
+  // the spec relies on, not the spec's own text: if the dispatcher's span rule
+  // changes, this fails in the fast suite instead of overnight; an edit to the
+  // spec's sequence itself still needs the nightly to catch it.
   it('e2e gate #2 replay: the spec’s spaced failure sequence auto-disables', async () => {
     const { id, userId } = await createSubscription(['alert.triggered']);
     const failing = recordingTransport(500);
