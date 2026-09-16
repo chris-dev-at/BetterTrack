@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { withLockedPrivacyModes } from '../data/repositories/paranoidEnforcementRepository';
 import * as schema from '../data/schema';
@@ -57,11 +57,12 @@ async function waitForDatabaseLock(
     waitingPid?: number;
   },
 ): Promise<DatabaseLockWait> {
-  const deadline = Date.now() + 5_000;
-  let observed: DatabaseLockWait[] = [];
-
-  while (Date.now() < deadline) {
-    observed = await observer<DatabaseLockWait[]>`
+  // `vi.waitFor` polls on a bounded schedule and rethrows the LAST failure at the
+  // deadline, so the diagnostic below still reaches the report — the loop this
+  // replaces bought the same thing with a sleep inside it (#1622).
+  return vi.waitFor(
+    async () => {
+      const observed = await observer<DatabaseLockWait[]>`
       SELECT
         pid,
         query,
@@ -71,25 +72,25 @@ async function waitForDatabaseLock(
       WHERE datname = current_database()
         AND wait_event_type = 'Lock'
     `;
-    const match = observed.find(
-      (row) =>
-        (input.waitingPid === undefined || row.pid === input.waitingPid) &&
-        row.blockingPids.map(Number).includes(input.blockedByPid) &&
-        input.queryPattern.test(row.query),
-    );
-    if (match) return match;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error(
-    `Timed out waiting for ${input.description}; observed ${JSON.stringify(
-      observed.map(({ pid, query, waitEventType, blockingPids }) => ({
-        pid,
-        query,
-        waitEventType,
-        blockingPids,
-      })),
-    )}`,
+      const match = observed.find(
+        (row) =>
+          (input.waitingPid === undefined || row.pid === input.waitingPid) &&
+          row.blockingPids.map(Number).includes(input.blockedByPid) &&
+          input.queryPattern.test(row.query),
+      );
+      if (match) return match;
+      throw new Error(
+        `Timed out waiting for ${input.description}; observed ${JSON.stringify(
+          observed.map(({ pid, query, waitEventType, blockingPids }) => ({
+            pid,
+            query,
+            waitEventType,
+            blockingPids,
+          })),
+        )}`,
+      );
+    },
+    { timeout: 5_000, interval: 10 },
   );
 }
 
