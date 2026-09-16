@@ -224,6 +224,68 @@ describe('CashMovementsPage', () => {
     );
   });
 
+  /**
+   * V5-P0c, issue #1658 part 3. This is the routed primary money surface, and it
+   * already rendered the `SourceBadge` — but its only filter was the label one,
+   * so "Imported from Flatex" was something you could read and not act on. The
+   * options come from the server's portfolio-wide facet, never from the rows
+   * this page happens to have paged in.
+   */
+  test('filters the ledger by a source tag the server facet advertises', async () => {
+    const imported = movement({
+      id: 'm-imported',
+      kind: 'deposit',
+      amountEur: 300,
+      note: 'Flatex deposit',
+      source: 'import:flatex',
+    });
+    vi.mocked(getCashMovements).mockImplementation(async (_portfolioId, params) =>
+      params?.source === 'import:flatex'
+        ? { ...LEDGER, movements: [imported], sourceTags: ['import:flatex', 'manual'] }
+        : { ...LEDGER, sourceTags: ['import:flatex', 'manual'] },
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Landlord');
+
+    await user.selectOptions(screen.getByLabelText('Source'), 'import:flatex');
+    await screen.findByText('Flatex deposit');
+    expect(screen.queryByText('Landlord')).not.toBeInTheDocument();
+    expect(getCashMovements).toHaveBeenLastCalledWith(
+      'p1',
+      expect.objectContaining({ source: 'import:flatex' }),
+      expect.anything(),
+    );
+  });
+
+  test('asks for the portfolio-wide facet and keeps it out of the page-size filter', async () => {
+    // The loaded page is pure `manual`; only the facet knows an imported row
+    // exists further back. Deriving the options from the page would hide it.
+    vi.mocked(getCashMovements).mockResolvedValue({
+      ...LEDGER,
+      nextCursor: 'cursor-1',
+      sourceTags: ['import:flatex', 'manual'],
+    });
+    renderPage();
+    await screen.findByText('Landlord');
+
+    expect(getCashMovements).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ includeSourceTags: true }),
+      expect.anything(),
+    );
+    const filter = await screen.findByLabelText('Source');
+    expect(within(filter).getByRole('option', { name: 'Imported · Flatex' })).toBeInTheDocument();
+    expect(within(filter).getByRole('option', { name: 'All sources' })).toBeInTheDocument();
+  });
+
+  test('stays out of the way of a pure-manual ledger', async () => {
+    vi.mocked(getCashMovements).mockResolvedValue({ ...LEDGER, sourceTags: ['manual'] });
+    renderPage();
+    await screen.findByText('Landlord');
+    expect(screen.queryByLabelText('Source')).not.toBeInTheDocument();
+  });
+
   test('keeps the page and tag picker mounted while a new filter is loading', async () => {
     let resolveFiltered!: (value: CashMovementsResponse) => void;
     const filtered = new Promise<CashMovementsResponse>((resolve) => {
@@ -259,7 +321,7 @@ describe('CashMovementsPage', () => {
     expect(screen.queryByText('Landlord')).not.toBeInTheDocument();
     expect(getCashMovements).toHaveBeenCalledWith(
       'p1',
-      { cursor: undefined, limit: 50, tag: undefined },
+      { cursor: undefined, limit: 50, tag: undefined, source: undefined, includeSourceTags: true },
       expect.anything(),
     );
 
@@ -267,7 +329,13 @@ describe('CashMovementsPage', () => {
     expect(await screen.findByText('Landlord')).toBeInTheDocument();
     expect(getCashMovements).toHaveBeenLastCalledWith(
       'p1',
-      { cursor: 'cursor-1', limit: 50, tag: undefined },
+      {
+        cursor: 'cursor-1',
+        limit: 50,
+        tag: undefined,
+        source: undefined,
+        includeSourceTags: false,
+      },
       expect.anything(),
     );
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
