@@ -1,4 +1,5 @@
 import {
+  GROUP_AUDIENCE_INVALID_ERROR_CODE,
   audienceTransitionRequiresConfirmation,
   type AudienceSelection,
   type AudienceState,
@@ -258,11 +259,16 @@ export const PUBLIC_ACK_REQUIRED = () =>
     'PUBLIC_LINK_ACK_REQUIRED',
   );
 
-/** A `group` audience must name a friend group the caller owns (V5-P8). */
+/**
+ * A `group` audience must name a friend group the caller owns (V5-P8). The code
+ * comes from `@bettertrack/contracts` because the SPA's deleted-circle repair
+ * branch keys on it — one definition, so a rename here cannot silently reduce
+ * that branch to the generic retry copy (#1978).
+ */
 export const GROUP_AUDIENCE_INVALID = () =>
   badRequest(
     'Sharing to a group requires one of your own friend groups.',
-    'GROUP_AUDIENCE_INVALID',
+    GROUP_AUDIENCE_INVALID_ERROR_CODE,
   );
 
 /** A widening/replacement write must be a fresh, deliberate owner action. */

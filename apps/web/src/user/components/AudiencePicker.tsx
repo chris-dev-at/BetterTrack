@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   FRIEND_GROUPS_MAX,
+  GROUP_AUDIENCE_INVALID_ERROR_CODE,
   SHARE_AUDIENCES,
   audienceTransitionRequiresConfirmation,
   type ShareAudience,
@@ -55,21 +56,6 @@ export interface AudiencePickerProps {
 
 /** Cache window for the friend-circle list — the same one `/people` uses. */
 const GROUPS_STALE_MS = 30_000;
-
-/**
- * `audienceService.GROUP_AUDIENCE_INVALID` — a `group` write that names no
- * circle the caller owns. The one refusal an owner can act on from inside this
- * dialog (the circle was deleted in another tab since the cached list was
- * read), so it names itself instead of arriving as the generic retry copy
- * (#1899) — the pattern `FriendGroupsSection` follows for the roster ceiling.
- *
- * NOTE: unlike `FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE` this code has no home in
- * `@bettertrack/contracts` yet, so it is restated here rather than shared. If
- * the server ever renames it, this branch degrades to the generic message — it
- * never misreports. Lifting it into contracts is a contracts-package change,
- * outside this client-side package's claim.
- */
-const GROUP_AUDIENCE_INVALID_CODE = 'GROUP_AUDIENCE_INVALID';
 
 // ── Tier iconography (inline SVG, dependency-free — matches the app house style) ─
 function TierIcon({ audience, className }: { audience: ShareAudience; className?: string }) {
@@ -284,7 +270,7 @@ export function AudiencePicker({
       }
     },
     onError: (error) => {
-      if (!(error instanceof ApiError) || error.code !== GROUP_AUDIENCE_INVALID_CODE) return;
+      if (!(error instanceof ApiError) || error.code !== GROUP_AUDIENCE_INVALID_ERROR_CODE) return;
       // The circle vanished between the cached list read and Save. Drop the
       // dead selection — re-submitting it can only be refused again, which is
       // the loop this refusal used to sit in — and refresh the stale list so
@@ -302,7 +288,7 @@ export function AudiencePicker({
   });
   /** The refusal above, as the dialog renders it. */
   const groupCircleGone =
-    mutation.error instanceof ApiError && mutation.error.code === GROUP_AUDIENCE_INVALID_CODE;
+    mutation.error instanceof ApiError && mutation.error.code === GROUP_AUDIENCE_INVALID_ERROR_CODE;
 
   const friends = friendsQuery.data?.friends ?? [];
   const filteredFriends = useMemo(() => {
