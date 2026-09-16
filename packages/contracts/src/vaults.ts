@@ -456,6 +456,29 @@ export type DriveConnectionDisconnectQuery = z.infer<typeof driveConnectionDisco
 export const driveConnectionEmptyBodySchema = z.union([z.undefined(), z.object({}).strict()]);
 export type DriveConnectionEmptyBody = z.infer<typeof driveConnectionEmptyBodySchema>;
 
+/**
+ * `DELETE /drive-connections/:connectionId?acknowledgeBound=true` — the ONE
+ * Drive-registry request that loses something. The acknowledgement IS the
+ * loss-of-reach assertion (§15 names it a gated operation next to vault
+ * deletion and the two portfolio moves), so that body carries the same in-body
+ * step-up credential those three carry, on the same
+ * {@link vaultStepUpCredentialSchema}.
+ *
+ * The UNACKNOWLEDGED disconnect keeps {@link driveConnectionEmptyBodySchema}:
+ * it is the call that DISCOVERS the binding, so asking for a password before
+ * telling an owner that a vault is bound would gate a read. A connection with
+ * nothing bound to it loses nothing and stays bodyless with it.
+ *
+ * Still `.strict()` with exactly one member, so the module-wide rule holds:
+ * no Drive route accepts a Google token on any method.
+ */
+export const driveConnectionDisconnectAcknowledgedRequestSchema = z
+  .object({ stepUp: vaultStepUpCredentialSchema })
+  .strict();
+export type DriveConnectionDisconnectAcknowledgedRequest = z.infer<
+  typeof driveConnectionDisconnectAcknowledgedRequestSchema
+>;
+
 // ── Envelope v2 header (§5) ──────────────────────────────────────────────────
 
 /** The three doc kinds of a vault's document set (§5). */

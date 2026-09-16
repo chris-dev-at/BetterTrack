@@ -1244,6 +1244,10 @@ const allowReauth = {
   async recordPortfolioVaultTransitionFailure() {
     return false;
   },
+  async verifyDriveConnectionDisconnect() {},
+  async recordDriveConnectionDisconnectFailure() {
+    return false;
+  },
 } satisfies VaultDeleteReauth;
 
 const noOpAudit = {

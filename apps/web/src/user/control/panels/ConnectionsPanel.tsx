@@ -34,6 +34,11 @@ import {
   createDriveConnectionRegistry,
   type DriveConnectionRegistry,
 } from '../../vault/media/driveConnectionRegistry';
+import {
+  StepUpCredentialFields,
+  stepUpCredentialOf,
+  type StepUpCredentialKind,
+} from '../../vault/ui/StepUpCredentialFields';
 import { useResolvedPrivacyModeState, vaultMediaQueryKey } from '../../vault/usePrivacyMode';
 import {
   useOptionalVaultRuntime,
@@ -357,6 +362,24 @@ export interface DriveVaultMoveResult {
   cleanupFailures: readonly { docId: string; message: string }[];
 }
 
+/**
+ * The refusals of the §15 step-up on the acknowledged disconnect (#1632): a
+ * missing or malformed credential, a wrong one, and the per-account progressive
+ * throttle. Keyed on the stable codes rather than bare status so an unrelated
+ * failure is not relabelled as a failed confirmation. The server never says
+ * WHICH factor was wrong, and neither does the message these map to.
+ */
+const STEP_UP_REFUSAL_CODES = new Set([
+  'VALIDATION_ERROR',
+  'INVALID_CREDENTIALS',
+  'TWO_FACTOR_INVALID_CODE',
+  'RATE_LIMITED',
+]);
+
+function isStepUpRefusal(error: ApiError): boolean {
+  return STEP_UP_REFUSAL_CODES.has(error.code);
+}
+
 /** Compact N-account registry and per-vault binding projection (E5). */
 function DriveAccountsSection({
   registry,
@@ -369,6 +392,10 @@ function DriveAccountsSection({
   const queryClient = useQueryClient();
   const [working, setWorking] = useState<string | null>(null);
   const [acknowledge, setAcknowledge] = useState<DriveConnection | null>(null);
+  // §15 step-up for the acknowledged disconnect-with-loss (#1632). Held beside
+  // the acknowledgement it belongs to, and dropped the moment the dialog closes.
+  const [stepUpKind, setStepUpKind] = useState<StepUpCredentialKind>('password');
+  const [stepUpValue, setStepUpValue] = useState('');
   const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<{
     tone: 'error' | 'success' | 'info';
@@ -481,16 +508,33 @@ function DriveAccountsSection({
   }
 
   async function disconnect(connection: DriveConnection, confirmed: boolean): Promise<void> {
+    // The acknowledgement is the loss-of-reach assertion, so it — and only it —
+    // carries the §15 credential (#1632). The first, unacknowledged attempt is
+    // what discovers the binding; asking for a password before the owner even
+    // knows a vault is bound would gate a read.
+    const stepUp = confirmed ? stepUpCredentialOf(stepUpKind, stepUpValue) : undefined;
+    if (confirmed && stepUpValue.trim() === '') return;
     setWorking(connection.id);
     setMessage(null);
     try {
-      await registry.disconnect(connection, confirmed);
+      await registry.disconnect(connection, confirmed, stepUp);
       setAcknowledge(null);
+      setStepUpValue('');
       setMessage({ tone: 'success', text: t('settings.connections.driveAccounts.disconnected') });
       await refresh();
     } catch (error) {
       if (error instanceof ApiError && error.code === 'DRIVE_CONNECTION_BOUND' && !confirmed) {
         setAcknowledge(connection);
+        setStepUpValue('');
+      } else if (confirmed && error instanceof ApiError && isStepUpRefusal(error)) {
+        // The server refuses generically and never says which factor was wrong;
+        // the surface says no more than it does, and keeps the acknowledgement
+        // open so the owner can correct the entry.
+        setStepUpValue('');
+        setMessage({
+          tone: 'error',
+          text: t('settings.connections.driveAccounts.acknowledgeStepUpError'),
+        });
       } else {
         setMessage({
           tone: 'error',
@@ -639,11 +683,33 @@ function DriveAccountsSection({
       {acknowledge ? (
         <Row stack>
           <Alert tone="info">{t('settings.connections.driveAccounts.acknowledge')}</Alert>
+          {/* §15 gated operation: the same credential control the vault-delete
+              and portfolio-move dialogs use, not a second prompt of its own. */}
+          <p className="bt-row-sub">{t('settings.connections.driveAccounts.acknowledgeStepUp')}</p>
+          <StepUpCredentialFields
+            credential={stepUpValue}
+            credentialKind={stepUpKind}
+            id={`drive-disconnect-${acknowledge.id}`}
+            onCredentialChange={setStepUpValue}
+            onKindChange={setStepUpKind}
+          />
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void disconnect(acknowledge, true)} size="sm" variant="danger">
+            <Button
+              disabled={working === acknowledge.id || stepUpValue.trim() === ''}
+              onClick={() => void disconnect(acknowledge, true)}
+              size="sm"
+              variant="danger"
+            >
               {t('settings.connections.driveAccounts.acknowledgeAction')}
             </Button>
-            <Button onClick={() => setAcknowledge(null)} size="sm" variant="quiet">
+            <Button
+              onClick={() => {
+                setAcknowledge(null);
+                setStepUpValue('');
+              }}
+              size="sm"
+              variant="quiet"
+            >
               {t('common.cancel')}
             </Button>
           </div>

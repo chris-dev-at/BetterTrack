@@ -2179,6 +2179,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const driveConnectionsService = createDriveConnectionService(
     createDriveConnectionRepository(db),
     audit,
+    // The acknowledged disconnect-with-loss is a §15 gated operation (#1632);
+    // it shares the one verifier with vault deletion and both portfolio moves.
+    discardReauth,
   );
 
   const paranoidTransitions = createParanoidTransitionService({
