@@ -73,6 +73,7 @@ import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/
 import { paranoidRestoreJsonLimitBytes } from '../bodyLimits';
 import {
   ACCOUNT_SECURITY_SCOPE,
+  isAdminRoleBearerPrincipal,
   portfolioVaultAccountSecurityRouteAcceptsBearer,
   recordBearerScopeDenied,
 } from '../middleware/bearerAuth';
@@ -98,13 +99,20 @@ export function isPortfolioVaultMoveOutHttpPath(method: string, path: string): b
   return method.toUpperCase() === 'POST' && PORTFOLIO_VAULT_MOVE_OUT_HTTP_PATH.test(path);
 }
 
-function requirePortfolioVaultTransitionBearerAccess(ctx: AppContext): RequestHandler {
+/**
+ * Exported since #1958 so the five-twin account-kind backstop is provable as a
+ * unit: the test drives every twin's guard directly, which is the only place
+ * the backstop is reachable (in production the global rail answers first).
+ */
+export function requirePortfolioVaultTransitionBearerAccess(ctx: AppContext): RequestHandler {
   return function requirePortfolioVaultTransitionBearerAccess(req, _res, next) {
     if (!req.apiKey) {
       next();
       return;
     }
-    if (req.authUser?.role === 'admin') {
+    // The account-kind boundary, shared verbatim with the global rail and the
+    // other four twins (#1958): one predicate, so they cannot drift.
+    if (isAdminRoleBearerPrincipal(req)) {
       next(notFound());
       return;
     }
@@ -119,7 +127,7 @@ function requirePortfolioVaultTransitionBearerAccess(ctx: AppContext): RequestHa
       return;
     }
     if (!scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE)) {
-      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, path).then(
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, 'insufficient-scope', path).then(
         () =>
           next(
             forbidden(

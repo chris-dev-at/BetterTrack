@@ -27,7 +27,12 @@ import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import { API_KEY_LIMITER_NAMESPACE } from '../../http/middleware/rateLimit';
 import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
-import { AuditAction, type AuditService } from '../audit/auditService';
+import {
+  AuditAction,
+  parseBearerScopeDeniedMeta,
+  type AuditService,
+  type BearerScopeDenialReason,
+} from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 
@@ -83,11 +88,16 @@ export interface ApiKeyService {
    * secret. Missing wiring deliberately fails closed.
    */
   revalidatePrincipal(input: { userId: string; keyId: string }): Promise<ApiKeyPrincipal | null>;
-  /** Record a scope-denied bearer attempt (called by the enforcement middleware). */
+  /**
+   * Record a scope-denied bearer attempt (called by the enforcement middleware).
+   * `reason` discriminates a genuine missing scope from a first-party-only
+   * refusal of a credential that DOES hold the scope (#1365).
+   */
   recordScopeDenied(input: {
     userId: string;
     keyId: string;
     requiredScope: string;
+    reason: BearerScopeDenialReason;
     method: string;
     path: string;
     ip?: string | null;
@@ -408,14 +418,27 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       return { user, keyId: key.id, scopes: key.scopes as ApiKeyScope[] };
     },
 
-    async recordScopeDenied({ userId, keyId, requiredScope, method, path, ip }) {
+    async recordScopeDenied({ userId, keyId, requiredScope, reason, method, path, ip }) {
+      // Parsed, not cast (#1951 §1): `reason` is a closed vocabulary and this is
+      // the point where it becomes a durable row, so an out-of-vocabulary value
+      // — or an extra key carrying credential material — throws here instead of
+      // being persisted for the full audit retention. The refusal the caller is
+      // answering still stands: a throw can only come from a caller that
+      // bypassed the compile-time union, and it surfaces as a REPORTED 500
+      // rather than a silent 400 (#1951 L1 — see `parseBearerScopeDeniedMeta`).
+      const meta = parseBearerScopeDeniedMeta('apiKeyService.recordScopeDenied', {
+        requiredScope,
+        reason,
+        method,
+        path,
+      });
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyScopeDenied,
         targetType: 'api_key',
         targetId: keyId,
         ip: ip ?? null,
-        meta: { requiredScope, method, path },
+        meta,
       });
     },
 
