@@ -43,6 +43,13 @@ const jose = require(require.resolve('jose', { paths: [apiDir] }));
 const { generateKeyPair, exportJWK, SignJWT } = jose;
 
 const PORT = Number(process.env.E2E_FAKE_GOOGLE_PORT ?? 4545);
+// Loopback by default (#2016). This server mints signed id_tokens for anyone
+// who asks — no auth, no origin check — so an all-interfaces listener would
+// hand the developer's LAN a token-minting oracle for the length of a run.
+// Both dialers (the browser, via the web origin's proxy/redirect, and the
+// API's server-side token/JWKS fetches) are same-box. See `API_HOST` in
+// e2e/support/config.ts for why this is the literal and not `localhost`.
+const HOST = process.env.E2E_FAKE_GOOGLE_HOST ?? '127.0.0.1';
 // The `aud` minted into every id_token — must equal the API's BT_GOOGLE_CLIENT_ID.
 const CLIENT_ID = process.env.BT_GOOGLE_CLIENT_ID ?? 'e2e-google-client-id';
 // The real Google issuer, so the API's unchanged issuer check passes.
@@ -229,8 +236,8 @@ function hashString(input) {
   return h;
 }
 
-server.listen(PORT, () => {
-  console.log(`[fake-google-idp] listening on :${PORT} (aud=${CLIENT_ID})`);
+server.listen(PORT, HOST, () => {
+  console.log(`[fake-google-idp] listening on ${HOST}:${PORT} (aud=${CLIENT_ID})`);
 });
 
 function shutdown() {
