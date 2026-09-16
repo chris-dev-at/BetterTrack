@@ -89,6 +89,11 @@ export function buildRankOrder(
   expression: SQLWrapper,
   rankedValues: readonly string[],
 ): SQL<number> {
+  if (rankedValues.length === 0) {
+    // `case x else … end` without a single `when` is a Postgres syntax error;
+    // fail here, at the builder, instead of inside the query.
+    throw new Error('buildRankOrder needs at least one ranked value');
+  }
   const arms = rankedValues.map((value, index) => sql`when ${value} then cast(${index} as int)`);
   return sql<number>`case ${expression} ${sql.join(arms, sql` `)} else cast(${rankedValues.length} as int) end`;
 }
