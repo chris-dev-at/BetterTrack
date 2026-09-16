@@ -325,10 +325,14 @@ reconciliation (#895/#896) and is kept because it is right:
    The readback that authorises it is taken from a medium the transition KEEPS,
    never from the one it retires: removing `server` needs a `drive`-kind
    attestation and removing `drive` a `server`-kind one, and the other way round
-   is refused `VAULT_MEDIA_VERIFICATION_FAILED`. The surviving-medium rule is
-   enforced twice — on the wire by `perVaultMediaTransitionRequestSchema`, and
-   again in `vaultBlobRepository`, which is the boundary that actually retires
-   the bytes.
+   is refused `VAULT_MEDIA_VERIFICATION_FAILED`. A `drive`-kind attestation must
+   additionally NAME the Drive connection the post-state keeps
+   (`next.driveConnectionId`): a readback from another of the owner's connected
+   Drive accounts passes every ownership check and still says nothing about the
+   copy the user is actually left with (#1987). The surviving-medium rule and
+   that connection identity are both enforced twice — on the wire by
+   `perVaultMediaTransitionRequestSchema`, and again in `vaultBlobRepository`,
+   which is the boundary that actually retires the bytes.
    Removing `server` atomically moves the vault's blobs + history into the
    retired recovery set (`vault_retired`), destroyable only through the signed
    purge gate: minimum 7-day retention, fresh other-medium readback, server
