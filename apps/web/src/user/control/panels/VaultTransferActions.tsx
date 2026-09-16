@@ -9,6 +9,8 @@ import {
   type FormEvent,
 } from 'react';
 
+import { useQueryClient } from '@tanstack/react-query';
+
 import type { VaultConfig } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
@@ -17,6 +19,7 @@ import { vaultTransferRuntime, type VaultTransferRuntime } from '../../vault/qr/
 import { createVaultTransferQrSource } from '../../vault/qr/senderSource';
 import { VaultReceivePhrase } from '../../vault/ui/VaultReceivePhrase';
 import { EndpointKeystoreResetFold, VaultTransferQr } from '../../vault/ui/VaultTransferQr';
+import { VAULT_ENDPOINT_STATE_QUERY_PREFIX } from '../../vault/ui/useVaultEndpointState';
 import type { Notice } from './PrivacyPanel';
 import { PanelFold, PanelList, PanelListItem, PanelNote } from './panelKit';
 
@@ -30,6 +33,7 @@ export function VaultTransferActions({
   runtime?: VaultTransferRuntime;
 }) {
   const t = useT();
+  const queryClient = useQueryClient();
   const [vaults, setVaults] = useState<readonly VaultConfig[]>([]);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [expanded, setExpanded] = useState(false);
@@ -83,6 +87,18 @@ export function VaultTransferActions({
                 // the receive action itself establishes the live per-vault session.
                 runtime.registerOpenedVault(receipt.opened);
                 setReceiverOpen(false);
+                // The custody this endpoint has just gained is news for every
+                // surface that renders a vault state, exactly as it is for the
+                // sibling writers (`VaultProvidePhraseDialog`,
+                // `VaultUnlockDialog`). Without it the manager row a few
+                // hundred pixels up kept its cached "Words needed on this
+                // device" standing beside this panel's "verified and saved on
+                // this device" (#2013): `readVaultEndpointState` short-circuits
+                // on the memoized per-tab resume, so nothing else re-reads the
+                // keystore until a lock, a sign-out or a navigation.
+                void queryClient.invalidateQueries({
+                  queryKey: VAULT_ENDPOINT_STATE_QUERY_PREFIX,
+                });
                 onNotice({ tone: 'success', key: 'vault.transfer.settings.received' });
               }}
             />

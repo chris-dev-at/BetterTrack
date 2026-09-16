@@ -36,14 +36,14 @@ import {
  * (`mirrorM5.test.ts`) — this file guards the render gates.
  */
 
-function wrap(node: React.ReactNode) {
+function wrap(node: React.ReactNode, locale?: string) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <I18nProvider>{node}</I18nProvider>
+        <I18nProvider initialLocale={locale}>{node}</I18nProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -95,6 +95,7 @@ describe('MirrorchainPanel — attribution chip (design §10)', () => {
     wrap(
       <MirrorAttributionChip
         attribution={{
+          state: 'shown',
           userId: '00000000-0000-4000-8000-000000000010',
           username: 'alice',
           profileIcon: null,
@@ -105,16 +106,59 @@ describe('MirrorchainPanel — attribution chip (design §10)', () => {
   });
 
   test('renders the i18n "group member" label when the server stripped attribution', () => {
-    // §10: a non-member viewer of a shared synced copy sees `userId: null` and
-    // the server-side literal "group member" — the chip translates that to the
-    // active locale (EN "Group member" here) so the English literal never
-    // reaches the UI.
+    // §10: a non-member viewer of a shared synced copy sees `state: 'stripped'`
+    // and the server-side literal "group member" — the chip translates that to
+    // the active locale (EN "Group member" here) so the English literal never
+    // reaches the UI. The stripped row carries NO frozen name to render.
     wrap(
       <MirrorAttributionChip
-        attribution={{ userId: null, username: 'group member', profileIcon: null }}
+        attribution={{
+          state: 'stripped',
+          userId: null,
+          username: 'group member',
+          profileIcon: null,
+        }}
       />,
     );
     expect(screen.getByText('Group member')).toBeInTheDocument();
+  });
+
+  test('renders "⟨frozen name⟩ (account deleted)" when the author account is gone (§6/§7)', () => {
+    // The OTHER `userId: null` state, and a different promise: design §6/§7 bind
+    // that a member who deletes their account keeps rendering as
+    // "alice (account deleted)" on every surviving copy — the denormalized
+    // `created_by_username` outlives the SET NULL. Collapsing it into the §10
+    // "Group member" chip loses history the design guarantees.
+    wrap(
+      <MirrorAttributionChip
+        attribution={{ state: 'deleted', userId: null, username: 'alice', profileIcon: null }}
+      />,
+    );
+    expect(screen.getByText('alice (account deleted)')).toBeInTheDocument();
+    expect(screen.queryByText('Group member')).not.toBeInTheDocument();
+  });
+
+  test('translates both null-actor states in DE', () => {
+    const stripped = wrap(
+      <MirrorAttributionChip
+        attribution={{
+          state: 'stripped',
+          userId: null,
+          username: 'group member',
+          profileIcon: null,
+        }}
+      />,
+      'de',
+    );
+    expect(within(stripped.container).getByText('Gruppenmitglied')).toBeInTheDocument();
+
+    const deleted = wrap(
+      <MirrorAttributionChip
+        attribution={{ state: 'deleted', userId: null, username: 'alice', profileIcon: null }}
+      />,
+      'de',
+    );
+    expect(within(deleted.container).getByText('alice (Konto gelöscht)')).toBeInTheDocument();
   });
 });
 

@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { ApiError, setAuthResponsePolicy } from './apiClient';
 import {
   deleteDriveConnection,
+  disableParanoidMode,
   downloadDataExport,
   listRememberedDevices,
   revokeAllRememberedDevices,
@@ -154,6 +155,72 @@ test('sends the §15 disconnect credential in the body, never the query, and onl
     expect(onUnauthorized).not.toHaveBeenCalled();
 
     await expect(deleteDriveConnection('conn-1')).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  } finally {
+    dispose();
+  }
+});
+
+/**
+ * #2000 — the locked-vault "start fresh" exit is the fifth credential-carrying
+ * destructive call (`docs/paranoid-design.md` §15/§17). Its `discard: true` form
+ * carries the `DELETE /account` rung — the typed username plus a server-verified
+ * password / TOTP code / recovery code — so a wrong one comes back as the same
+ * generic 401 every §15 refusal uses, and must leave the owner standing in the
+ * stuck-unlock dialog rather than signing them out of the session they still
+ * hold. The RESTORING disable carries no credential, so its 401 is a real
+ * expiry and must still clear the session: that is the negative half below,
+ * without which this pin would pass on a module that suppressed everything.
+ */
+const STRICT_RESTORE_DOCUMENT = {
+  schemaVersion: 1 as const,
+  entities: [],
+  mergeLog: [],
+  mirrorProvenance: [],
+};
+
+test('§15 discard refuses in-form, while the restoring disable still clears an expired session', async () => {
+  const onUnauthorized = vi.fn();
+  const dispose = setAuthResponsePolicy({ onUnauthorized });
+  try {
+    const unauthorized = () =>
+      new Response(
+        JSON.stringify({
+          error: { code: 'INVALID_CREDENTIALS', message: 'Re-authentication failed.' },
+        }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      );
+    const fetchMock = vi.fn().mockResolvedValue(unauthorized());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      disableParanoidMode({
+        rehydrationId: '018f6a3e-7777-7000-8000-000000000041',
+        document: STRICT_RESTORE_DOCUMENT,
+        confirm: true,
+        discard: true,
+        confirmUsername: 'ada',
+        password: 'mistyped-account-password',
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+    // The credential rides the body, never the URL: it would otherwise land in
+    // access logs, referrers and history.
+    const [discardUrl, discardInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(discardUrl).toBe('/api/v1/account/paranoid/disable');
+    expect(discardUrl).not.toMatch(/mistyped-account-password|password|recoveryCode/);
+    expect(JSON.parse(discardInit.body as string)).toMatchObject({
+      discard: true,
+      password: 'mistyped-account-password',
+    });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+
+    await expect(
+      disableParanoidMode({
+        rehydrationId: '018f6a3e-7777-7000-8000-000000000042',
+        document: STRICT_RESTORE_DOCUMENT,
+        confirm: true,
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
     expect(onUnauthorized).toHaveBeenCalledOnce();
   } finally {
     dispose();
