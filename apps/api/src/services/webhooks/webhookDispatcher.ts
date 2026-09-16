@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https';
 
 import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
+  WEBHOOK_AUTO_DISABLE_WINDOW_MS,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_DELIVERY_HTTP_ERROR,
   WEBHOOK_DELIVERY_NETWORK_ERROR,
@@ -66,6 +67,13 @@ import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
  * answer that cannot change, and the operator's "my endpoint is gone" signal
  * should surface on the first event rather than the fifth. It is still recorded
  * as a failure with its status, so the auto-disable streak is unaffected.
+ *
+ * Auto-disable is WINDOWED: the threshold counts only failures inside
+ * {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} of the streak's first failure, and a
+ * failure arriving after that window starts a fresh streak instead of extending
+ * a stale one. A lifetime tally cannot distinguish a dead receiver from a
+ * healthy one that has blipped N times over months, and the streak has no other
+ * way to decay: only a success or a manual re-enable clears it.
  */
 
 export interface WebhookTransportResult {
@@ -135,6 +143,8 @@ export interface WebhookDispatcherDeps {
   logger: Logger;
   /** Consecutive failures before auto-disable. Defaults to the contract constant. */
   autoDisableThreshold?: number;
+  /** Window those failures must fall inside. Defaults to the contract constant. */
+  autoDisableWindowMs?: number;
   /** DNS seam for the per-attempt outbound guard (tests); defaults to the system resolver. */
   dnsResolver?: OutboundUrlResolver;
   /** Injectable clock (tests) — drives the signature timestamp + row stamps. */
@@ -216,6 +226,7 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     audit,
     logger,
     autoDisableThreshold = WEBHOOK_AUTO_DISABLE_THRESHOLD,
+    autoDisableWindowMs = WEBHOOK_AUTO_DISABLE_WINDOW_MS,
     dnsResolver,
     now = Date.now,
   } = deps;
@@ -241,13 +252,20 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     if (!inserted) return false;
 
     const at = new Date(now());
-    const failures = await subscriptions.incrementFailure(input.subscriptionId, at);
+    // Windowed: the repository restarts the streak when the previous one is
+    // older than `autoDisableWindowMs`, so `failures` is the count inside the
+    // current window — never a lifetime total.
+    const failures = await subscriptions.incrementFailure(
+      input.subscriptionId,
+      at,
+      autoDisableWindowMs,
+    );
     if (failures < autoDisableThreshold) return false;
 
     await subscriptions.disable(input.subscriptionId, 'auto', at);
     logger.warn(
-      { subscriptionId: input.subscriptionId, failures },
-      'webhook subscription auto-disabled after consecutive failures',
+      { subscriptionId: input.subscriptionId, failures, windowMs: autoDisableWindowMs },
+      'webhook subscription auto-disabled after consecutive failures in the window',
     );
     await audit.record({
       actorId: input.userId,
@@ -255,7 +273,7 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
       targetType: 'webhook_subscription',
       targetId: input.subscriptionId,
       ip: null,
-      meta: { failures },
+      meta: { failures, windowMs: autoDisableWindowMs },
     });
     return true;
   }
