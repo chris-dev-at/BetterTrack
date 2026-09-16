@@ -65,6 +65,26 @@ function parseImportOverrides(raw: string | undefined): ExpenseImportOverride[] 
   return result.data;
 }
 
+/** The retirement notice every non-read verb on the area answers with. */
+const retiredArea = () =>
+  new ApiError(
+    410,
+    'EXPENSE_AREA_RETIRED',
+    'Expense tracking has moved onto the portfolio cash ledger. Use /api/v1/cash.',
+  );
+
+/**
+ * The same retirement, worded for the import lane: pointing a would-be importer
+ * at `/api/v1/cash` would be the same false promise this gate exists to end —
+ * the cash ledger deliberately has no import endpoint yet (§6.8.3, issue #964).
+ */
+const retiredImport = () =>
+  new ApiError(
+    410,
+    'EXPENSE_AREA_RETIRED',
+    'Bank-statement import retired with the expense area; no import endpoint is available.',
+  );
+
 /**
  * Expense tracking — a NEW top-level product area (PROJECTPLAN.md §13.5 V5-P9,
  * foundation issue 1/3). Controllers stay thin: parse → service → respond. Every
@@ -94,11 +114,25 @@ export function createExpensesRouter(ctx: AppContext): Router {
    * paranoid vault still restores into them. The tables are dropped in a later
    * migration once both of those are re-pointed (see the phase-2 report).
    *
-   * The gate inspects the VERB only, so it is exact just as long as no read
-   * handler writes. It once was not: `GET /categories` seeded the starter
+   * Elsewhere the gate inspects the VERB only, so it is exact just as long as no
+   * read handler writes. It once was not: `GET /categories` seeded the starter
    * category set for any owner who had none, re-opening the very divergence
    * above (#1550). Every handler below the gate is now a pure read — keep it
    * that way; a "harmless" seed-on-read is not harmless here.
+   *
+   * THE IMPORT LANE IS REFUSED FOR EVERY VERB, reads included (#1660). A verb
+   * rule alone left `GET /import/banks` as the one endpoint in the feature that
+   * still said yes: it answered `200` with all four bank mappers while the only
+   * thing a caller could do with that answer — `POST /import/preview`, then
+   * `/import/apply` — answered 410. Bank-statement import is retired WITH the
+   * expense area and re-lands on the cash ledger (§6.8.3, issue #964), so the
+   * honest answer to every `/import/*` request is the one its siblings give.
+   * Nothing here backs the vault rollback either: the mapper list is static
+   * metadata, not `expense_*` data.
+   *
+   * The match is CASE-INSENSITIVE because the Express router is: `caseSensitive`
+   * is off, so `/IMPORT/banks` reaches the same handler and has to meet the same
+   * gate. `req.path` is the router-relative path without the query string.
    *
    * 410 rather than 404 or 405: the resource genuinely existed and is genuinely
    * gone, and a client that sees it should stop retrying rather than treat it as
@@ -106,19 +140,18 @@ export function createExpensesRouter(ctx: AppContext): Router {
    */
   // Named, not anonymous: the paranoid route table identifies opaque `use`
   // mounts by their handler name, so an anonymous gate would appear there as an
-  // unclassifiable surface.
+  // unclassifiable surface. The name is pinned in `paranoidEnforcement.ts`.
   router.use(function refuseRetiredExpenseWrite(req, _res, next) {
-    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    const path = req.path.toLowerCase();
+    const importLane = path === '/import' || path.startsWith('/import/');
+    if (
+      !importLane &&
+      (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS')
+    ) {
       next();
       return;
     }
-    next(
-      new ApiError(
-        410,
-        'EXPENSE_AREA_RETIRED',
-        'Expense tracking has moved onto the portfolio cash ledger. Use /api/v1/cash.',
-      ),
-    );
+    next(importLane ? retiredImport() : retiredArea());
   });
 
   const uploadFile = uploadCsvFile('EXPENSE_IMPORT_FILE_INVALID');
@@ -274,12 +307,17 @@ export function createExpensesRouter(ctx: AppContext): Router {
     res.status(204).send();
   });
 
-  // ── Bank-statement CSV import (issue 2/3) ──
-  // Stateless: preview persists nothing; apply re-parses the re-uploaded file.
+  // ── Bank-statement CSV import (issue 2/3) — RETIRED (#1660) ──
+  // The gate above refuses this whole subtree for every verb; the handlers stay
+  // mounted so each path answers 410 (gone) instead of 404 (never existed), and
+  // so the paranoid route table keeps classifying the same surface.
 
-  // GET /expenses/import/banks — the supported bank mappers, for the manual picker.
-  router.get('/import/banks', (_req, res) => {
-    res.json(ctx.expenseImports.listBanks());
+  // GET /expenses/import/banks — retired. It used to answer 200 with the four
+  // mappers, which advertised an import the very next call refuses. It no longer
+  // reads the mapper registry at all: the gate refuses first, and this handler
+  // refuses again so that relaxing the gate cannot silently re-open the claim.
+  router.get('/import/banks', () => {
+    throw retiredImport();
   });
 
   // POST /expenses/import/preview — upload a CSV (multipart: `file` [+ bankId]);
