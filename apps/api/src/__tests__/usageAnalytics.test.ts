@@ -518,10 +518,23 @@ describe('concurrent usage rollup', () => {
     async () => {
       const harness = await createTestApp();
       const user = await harness.seedUser({ email: 'rollup@test.dev', username: 'rollup_race' });
-      harness.ctx.usageAnalytics.capture({ userId: user.id, feature: 'portfolio' });
-      harness.ctx.usageAnalytics.capture({ userId: user.id, feature: 'assets', assetId: 'AAPL' });
+      // Pin the instant; do not read the wall clock twice (#1952). `capture`
+      // folds each signal onto `dayOf(now())`, so a `day` taken from a SECOND
+      // `new Date()` — before the captures or after them — disagrees with the
+      // rows whenever the run crosses UTC midnight in between, and `rollupDay`
+      // then materializes an empty day and asserts against `[]`. One
+      // `occurredAt` shared by both captures AND by the rollup target closes
+      // the window instead of narrowing it.
+      const occurredAt = new Date();
+      const day = occurredAt.toISOString().slice(0, 10);
+      harness.ctx.usageAnalytics.capture({ userId: user.id, feature: 'portfolio', occurredAt });
+      harness.ctx.usageAnalytics.capture({
+        userId: user.id,
+        feature: 'assets',
+        assetId: 'AAPL',
+        occurredAt,
+      });
       await harness.ctx.usageAnalytics.flush();
-      const day = new Date().toISOString().slice(0, 10);
 
       const clientA = postgres(REAL_DATABASE_URL!, { max: 1 });
       const clientB = postgres(REAL_DATABASE_URL!, { max: 1 });

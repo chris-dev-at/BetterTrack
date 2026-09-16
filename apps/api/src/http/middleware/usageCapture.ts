@@ -96,11 +96,28 @@ export function createUsageCaptureMiddleware(
       // A bearer principal is dropped on `finish` regardless, so do not spend a
       // vault lookup deciding how to record traffic that is never recorded.
       if (req.apiKey) return true;
-      if (target) return vaulted.isOwnedPortfolioVaulted(user.id, target.portfolioId);
-      // Per-asset routes contain no portfolio attribution. When the account
-      // owns any vault, recording the requested ids can reconstruct its local
+      // ORDER IS THE GUARANTEE (#1952): the custody-segment fence answers
+      // FIRST, before any portfolio attribution is consulted. Per-asset routes
+      // contain no attribution that could be checked, so when the account owns
+      // any vault, recording the requested ids can reconstruct its local
       // holdings roster; fail closed for this telemetry branch.
+      //
+      // Reversed, this was a bypass. `vaultedPortfolioTargetForRequest` reads
+      // the RAW query, so `GET /custom-assets/<private uuid>/value-points?
+      // portfolioId=<a plain portfolio of the caller's own>` reached the target
+      // branch first, which answered "that portfolio is not vaulted" — and the
+      // signal was buffered in memory carrying the private uuid, leaving the
+      // whole guarantee to the write-boundary re-check in
+      // `usageAnalyticsRepository.upsertEvents`. That second fence still holds
+      // (defence in depth), but it can only drop a row the process already
+      // holds; deciding custody first keeps the id out of the buffer entirely.
+      //
+      // The reorder cannot narrow the recorded set for an account owning NO
+      // vault: both lookups answer `false` for it, so the outcome there is
+      // order-independent. `__tests__/usageCaptureFence.test.ts` pins that as a
+      // 16-shape table taken from the pre-change implementation.
       if (unattributedAssetRequest) return vaulted.userOwnsVaultedPortfolio(user.id);
+      if (target) return vaulted.isOwnedPortfolioVaulted(user.id, target.portfolioId);
       return false;
     })().catch(() => true);
 
