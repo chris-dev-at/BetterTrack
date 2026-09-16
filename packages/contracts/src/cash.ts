@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { MAX_CASH_AMOUNT_EUR } from './portfolio';
+import { CASH_MOVEMENT_NOTE_MAX, MAX_CASH_AMOUNT_EUR } from './portfolio';
 
 /**
  * CASH FLOW — the classification layer on the portfolio cash ledger (V5 cash
@@ -445,8 +445,16 @@ export type CashRuleApplyResponse = z.infer<typeof cashRuleApplyResponseSchema>;
  *
  * An empty note is a legal request answering `[]`, because a form with nothing
  * typed yet is the normal state, not an error.
+ *
+ * The ceiling is `CASH_MOVEMENT_NOTE_MAX` — the longest note a cash write
+ * accepts and the exact prefix `applyCashRuleTags` matches (#1954). Naming the
+ * constant rather than repeating its number keeps the preview from being asked
+ * about a string the booking path would never have matched: the two bounds are
+ * one bound, and moving it moves both.
  */
-export const cashRulePreviewRequestSchema = z.object({ note: z.string().max(1000) }).strict();
+export const cashRulePreviewRequestSchema = z
+  .object({ note: z.string().max(CASH_MOVEMENT_NOTE_MAX) })
+  .strict();
 export type CashRulePreviewRequest = z.infer<typeof cashRulePreviewRequestSchema>;
 
 export const cashRulePreviewResponseSchema = z.object({ tagIds: z.array(z.string()) }).strict();
