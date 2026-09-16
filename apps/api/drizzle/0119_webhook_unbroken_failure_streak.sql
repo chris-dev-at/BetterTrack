@@ -37,3 +37,19 @@ UPDATE "webhook_subscriptions"
 SET "unbroken_failure_streak" = "consecutive_failures",
     "unbroken_streak_started_at" = "failure_window_started_at"
 WHERE "consecutive_failures" > 0;
+--> statement-breakpoint
+-- The invariant both anchors have carried in comments since 0118, now enforced.
+-- These come AFTER the backfill above on purpose: added before it, the legacy
+-- rows this migration has not yet populated (`unbroken_streak_started_at` still
+-- null while `consecutive_failures` > 0) would fail validation and take the
+-- deploy down.
+--
+-- The windowed pair is declared here rather than in 0118 because 0118 is
+-- already released; a released migration is never edited (`check:migrations-immutable`).
+ALTER TABLE "webhook_subscriptions"
+ADD CONSTRAINT "webhook_subscriptions_failure_window_anchor"
+CHECK (("consecutive_failures" = 0) = ("failure_window_started_at" IS NULL));
+--> statement-breakpoint
+ALTER TABLE "webhook_subscriptions"
+ADD CONSTRAINT "webhook_subscriptions_unbroken_streak_anchor"
+CHECK (("unbroken_failure_streak" = 0) = ("unbroken_streak_started_at" IS NULL));

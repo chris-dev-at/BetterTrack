@@ -4219,7 +4219,24 @@ export const webhookSubscriptions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('webhook_subscriptions_user_idx').on(t.userId)],
+  (t) => [
+    // Three comments assert "null exactly when the counter is 0" and nothing
+    // used to enforce it (#1619 found 34 live CHECKs schema.ts never declared;
+    // this is the same class caught before it starts). Every current writer
+    // honours it — `recordSuccess`, `incrementFailure`, the manual re-enable —
+    // so these make a documented invariant true by construction rather than by
+    // review. Declared here as well as in SQL because `check:schema-drift`
+    // compares both directions.
+    check(
+      'webhook_subscriptions_failure_window_anchor',
+      sql`(${t.consecutiveFailures} = 0) = (${t.failureWindowStartedAt} is null)`,
+    ),
+    check(
+      'webhook_subscriptions_unbroken_streak_anchor',
+      sql`(${t.unbrokenFailureStreak} = 0) = (${t.unbrokenStreakStartedAt} is null)`,
+    ),
+    index('webhook_subscriptions_user_idx').on(t.userId),
+  ],
 );
 
 export const webhookDeliveries = pgTable(

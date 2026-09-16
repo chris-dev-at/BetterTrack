@@ -1035,7 +1035,7 @@
           "pausedManual": "Paused",
           "disabledAuto": "Auto-disabled"
         },
-        "disabledAutoHint": "Disabled after {{count}} consecutive failed deliveries spanning more than an hour. Re-enable to resume delivery.",
+        "disabledAutoHint": "Disabled after {{count}} consecutive failed deliveries spanning at least an hour. Re-enable to resume delivery.",
         "lastDelivery": "Last delivery {{at}}",
         "neverDelivered": "No deliveries yet",
         "pause": "Pause",

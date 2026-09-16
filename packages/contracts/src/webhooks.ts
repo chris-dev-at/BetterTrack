@@ -8,8 +8,8 @@ import { feedbackStatusSchema } from './feedback';
  * when a matching event fires for THAT user, BetterTrack POSTs an HMAC-signed
  * JSON payload to the URL. A per-subscription secret is shown exactly once at
  * creation (only an encrypted form is stored, never logged); a dead receiver
- * auto-disables after N consecutive failed deliveries and can be re-enabled
- * manually. A bounded per-subscription delivery log records each outcome.
+ * auto-disables after N consecutive failed deliveries that span at least
+ * {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS}, and can be re-enabled manually. A bounded per-subscription delivery log records each outcome.
  *
  * The subscribable **catalog** ({@link WEBHOOK_EVENT_TYPES}) is the user-scoped
  * subset of the API's typed domain events (`apps/api/src/events/` —
@@ -248,20 +248,33 @@ export const WEBHOOK_SECRET_PREFIX = 'whsec_';
 /**
  * Consecutive terminally-failed deliveries after which a subscription
  * auto-disables (`disabledReason: 'auto'`). Shared so the UI can name the
- * threshold in its copy. Re-enabling resets the counter.
+ * threshold in its copy. A success or a re-enable resets the counters.
  *
- * Counted only inside {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} — the threshold
- * alone is a lifetime tally, which cannot tell a dead receiver from a healthy
- * one that has blipped five times over five months.
+ * The threshold alone is a lifetime tally, which cannot tell a dead receiver
+ * from a healthy one that has blipped five times over five months. It is
+ * therefore counted on TWO streaks and gated by a span — see the full rule at
+ * {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS}:
+ *
+ * - the WINDOWED streak counts only failures inside
+ *   {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} of its first failure;
+ * - the UNBROKEN streak counts every terminal failure since the last success,
+ *   however far apart — which is what lets a dead receiver whose events are
+ *   rarer than the window trip at all, so the threshold is expressly NOT
+ *   confined to the window.
+ *
+ * Reaching it on either streak is necessary and not sufficient: the tripping
+ * streak must also span {@link WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS}.
  */
 export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
 
 /**
  * The bounded window the {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} terminal
  * failures must fall inside for a subscription to auto-disable: the streak is
- * anchored at its FIRST failure and a failure arriving more than this long
- * after that anchor starts a fresh streak at 1 rather than adding to a stale
- * one.
+ * anchored at its FIRST failure and a failure arriving AT OR MORE THAN this
+ * long after that anchor starts a fresh streak at 1 rather than adding to a
+ * stale one. (The boundary is exclusive on the window side: the predicate is
+ * `anchor > at − windowMs`, so a failure landing exactly at `anchor + windowMs`
+ * restarts.)
  *
  * 24 hours, and the trade is deliberate in both directions. An outage that ends
  * inside the window leaves the streak to expire on its own, with no user

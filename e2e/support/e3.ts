@@ -46,6 +46,7 @@ import type { APIRequestContext } from '@playwright/test';
 // style this harness already uses for `apps/api`. Re-exported below so the specs
 // stay on `./support/e3` and never hand-copy a contract value that could drift.
 import {
+  WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -79,6 +80,7 @@ import { API_BASE_URL, DATABASE_URL, REDIS_URL, SESSION_SECRET } from './config'
  * root e2e context can't resolve the bare `@bettertrack/contracts` specifier).
  */
 export {
+  WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -202,6 +204,18 @@ export interface WebhookHarness {
     subscriptionId: string,
     ctx: { deliveryId: string; attempt: number; maxAttempts: number; event?: WebhookTestEvent },
   ): Promise<WebhookDeliveryResult>;
+  /**
+   * Move the dispatcher's clock forward (§13.5 V5-P10, #1646).
+   *
+   * Auto-disable needs a SPAN as well as a count: the tripping streak must span
+   * at least WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS from its first failure, so that a
+   * short burst — five events during one five-minute outage — cannot kill a
+   * working receiver. Terminal failures driven back-to-back from a spec are
+   * exactly that burst and correctly do NOT disable anything. A dead receiver
+   * is one still failing an hour later, which is what this lets a spec express
+   * without sleeping for an hour.
+   */
+  advanceClock(ms: number): void;
   dispose(): Promise<void>;
 }
 
@@ -229,6 +243,11 @@ export function createWebhookHarness(): WebhookHarness {
   const subscriptions: WebhookSubscriptionRepository = createWebhookSubscriptionRepository(db);
   const deliveries = createWebhookDeliveryRepository(db);
 
+  // The dispatcher stamps rows and measures auto-disable spans through this
+  // clock. It starts at the real wall clock, so nothing a spec does not advance
+  // behaves differently from production.
+  const clock = { ms: Date.now() };
+
   const dispatcher = createWebhookDispatcher({
     subscriptions,
     deliveries,
@@ -236,6 +255,7 @@ export function createWebhookHarness(): WebhookHarness {
     encryptionKey,
     audit: createAuditService(createAuditRepository(db)),
     logger,
+    now: () => clock.ms,
   });
 
   function toHarness(row: {
@@ -270,6 +290,9 @@ export function createWebhookHarness(): WebhookHarness {
     },
     secretFor(sub) {
       return decryptSecret(sub.secretEncrypted, encryptionKey);
+    },
+    advanceClock(ms) {
+      clock.ms += ms;
     },
     deliver(subscriptionId, ctx) {
       const event: WebhookTestEvent = ctx.event ?? {

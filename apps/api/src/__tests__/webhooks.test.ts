@@ -1361,6 +1361,103 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(after.unbrokenFailureStreak).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD - 1);
   });
 
+  // Guards the owner-mandated browser gate #2 (`e2e/webhooks.spec.ts` — "a dead
+  // receiver retries, auto-disables, and re-enables from Settings") from THIS
+  // change, in a suite that runs on every PR rather than only in the nightly.
+  //
+  // That spec drives the real dispatcher through `createWebhookHarness`
+  // (`e2e/support/e3.ts`) exactly as these two tests do: failure #1 as a full
+  // five-attempt cycle sharing one delivery id, then failures #2…#N as
+  // immediate-terminal deliveries. #1646 made the SHAPE of that sequence
+  // load-bearing — back-to-back it is a burst and must not disable — so the
+  // arithmetic the spec now depends on is pinned here too. If someone re-packs
+  // those deliveries, this fails in the fast suite instead of overnight.
+  it('e2e gate #2 replay: the spec’s spaced failure sequence auto-disables', async () => {
+    const { id, userId } = await createSubscription(['alert.triggered']);
+    const failing = recordingTransport(500);
+    const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
+    const dispatcher = clockedDispatcher({
+      h: harness,
+      transport: failing.transport,
+      now: () => clock.ms,
+    });
+
+    // Failure #1 as the spec runs it: attempts 1‑4 retryable, attempt 5 terminal,
+    // all sharing one delivery id so the streak advances exactly once.
+    const cycleId = deliveryId(1);
+    const outcomes: string[] = [];
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const r = await dispatcher.deliver(
+        { subscriptionId: id, deliveryId: cycleId, event: alertEvent(userId) },
+        { attempt, maxAttempts: 5 },
+      );
+      outcomes.push(r.outcome);
+    }
+    expect(outcomes).toEqual(['retry', 'retry', 'retry', 'retry', 'failed']);
+    expect((await subscriptionRow(harness.db, id)).consecutiveFailures).toBe(1);
+
+    // Failures #2…#N, each preceded by the spec's clock step. `Math.ceil` over
+    // THRESHOLD-1 steps guarantees the last failure lands at or past the span
+    // for any value of either constant.
+    const step = Math.ceil(WEBHOOK_AUTO_DISABLE_MIN_SPAN_MS / (WEBHOOK_AUTO_DISABLE_THRESHOLD - 1));
+    let lastOutcome = '';
+    for (let failure = 2; failure <= WEBHOOK_AUTO_DISABLE_THRESHOLD; failure += 1) {
+      clock.ms += step;
+      const r = await dispatcher.deliver(
+        { subscriptionId: id, deliveryId: deliveryId(failure), event: alertEvent(userId) },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      lastOutcome = r.outcome;
+    }
+    expect(lastOutcome).toBe('disabled');
+
+    // The three row assertions the spec makes after the badge appears.
+    const disabled = await subscriptionRow(harness.db, id);
+    expect(disabled.enabled).toBe(false);
+    expect(disabled.disabledReason).toBe('auto');
+    expect(disabled.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+  });
+
+  it('e2e gate #2 replay: the SAME sequence back-to-back does not disable', async () => {
+    const { id, userId } = await createSubscription(['alert.triggered']);
+    const failing = recordingTransport(500);
+    const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
+    const dispatcher = clockedDispatcher({
+      h: harness,
+      transport: failing.transport,
+      now: () => clock.ms,
+    });
+
+    // Byte-for-byte the sequence above with the clock step removed — the shape
+    // the spec had before #1646. It reaches the threshold on both streaks and
+    // still must not disable, because minutes of failure are an outage and not
+    // a dead receiver. This is the negative space: without it the test above
+    // would pass just as happily if the span rule were deleted.
+    const cycleId = deliveryId(1);
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await dispatcher.deliver(
+        { subscriptionId: id, deliveryId: cycleId, event: alertEvent(userId) },
+        { attempt, maxAttempts: 5 },
+      );
+    }
+    let lastOutcome = '';
+    for (let failure = 2; failure <= WEBHOOK_AUTO_DISABLE_THRESHOLD; failure += 1) {
+      const r = await dispatcher.deliver(
+        { subscriptionId: id, deliveryId: deliveryId(failure), event: alertEvent(userId) },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      lastOutcome = r.outcome;
+    }
+    expect(lastOutcome).toBe('failed');
+
+    const stillEnabled = await subscriptionRow(harness.db, id);
+    expect(stillEnabled.enabled).toBe(true);
+    expect(stillEnabled.disabledReason).toBeNull();
+    // Both counters are AT the threshold; only the span held the disable off.
+    expect(stillEnabled.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+    expect(stillEnabled.unbrokenFailureStreak).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+  });
+
   it('auto-disables after N failures spanning the minimum, records + audits it, and re-enables manually', async () => {
     const failing = recordingTransport(500);
     const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
