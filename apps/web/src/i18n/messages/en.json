@@ -3264,7 +3264,10 @@
       "other": "{{count}} members"
     },
     "groupsAtLimit": "This is all {{count}} of your groups — the maximum. Manage them on the People page.",
-    "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
+    "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it.",
+    "groupDeletedNotice": "The group this was shared with no longer exists, so right now nobody can see it. Pick another group or a different audience below, then save.",
+    "groupGoneError": "That group no longer exists. Your sharing is unchanged — pick another group or a different audience, then save again.",
+    "audienceGroupDeleted": "a deleted group (reaches nobody)"
   },
   "watchlists": {
     "title": "Watchlists",

@@ -3264,7 +3264,10 @@
       "other": "{{count}} Mitglieder"
     },
     "groupsAtLimit": "Das sind alle {{count}} Gruppen – das Maximum. Verwalte sie auf der Personen-Seite.",
-    "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
+    "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann.",
+    "groupDeletedNotice": "Die Gruppe, mit der dies geteilt wurde, existiert nicht mehr — derzeit sieht es niemand. Wähle unten eine andere Gruppe oder eine andere Sichtbarkeit und speichere dann.",
+    "groupGoneError": "Diese Gruppe existiert nicht mehr. Deine Freigabe bleibt unverändert — wähle eine andere Gruppe oder eine andere Sichtbarkeit und speichere erneut.",
+    "audienceGroupDeleted": "einer gelöschten Gruppe (erreicht niemanden)"
   },
   "watchlists": {
     "title": "Watchlists",
