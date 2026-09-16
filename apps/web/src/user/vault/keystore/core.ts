@@ -216,6 +216,13 @@ export class EndpointVaultKeystore {
     const stable = await this.readStableEntries();
     this.reconcileSessionRevision(stable.revision);
     try {
+      // #1640 residue 1: the §12 marker, on the hot path. Read AFTER the await
+      // above and BEFORE every branch below, because the marker is about the
+      // DEVICE, not about the vault that was asked after. Sitting lower — under
+      // the password-lockout return, where it first landed — meant a lock
+      // arriving during a lockout window was reported as `locked` while the
+      // session it should have ended stayed standing, entropy still in the map.
+      const deviceLocked = this.endSessionIfDeviceLocked();
       const entries = stable.entries.map((record) =>
         parseStoredPhraseEntry(record.value, record.vaultId),
       );
@@ -249,11 +256,9 @@ export class EndpointVaultKeystore {
           },
         };
       }
-      // #1640 residue 1: the §12 marker, on the hot path. Read AFTER the awaits
-      // above and with nothing awaited between here and the decision below, so
-      // it reflects the latest moment this tab can observe. It ends the session
-      // itself, so the `sessionMatches` terms below already see the teardown.
-      const deviceLocked = this.endSessionIfDeviceLocked();
+      // `deviceLocked` ended the session above, so these terms already see the
+      // teardown; it is named again here so the refusal is explicit rather than
+      // a side effect somebody could optimise away.
       const sessionMatches =
         !deviceLocked &&
         this.deviceKey != null &&
@@ -583,17 +588,24 @@ export class EndpointVaultKeystore {
   }
 
   /**
-   * The §12 marker on the HOT read path — `stateFor` and `readMnemonic` (#1640).
+   * The §12 marker on the HOT read path (#1640).
    *
-   * Those two are every surface state read and every plaintext hand-out, and a
-   * tab whose session is live served both purely from memory. So the guarantee
-   * "a lock on this device revokes this tab" rested on two EVENT paths that can
-   * both be missing at once: the `session-lock` message (no `BroadcastChannel`,
-   * a transport that returned null, a wedged channel) and the account-scoped
-   * `storage` twin (no `localStorage` in that tab, a private-mode context, a
-   * `broadcastVaultLock` that threw). The marker is written synchronously before
-   * any await by whichever tab locked, so reading it here closes that gap
-   * deterministically rather than probabilistically.
+   * THREE call sites, which together are every hand-out this keystore serves
+   * from memory: `stateFor` (every surface state read), `readStoredMnemonic`
+   * (every plaintext seed-phrase hand-out) and `withContentKey` (every K_c
+   * borrow, so every vault document read AND write). A tab whose session is live
+   * served all three from memory alone, so the guarantee "a lock on this device
+   * revokes this tab" rested on two EVENT paths that can both be missing at
+   * once: the `session-lock` message (no `BroadcastChannel`, a transport that
+   * returned null, a wedged channel) and the account-scoped `storage` twin (no
+   * `localStorage` in that tab, a private-mode context, a `broadcastVaultLock`
+   * that threw). The marker is written synchronously before any await by
+   * whichever tab locked, so reading it here closes that gap deterministically
+   * rather than probabilistically.
+   *
+   * Each site reads it for itself, never relying on a sibling having been
+   * called first: `withContentKey` was reachable without any `stateFor` at all
+   * (review B1), which is exactly the shape of hole this issue is about.
    *
    * IDEMPOTENT: the teardown key is the session itself. A second call finds
    * `deviceKey == null`, ends nothing and still reports `true`, so a surface
@@ -616,7 +628,15 @@ export class EndpointVaultKeystore {
     const accountId = this.accountId;
     if (accountId == null) return false;
     if (readEndpointDeviceLockMarker(accountId) !== 'locked') return false;
-    if (this.deviceKey != null) this.endSession();
+    // `applyRemoteLock`, not the bare `endSession`: the marker says another tab
+    // locked this device, which is precisely the event `applyRemoteLock` names,
+    // and the fuller teardown is load-bearing. `endSession()` alone left the
+    // `bettertrack-paranoid-session-v1` record in place, so the very next reload
+    // would resume from it — the marker keeps it inert, but a record nothing
+    // deletes is the same residue in a different drawer. It also drops the
+    // resume memo. Still exactly once per teardown (the guard above), so the
+    // one-read-per-call cost pin holds.
+    if (this.deviceKey != null) this.applyRemoteLock();
     return true;
   }
 
@@ -1109,6 +1129,15 @@ export class EndpointVaultKeystore {
    * Borrows a session-scoped K_c copy that is wiped when custody locks.
    * Consumers MUST call assertSessionCurrent between any crypto operation and
    * any external side effect; an async suspension may cross a session teardown.
+   *
+   * THE THIRD MEMORY-SERVED HAND-OUT (#1640 review, B1). K_c decrypts and
+   * encrypts every vault document, and several callers reach it without ever
+   * going through `stateFor` — `engine/portfolioDocumentSet.ts`,
+   * `portfolioMoveCapture.ts`, `portfolioRestoreDocument.ts`. Serving it from
+   * `contentKeys` with no marker read left a tab that missed both event paths
+   * reading and WRITING vault content after the device was locked; the first
+   * fix only looked complete because a surface usually calls `stateFor` first,
+   * which is a guarantee resting on a caller's habit.
    */
   withContentKey<T>(
     vaultId: string,
@@ -1118,6 +1147,10 @@ export class EndpointVaultKeystore {
       assertSessionCurrent: () => void,
     ) => Promise<T> | T,
   ): Promise<T> {
+    // BEFORE the key leaves the map, never after: the teardown clears
+    // `contentKeys` and zeroes those bytes in place, so a reference captured
+    // first would hand out a borrowed copy of a zeroed key.
+    this.endSessionIfDeviceLocked();
     const cached = this.contentKeys.get(vaultId);
     if (cached == null) {
       return Promise.reject(

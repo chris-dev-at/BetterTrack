@@ -124,8 +124,10 @@ test('paranoid + locked replaces the whole authenticated subtree with the unlock
   // painting at all is the proof. It used to be read off the envelope seam
   // instead — the gate's mount effect started a trusted-device unlock and that
   // read the envelope — but #1640 retired that custody, so nothing touches a
-  // medium until the user submits a passphrase. Which is also asserted here:
-  await waitFor(() => expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled());
+  // medium until the user submits a passphrase. Which is also asserted here,
+  // WITHOUT a `waitFor`: wrapping a negative in one settles on the first tick
+  // and asserts nothing at all.
+  expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
   expect(screen.getByLabelText('Vault passphrase')).toBeInTheDocument();
   // No app chrome either — the gate replaces the shell, not just the page.
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();

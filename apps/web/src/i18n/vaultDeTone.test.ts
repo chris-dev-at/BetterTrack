@@ -6,7 +6,8 @@ import en from './messages/en.json';
 type MessageNode = string | { [key: string]: MessageNode };
 
 /**
- * The vault catalogs, EN ⇄ DE — STRUCTURE first, then tone (#1640 residue 2).
+ * The vault + paranoid-facing catalogs, EN ⇄ DE — STRUCTURE first, then tone
+ * (#1640 residue 2).
  *
  * The previous shape of this file was a tone guard only, and its coverage came
  * from a hand-written list of six `de.vault.*` subtrees. Both halves of that
@@ -30,13 +31,28 @@ type MessageNode = string | { [key: string]: MessageNode };
  * actually touches.
  */
 
-/** Every catalog root this file governs — proven exhaustive by the first test. */
+/**
+ * Every catalog root this file governs.
+ *
+ * The list is explicit because the paranoid surface is NOT identifiable by root
+ * name: `mirrorchain` (86 DE strings), `privacy` and `deleteAccount` carry
+ * paranoid-facing copy and contain neither "vault" nor "paranoid". The first
+ * test below is therefore a NAME heuristic and nothing more — it catches a new
+ * `vault*`/`*paranoid*` root added outside this list, which is the common case,
+ * and cannot catch a root named something else. Adding one of those is a
+ * judgement call that belongs here, in the list.
+ */
 const VAULT_NAMESPACES = [
   'vault',
   'vaultExports',
   'vaultComposition',
   'vaultMoney',
   'paranoidFreshStart',
+  // Paranoid-facing but not vault-named: §18's mirrorchain, the §3 destruction
+  // exit and the privacy copy the shield chip explains. All clean today.
+  'mirrorchain',
+  'privacy',
+  'deleteAccount',
 ] as const;
 
 /**
@@ -88,11 +104,15 @@ const deVault = vaultCatalog(de as unknown as Record<string, unknown>);
 const enVault = vaultCatalog(en as unknown as Record<string, unknown>);
 
 describe('the vault catalogs are structurally paired (EN ⇄ DE)', () => {
-  test('governs every vault-ish catalog root, so a new one cannot escape the guard', () => {
+  test('catches a newly added vault-NAMED root, and lists nothing the catalog lacks', () => {
     const governed = new Set<string>(VAULT_NAMESPACES);
-    const vaultish = Object.keys(en).filter((key) => /vault|paranoid/i.test(key));
-    expect(vaultish.filter((key) => !governed.has(key))).toEqual([]);
-    // …and nothing is listed that the catalog does not actually define.
+    // A name heuristic, deliberately not called exhaustive — see the note on
+    // VAULT_NAMESPACES. It closes the common hole (somebody adds `vaultFoo`)
+    // and says nothing about a paranoid surface named something else.
+    const vaultNamed = Object.keys(en).filter((key) => /vault|paranoid/i.test(key));
+    expect(vaultNamed.filter((key) => !governed.has(key))).toEqual([]);
+    // …and nothing is listed that the catalog does not actually define, so a
+    // renamed root fails here instead of silently dropping out of scope.
     expect([...governed].filter((key) => !(key in en))).toEqual([]);
   });
 

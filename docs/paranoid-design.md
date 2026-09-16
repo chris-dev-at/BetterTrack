@@ -783,22 +783,37 @@ untouched** and is not part of this arc's diff.
   per session, every session. No data is lost by it — the ciphertext, the
   passphrase and the recovery kit are untouched.
   **Where the device-locked marker is read (#1640).** It is not only a resume
-  guard: `stateFor()` and `readMnemonic()` — every surface state read and every
-  plaintext hand-out — consult it too, so a tab whose session is live serves
-  from memory only while the marker is clear. Without that, the guarantee "a
+  guard. Three call sites consult it, and together they are every hand-out the
+  keystore serves from memory: `stateFor()` (every surface state read),
+  `readStoredMnemonic()` (every plaintext seed-phrase hand-out) and
+  `withContentKey()` (every K_c borrow, so every vault document read AND write).
+  Each reads it for itself rather than relying on a sibling having been called
+  first — `withContentKey` is reachable with no `stateFor` at all
+  (`engine/portfolioDocumentSet.ts`, `portfolioMoveCapture.ts`,
+  `portfolioRestoreDocument.ts`), and a guarantee that rests on a caller's habit
+  is the kind of residue this section keeps collecting. Without these reads, "a
   lock on this device revokes every tab" rested on two EVENT paths that can both
-  be absent at once (no `BroadcastChannel`/a wedged channel, and no account-scoped
-  `storage` twin), while the marker is written synchronously before any await by
-  whichever tab locked. There is no cache — the marker exists to be fresher than
-  those messages, and a cache would bound exactly that; the cost is one
-  synchronous `localStorage` read per call, beside IndexedDB round trips the
-  same call already makes. One asymmetry is deliberate: an UNREADABLE
-  `localStorage` reads as locked for the resume and the grant responder (they
-  install or hand out a session this tab has not proven) but NOT on the hot path,
-  because `unlock()` clears the marker through the same broken store, so failing
-  closed there would revoke every unlock forever rather than cost one password.
-  Plain custody is untouched by the marker: it is not device-password custody
-  and has no unlock action to offer.
+  be absent at once (no `BroadcastChannel`/a wedged channel, and no
+  account-scoped `storage` twin), while the marker is written synchronously
+  before any await by whichever tab locked. It is read at the TOP of `stateFor`,
+  above the password-lockout early return, because the marker is about the
+  device and not about the vault that was asked after; below it, a lock arriving
+  during a lockout window reported `locked` while the session it should have
+  ended stayed standing. The teardown is `applyRemoteLock()`, not a bare
+  `endSession()`, so the device session record goes with it instead of relying
+  on the marker to keep a stale one inert.
+  There is no cache — the marker exists to be fresher than those messages, and a
+  cache would bound exactly that; the cost is one synchronous `localStorage`
+  read per call, beside IndexedDB round trips the same call already makes. One
+  asymmetry is deliberate: an UNREADABLE `localStorage` reads as locked for the
+  resume and the grant responder (they install or hand out a session this tab
+  has not proven) but NOT on the hot path, because `unlock()` clears the marker
+  through the same broken store, so failing closed there would revoke every
+  unlock forever rather than cost one password. **The residual, stated plainly:
+  on a profile where `localStorage` reads throw, a device lock performed in
+  another tab is not observable by this tab at all, and revocation there rests
+  on the two event paths alone.** Plain custody is untouched by the marker: it
+  is not device-password custody and has no unlock action to offer.
   Shipped: the device key is a private field zeroed by `clearSessionSecrets()`
   (`keystore/core.ts`), the keystore's own IndexedDB holds only KDF
   parameters, the wrap-check and lockout metadata (`keystore/storage.ts`), and
