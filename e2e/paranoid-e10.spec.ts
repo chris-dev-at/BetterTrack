@@ -20,7 +20,7 @@ import {
 } from '../apps/web/src/user/vault/ui/ParanoidSurfaceGate';
 // Read from the message bundle the app renders it from — never a second
 // hardcoded copy (the google-login spec pins the same idiom, #1859).
-import en from '../apps/web/src/i18n/messages/en.json';
+import en from '../apps/web/src/i18n/messages/en.json' with { type: 'json' };
 import { newAdminRequestContext } from './support/adminApi';
 import { withoutMatcherAriaSnapshot } from './support/artifactHygiene';
 import { ACCOUNT_PASSWORD } from './support/config';
