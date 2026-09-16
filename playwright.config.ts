@@ -6,6 +6,7 @@ import {
   ADMIN_PASSWORD,
   ADMIN_PORT,
   API_BASE_URL,
+  API_HOST,
   API_PORT,
   DATABASE_URL,
   FAKE_GOOGLE_PORT,
@@ -17,6 +18,7 @@ import {
   SESSION_SECRET,
   WEB_BASE_URL,
   WEB_PORT,
+  WORKER_HEALTH_HOST,
   WORKER_HEALTH_PORT,
   WORKER_HEALTH_URL,
 } from './e2e/support/config';
@@ -119,6 +121,15 @@ const apiEnv = {
   // inheriting `PORT`'s 3000 default, and pin the Prometheus port so a dev
   // stack's API on the same host cannot cause an EADDRINUSE crash at boot.
   PORT: API_PORT,
+  // ...and on LOOPBACK ONLY (#2004). `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`
+  // above opens the guard's own-network carve-out so the capture receiver on
+  // this box's LAN address passes; with the listener on every interface, that
+  // plus the repo-known seed admin turned the throwaway stack into a LAN-
+  // reachable SSRF probe for the length of a run. The bind address constrains
+  // who can DIAL the API and nothing else — the API still connects OUT to the
+  // receiver's LAN address exactly as before, which is what webhooks.spec.ts
+  // exercises. Production leaves BT_HOST empty; see infra/docker-compose.yml.
+  BT_HOST: API_HOST,
   BT_METRICS_PORT: METRICS_PORT,
   DATABASE_URL,
   REDIS_URL,
@@ -156,6 +167,11 @@ const workerEnv = {
   ...apiEnv,
   BT_METRICS_ENABLED: 'false',
   E2E_WORKER_HEALTH_PORT: WORKER_HEALTH_PORT,
+  // The worker process itself opens no HTTP surface (its metrics listener is off
+  // one line up), so the ONLY worker-side port on this box is the wrapper's
+  // readiness endpoint — and it binds loopback too (#2004). `BT_HOST` rides along
+  // from `apiEnv` and is inert here; it is the api's listener knob.
+  E2E_WORKER_HEALTH_HOST: WORKER_HEALTH_HOST,
 };
 
 export default defineConfig({

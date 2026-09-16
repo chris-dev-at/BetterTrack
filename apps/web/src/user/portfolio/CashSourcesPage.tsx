@@ -5,11 +5,10 @@ import {
   useInfiniteQuery,
   useQuery,
   useQueryClient,
-  type InfiniteData,
 } from '@tanstack/react-query';
 
 import { CASH_MOVEMENTS_DEFAULT_LIMIT } from '@bettertrack/contracts';
-import type { CashMovement, CashMovementsResponse, CashSource } from '@bettertrack/contracts';
+import type { CashMovement, CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
@@ -455,6 +454,11 @@ export function CashSourcesPage() {
           cursor: pageParam,
           limit: CASH_MOVEMENTS_DEFAULT_LIMIT,
           source: historySourceFilter === 'all' ? undefined : historySourceFilter,
+          // The filter's options come from the server's portfolio-wide facet
+          // (V5-P0c, #1658), never from the pages this view happens to hold.
+          // Only the first page asks for it: it is the only one read back, and
+          // an invalidation refetches page one anyway.
+          includeSourceTags: pageParam === undefined,
         },
         signal,
       ),
@@ -521,25 +525,16 @@ export function CashSourcesPage() {
   const active = activeSources(sources);
   const totalActive = active.reduce((sum, s) => sum + s.balanceEur, 0);
   const movements = cashQuery.data?.pages.flatMap((page) => page.movements) ?? [];
-  const allHistoryData =
-    historySourceFilter === 'all'
-      ? cashQuery.data
-      : queryClient.getQueryData<InfiniteData<CashMovementsResponse>>([
-          'portfolio',
-          portfolioId,
-          'cash',
-          'history',
-          'all',
-        ]);
+  // Portfolio-wide source facet, straight from the server (V5-P0c, #1658).
+  // This used to be derived from whichever pages were cached, so a portfolio
+  // with 60 manual movements this year and one `import:flatex` deposit from last
+  // year resolved to `['manual']`: the filter never appeared and the imported row
+  // could not be reached until the user paged past row 50 by hand.
   const sourceTags = (() => {
-    const tags = new Set<string>();
+    const tags = new Set<string>(cashQuery.data?.pages[0]?.sourceTags ?? []);
+    // An active selection stays selectable even while its own response — and
+    // with it the facet — is still in flight.
     if (historySourceFilter !== 'all') tags.add(historySourceFilter);
-    for (const page of allHistoryData?.pages ?? []) {
-      for (const movement of page.movements) tags.add(movement.source);
-    }
-    for (const page of cashQuery.data?.pages ?? []) {
-      for (const movement of page.movements) tags.add(movement.source);
-    }
     return [...tags].sort();
   })();
   // Names come from the movements payload's source list (archived included) so a

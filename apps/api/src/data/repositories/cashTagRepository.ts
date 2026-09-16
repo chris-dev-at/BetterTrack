@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, sql } from 'drizzle-orm';
 
 import { CASH_SYSTEM_TAGS, type CashSystemTagKey } from '@bettertrack/contracts';
 
@@ -114,6 +114,19 @@ export function createCashTagRepository(db: Database) {
         // the stable spine of the list, so it leads.
         .orderBy(...TAG_ORDER);
       return rows.map(toTag);
+    },
+
+    /**
+     * How many tags this owner holds — the O(1) answer the per-user cap asks for
+     * (#1963), on the HTTP create and on the restore alike. System tags COUNT:
+     * the cap bounds the TABLE, and the nine app-owned rows are nine rows.
+     */
+    async countForOwner(userId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: count() })
+        .from(cashTags)
+        .where(eq(cashTags.userId, userId));
+      return Number(row?.count ?? 0);
     },
 
     async findByIdForOwner(userId: string, tagId: string): Promise<CashTagRecord | null> {

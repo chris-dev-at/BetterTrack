@@ -1101,6 +1101,55 @@ describe('mirrorchain M2 — replication core', () => {
     expect(bLink!.localId).not.toBe(bLocalBefore);
   });
 
+  /**
+   * V5-P0c (#1658): the correction path re-creates the row, and `mirrorService`
+   * hands `createTransactions` the OLD row's tag so "the row keeps its tag
+   * through a correction". It could not: `transactionRepository.findByIdForUser`
+   * projected its columns WITHOUT `source` and cast the row to the full select
+   * type, so `local.source` was `undefined` behind a `string` type and
+   * `opts?.source ?? 'manual'` retagged Bob's replica `manual` on every
+   * corrected update — a replicated row reading as hand-entered.
+   */
+  it('a corrected update keeps the replica row `sync:mirrorchain` and the origin row its own tag (#1658)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 1000 });
+    const [tx] = await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 10,
+        price: 50,
+        fee: 0,
+        executedAt: new Date().toISOString(),
+        // Cash-linked, so the edit below is financially immutable in place and
+        // MUST take the delete-and-re-create correction path.
+        payFromCash: true,
+      },
+    ]);
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    const tagOf = async (userId: string, pid: string) => {
+      const { items } = await harness.ctx.portfolio.listTransactions(userId, pid, {});
+      expect(items).toHaveLength(1);
+      return items[0]!.source;
+    };
+    expect(await tagOf(alice.id, aPid)).toBe('manual');
+    expect(await tagOf(bob.id, bPid)).toBe('sync:mirrorchain');
+
+    await harness.ctx.mirror.submitTransactionUpdate(alice.id, aPid, tx!.id, { price: 60 });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Both rows were deleted and re-created; both keep the tag they had.
+    expect(await tagOf(bob.id, bPid)).toBe('sync:mirrorchain');
+    expect(await tagOf(alice.id, aPid)).toBe('manual');
+    // And the filter agrees with the row: Bob's copy holds no hand-entered
+    // transaction at all, so `?source=manual` must find nothing there.
+    const bobManual = await harness.ctx.portfolio.listTransactions(bob.id, bPid, {
+      source: 'manual',
+    });
+    expect(bobManual.items).toHaveLength(0);
+  });
+
   it('tx.update heals the correction path’s crash window (link present, row gone) by re-creating from the full-state payload (§2)', async () => {
     const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
     const [tx] = await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [

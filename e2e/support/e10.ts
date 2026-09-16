@@ -376,7 +376,17 @@ export async function openVaultAction(
 
 /**
  * One unlock attempt through the real access surface. Returns without asserting
- * the outcome so a caller can drive both the refusal ladder and the success.
+ * the OUTCOME so a caller can drive both the refusal ladder and the success —
+ * but it does assert the surface actually offered the unlock, and that
+ * distinction is the whole point of the bounded wait below.
+ *
+ * `?action=unlock` is a REQUEST, not a state (#1526): a ready endpoint no longer
+ * offers `unlock`, so `VaultManager` answers the deep link with the "moved past"
+ * notice and renders no password field. Filling a field that will never exist is
+ * indistinguishable from a slow app at the locator level, so an arc that reached
+ * here in the wrong state used to burn its ENTIRE test budget on one `fill` —
+ * eight minutes, in the [E10-A10b] report on #1994 — and then blame a timeout.
+ * The named assertion turns that into a failure that says which surface it got.
  */
 export async function attemptUnlock(
   page: Page,
@@ -384,6 +394,12 @@ export async function attemptUnlock(
   devicePassword: string,
 ): Promise<Locator> {
   const section = await openVaultAction(page, vaultId, 'unlock');
+  await expect(
+    section.locator(`#vault-access-secret-${vaultId}`),
+    "the access surface did not offer the unlock form — this endpoint's live state no longer " +
+      'offers `unlock` (ready, locked out, or the phrase missing), so the deep link answered ' +
+      'with its next-step notice instead',
+  ).toBeVisible({ timeout: 30_000 });
   await section.locator(`#vault-access-secret-${vaultId}`).fill(devicePassword);
   await section.getByRole('button', { name: 'Continue', exact: true }).click();
   return section;

@@ -90,6 +90,7 @@ import {
   type LiveYearRowView,
   type LiveYearSettlement,
 } from './livingYear';
+import { correctionSourceForYear } from './correctionSource';
 import { isCustomFifoSell } from './customState';
 import {
   activeCustomParams,
@@ -293,7 +294,6 @@ export interface TaxService {
 /** Movement notes (stored data, mirroring the cash-link note precedent). */
 const NOTE_AT_WITHHELD = 'KESt withheld (AT)';
 const NOTE_AT_REFUNDED = 'KESt refunded (AT)';
-const NOTE_AT_CORRECTION = 'Tax year correction (AT)';
 const NOTE_DE_WITHHELD = 'KapESt + Soli withheld (DE)';
 const NOTE_DE_REFUNDED = 'KapESt + Soli refunded (DE)';
 const NOTE_MANUAL_WITHHELD = 'Tax withheld (manual entry)';
@@ -572,12 +572,20 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     };
   }
 
-  /** Map a settlement spec to the unattached correction movement it posts. */
+  /**
+   * Map a settlement spec to the unattached correction movement it posts.
+   *
+   * `source` is REQUIRED (V5-P0c, #1658): a correction carries the tag of the
+   * write that caused it, so `?source=<tag>` finds exactly the legs that write
+   * produced. Leaving it to the column default stamped every correction `manual`
+   * and made the filter lie — see `correctionSource.ts` for the attribution rule.
+   */
   function correctionMovement(
     spec: TaxMovementSpec,
     sourceId: string,
     year: number,
-    note: string = NOTE_AT_CORRECTION,
+    note: string,
+    source: string,
   ): NewCashMovement {
     return {
       sourceId,
@@ -586,6 +594,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       executedAt: new Date(now()),
       note,
       taxYear: year,
+      source,
     };
   }
 
@@ -1013,6 +1022,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           await correctionSourceId(portfolioId),
           settlement.year,
           liveCorrectionNote(regime),
+          // The delete IS the cause, so the correction carries the deleted
+          // row's tag (V5-P0c, #1658).
+          transaction.source,
         ),
       );
     }
@@ -1154,6 +1166,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
               await correctionSourceId(portfolioId),
               settlement.year,
               liveCorrectionNote(regime),
+              // The dividend being recorded is the cause; stated here rather
+              // than left to `insertDividend`'s fallback (V5-P0c, #1658).
+              sourceTag,
             ),
           );
         }
@@ -1318,6 +1333,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             await correctionSourceId(portfolioId),
             settlement.year,
             liveCorrectionNote(regime),
+            // Same rule as the transaction delete: the deleted dividend's tag.
+            dividend.source,
           ),
         );
       }
@@ -1501,6 +1518,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           sourceId,
           settlement.year,
           liveCorrectionNote(state.liveRegime),
+          // No single write caused this one — the year's own rows did
+          // (`correctionSourceForYear`, V5-P0c #1658).
+          correctionSourceForYear(settlement.year, state.transactions, state.dividendRows),
         );
         if (spec.kind === 'tax_withholding') {
           try {

@@ -451,6 +451,22 @@ export function createParanoidRehydrationSourceRepository(
     // the movements themselves. `validateGraph` proves the references first, so
     // these are plain inserts with no conflict handling — a duplicate here means
     // a malformed vault, which must fail loudly rather than be absorbed.
+    //
+    // LOUDLY, BUT NOT FROM HERE (#1963). For `cash_rule_tags` that promise used
+    // to be kept by `cash_rule_tags_rule_tag_unique` raising a driver error
+    // inside this open transaction — a 500 for a payload the server could name
+    // at the door. A repeated `(ruleId, tagId)` pair is now refused twice
+    // before reaching this file: by the document schema
+    // (`vaultStrictDocumentV1Schema`) at parse time, and by
+    // `cashTagService.restoreRuleTags` on the way in. The insert stays
+    // conflict-free deliberately — absorbing a duplicate with
+    // `onConflictDoNothing` would silently accept a document nothing
+    // legitimate wrote — it just is no longer the thing that reports it.
+    //
+    // The other unique keys these inserts can still meet (a tag name colliding
+    // case-insensitively, a repeated `(movementId, tagId)`, a repeated budget
+    // period) have no such gate yet and remain 500s; issue #1963 scoped the
+    // rule→tag pair.
 
     async restoreCashTags(rows) {
       await forEachChunk(rows, async (chunk) => {

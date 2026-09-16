@@ -837,7 +837,11 @@ export const transactionExecutedAtCursorSchema = z
     message: 'Invalid executed-time transaction cursor.',
   });
 
-const transactionQueryBooleanSchema = z
+/**
+ * `?flag=true` on a GET, tolerant of an already-parsed boolean. Shared by the
+ * transaction and cash ledgers' `includeSourceTags` opt-in (V5-P0c).
+ */
+const listQueryBooleanSchema = z
   .union([z.boolean(), z.enum(['true', 'false'])])
   .default(false)
   .transform((value) => value === true || value === 'true');
@@ -858,7 +862,7 @@ export const transactionListQuerySchema = z
     assetId: z.string().uuid().optional(),
     order: transactionListOrderSchema.default('id'),
     /** Add the complete portfolio-wide distinct-source facet to the response. */
-    includeSourceTags: transactionQueryBooleanSchema,
+    includeSourceTags: listQueryBooleanSchema,
   })
   .strict()
   .superRefine((query, ctx) => {
@@ -1308,6 +1312,14 @@ export const cashMovementsResponseSchema = z
     movements: z.array(cashMovementSchema),
     sources: z.array(cashSourceSchema),
     nextCursor: z.string().uuid().nullable(),
+    /**
+     * Complete portfolio-wide source facet, returned only when explicitly
+     * requested — the cash twin of the transaction ledger's facet (V5-P0c,
+     * #1658). It describes the WHOLE portfolio, never the current page or the
+     * active `source`/`tag` filter, so a single imported row on page 3 still
+     * makes the filter appear and selectable.
+     */
+    sourceTags: z.array(sourceTagSchema).optional(),
   })
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
@@ -1334,6 +1346,8 @@ export const cashMovementsQuerySchema = z
     limit: z.coerce.number().int().min(1).max(200).optional(),
     source: sourceTagSchema.optional(),
     tag: z.union([z.string().uuid(), z.literal(CASH_MOVEMENT_UNTAGGED_FILTER)]).optional(),
+    /** Add the complete portfolio-wide distinct-source facet to the response. */
+    includeSourceTags: listQueryBooleanSchema,
   })
   .strict();
 export type CashMovementsQuery = z.infer<typeof cashMovementsQuerySchema>;
