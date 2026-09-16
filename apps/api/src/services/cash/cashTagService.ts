@@ -1,5 +1,7 @@
 import {
+  CASH_RULE_PATTERN_MAX,
   CASH_SYSTEM_TAGS,
+  CASH_TAGS_PER_ITEM_MAX,
   type CashMovementTagsResponse,
   type CashRule,
   type CashRuleListResponse,
@@ -54,6 +56,23 @@ const RULE_LIMIT_REACHED = () =>
   conflict(
     `You already have the maximum of ${CASH_RULES_PER_USER_MAX} tagging rules. Delete one to add another.`,
     'CASH_RULE_LIMIT_REACHED',
+  );
+/**
+ * 400, not the 409 its sibling above returns (#1954). A rule count is ACCOUNT
+ * STATE — "you already have 200" is a conflict with something the user owns —
+ * whereas an over-long pattern or an over-tagged rule is a MALFORMED ROW: the
+ * write path refuses both with a 400 from the request schema, and the restore
+ * lane's whole promise is that a document row meets the gate a written row does.
+ */
+const RULE_PATTERN_TOO_LONG = () =>
+  badRequest(
+    `A rule pattern may be at most ${CASH_RULE_PATTERN_MAX} characters.`,
+    'CASH_RULE_PATTERN_TOO_LONG',
+  );
+const RULE_TAG_LIMIT_REACHED = () =>
+  badRequest(
+    `A rule may carry at most ${CASH_TAGS_PER_ITEM_MAX} tags.`,
+    'CASH_RULE_TAG_LIMIT_REACHED',
   );
 
 /**
@@ -129,6 +148,21 @@ export interface CashRuleRestoreScope<TRow extends CashRuleRestoreRow> {
   insertRules(rows: readonly TRow[]): Promise<void>;
 }
 
+/**
+ * The one fact this service needs from a restored `cash_rule_tags` link: which
+ * rule it hangs off. The caller keeps the full row (its own id, the tag id, the
+ * timestamp) and hands it back unchanged to its transaction-bound writer, the
+ * same seam {@link CashRuleRestoreScope} uses.
+ */
+export interface CashRuleTagRestoreRow {
+  ruleId: string;
+}
+
+/** Caller-owned transaction seam for the bulk rule→tag link restore. */
+export interface CashRuleTagRestoreScope<TRow extends CashRuleTagRestoreRow> {
+  insertRuleTags(rows: readonly TRow[]): Promise<void>;
+}
+
 export interface CashTagServiceDeps {
   tags: CashTagRepository;
   rules: CashRuleRepository;
@@ -169,6 +203,15 @@ export interface CashTagService {
     userId: string,
     rows: readonly TRow[],
     scope: CashRuleRestoreScope<TRow>,
+  ): Promise<void>;
+  /**
+   * Install the restored rule→tag links through the cap a written rule's tag
+   * set meets — `CASH_TAGS_PER_ITEM_MAX` PER RULE (#1954).
+   */
+  restoreRuleTags<TRow extends CashRuleTagRestoreRow>(
+    userId: string,
+    rows: readonly TRow[],
+    scope: CashRuleTagRestoreScope<TRow>,
   ): Promise<void>;
   applyRules(userId: string): Promise<CashRuleApplyResponse>;
   previewRules(userId: string, note: string): Promise<CashRulePreviewResponse>;
@@ -325,9 +368,20 @@ export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
      * a pattern RE2 cannot compile (inert, and invisible — the user sees a rule
      * that never fires) or a rule set of any size at all.
      *
-     * Length is now bounded by the row schema itself (`vault.ts`), so what is
-     * left for the service is what only the service knows: the regex must
-     * COMPILE, and the set must fit the same per-user cap a written rule meets.
+     * Length is bounded by the row schema itself (`vault.ts`) AND re-checked
+     * here (#1954), so the docblock's claim — "the same gate a written rule
+     * passes" — is literally true of this function rather than true only of the
+     * one caller that happens to parse first. What is left beyond it is what
+     * only the service knows: the regex must COMPILE, and the set must fit the
+     * same per-user cap a written rule meets.
+     *
+     * ORDER IS LOAD-BEARING (#1954): the O(1) CARDINALITY CHECK RUNS FIRST.
+     * Compiling is the expensive half — RE2 compiles every restored pattern,
+     * ~1.2 s for 35 000 of them, inside the OPEN rehydration transaction, and it
+     * evicts the shared 512-entry compile cache on the way through. Doing that
+     * before asking "is this document even allowed to be this big?" made the
+     * refusal cost more than the acceptance. A document past the cap is now
+     * turned away by one COUNT and a comparison, having compiled nothing.
      *
      * BOTH REFUSE THE WHOLE RESTORE rather than importing a bounded prefix.
      * That is the deliberate choice, and the reasoning is this:
@@ -351,14 +405,62 @@ export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
      */
     async restoreRules(userId, rows, scope): Promise<void> {
       if (rows.length === 0) return;
+      // Cardinality first — one count, no compiles (see the order note above).
+      const existing = await rules.countForOwner(userId);
+      if (existing + rows.length > CASH_RULES_PER_USER_MAX) throw RULE_LIMIT_REACHED();
       for (const row of rows) {
+        // Length before compile, for the same reason and one level down: a
+        // pattern the write path could never have stored is refused on a string
+        // length rather than handed to the regex engine to think about.
+        if (row.pattern.length > CASH_RULE_PATTERN_MAX) throw RULE_PATTERN_TOO_LONG();
         if (row.matchType === 'regex' && !isSupportedCashRuleRegex(row.pattern)) {
           throw RULE_REGEX_UNSUPPORTED();
         }
       }
-      const existing = await rules.countForOwner(userId);
-      if (existing + rows.length > CASH_RULES_PER_USER_MAX) throw RULE_LIMIT_REACHED();
       await scope.insertRules(rows);
+    },
+
+    /**
+     * THE OTHER HALF OF A RESTORED RULE (#1954).
+     *
+     * `restoreRules` above caps how many rules a document may install; this caps
+     * how many TAGS each of them may carry. The two multiply — matching costs
+     * `O(notes × rules)` and writing costs `O(matched movements × that rule's
+     * tags)` — so capping one and not the other caps nothing: `loadRules`
+     * aggregates a rule's tags with an unbounded `array_agg`, and
+     * `applyCashRuleTags` then pushes one (movement, tag) pair per tag.
+     *
+     * WHY THE SERVICE REPEATS THE DOCUMENT SCHEMA'S CHECK. `vault.ts` refuses an
+     * over-tagged rule at parse time, which is the earliest possible refusal and
+     * the one that protects the HTTP rehydration route. This gate is the one
+     * that protects the TABLE: it is what any future caller with its own parse
+     * path — a second restore surface, a migration, a test harness — meets, and
+     * §13.5's rule is that the server does not trust a vault payload, not that
+     * it trusts one parser. Neither check is redundant with the other; they
+     * guard different doors into the same rows.
+     *
+     * COUNTS ONLY THE DOCUMENT, unlike the per-user rule cap. A restore writes
+     * the rules and their links in the same transaction, moments apart, so the
+     * links this document carries ARE the rule's whole tag set. Adding a live
+     * `SELECT count(*) … GROUP BY rule_id` would re-read rows this same
+     * transaction has just written and could only ever return the same numbers.
+     */
+    // `_userId`: the owner is carried for seam symmetry with `restoreRules` and
+    // because a caller must not be able to hand these links to the service
+    // without naming whose account they are entering. The CHECK itself is
+    // document-local (see above), so the id is deliberately not read here —
+    // ownership of the referenced rules is proved by `validateGraph`, and the
+    // write is scoped by the caller's own transaction (§10: scoping lives in the
+    // repository, never in a service's argument list).
+    async restoreRuleTags(_userId, rows, scope): Promise<void> {
+      if (rows.length === 0) return;
+      const perRule = new Map<string, number>();
+      for (const row of rows) {
+        const count = (perRule.get(row.ruleId) ?? 0) + 1;
+        if (count > CASH_TAGS_PER_ITEM_MAX) throw RULE_TAG_LIMIT_REACHED();
+        perRule.set(row.ruleId, count);
+      }
+      await scope.insertRuleTags(rows);
     },
 
     /**
