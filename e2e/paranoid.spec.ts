@@ -104,12 +104,13 @@ test.use({ trace: 'off', screenshot: 'off', video: 'off' });
  * #9), so `openParanoidSetup` now has nothing to click — for these specs and
  * for every user.
  *
- * WHY NOT REWORK THEM. There is no other entry: the wizard renders under
- * `privacyMode === 'normal'` only, so it is unreachable for an existing
- * paranoid account too, and `ParanoidEnableWizard` is referenced by nothing in
- * the app. The only way to keep these green would be a test-only door back into
- * a security ceremony no user can reach — a suite that is green about something
- * that does not exist, which is worse than a loud skip.
+ * WHY NOT REWORK THEM. There is no other entry: the wizard rendered under
+ * `privacyMode === 'normal'` only, so it was unreachable for an existing
+ * paranoid account too, and `ParanoidEnableWizard` was deleted outright (#1648)
+ * once that made the file dead weight with nothing left pointing at it. The
+ * only way to keep these green would be a test-only door back into a security
+ * ceremony no user can reach — a suite that is green about something that does
+ * not exist, which is worse than a loud skip.
  *
  * WHAT THIS COSTS, stated rather than hidden: `POST /vault/enable` keeps its
  * service/route coverage, but the account-level ceremony loses its ONLY
@@ -720,11 +721,12 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 
   // #1354 moved Drive consent AHEAD of the passphrase: choosing a Drive medium
   // now preloads GIS and then REQUIRES an explicit authorization gesture, and
-  // step 2's Continue stays disabled until it lands
-  // (`ParanoidEnableWizard.tsx`: `step === 2 && (authorizingDrive ||
-  // (driveSelected && drive == null))`). Clicking Continue straight after the
-  // radio — what this helper did before — waits on a button that can never
-  // enable, so the arc burned its whole 360 s budget on click retries.
+  // step 2's Continue stayed disabled until it landed
+  // (`step === 2 && (authorizingDrive || (driveSelected && drive == null))`,
+  // the condition the now-deleted `ParanoidEnableWizard.tsx` (#1648) rendered
+  // this arc against). Clicking Continue straight after the radio — what this
+  // helper did before — waits on a button that can never enable, so the arc
+  // burned its whole 360 s budget on click retries.
   //
   // Waiting for the CONNECTED copy rather than just clicking is deliberate:
   // authorization is asynchronous, and the same button renders "Retry" when
