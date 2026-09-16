@@ -63,9 +63,10 @@ vi.mock('../../vault/engine/VaultMoneyEngineContext', () => ({
 }));
 
 /**
- * NOT mocked away: `ParanoidEnableWizard` is deliberately left unstubbed so the
- * "no new enable entry" assertions below fail loudly if the real component ever
- * finds its way back onto this panel through any path (§16 2026-08-30 ruling).
+ * `ParanoidEnableWizard` was deleted (#1648); there is nothing left to stub.
+ * The "no new enable entry" assertions below still guard the §16 2026-08-30
+ * ruling — they fail loudly if any account-level enable entry point, wizard
+ * or otherwise, finds its way back onto this panel.
  */
 vi.mock('../../vault/ui/VaultManager', () => ({
   VaultManager: () => <section aria-label="Vaults">Vault manager</section>,
