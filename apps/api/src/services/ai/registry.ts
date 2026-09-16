@@ -1,5 +1,6 @@
 import type { Logger } from '../../logger';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
+import type { OutboundUrlResolver } from '../security/outboundUrlGuard';
 import { createOllamaProvider } from './ollamaProvider';
 import type { AiProvider } from './types';
 
@@ -16,6 +17,12 @@ export interface AiRegistryDeps {
   appSettings: Pick<AppSettingsService, 'getAiSettings'>;
   /** Injectable fetch handed to the constructed adapter (tests). */
   fetchImpl?: typeof fetch;
+  /**
+   * DNS resolver handed to the adapter's fetch-time egress guard (§13.5 V5-P12,
+   * #1656). Defaults to the system resolver; a test injects a stub so a
+   * rebinding hostname is deterministic and the suite stays offline.
+   */
+  resolver?: OutboundUrlResolver;
   logger?: Logger;
 }
 
@@ -32,6 +39,7 @@ export function createAiRegistry(deps: AiRegistryDeps): AiRegistry {
       endpoint,
       model,
       fetchImpl: deps.fetchImpl,
+      resolver: deps.resolver,
       logger: deps.logger,
     });
   }
