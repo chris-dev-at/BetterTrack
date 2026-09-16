@@ -39,6 +39,7 @@ import {
   resolveBearerPolicyClassification,
   taxYearDocumentationRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
+import { requireCookieSessionOrPasskeyManagementBearer } from '../http/routes/authRoutes';
 import { requireCookieSessionOrTaxYearDocumentationBearer } from '../http/routes/settingsRoutes';
 import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
 import { ACCOUNT_PASSKEY_NAMESPACE } from '../services/auth/loginThrottle';
@@ -680,6 +681,68 @@ describe('#1324 account:security parity for native account state', () => {
     expect(pathAcceptsBearer('/auth/passkeys/not-a-uuid', 'PATCH')).toBe(false);
     expect(pathAcceptsBearer('/auth/first-run/complete', 'POST')).toBe(true);
     expect(pathAcceptsBearer('/auth/first-run/complete', 'GET')).toBe(false);
+  });
+
+  it('keeps the router-local passkey guard method-, path- and scope-aware', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const invoke = (input: {
+      scopes?: string[];
+      sessionId?: string;
+      method: string;
+      path: string;
+    }) => {
+      const next = vi.fn();
+      requireCookieSessionOrPasskeyManagementBearer(
+        {
+          apiKey: input.scopes
+            ? {
+                id: 'bypassed-policy-key',
+                scopes: input.scopes,
+                kind: 'personal',
+                securityGeneration: 0,
+              }
+            : undefined,
+          sessionId: input.sessionId,
+          method: input.method,
+          path: input.path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      return next;
+    };
+
+    // The owning browser session and a scoped bearer on the three management
+    // routes pass — the twin admits exactly what the global table admits.
+    expect(
+      invoke({ sessionId: 'session', method: 'GET', path: '/passkeys' }),
+    ).toHaveBeenCalledWith();
+    for (const [method, path] of [
+      ['GET', '/passkeys'],
+      ['PATCH', `/passkeys/${id}`],
+      ['DELETE', `/passkeys/${id}`],
+    ] as const) {
+      expect(
+        invoke({ scopes: [ACCOUNT_SECURITY_SCOPE], method, path }),
+        `${method} ${path}`,
+      ).toHaveBeenCalledWith();
+    }
+
+    // Wrong scope, the two WebAuthn ceremonies, a method the allowlist does not
+    // carry and a future `/auth/passkeys/*` sibling all stay closed here even if
+    // the global policy table were to regress.
+    for (const input of [
+      { scopes: ['market:read'], method: 'GET', path: '/passkeys' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/passkeys/register/options' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/passkeys/login/verify' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: `/passkeys/${id}` },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'GET', path: '/passkeys/export' },
+    ]) {
+      expect(invoke(input).mock.calls[0]![0], `${input.method} ${input.path}`).toMatchObject({
+        statusCode: 403,
+        code: 'API_KEY_FORBIDDEN',
+      });
+    }
   });
 
   it('keeps the tax-year documentation guard read-only and scope-aware', () => {
