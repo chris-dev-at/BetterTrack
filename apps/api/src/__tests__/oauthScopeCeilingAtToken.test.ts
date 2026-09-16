@@ -12,7 +12,20 @@ import * as schema from '../data/schema';
 import { seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
-/** ADVERSARIAL REVIEW PROBE for PR #1979 — not for merge. */
+/**
+ * The scope CEILING, pinned at the TOKEN rather than at the grants list (#1740,
+ * landed from the #1979 review's probe set):
+ *
+ * - narrowing a client's ceiling after consent drops the removed write AND its
+ *   implied read from the live token and from the refreshed one;
+ * - widening the ceiling after consent never reaches a live third-party grant,
+ *   not even through the refresh normalizer (§16 2026-08-19);
+ * - a consented `:read` under a legacy `:write`-only ceiling yields exactly that
+ *   read and no write — the one bounded widening the write⇒read rule allows;
+ * - the consent payload, the stored code/grant/token set and the audit meta are
+ *   the same normalized set;
+ * - the first-party seed stays additive and idempotent.
+ */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const HTTPS_REDIRECT = 'https://app.example/callback';
