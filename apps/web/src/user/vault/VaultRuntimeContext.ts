@@ -14,8 +14,6 @@ export interface VaultDriveUnlockOptions {
   authorizeDrive: boolean;
   /** A fresh Drive-only device must fetch its first unlock envelope from Drive. */
   driveOnly: boolean;
-  /** Persist a non-extractable device key after this authenticated unlock. */
-  keepUnlocked?: boolean;
 }
 
 export interface VaultRuntime {
@@ -37,8 +35,6 @@ export interface VaultRuntime {
     recoveryKit: Uint8Array,
     options: VaultDriveUnlockOptions,
   ): Promise<DriveConnectionController>;
-  /** Try the optional non-extractable device key without prompting. */
-  unlockFromDevice(options: Omit<VaultDriveUnlockOptions, 'keepUnlocked'>): Promise<boolean>;
   /** Prepare GIS before exposing a Drive authorization gesture. */
   prepareDriveStorage(): Promise<void>;
   /** User-gesture GIS authorization used by the pre-enable media round trip. */

@@ -12,7 +12,7 @@ import { VAULT_FORMAT_VERSION, type DriveConnection } from '@bettertrack/contrac
 
 import { getGoogleDriveClientId } from '../../lib/runtimeConfig';
 import { listDriveConnections } from '../../lib/userApi';
-import { createIndexedDbVaultCustody, type DeviceVaultCustody } from './custody';
+import { purgeRetiredDeviceCustody } from './custody';
 import {
   createDriveDataHome,
   createGoogleDriveTokenClient,
@@ -63,12 +63,9 @@ export {
 } from './VaultRuntimeContext';
 
 const KEY_ID_STORAGE_PREFIX = 'bettertrack:vault-key:';
-const CUSTODY_DEVICE_STORAGE_PREFIX = 'bettertrack:vault-custody-device:';
-const DEVICE_LOCKED_STORAGE_PREFIX = 'bettertrack:vault-device-locked:';
 
 export interface VaultRuntimeProviderDependencies {
   clientId?: string | null;
-  custody?: DeviceVaultCustody;
   tokens?: GoogleDriveTokenClient;
   drive?: DriveDataHome;
   server?: DataHome;
@@ -103,9 +100,7 @@ export function VaultRuntimeProvider({
   dependencies?: VaultRuntimeProviderDependencies;
   children: ReactNode;
 }) {
-  const [core] = useState(
-    () => new VaultLockCore({ custody: dependencies?.custody ?? createIndexedDbVaultCustody() }),
-  );
+  const [core] = useState(() => new VaultLockCore());
   const [transfer] = useState(() => dependencies?.transferRuntime ?? vaultTransferRuntime);
   const [connection, setConnection] = useState<DriveConnectionController | null>(null);
   const [sync, setSync] = useState<VaultDriveSyncCoordinator | null>(null);
@@ -152,13 +147,12 @@ export function VaultRuntimeProvider({
     async (
       options: {
         broadcast?: boolean;
-        markDeviceLocked?: boolean;
         transferAlreadyRevoked?: boolean;
       } = {},
     ) => {
       operationGenerationRef.current += 1;
-      // Revoke every plaintext seam before the first await. The gate can paint
-      // in the same React turn while IndexedDB custody cleanup finishes.
+      // Revoke every plaintext seam before the first await, so the gate can
+      // paint in the same React turn.
       if (options.transferAlreadyRevoked !== true) transfer.endSession();
       setPhase('locked');
       setConnection(null);
@@ -169,19 +163,14 @@ export function VaultRuntimeProvider({
       driveRef.current = null;
       tokensRef.current?.clear();
       setDriveAuthorization('consent-required');
-      // The persistent §12 marker and the cross-tab broadcast are DELIBERATELY
-      // independent switches. `unlockFromDevice` reads only the marker, so
-      // coupling it to `broadcast` is what let a lock path (logout, PIN
-      // idle-lock, account switch, confirmed-unauthorized) silently reopen a
-      // kept-unlocked vault once the broadcast half moved into
-      // `requestVaultLock`. Only the provider's own unmount teardown — which is
-      // not a user-intended lock — opts out of the marker.
-      if (options.markDeviceLocked !== false && userId != null) rememberDeviceLocked(userId);
+      // There is no device-locked marker to write any more: it existed only to
+      // keep a PERSISTED vault key from reopening the vault after a lock, and
+      // #1640 retired that custody (§12). The session is memory, so a lock is
+      // complete the moment this function's synchronous half has run.
       if (options.broadcast !== false && userId != null) broadcastVaultLock(userId);
-      // Plaintext access is already synchronously revoked. A browser storage
-      // failure must not become an unhandled rejection; the persistent lock
-      // marker above also prevents a stale custody key from reopening the vault.
-      await core.lock(userId == null ? undefined : custodyDeviceId(userId)).catch(() => undefined);
+      // Plaintext access is already synchronously revoked; a browser storage
+      // failure must not become an unhandled rejection.
+      await core.lock().catch(() => undefined);
     },
     [core, transfer, userId],
   );
@@ -190,11 +179,21 @@ export function VaultRuntimeProvider({
     if (!authenticated) void lock();
     return () => {
       // Unmount/rebind teardown, not a lock the user asked for: revoke the live
-      // session but leave the persisted §12 marker exactly as it was, so a
-      // remount cannot invent a lock the user never performed.
-      void lock({ broadcast: false, markDeviceLocked: false });
+      // session, and do not broadcast — a remount must not look to other tabs
+      // like a lock the user never performed.
+      void lock({ broadcast: false });
     };
   }, [authenticated, lock, userId]);
+
+  /**
+   * Erase what the RETIRED v1 "keep unlocked on this device" custody left on
+   * this device (§12, #1640 residue 3). Idempotent, best effort, and off every
+   * critical path — see `purgeRetiredDeviceCustody`.
+   */
+  useEffect(() => {
+    if (!authenticated) return;
+    purgeRetiredDeviceCustody(userId);
+  }, [authenticated, userId]);
 
   // Manual lock in one tab immediately revokes the decrypted session in every
   // other tab for the same account. The signal contains no secret or money.
@@ -256,7 +255,7 @@ export function VaultRuntimeProvider({
   const runUnlock = useCallback(
     async (
       unlockOptions: VaultDriveUnlockOptions,
-      unlockCore: (envelope: Uint8Array, deviceId: string) => Promise<void>,
+      unlockCore: (envelope: Uint8Array) => Promise<void>,
     ): Promise<DriveConnectionController> => {
       if (!authenticated || userId == null) {
         throw new VaultCryptoError('locked', 'An authenticated vault owner is required.');
@@ -268,7 +267,6 @@ export function VaultRuntimeProvider({
       const needsDrive = unlockOptions.authorizeDrive || unlockOptions.driveOnly;
       const tokenClient = tokens(needsDrive);
       const driveHome = drive(ownerId, needsDrive);
-      const deviceId = custodyDeviceId(ownerId);
       let installed: UnlockedVaultDriveRuntime | null = null;
       setPhase('unlocking');
       const requireCurrentOperation = () => {
@@ -299,7 +297,7 @@ export function VaultRuntimeProvider({
                 ))
             )(ownerId);
         requireCurrentOperation();
-        await unlockCore(envelope, deviceId);
+        await unlockCore(envelope);
         requireCurrentOperation();
 
         installed = await core.withVaultKey((vaultKey, keyId) =>
@@ -338,7 +336,7 @@ export function VaultRuntimeProvider({
           tokenClient.clear();
           setDriveAuthorization('consent-required');
           setPhase('locked');
-          await core.lock(deviceId);
+          await core.lock();
         }
         throw cause;
       }
@@ -358,51 +356,15 @@ export function VaultRuntimeProvider({
   );
 
   const unlockWithPassphrase = useCallback(
-    async (passphrase: string, unlockOptions: VaultDriveUnlockOptions) => {
-      const unlocked = await runUnlock(unlockOptions, (envelope, deviceId) =>
-        core.unlockWithPassphrase(
-          envelope,
-          passphrase,
-          undefined,
-          unlockOptions.keepUnlocked === true,
-          deviceId,
-        ),
-      );
-      if (userId != null && unlockOptions.keepUnlocked === true) forgetDeviceLocked(userId);
-      return unlocked;
-    },
-    [core, runUnlock, userId],
+    (passphrase: string, unlockOptions: VaultDriveUnlockOptions) =>
+      runUnlock(unlockOptions, (envelope) => core.unlockWithPassphrase(envelope, passphrase)),
+    [core, runUnlock],
   );
 
   const unlockWithRecoveryKit = useCallback(
-    async (recoveryKit: Uint8Array, unlockOptions: VaultDriveUnlockOptions) => {
-      const unlocked = await runUnlock(unlockOptions, (envelope, deviceId) =>
-        core.unlockWithRecoveryKit(
-          envelope,
-          recoveryKit,
-          unlockOptions.keepUnlocked === true,
-          deviceId,
-        ),
-      );
-      if (userId != null && unlockOptions.keepUnlocked === true) forgetDeviceLocked(userId);
-      return unlocked;
-    },
-    [core, runUnlock, userId],
-  );
-
-  const unlockFromDevice = useCallback(
-    async (unlockOptions: Omit<VaultDriveUnlockOptions, 'keepUnlocked'>): Promise<boolean> => {
-      if (userId == null || isDeviceLocked(userId)) return false;
-      try {
-        await runUnlock(unlockOptions, (envelope, deviceId) =>
-          core.unlockFromDevice(deviceId, envelope),
-        );
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [core, runUnlock, userId],
+    (recoveryKit: Uint8Array, unlockOptions: VaultDriveUnlockOptions) =>
+      runUnlock(unlockOptions, (envelope) => core.unlockWithRecoveryKit(envelope, recoveryKit)),
+    [core, runUnlock],
   );
 
   const reconnect = useCallback(async (): Promise<VaultSyncState> => {
@@ -568,7 +530,6 @@ export function VaultRuntimeProvider({
       syncState,
       unlockWithPassphrase,
       unlockWithRecoveryKit,
-      unlockFromDevice,
       prepareDriveStorage,
       authorizeDriveStorage,
       releaseDriveStorage,
@@ -596,7 +557,6 @@ export function VaultRuntimeProvider({
       rotateKey,
       sync,
       syncState,
-      unlockFromDevice,
       unlockWithPassphrase,
       unlockWithRecoveryKit,
     ],
@@ -656,43 +616,6 @@ function sameSyncState(left: VaultSyncState | null, right: VaultSyncState | null
     left.pending === right.pending &&
     left.lastFailure === right.lastFailure
   );
-}
-
-function custodyDeviceId(userId: string): string {
-  const key = `${CUSTODY_DEVICE_STORAGE_PREFIX}${userId}`;
-  try {
-    const stored = globalThis.localStorage?.getItem(key);
-    if (stored) return stored;
-    const created = globalThis.crypto.randomUUID();
-    globalThis.localStorage?.setItem(key, created);
-    return created;
-  } catch {
-    return globalThis.crypto.randomUUID();
-  }
-}
-
-function rememberDeviceLocked(userId: string): void {
-  try {
-    globalThis.localStorage?.setItem(`${DEVICE_LOCKED_STORAGE_PREFIX}${userId}`, '1');
-  } catch {
-    // If persistence is unavailable, custody is unavailable too; unlock fails closed.
-  }
-}
-
-function forgetDeviceLocked(userId: string): void {
-  try {
-    globalThis.localStorage?.removeItem(`${DEVICE_LOCKED_STORAGE_PREFIX}${userId}`);
-  } catch {
-    // Keeping the marker is the fail-closed outcome.
-  }
-}
-
-function isDeviceLocked(userId: string): boolean {
-  try {
-    return globalThis.localStorage?.getItem(`${DEVICE_LOCKED_STORAGE_PREFIX}${userId}`) === '1';
-  } catch {
-    return true;
-  }
 }
 
 function rememberKeyId(userId: string, keyId: string): void {

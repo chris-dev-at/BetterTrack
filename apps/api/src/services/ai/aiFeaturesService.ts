@@ -13,7 +13,7 @@ import type { AnalyticsService } from '../analytics/analyticsService';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
 import type { AiService } from './aiService';
-import { AiProviderError } from './errors';
+import { AiUnusableOutputError } from './errors';
 import { buildInsightsPrompt, computeInsights, INSIGHTS_SYSTEM_PROMPT } from './insightFacts';
 import { buildNlBuilderPrompt, NL_BUILDER_SYSTEM_PROMPT, parseNlIntents } from './nlIntent';
 
@@ -33,7 +33,7 @@ import { buildNlBuilderPrompt, NL_BUILDER_SYSTEM_PROMPT, parseNlIntents } from '
  */
 
 export interface AiFeaturesServiceDeps {
-  ai: Pick<AiService, 'complete'>;
+  ai: Pick<AiService, 'assertAvailable' | 'complete' | 'refundCompletion'>;
   portfolio: Pick<PortfolioService, 'getPortfolio'>;
   analytics: Pick<AnalyticsService, 'getSeries'>;
   search: Pick<SearchService, 'search'>;
@@ -56,6 +56,14 @@ export function createAiFeaturesService(deps: AiFeaturesServiceDeps): AiFeatures
 
   async function insights(userId: string, input: AiInsightsRequest): Promise<AiInsightsResponse> {
     await deps.paranoid?.assertAllowed(userId, 'portfolioServer');
+    // Availability FIRST, before a single read (#1656 defect 5). The configured
+    // check used to live inside `ai.complete`, at the very END of this function
+    // — so an install with no provider ran a full portfolio + analytics load and
+    // could answer 400 `AI_NO_DATA`, a substantive statement about the caller's
+    // portfolio, where the only true answer was "this feature is not available".
+    // It also meant an unconfigured install paid for those reads on every call.
+    await ai.assertAvailable(userId);
+
     // `getPortfolio` enforces ownership (404/403), so this doubles as the
     // authorization check on the portfolio the caller asked about.
     const overview = await portfolio.getPortfolio(userId, input.portfolioId);
@@ -102,8 +110,16 @@ export function createAiFeaturesService(deps: AiFeaturesServiceDeps): AiFeatures
     });
     const intents = parseNlIntents(completion.text);
     if (intents.length === 0) {
+      // Refund the unit this draft spent (#1656 defect 5). `complete` returned,
+      // so it did NOT refund — this is the single refund site for that unit, and
+      // it runs exactly once because the throw below leaves no retry inside this
+      // function. Without it a small local model that answers in prose instead
+      // of JSON drains a user's entire daily budget while returning errors.
+      await ai.refundCompletion(userId);
       logger.warn('ai nl builder: model returned no usable intents');
-      throw new AiProviderError('Could not turn that description into a basket. Try rephrasing.');
+      // 422, not the old 502: the provider is healthy and the budget is intact,
+      // so the client can tell "rephrase this" from "the local model is down".
+      throw new AiUnusableOutputError();
     }
 
     // Resolve every intent through the LOCAL catalog ONLY (`searchService`). An

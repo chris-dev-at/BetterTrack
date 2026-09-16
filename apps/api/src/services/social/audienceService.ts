@@ -265,6 +265,25 @@ export const GROUP_AUDIENCE_INVALID = () =>
     'GROUP_AUDIENCE_INVALID',
   );
 
+/**
+ * A `specific_friends` write NAMES its recipients, so each name must resolve to
+ * an active friend — refused BY NAME, exactly like adding one to a circle
+ * (#1949).
+ *
+ * The same code as `socialService`'s add path on purpose: both answer the same
+ * question ("may this person be named a recipient?") with the same definition
+ * (`activeFriendOf`, #1897), so they must not answer it with different HTTP
+ * outcomes. The audience write used to filter the name away and return 200 — an
+ * audience that reaches nobody, reported as saved, for a request the add path
+ * would have refused.
+ *
+ * Not an enumeration oracle: an unknown uuid, a stranger's id and a disabled
+ * friend's id are indistinguishable here, and the only ids that pass are ones
+ * `GET /social/friends` already hands the caller.
+ */
+export const AUDIENCE_MEMBER_NOT_FRIEND = () =>
+  badRequest('Only your accepted friends can be named as recipients.', 'GROUP_MEMBER_NOT_FRIEND');
+
 /** A widening/replacement write must be a fresh, deliberate owner action. */
 export const AUDIENCE_WIDEN_CONFIRMATION_REQUIRED = (currentAudience: ShareAudience) =>
   conflict(
@@ -661,10 +680,21 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       // isn't re-notified when it widens to public (#438).
       const prior = await repo.getOwnedState(kind, subjectId);
 
+      // A named recipient set is a SET: `assertAudienceTransitionConfirmed`
+      // already compares it as one, and the membership rows are unique per
+      // (audience, friend), so a client naming the same friend twice used to
+      // reach the insert as two rows and 500 on the unique index. Deduplicate
+      // once, here, and every stage below agrees on what was named.
+      const namedIds =
+        input.audience === 'specific_friends' ? [...new Set(input.friendIds ?? [])] : [];
       const memberIds =
-        input.audience === 'specific_friends'
-          ? await repo.friendIdsOf(ownerId, input.friendIds ?? [])
-          : [];
+        input.audience === 'specific_friends' ? await repo.friendIdsOf(ownerId, namedIds) : [];
+      // A named recipient the definition drops is a REFUSAL, not a filter
+      // (#1949): `friendIdsOf` keeps only active friends, so anything the caller
+      // named that did not survive is an id it may not name. Checked before the
+      // widen guard — a set that can never be saved must not first be answered
+      // with "confirm this widening".
+      if (memberIds.length !== namedIds.length) throw AUDIENCE_MEMBER_NOT_FRIEND();
       assertAudienceTransitionConfirmed(
         prior,
         { audience: input.audience, friendIds: memberIds, groupId },
