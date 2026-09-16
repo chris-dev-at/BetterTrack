@@ -61,9 +61,48 @@ import {
  * exactly why they need this.
  */
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
+
+/**
+ * EGRESS POLICY FOR THIS THROWAWAY E2E STACK — `BT_OUTBOUND_DEPLOYMENT_SUBNETS`.
+ *
+ * The webhooks gate ([V5-P14][E3], #737) creates a real subscription through the
+ * Control Center and points it at the harness's capture receiver. That receiver
+ * cannot live on loopback: the SSRF guard on user-supplied webhook URLs (#1556,
+ * `apps/api/src/services/security/outboundUrlGuard.ts`) refuses 127.0.0.0/8
+ * under EVERY policy, so the create answered `400 WEBHOOK_URL_BLOCKED` and the
+ * signing-secret dialog never appeared (#1991). The receiver therefore binds on
+ * this box's own private LAN interface (see `createCaptureReceiver` in
+ * `e2e/support/e3.ts`), which the webhook policy's `allowPrivateLan` does allow
+ * — except that #1864 carves the deployment's OWN interface network back out,
+ * refused under every policy, and on a single-box e2e stack that carve-out is
+ * derived from the very interface the receiver sits on.
+ *
+ * `none` declares that THIS deployment has no internal service network to
+ * protect, which is true: the e2e stack is one throwaway Node process per role
+ * on a developer box or a CI runner, with no compose bridge carrying `db`,
+ * `redis` or the exporters. It relaxes exactly that one carve-out and nothing
+ * else — the guard is untouched, and loopback, link-local/cloud-metadata,
+ * unspecified/broadcast, CGNAT, multicast and every other non-routable range
+ * stay refused here exactly as in production. PRODUCTION NEVER SETS THIS:
+ * `infra/.env.production.example` ships it empty, which means "derive the
+ * carve-out from the container's own interfaces" — the compose service bridge.
+ *
+ * Assigned to `process.env` as well as to `apiEnv` on purpose. The E3 harness
+ * builds the REAL dispatcher and the REAL address-pinned transport INSIDE the
+ * Playwright worker process (`createWebhookHarness`), so the delivery-time guard
+ * (#1702's address pin) reads THIS process's environment, not the API's. Like
+ * the assignment above, this works because the config is loaded in every worker
+ * process.
+ */
+const OUTBOUND_DEPLOYMENT_SUBNETS = 'none';
+process.env.BT_OUTBOUND_DEPLOYMENT_SUBNETS = OUTBOUND_DEPLOYMENT_SUBNETS;
+
 const apiEnv = {
   ...process.env,
   NODE_ENV: 'development',
+  // The create-time half of the egress opt-out documented above; the delivery
+  // half is the `process.env` assignment, for the in-process harness.
+  BT_OUTBOUND_DEPLOYMENT_SUBNETS: OUTBOUND_DEPLOYMENT_SUBNETS,
   // Compressed multi-navigation specs pass through the Home command center's
   // roll-up on every auth landing. The exhaustive mobile overflow gate reloads
   // every route and overlay in four locale/width profiles, which is intentionally
