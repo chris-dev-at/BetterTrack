@@ -196,15 +196,17 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
       .set(...XRW)
       .send({ name: 'x', baseCurrency: 'EUR' });
 
-    // The capture is fire-and-forget on `finish`; poll briefly for the rows.
+    // The capture is fire-and-forget on `finish`, so the rows are the thing to
+    // await — `vi.waitFor` re-reads the repository until they land, instead of
+    // a hand-rolled sleep-and-retry loop (#1622).
     const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
-    let rows = await repo.listForKey(keyId, 50);
-    for (let i = 0; i < 40 && rows.length < 2; i += 1) {
-      await new Promise((r) => setTimeout(r, 10));
-      rows = await repo.listForKey(keyId, 50);
-    }
-    expect(rows.length).toBeGreaterThanOrEqual(2);
+    const rows = await vi.waitFor(async () => {
+      const current = await repo.listForKey(keyId, 50);
+      expect(current.length).toBeGreaterThanOrEqual(2);
+      return current;
+    });
     expect(rows.some((r) => r.status === 403)).toBe(true);
+    expect(rows.some((r) => r.status === 200)).toBe(true);
   });
 
   it('keeps the concrete resource path for a normal account', async () => {
@@ -214,12 +216,13 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     await request(harness.app).get(`/api/v1${path}`).set('Authorization', `Bearer ${token}`);
 
     const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
-    let rows = await repo.listForKey(keyId, 10);
-    for (let i = 0; i < 40 && rows.length === 0; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      rows = await repo.listForKey(keyId, 10);
-    }
+    const rows = await vi.waitFor(async () => {
+      const current = await repo.listForKey(keyId, 10);
+      expect(current).not.toHaveLength(0);
+      return current;
+    });
     expect(rows[0]?.path).toBe(path);
+    expect(rows[0]?.method).toBe('GET');
   });
 
   it('suppresses request-log capture for a paranoid account', async () => {
@@ -304,13 +307,27 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     await request(harness.app)
       .get(`/api/v1/assets/${RESOURCE_ASSET_ID}/history?range=1M`)
       .set('Authorization', `Bearer ${token}`);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // BARRIER, not a quiet window (#1622). One more request that IS auditable,
+    // issued after the three that must not be. Capture is scheduled on `finish`
+    // in request order and the writes queue behind each other on the same
+    // connection, so the moment THIS row is readable, the three suppressed ones
+    // have already been through `recordRequest`. A flat `sleep(25)` only ever
+    // hoped for that, and hoped less well the busier the machine was.
+    await request(harness.app).get('/api/v1/portfolios').set('Authorization', `Bearer ${token}`);
+    const requestLog = createApiKeyRequestLogRepository(harness.db, harness.db);
+    await vi.waitFor(async () => {
+      expect((await requestLog.listForKey(keyId, 10)).map((row) => row.path)).toContain(
+        '/portfolios',
+      );
+    });
 
-    const rows = await createApiKeyRequestLogRepository(harness.db, harness.db).listForKey(
-      keyId,
-      10,
+    const rows = await requestLog.listForKey(keyId, 10);
+    // Exactly the two auditable paths, and nothing from the three roster-bearing
+    // asset reads — `createdAt` ties make the row ORDER unstable, so assert the
+    // membership and the count rather than a sequence.
+    expect(rows.map((row) => row.path).sort()).toEqual(
+      ['/portfolios', `/portfolios/${sibling.id}`].sort(),
     );
-    expect(rows.map((row) => row.path)).toEqual([`/portfolios/${sibling.id}`]);
     expect(JSON.stringify(rows)).not.toContain(lockedId);
     expect(JSON.stringify(rows)).not.toContain(RESOURCE_ASSET_ID);
   });
@@ -343,14 +360,12 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
         .set(...XRW);
       return res.status;
     };
-    const waitForRows = async (atLeast: number) => {
-      let rows = await repo.listForKey(keyId, 50);
-      for (let i = 0; i < 40 && rows.length < atLeast; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        rows = await repo.listForKey(keyId, 50);
-      }
-      return rows;
-    };
+    const waitForRows = (atLeast: number) =>
+      vi.waitFor(async () => {
+        const rows = await repo.listForKey(keyId, 50);
+        expect(rows.length).toBeGreaterThanOrEqual(atLeast);
+        return rows;
+      });
 
     const beforeVault = await createAsset('Vintage car');
     const afterVault = await createAsset('Family home');
@@ -383,11 +398,16 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     // The write still SUCCEEDS — suppression is about the audit row, never
     // about refusing the user their own custom asset.
     expect(await deleteAsset(afterVault)).toBe(204);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // BARRIER, not a quiet window (#1622): an auditable request issued after the
+    // suppressed DELETE. Its row appearing proves the DELETE's capture already
+    // ran and chose to write nothing.
+    await request(harness.app).get('/api/v1/portfolios').set('Authorization', `Bearer ${token}`);
+    const after = await waitForRows(auditedBefore + 1);
 
-    const after = await repo.listForKey(keyId, 50);
-    // Not one row was added by that DELETE, and the uuid is nowhere in the log.
-    expect(after).toHaveLength(auditedBefore);
+    // The DELETE added nothing of its own — only the barrier's row — and the
+    // private uuid is nowhere in the log.
+    expect(after).toHaveLength(auditedBefore + 1);
+    expect(after.map((row) => row.path)).toContain('/portfolios');
     expect(after.map((row) => row.path)).not.toContain(`/custom-assets/${afterVault}`);
     expect(JSON.stringify(after)).not.toContain(afterVault);
   });

@@ -100,15 +100,36 @@ async function countHarnessClients(redis: Redis): Promise<number> {
   return raw.split('\n').filter((line) => line.includes(marker)).length;
 }
 
-/** Sample until two consecutive reads agree — connects land asynchronously. */
+/**
+ * Sample until two consecutive reads agree — connects land asynchronously.
+ *
+ * `previous` starts as NaN ON PURPOSE. `vi.waitFor` runs its callback
+ * immediately, so seeding it with a live read would make the first two
+ * "consecutive reads" microseconds apart and the helper would return whatever
+ * the very first sample happened to be — where the loop this replaced always
+ * waited one 50 ms interval before its first comparison. NaN never equals
+ * anything, so the first pass can only record a baseline, and the earliest a
+ * number can be called stable is one full interval later. That matters: these
+ * counts are the baselines the #1914/#1485 socket-leak assertions are measured
+ * against, and a baseline taken mid-connect hides the leak it exists to catch.
+ */
 async function stableClientCount(redis: Redis): Promise<number> {
-  const deadline = Date.now() + 2_000;
-  let previous = await countHarnessClients(redis);
-  for (;;) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const next = await countHarnessClients(redis);
-    if (next === previous || Date.now() > deadline) return next;
-    previous = next;
+  let previous = Number.NaN;
+  try {
+    return await vi.waitFor(
+      async () => {
+        const next = await countHarnessClients(redis);
+        const agreed = next === previous;
+        previous = next;
+        if (!agreed) throw new Error(`client count still moving (now ${next})`);
+        return next;
+      },
+      { timeout: 2_000, interval: 50 },
+    );
+  } catch {
+    // Deadline reached: hand back the last reading, exactly as before. This
+    // helper never decides whether a number is acceptable — the caller does.
+    return previous;
   }
 }
 
@@ -119,13 +140,21 @@ async function stableClientCount(redis: Redis): Promise<number> {
  * the real number.
  */
 async function settledClientCount(redis: Redis, expected: number): Promise<number> {
-  const deadline = Date.now() + 2_000;
   let count = await countHarnessClients(redis);
-  while (count !== expected && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    count = await countHarnessClients(redis);
+  try {
+    return await vi.waitFor(
+      async () => {
+        count = await countHarnessClients(redis);
+        expect(count).toBe(expected);
+        return count;
+      },
+      { timeout: 2_000, interval: 25 },
+    );
+  } catch {
+    // Deadline reached: hand back the last reading so the caller's assertion —
+    // not this helper — reports the leak.
+    return count;
   }
-  return count;
 }
 
 describe.runIf(integrationMode)('harness lifecycle on real Redis (#1914)', () => {

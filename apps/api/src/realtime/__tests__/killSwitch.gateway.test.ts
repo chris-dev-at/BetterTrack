@@ -21,6 +21,7 @@ import {
 
 import { createAssetRepository } from '../../data/repositories/assetRepository';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import { waitForSocketAck, waitForSocketEvent } from '../../test/waitFor';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
 import {
   REALTIME_FEATURE_SHED_MAX_DELAY_MS,
@@ -167,46 +168,21 @@ async function flip(agent: Agent, key: string, enabled: boolean): Promise<void> 
   expect(res.status).toBe(200);
 }
 
-function waitForEvent<T>(socket: ClientSocket, event: string, ms = 3000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event}`)), ms);
-    socket.once(event, (payload: T) => {
-      clearTimeout(timer);
-      resolve(payload);
-    });
-  });
-}
-
 function watch(
   socket: ClientSocket,
   assetId: string,
   window: string,
 ): Promise<RealtimeLiveWatchAck> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for live.watch ack')), 3000);
-    socket.emit(
-      REALTIME_CLIENT_EVENTS.liveWatch,
-      { assetId, window },
-      (ack: RealtimeLiveWatchAck) => {
-        clearTimeout(timer);
-        resolve(ack);
-      },
-    );
+  return waitForSocketAck<RealtimeLiveWatchAck>(socket, REALTIME_CLIENT_EVENTS.liveWatch, {
+    assetId,
+    window,
   });
 }
 
 /** Join the `asset:{id}` room so `quote.updated` is addressed to this socket. */
 function joinAssetRoom(socket: ClientSocket, assetId: string): Promise<RealtimeRoomAck> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for room.join ack')), 3000);
-    socket.emit(
-      REALTIME_CLIENT_EVENTS.roomJoin,
-      { room: { kind: 'asset', id: assetId } },
-      (ack: RealtimeRoomAck) => {
-        clearTimeout(timer);
-        resolve(ack);
-      },
-    );
+  return waitForSocketAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.roomJoin, {
+    room: { kind: 'asset', id: assetId },
   });
 }
 
@@ -250,7 +226,7 @@ describe('`realtime` OFF sheds connections that are already established', () => 
     socket.on('disconnect', (reason: string) => {
       closeReason = reason;
     });
-    const disabled = waitForEvent<RealtimeFeatureDisabled>(
+    const disabled = waitForSocketEvent<RealtimeFeatureDisabled>(
       socket,
       REALTIME_SERVER_EVENTS.featureDisabled,
     );
@@ -280,7 +256,7 @@ describe('`realtime` OFF sheds connections that are already established', () => 
     // so the shed socket's silence is a conclusion, not a race.
     await flip(admin, 'realtime', true);
     const reconnected = await connect(cookie);
-    const delivered = waitForEvent(reconnected, REALTIME_SERVER_EVENTS.notificationNew);
+    const delivered = waitForSocketEvent(reconnected, REALTIME_SERVER_EVENTS.notificationNew);
     await harness.ctx.events.publish({
       type: 'notification.created',
       userId: user.id,
@@ -306,7 +282,7 @@ describe('`realtime` OFF sheds connections that are already established', () => 
     const configReads = vi.spyOn(harness.ctx.featureFlags, 'resolver');
 
     await flip(admin, 'realtime', false);
-    const stillPushed = waitForEvent(socket, REALTIME_SERVER_EVENTS.notificationNew);
+    const stillPushed = waitForSocketEvent(socket, REALTIME_SERVER_EVENTS.notificationNew);
     await pushEvents(user.id, assetId);
     await stillPushed;
     // The emit paths never consult the flag; the switch is enforced by the sweep
@@ -345,7 +321,7 @@ describe('a narrowed rollout sheds exactly the sockets it excludes', () => {
     const admin = await adminAgent();
     const deniedSocket = await connect(await loginCookie(denied));
     const keptSocket = await connect(await loginCookie(kept));
-    const disabled = waitForEvent<RealtimeFeatureDisabled>(
+    const disabled = waitForSocketEvent<RealtimeFeatureDisabled>(
       deniedSocket,
       REALTIME_SERVER_EVENTS.featureDisabled,
     );
@@ -395,7 +371,7 @@ describe('`liveMode` OFF sheds established watches, not the connection', () => {
     const admin = await adminAgent();
     const watchedId = await seedAsset('WATCHED.DE');
     const socket = await connect(await loginCookie(user));
-    const disabled = waitForEvent<RealtimeFeatureDisabled>(
+    const disabled = waitForSocketEvent<RealtimeFeatureDisabled>(
       socket,
       REALTIME_SERVER_EVENTS.featureDisabled,
     );
