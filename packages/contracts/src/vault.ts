@@ -4,7 +4,7 @@ import { MAX_PASSWORD_LENGTH } from './auth';
 import {
   CASH_RULE_PATTERN_MAX,
   CASH_TAGS_PER_ITEM_MAX,
-  CASH_TAGS_PER_USER_MAX,
+  CASH_TAGS_RESTORE_MAX,
   cashRuleMatchTypeSchema,
 } from './cash';
 import {
@@ -1835,44 +1835,311 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
 }
 
 /**
+ * EVERY RESTORE-REACHABLE UNIQUE KEY, STATED ONCE (#1973).
+ *
+ * A vault document is client-authored, and the rehydration transaction inserts
+ * it into twenty tables with NO `onConflict` handling anywhere — deliberately,
+ * because a conflict there means a document no legitimate capture wrote, and
+ * absorbing it would silently accept a payload the server cannot explain. The
+ * cost of that promise is that every unique key those inserts can meet is a
+ * Postgres `23505` raised INSIDE the open transaction: a 500 for a payload the
+ * server could have named at the door and, on the paranoid exit, a dead end with
+ * no code the client can show.
+ *
+ * #1963 closed one pair (`cash_rule_tags_rule_tag_unique`). This states the
+ * whole set in one place, so the next table added to the restore lane is
+ * answered here rather than one pair at a time.
+ *
+ * ── THE COMPLETE KEY TABLE ──────────────────────────────────────────────────
+ *
+ * Every `uniqueIndex` and composite primary key on a table a `restore*` method
+ * of `paranoidRehydrationRepository.ts` inserts into, and where each is proved:
+ *
+ *  - `assets_provider_owner_unique` — `validateCustomAssetFacts` (providerRef
+ *    equals the entity id, provider is `manual`, owner is the caller) plus
+ *    `validateUniqueRestoredIds`.
+ *  - `assets_global_provider_ref_unique` — unreachable: partial, `where owner_id
+ *    is null`, and a restored custom asset always carries an owner.
+ *  - `price_history_asset_date_pk` — `validateGraph`, custom-asset value keys.
+ *  - `portfolios_user_name_unique` — `validateGraph`, portfolio name keys.
+ *  - `portfolio_cash_sources_portfolio_name_unique` — `validateGraph`.
+ *  - `portfolio_cash_sources_main_unique` — `validateGraph`, exactly one active
+ *    main source per portfolio.
+ *  - `user_tax_settings` (user_id) — `validateGraph`, at most one tax setting.
+ *  - `portfolio_settings` (portfolio_id, key) — `validateGraph`.
+ *  - `standing_order_runs_period_unique` — `validateGraph`, run period keys.
+ *  - `expense_categories_user_name_unique` — `validateGraph`.
+ *  - `expense_transactions_user_dedup_unique` — `validateGraph`.
+ *  - `expense_budgets_category_unique` — `validateGraph`, one budget per
+ *    category.
+ *  - every remaining table (`transactions`, `dividends`, `standing_orders`,
+ *    `cash_rules`, `expense_rules`) carries an `id` primary key and nothing
+ *    else — `validateUniqueRestoredIds`.
+ *  - `portfolio_cash_movements_dedup_unique` — HERE,
+ *    `CASH_MOVEMENT_DEDUP_DUPLICATE`.
+ *  - `cash_tags_user_name_lower_unique` — HERE, `CASH_TAG_NAME_DUPLICATE`.
+ *  - `cash_tags_user_system_key_unique` — HERE,
+ *    `CASH_TAG_SYSTEM_KEY_DUPLICATE`.
+ *  - `cash_movement_tags_movement_tag_unique` — HERE,
+ *    `CASH_MOVEMENT_TAG_DUPLICATE`.
+ *  - `cash_budgets_portfolio_tag_period_unique` — HERE,
+ *    `CASH_BUDGET_PERIOD_DUPLICATE`.
+ *  - `cash_budgets_portfolio_tag_recurring_unique` — HERE,
+ *    `CASH_BUDGET_RECURRING_DUPLICATE`.
+ *  - `cash_rule_tags_rule_tag_unique` — HERE, `CASH_RULE_TAG_DUPLICATE` (#1963,
+ *    moved in so one function holds the whole set).
+ *
+ * `cash_budget_fires` and `expense_budget_fires` carry unique keys of their own
+ * and are deliberately NOT restored (derived exactly-once alert bookkeeping,
+ * rebuilt from the live ledger), so no document can reach them.
+ *
+ * ── WHY A FUNCTION AND NOT A REFINEMENT BODY ────────────────────────────────
+ *
+ * Two seams must state the SAME invariant, and the schema is the one that can be
+ * bypassed: `vaultStrictDocumentV1Schema` guards the HTTP restore route, and
+ * `validateParanoidRestoreDocument` guards the TABLE for any caller that parsed
+ * somewhere else (§13.5 is "the server does not trust a vault payload", not "the
+ * server trusts one parser"). Written twice they would drift; written once, the
+ * API service turns the returned violation into a 400 carrying the very code the
+ * zod issue carries.
+ *
+ * ── LIVE ROWS ONLY ──────────────────────────────────────────────────────────
+ *
+ * A tombstone is not a row the restore writes (#1961/#1972). A tombstoned twin
+ * beside a live row is delete-then-recreate, which is an ordinary edit — and the
+ * paranoid EXIT pushes every row of the unlocked vault, tombstones included,
+ * through this same schema. Comparing them would refuse documents the service
+ * accepts and could lock an account out of its own data.
+ *
+ * ── FIRST OFFENDER WINS ─────────────────────────────────────────────────────
+ *
+ * One walk, one violation. A document already refused does not become more
+ * refused, and a malformed one must not be able to make the server build a
+ * report proportional to its own size.
+ *
+ * ── THE ONE RESIDUAL, NAMED ─────────────────────────────────────────────────
+ *
+ * `cash_tags_user_name_lower_unique` indexes `lower(name)` — PostgreSQL's fold,
+ * under the database's collation. This compares `String.prototype.toLowerCase`,
+ * which is Unicode FULL case mapping, while a libc collation folds per code
+ * point (SIMPLE mapping). They agree on ordinary text, but code points exist
+ * where libc equates two names JavaScript does not (U+0130 LATIN CAPITAL LETTER
+ * I WITH DOT ABOVE is the textbook case), and such a document would still reach
+ * the index.
+ *
+ * It cuts the other way too on a handful of code points — JavaScript can fold a
+ * pair Postgres keeps apart — but there the answer is a refusal the owner can
+ * clear by renaming one tag, not a 500 and not lost data.
+ *
+ * The residual is accepted rather than guessed at, and this is the direction to
+ * accept it in: an approximation folding MORE than Postgres would refuse
+ * legitimate documents wholesale on the exit path — the failure this lane treats
+ * as graver than a loud one, because a refused exit is an account that cannot
+ * get its data back. `cashTagRepository.ensureSystemTags` already answers the
+ * same question with the same `toLowerCase()`, so the two agree with each other.
+ */
+export const VAULT_RESTORE_UNIQUE_KEY_CODES = {
+  cashTagName: 'CASH_TAG_NAME_DUPLICATE',
+  cashTagSystemKey: 'CASH_TAG_SYSTEM_KEY_DUPLICATE',
+  cashMovementDedup: 'CASH_MOVEMENT_DEDUP_DUPLICATE',
+  cashMovementTag: 'CASH_MOVEMENT_TAG_DUPLICATE',
+  cashBudgetPeriod: 'CASH_BUDGET_PERIOD_DUPLICATE',
+  cashBudgetRecurring: 'CASH_BUDGET_RECURRING_DUPLICATE',
+  cashRuleTag: 'CASH_RULE_TAG_DUPLICATE',
+} as const;
+
+/** The stable 400 code one refused restore-reachable unique key answers with. */
+export type VaultRestoreUniqueKeyCode =
+  (typeof VAULT_RESTORE_UNIQUE_KEY_CODES)[keyof typeof VAULT_RESTORE_UNIQUE_KEY_CODES];
+
+export interface VaultRestoreUniqueKeyViolation {
+  /** The stable client-facing code; identical on the zod issue and on the 400. */
+  readonly code: VaultRestoreUniqueKeyCode;
+  /** The PostgreSQL unique index this document would otherwise have hit. */
+  readonly index: string;
+  readonly message: string;
+}
+
+/**
+ * The first restore-reachable unique key this document's LIVE rows break, or
+ * `null` when they break none. See the table above for the complete key set and
+ * for the keys proved elsewhere.
+ */
+export function findRestoredUniqueKeyViolation(
+  entities: readonly VaultStrictEntity[],
+): VaultRestoreUniqueKeyViolation | null {
+  const tagNames = new Set<string>();
+  const tagSystemKeys = new Set<string>();
+  const movementDedup = new Set<string>();
+  const movementTags = new Set<string>();
+  const budgetPeriods = new Set<string>();
+  const budgetRecurring = new Set<string>();
+  const ruleTags = new Set<string>();
+
+  /**
+   * `\u0000` cannot occur in a uuid and every key below is uuid-prefixed, so a
+   * joined key stays unambiguous even where a later component is free text.
+   */
+  const claim = (
+    seen: Set<string>,
+    key: string,
+    code: VaultRestoreUniqueKeyCode,
+    index: string,
+    message: string,
+  ): VaultRestoreUniqueKeyViolation | null => {
+    if (seen.has(key)) return { code, index, message };
+    seen.add(key);
+    return null;
+  };
+
+  for (const entity of entities) {
+    if (entity.deletedAt !== null) continue;
+
+    switch (entity.kind) {
+      case 'cashTag': {
+        const nameClash = claim(
+          tagNames,
+          `${entity.data.userId}\u0000${entity.data.name.toLowerCase()}`,
+          VAULT_RESTORE_UNIQUE_KEY_CODES.cashTagName,
+          'cash_tags_user_name_lower_unique',
+          'An account may hold only one cash tag per name.',
+        );
+        if (nameClash) return nameClash;
+        // NULLs are distinct in a Postgres unique index, so the second key
+        // constrains app-owned tags only — it IS the system seed's idempotency
+        // key, which is why a user tag (no `systemKey`) can never trip it.
+        if (entity.data.systemKey === null) break;
+        const keyClash = claim(
+          tagSystemKeys,
+          `${entity.data.userId}\u0000${entity.data.systemKey}`,
+          VAULT_RESTORE_UNIQUE_KEY_CODES.cashTagSystemKey,
+          'cash_tags_user_system_key_unique',
+          'An account may hold only one cash tag per built-in key.',
+        );
+        if (keyClash) return keyClash;
+        break;
+      }
+
+      case 'cashMovement': {
+        // NULLs are distinct again, and that is the column's whole design: a
+        // hand-entered movement carries no hash and can never collide, while two
+        // IMPORTED rows sharing one hash are exactly the duplicate the index
+        // exists to stop — the row a re-imported bank statement would book twice.
+        if (entity.data.dedupHash === null) break;
+        const clash = claim(
+          movementDedup,
+          `${entity.data.portfolioId}\u0000${entity.data.dedupHash}`,
+          VAULT_RESTORE_UNIQUE_KEY_CODES.cashMovementDedup,
+          'portfolio_cash_movements_dedup_unique',
+          'A portfolio may hold only one cash movement per import deduplication hash.',
+        );
+        if (clash) return clash;
+        break;
+      }
+
+      case 'cashMovementTag': {
+        const clash = claim(
+          movementTags,
+          `${entity.data.movementId}\u0000${entity.data.tagId}`,
+          VAULT_RESTORE_UNIQUE_KEY_CODES.cashMovementTag,
+          'cash_movement_tags_movement_tag_unique',
+          'A cash movement may carry a tag only once.',
+        );
+        if (clash) return clash;
+        break;
+      }
+
+      case 'cashBudget': {
+        // TWO indexes, one invariant, and each names itself. `period_key` is
+        // NULLABLE by design (NULL = the recurring monthly target, `YYYY-MM` = a
+        // single-month override), and because NULLs are distinct the
+        // three-column index cannot constrain the recurring rows at all — the
+        // partial index does that. Answering with the index the document
+        // actually hit is what makes the code worth having.
+        if (entity.data.periodKey === null) {
+          const recurringClash = claim(
+            budgetRecurring,
+            `${entity.data.portfolioId}\u0000${entity.data.tagId}`,
+            VAULT_RESTORE_UNIQUE_KEY_CODES.cashBudgetRecurring,
+            'cash_budgets_portfolio_tag_recurring_unique',
+            'A portfolio may hold only one recurring cash budget per tag.',
+          );
+          if (recurringClash) return recurringClash;
+          break;
+        }
+        const periodClash = claim(
+          budgetPeriods,
+          `${entity.data.portfolioId}\u0000${entity.data.tagId}\u0000${entity.data.periodKey}`,
+          VAULT_RESTORE_UNIQUE_KEY_CODES.cashBudgetPeriod,
+          'cash_budgets_portfolio_tag_period_unique',
+          'A portfolio may hold only one cash budget per tag and month.',
+        );
+        if (periodClash) return periodClash;
+        break;
+      }
+
+      case 'cashRuleTag': {
+        const clash = claim(
+          ruleTags,
+          `${entity.data.ruleId}\u0000${entity.data.tagId}`,
+          VAULT_RESTORE_UNIQUE_KEY_CODES.cashRuleTag,
+          'cash_rule_tags_rule_tag_unique',
+          'A cash rule may link a tag only once.',
+        );
+        if (clash) return clash;
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  return null;
+}
+
+/**
  * THE CASH CLASSIFICATION SETS ARE CARDINALITIES, SO THE DOCUMENT BOUNDS THEM
- * (#1954 the fan-out, #1963 the tag count and the link identity).
+ * (#1954 the fan-out, #1963 the tag count, #1973 the key identities).
  *
- * Three facts about a restored cash lane that NO ROW SCHEMA CAN SEE, checked in
- * ONE walk over the entities so a refused document costs one pass:
+ * Facts about a restored cash lane that NO ROW SCHEMA CAN SEE:
  *
- *  1. how many tags the account holds          — `CASH_TAGS_PER_USER_MAX`
- *  2. how many tags one rule carries           — `CASH_TAGS_PER_ITEM_MAX`
- *  3. that a `(ruleId, tagId)` link appears ONCE — `cash_rule_tags_rule_tag_unique`
+ *  1. every restore-reachable UNIQUE KEY holds — {@link findRestoredUniqueKeyViolation}
+ *  2. how many tags the account holds          — `CASH_TAGS_RESTORE_MAX`
+ *  3. how many tags one rule carries           — `CASH_TAGS_PER_ITEM_MAX`
  *
- * ── 1. THE TAG COUNT (#1963) ────────────────────────────────────────────────
+ * ── 1. IDENTITY BEFORE CARDINALITY (#1973) ──────────────────────────────────
  *
- * The HTTP path now caps it on create (`cashTagService.createTag`), and the
- * document restates it because a restore never passes through that path. It is
- * the supply side of the fan-out: 20 000 restorable tags are what made 20 000
- * links to one rule reachable in the first place, and every tag is also a row in
- * an unbounded read and a cascade target of every delete.
+ * The unique keys are checked FIRST and as a class, not interleaved with the
+ * counts. A document pushed past a cap BY repeated rows is a document with
+ * repeated rows, and saying so is the honest answer — #1963 established that
+ * ordering for the `(ruleId, tagId)` pair against the fan-out cap, and it
+ * generalizes to every other key. Their full table, and the reason they live in
+ * a shared function rather than in this body, are on
+ * {@link findRestoredUniqueKeyViolation}.
  *
- * ── 3. THE LINK IDENTITY (#1963) ────────────────────────────────────────────
+ * Two bounded walks rather than one, and deliberately: expressing "identity
+ * beats cardinality" in a single pass would order the answer by an entity's
+ * POSITION in the document instead of by what is actually wrong with it. Both
+ * walks are O(live entities) and the first violation ends them.
  *
- * `cash_rule_tags` carries a UNIQUE (rule_id, tag_id) index and the restore
- * repository inserts with no conflict handling deliberately — "a duplicate here
- * means a malformed vault, which must fail loudly rather than be absorbed".
- * Loudly meant a driver error inside the OPEN rehydration transaction: a 500
- * raised after the document was proved and the write had begun. The pair is
- * stated here so the same document is refused BEFORE any of that, as a 400 that
- * says what is wrong.
+ * ── 2. THE TAG COUNT (#1963) ────────────────────────────────────────────────
  *
- * Refused rather than de-duplicated because no producer in the app can write
- * this shape: every capture reads a rule's tag set from the table that unique
- * index guards, so a repeated pair is a document nothing legitimate authored.
- * Absorbing it with `onConflictDoNothing` would accept a payload we cannot
- * explain and would make the fan-out cap count something other than what lands
- * in the table. The pair check runs BEFORE the fan-out count, so a rule pushed
- * past the cap BY duplicates is named as a duplicate rather than as an
- * over-tagged rule.
+ * The HTTP path caps it on create (`cashTagService.createTag`), and the document
+ * restates it because a restore never passes through that path. It is the supply
+ * side of the fan-out: 20 000 restorable tags are what made 20 000 links to one
+ * rule reachable in the first place, and every tag is also a row in an unbounded
+ * read and a cascade target of every delete.
  *
- * ── 2. A RULE'S TAG FAN-OUT IS A CARDINALITY (#1954) ────────────────────────
+ * The RESTORE ceiling is `CASH_TAGS_RESTORE_MAX`, not the create cap, and the
+ * difference is load-bearing rather than slack: `ensureSystemTags` and the
+ * fusion catch-up both write `cash_tags` without passing `createTag`, so an
+ * account sitting exactly on the create cap can be pushed over it by the app
+ * itself. Reading the create cap here would make that account's paranoid exit
+ * refuse a document it authored honestly. See the constant for the full
+ * argument (#1973 addendum).
+ *
+ * ── 3. A RULE'S TAG FAN-OUT IS A CARDINALITY (#1954) ────────────────────────
  *
  * `cash_rule_tags` is a link table: one row is `(ruleId, tagId)` and no row
  * schema can see how many siblings it has. The HTTP path bounds the set at
@@ -1901,16 +2168,29 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
  *
  * COUNTS LIVE ROWS ONLY — see the tombstone note in the loop; it is the half of
  * this refinement that keeps it in step with the service gate and keeps it off
- * the paranoid exit path. It applies to all three checks: a soft-deleted tag is
- * not a tag the account holds, and a tombstoned link beside a live one is an
- * unlink followed by a relink, not a duplicate.
+ * the paranoid exit path. It applies to every check on both walks: a soft-deleted
+ * tag is not a tag the account holds, and a tombstoned row beside a live twin is
+ * a delete followed by a recreate, not a duplicate.
  */
 function refineRestoredCashSets(
   value: { readonly entities: readonly VaultStrictEntity[] },
   ctx: z.RefinementCtx,
 ): void {
+  // Walk one: identity. Every restore-reachable unique key, in the one function
+  // the API service's pre-transaction gate calls too, so the two cannot drift.
+  const violation = findRestoredUniqueKeyViolation(value.entities);
+  if (violation) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['entities'],
+      params: { code: violation.code },
+      message: violation.message,
+    });
+    return;
+  }
+
+  // Walk two: cardinality.
   const perRule = new Map<string, number>();
-  const seenLinks = new Set<string>();
   let liveTags = 0;
   for (const entity of value.entities) {
     // LIVE ROWS ONLY. A tombstone is not a row the account carries: the restore
@@ -1929,14 +2209,14 @@ function refineRestoredCashSets(
 
     if (entity.kind === 'cashTag') {
       liveTags += 1;
-      if (liveTags > CASH_TAGS_PER_USER_MAX) {
+      if (liveTags > CASH_TAGS_RESTORE_MAX) {
         ctx.addIssue({
           code: z.ZodIssueCode.too_big,
           type: 'array',
-          maximum: CASH_TAGS_PER_USER_MAX,
+          maximum: CASH_TAGS_RESTORE_MAX,
           inclusive: true,
           path: ['entities'],
-          message: `An account may hold at most ${CASH_TAGS_PER_USER_MAX} cash tags.`,
+          message: `An account may restore at most ${CASH_TAGS_RESTORE_MAX} cash tags.`,
         });
         return;
       }
@@ -1945,21 +2225,8 @@ function refineRestoredCashSets(
 
     if (entity.kind !== 'cashRuleTag') continue;
 
-    // The pair BEFORE the count: a rule pushed past the fan-out cap by repeats
-    // is a document with duplicate links, and saying so is the honest answer.
-    // `\u0000` cannot occur in a uuid, so the joined key is unambiguous.
-    const pair = `${entity.data.ruleId}\u0000${entity.data.tagId}`;
-    if (seenLinks.has(pair)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['entities'],
-        params: { code: 'CASH_RULE_TAG_DUPLICATE' },
-        message: 'A cash rule may link a tag only once.',
-      });
-      return;
-    }
-    seenLinks.add(pair);
-
+    // The pair itself was proved on walk one, so a rule pushed past the fan-out
+    // cap BY repeats has already been named as a duplicate rather than counted.
     const count = (perRule.get(entity.data.ruleId) ?? 0) + 1;
     if (count > CASH_TAGS_PER_ITEM_MAX) {
       ctx.addIssue({

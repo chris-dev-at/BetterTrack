@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { CASH_TAGS_PER_USER_MAX } from '@bettertrack/contracts';
+import {
+  CASH_SYSTEM_TAGS,
+  CASH_TAGS_PER_USER_MAX,
+  CASH_TAGS_RESTORE_MAX,
+} from '@bettertrack/contracts';
 
 import type { CashRuleRepository } from '../../../data/repositories/cashRuleRepository';
 import type {
@@ -105,13 +109,36 @@ describe('per-user tag cap', () => {
   });
 });
 
-describe('restored tags meet the same cap a written one does', () => {
+describe('restored tags meet the RESTORE ceiling (#1973 addendum)', () => {
+  /**
+   * NOT `CASH_TAGS_PER_USER_MAX`, and the difference is the point. `cash_tags`
+   * has two writers that never pass `createTag` — `ensureSystemTags` and the
+   * fusion catch-up's bare `onConflictDoNothing` — so an account sitting exactly
+   * on the create cap can be pushed over it by the APP. Measured against the
+   * create cap, this gate would then refuse to give that account its data back.
+   */
   const restoredTags = (count: number) =>
     Array.from({ length: count }, (_unused, i) => ({ name: `tag-${i}` }));
 
-  it('accepts a document landing exactly ON the cap', async () => {
+  it('derives the ceiling from the create cap plus the whole app-owned seed', () => {
+    expect(CASH_TAGS_RESTORE_MAX).toBe(CASH_TAGS_PER_USER_MAX + CASH_SYSTEM_TAGS.length);
+  });
+
+  it('accepts an account at the CREATE cap that a later release re-seeded', async () => {
+    // The trap, on this seam: 1000 tags the user made, plus a system tag a
+    // future `CASH_SYSTEM_TAGS` entry added behind them.
+    const insertTags = vi.fn(async () => {});
+
+    await service(stubTags()).restoreTags(USER, restoredTags(CASH_TAGS_PER_USER_MAX + 1), {
+      insertTags,
+    });
+
+    expect(insertTags).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a document landing exactly ON the ceiling', async () => {
     const insertTags = vi.fn(async (_rows: readonly { name: string }[]) => {});
-    const document = restoredTags(CASH_TAGS_PER_USER_MAX);
+    const document = restoredTags(CASH_TAGS_RESTORE_MAX);
 
     await service(stubTags()).restoreTags(USER, document, { insertTags });
 
@@ -120,11 +147,11 @@ describe('restored tags meet the same cap a written one does', () => {
     expect(insertTags.mock.calls[0]![0]).toBe(document);
   });
 
-  it('refuses the WHOLE document one tag past the cap — never a bounded prefix', async () => {
+  it('refuses the WHOLE document one tag past the ceiling — never a bounded prefix', async () => {
     const insertTags = vi.fn(async () => {});
 
     const err = await refusal(() =>
-      service(stubTags()).restoreTags(USER, restoredTags(CASH_TAGS_PER_USER_MAX + 1), {
+      service(stubTags()).restoreTags(USER, restoredTags(CASH_TAGS_RESTORE_MAX + 1), {
         insertTags,
       }),
     );
@@ -147,9 +174,9 @@ describe('restored tags meet the same cap a written one does', () => {
     expect(insertTags).not.toHaveBeenCalled();
   });
 
-  it('counts tags the account ALREADY has, so a re-run cannot walk past the cap', async () => {
+  it('counts tags the account ALREADY has, so a re-run cannot walk past the ceiling', async () => {
     const insertTags = vi.fn(async () => {});
-    const tags = stubTags({ countForOwner: vi.fn(async () => CASH_TAGS_PER_USER_MAX - 1) });
+    const tags = stubTags({ countForOwner: vi.fn(async () => CASH_TAGS_RESTORE_MAX - 1) });
 
     const err = await refusal(() =>
       service(tags).restoreTags(USER, restoredTags(2), { insertTags }),

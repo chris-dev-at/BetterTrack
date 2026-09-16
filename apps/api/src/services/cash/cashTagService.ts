@@ -3,6 +3,7 @@ import {
   CASH_SYSTEM_TAGS,
   CASH_TAGS_PER_ITEM_MAX,
   CASH_TAGS_PER_USER_MAX,
+  CASH_TAGS_RESTORE_MAX,
   type CashMovementTagsResponse,
   type CashRule,
   type CashRuleListResponse,
@@ -92,6 +93,25 @@ const RULE_TAG_DUPLICATE = () =>
 const TAG_LIMIT_REACHED = () =>
   conflict(
     `You already have the maximum of ${CASH_TAGS_PER_USER_MAX} tags. Delete one to add another.`,
+    'CASH_TAG_LIMIT_REACHED',
+  );
+/**
+ * The RESTORE lane's ceiling, and deliberately a different number from the one
+ * above (#1973 addendum). `ensureSystemTags` and the fusion catch-up both write
+ * `cash_tags` without passing {@link createTag}, so an account sitting exactly
+ * on the create cap can be pushed over it by the app itself — and then the cap
+ * would not be refusing a write, it would be refusing to give that account its
+ * data back. `CASH_TAGS_RESTORE_MAX` is the create cap plus the whole app-owned
+ * seed, derived so a tenth system key moves both sides at once.
+ *
+ * Same CODE as its sibling: the client's answer is unchanged ("this account
+ * holds too many tags"), only the number it is measured against differs, and a
+ * second code would make every caller learn a distinction that changes nothing
+ * they can do about it.
+ */
+const TAG_RESTORE_LIMIT_REACHED = () =>
+  conflict(
+    `A restore may install at most ${CASH_TAGS_RESTORE_MAX} tags.`,
     'CASH_TAG_LIMIT_REACHED',
   );
 
@@ -230,7 +250,8 @@ export interface CashTagService {
   deleteRule(userId: string, ruleId: string): Promise<void>;
   /**
    * Install restored tags through the per-user cap a written one meets
-   * (#1963) — `CASH_TAGS_PER_USER_MAX`, counting what the account already holds.
+   * (#1963) — at `CASH_TAGS_RESTORE_MAX` (#1973 addendum), counting what the
+   * account already holds.
    */
   restoreTags<TRow>(
     userId: string,
@@ -412,7 +433,7 @@ export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
     },
 
     /**
-     * THE TAG TABLE'S OWN GATE (#1963).
+     * THE TAG TABLE'S OWN GATE (#1963), AT THE RESTORE CEILING (#1973).
      *
      * `restoreRules` below caps how many rules a document installs and
      * `restoreRuleTags` caps how many tags each carries — and neither bounded
@@ -437,11 +458,15 @@ export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
      * Counts existing rows too: the restore writes into a wiped account today,
      * but a cap that only counted the document would be one re-run away from
      * being no cap at all.
+     *
+     * MEASURED AGAINST `CASH_TAGS_RESTORE_MAX`, not the create cap — see
+     * {@link TAG_RESTORE_LIMIT_REACHED}. The document schema reads the same
+     * ceiling, so the two seams accept and refuse the same documents.
      */
     async restoreTags(userId, rows, scope): Promise<void> {
       if (rows.length === 0) return;
-      if ((await tags.countForOwner(userId)) + rows.length > CASH_TAGS_PER_USER_MAX) {
-        throw TAG_LIMIT_REACHED();
+      if ((await tags.countForOwner(userId)) + rows.length > CASH_TAGS_RESTORE_MAX) {
+        throw TAG_RESTORE_LIMIT_REACHED();
       }
       await scope.insertTags(rows);
     },

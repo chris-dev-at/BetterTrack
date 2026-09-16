@@ -9,6 +9,7 @@ import type {
 } from '@bettertrack/contracts';
 import {
   customTaxParamsSchema,
+  findRestoredUniqueKeyViolation,
   MIRROR_LEDGER_OP_KINDS,
   mirrorOpPayloadSchema,
   paranoidDisableRehydrationRequestSchema,
@@ -40,6 +41,7 @@ import {
 } from '../../data/repositories/paranoidVaultRepository';
 import { createCashRuleRepository } from '../../data/repositories/cashRuleRepository';
 import { createCashTagRepository } from '../../data/repositories/cashTagRepository';
+import { badRequest } from '../../errors';
 import { createCashTagService } from '../cash/cashTagService';
 import { createExpenseBudgetService } from '../expenses/budgetService';
 import { createExpenseService } from '../expenses/expenseService';
@@ -2683,6 +2685,44 @@ async function ensureNoExistingRestorableRows(
 }
 
 /**
+ * THE UNIQUE KEYS, ON THE SECOND SEAM (#1973).
+ *
+ * `vaultStrictDocumentV1Schema` refuses these keys at parse time, which is the
+ * earliest possible refusal and the one that protects the HTTP restore route.
+ * This is the gate that protects the TABLES: it is what any caller with its own
+ * parse path meets — a second restore surface, a migration, a test harness — and
+ * §13.5's rule is that the server does not trust a vault payload, not that it
+ * trusts one parser. Neither check is redundant with the other; they guard
+ * different doors into the same rows.
+ *
+ * ONE IMPLEMENTATION, TWO SEAMS. Both call
+ * {@link findRestoredUniqueKeyViolation}, so the schema and the service cannot
+ * come to disagree about one document — a disagreement that, on the paranoid
+ * exit, means an account that can neither restore nor be told why.
+ *
+ * BEFORE THE TRANSACTION, not inside it. That is the whole point of the issue:
+ * every one of these keys used to be a `23505` raised by an INSERT in the open
+ * rehydration transaction — a 500 after the graph had been proved and most of
+ * the account had been written. Refused here, nothing is written at all and the
+ * ciphertext, the client's copy and the account all survive, so the user can fix
+ * the document and come back.
+ *
+ * A 400 CARRYING THE KEY'S OWN CODE, like #1963's `CASH_RULE_TAG_DUPLICATE`: an
+ * `ApiError` rather than a `ParanoidRehydrationError`, because both transition
+ * services rethrow anything that is not the latter untouched, so the stable code
+ * survives to the client instead of collapsing into one generic
+ * "invalid rehydration".
+ *
+ * LIVE ROWS ONLY — the caller hands `liveEntities(document)` in, and the shared
+ * function skips tombstones itself, so the two seams agree on a tombstoned twin
+ * beside a live row (a delete followed by a recreate, never a duplicate).
+ */
+export function assertRestoredUniqueKeys(entities: readonly Entity[]): void {
+  const violation = findRestoredUniqueKeyViolation(entities);
+  if (violation) throw badRequest(violation.message, violation.code);
+}
+
+/**
  * Strict, write-free restore validation shared by v1 account disable and E4
  * portfolio move-out. Every client-authored fact is normalized and proved
  * before a caller is allowed to open its restore transaction.
@@ -2712,6 +2752,11 @@ export async function validateParanoidRestoreDocument(
   // Account disable must retain its historical "one active portfolio" guard.
   // A per-portfolio move-out may legitimately restore an archived portfolio.
   validateGraph(input.userId, entities, input.portfolioId === undefined);
+  // After the graph, because a document that names rows it does not carry is
+  // malformed in a more basic way than one that carries a row twice — and the
+  // reference errors this preserves are what every existing restore refusal
+  // says. Both run before any transaction opens.
+  assertRestoredUniqueKeys(entities);
 
   // Authentication precedes option-B solvency: only a movement proved against
   // the retained append-only chain may carry the replica-force waiver.

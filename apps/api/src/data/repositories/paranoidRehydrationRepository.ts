@@ -452,21 +452,24 @@ export function createParanoidRehydrationSourceRepository(
     // these are plain inserts with no conflict handling — a duplicate here means
     // a malformed vault, which must fail loudly rather than be absorbed.
     //
-    // LOUDLY, BUT NOT FROM HERE (#1963). For `cash_rule_tags` that promise used
-    // to be kept by `cash_rule_tags_rule_tag_unique` raising a driver error
-    // inside this open transaction — a 500 for a payload the server could name
-    // at the door. A repeated `(ruleId, tagId)` pair is now refused twice
-    // before reaching this file: by the document schema
-    // (`vaultStrictDocumentV1Schema`) at parse time, and by
-    // `cashTagService.restoreRuleTags` on the way in. The insert stays
-    // conflict-free deliberately — absorbing a duplicate with
-    // `onConflictDoNothing` would silently accept a document nothing
-    // legitimate wrote — it just is no longer the thing that reports it.
+    // LOUDLY, BUT NOT FROM HERE (#1963, #1973). That promise used to be kept by
+    // the unique indexes themselves raising a driver error inside this open
+    // transaction — a 500 for a payload the server could name at the door, and,
+    // on the paranoid exit, a dead end with no code the client can show.
     //
-    // The other unique keys these inserts can still meet (a tag name colliding
-    // case-insensitively, a repeated `(movementId, tagId)`, a repeated budget
-    // period) have no such gate yet and remain 500s; issue #1963 scoped the
-    // rule→tag pair.
+    // EVERY unique key reachable from a client-authored document is now refused
+    // twice before reaching this file, each with its own stable 400 code: by
+    // `vaultStrictDocumentV1Schema` at parse time, and by
+    // `assertRestoredUniqueKeys` (`paranoidRehydrationService`) before the
+    // transaction opens. Both call one function —
+    // `findRestoredUniqueKeyViolation` in `@bettertrack/contracts` — which
+    // carries the complete key table and says where the keys proved elsewhere
+    // (`validateGraph`, `validateUniqueRestoredIds`) are proved.
+    //
+    // THE INSERTS BELOW STAY CONFLICT-FREE DELIBERATELY. Absorbing a duplicate
+    // with `onConflictDoNothing` would silently accept a document nothing
+    // legitimate wrote. A `23505` from any of them is now an INVARIANT BREAK —
+    // a bug in the gates above, not a client input — and must stay loud.
 
     async restoreCashTags(rows) {
       await forEachChunk(rows, async (chunk) => {
