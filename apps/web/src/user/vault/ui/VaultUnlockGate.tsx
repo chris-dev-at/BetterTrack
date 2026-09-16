@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { VaultMediaSet } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { getTwoFactorStatus } from '../../../lib/twoFactorApi';
-import { Button as OriginButton, CheckRow, Disclosure } from '../../../ui/origin';
+import { Button as OriginButton, Disclosure } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert, AuthCard, Button, TextField } from '../../components/ui';
@@ -45,10 +45,8 @@ export function VaultUnlockGate({
   const runtime = useVaultRuntime();
   const { user, logout } = useAuth();
   const [passphrase, setPassphrase] = useState('');
-  const [keepUnlocked, setKeepUnlocked] = useState(false);
   const [recoveryKit, setRecoveryKit] = useState<Uint8Array | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
-  const trustedAttempted = useRef(false);
   const driveSelected = mediaSet.includes('drive');
   const drivePreparation = useDriveGisPreparation(driveSelected, runtime.prepareDriveStorage);
   const driveReady = !driveSelected || drivePreparation.state === 'ready';
@@ -61,17 +59,13 @@ export function VaultUnlockGate({
    * frame is unmounted before it can paint and the user's last sight of a
    * one-way, irreversible flow would otherwise be a passphrase prompt.
    * Mounting while an unlock is ALREADY in flight is exactly that hand-off:
-   * this gate never starts one at mount (the effect below requires 'locked'),
-   * so somebody else owns it. Read once at mount, and never a lie either way —
-   * an account that reaches this gate at all is paranoid, so its vault is on.
+   * this gate starts no unlock of its own at any point — the trusted-device
+   * attempt that used to run here went out with the retired keep-unlocked
+   * custody (§12, #1640) — so somebody else owns it. Read once at mount, and
+   * never a lie either way: an account that reaches this gate at all is
+   * paranoid, so its vault is on.
    */
   const [handedOverFromEnable] = useState(() => runtime.phase === 'unlocking');
-
-  useEffect(() => {
-    if (trustedAttempted.current || runtime.phase !== 'locked') return;
-    trustedAttempted.current = true;
-    void runtime.unlockFromDevice({ authorizeDrive: false, driveOnly: false });
-  }, [runtime]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -81,7 +75,6 @@ export function VaultUnlockGate({
       const options = {
         authorizeDrive: driveSelected,
         driveOnly: mediaSet.length === 1 && driveSelected,
-        keepUnlocked,
       };
       if (recoveryKit != null) {
         await runtime.unlockWithRecoveryKit(recoveryKit, options);
@@ -111,11 +104,10 @@ export function VaultUnlockGate({
           value={passphrase}
         />
 
-        <CheckRow checked={keepUnlocked} disabled={busy} onChange={setKeepUnlocked}>
-          {t('vault.unlock.keepUnlocked')}
-          <span className="bt-muted mt-1 block text-xs">{t('vault.unlock.keepUnlockedHint')}</span>
-        </CheckRow>
-
+        {/* No "keep unlocked on this device" here, and never again: §12 retires
+            v1's persisted-VK convenience, and #1640 deleted the checkbox, the
+            write path and the read path together. The passphrase (or the
+            recovery kit) is required once per session, every session. */}
         <div className="bt-panel flex flex-col gap-2 p-3">
           <label className="bt-row-title" htmlFor="vault-recovery-kit">
             {t('vault.unlock.recoveryKit')}

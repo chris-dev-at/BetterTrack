@@ -775,7 +775,43 @@ export const mirrorChainListResponseSchema = z
   .strict();
 export type MirrorChainListResponse = z.infer<typeof mirrorChainListResponseSchema>;
 
-/** The member sheet (design §11): the chain header + the caller's role + the roster. */
+/**
+ * One still-open invite on a chain, as an owner/manager sees it in the member
+ * sheet (design §4 revocability + §11's "that sheet is the entire management
+ * surface"). Chain-scoped, NOT viewer-scoped: it lists invites the caller did
+ * not send, which is what makes a severed inviter's pending invite revocable
+ * before its 30-day horizon retires it.
+ *
+ * Carries no account ids — matching {@link mirrorInviteSchema}, the viewer
+ * needs a face, a name and the invite id it revokes with, and nothing here
+ * should hand a manager a durable handle on a stranger's account.
+ * `fromUsername` is null once the inviter's account is deleted (`from_user`
+ * SET NULL, design §1).
+ */
+export const mirrorChainPendingInviteSchema = z
+  .object({
+    id: z.string().uuid(),
+    toUsername: z.string(),
+    /** The invitee's curated icon — the same face the rest of the app shows. */
+    toProfileIcon: z.string().nullable(),
+    fromUsername: z.string().nullable(),
+    /** Whether the inviter still holds the §5 `invite` capability on this chain. */
+    inviterStillAuthorized: z.boolean(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type MirrorChainPendingInvite = z.infer<typeof mirrorChainPendingInviteSchema>;
+
+/**
+ * The member sheet (design §11): the chain header + the caller's role + the
+ * roster + (owner/manager only) every still-open invite on the chain.
+ *
+ * `pendingInvites` is always present and is ALWAYS EMPTY for a plain member:
+ * the §5 matrix gives `invite` to owner + manager only, and revocation is the
+ * same capability (design §4), so the list is exactly the set of invites the
+ * caller may act on. It rides the member sheet rather than a route of its own
+ * because §11 binds chain management to that one surface.
+ */
 export const mirrorMemberListResponseSchema = z
   .object({
     chainId: z.string().uuid(),
@@ -785,6 +821,7 @@ export const mirrorMemberListResponseSchema = z
     role: mirrorMemberRoleSchema,
     memberCap: z.number().int().positive(),
     members: z.array(mirrorMemberSchema),
+    pendingInvites: z.array(mirrorChainPendingInviteSchema),
   })
   .strict();
 export type MirrorMemberListResponse = z.infer<typeof mirrorMemberListResponseSchema>;

@@ -31,8 +31,16 @@ const cached = <T>(value: T) => ({ value, stale: false, asOf: Date.now() });
 const historyOf = (closes: number[]) =>
   cached(closes.map((close, i) => ({ time: `${dayOffset(-6 + i)}T00:00:00.000Z`, close })));
 
+/**
+ * A LOOPBACK LITERAL endpoint (#1656): the egress guard short-circuits on a
+ * literal, so this suite needs no DNS and stays offline — and loopback is the
+ * one local range that cannot collide with the deployment carve-out, which is
+ * derived from the running machine's own private interfaces when the env var is
+ * unset.
+ */
+const AI_ENDPOINT = 'http://127.0.0.1:11434';
 const AI_ENV = {
-  BT_OLLAMA_ENDPOINT: 'http://ollama.test:11434',
+  BT_OLLAMA_ENDPOINT: AI_ENDPOINT,
   BT_OLLAMA_MODEL: 'llama3.1:8b',
 } as const;
 
@@ -131,9 +139,12 @@ describe('AI features — insights (§13.5 V5-P12 2/2)', () => {
     expect(facts.topWeightPct).toBe(100); // NOT 999
     expect(facts.positionCount).toBe(1);
 
-    // LOCAL AI ONLY: the model was reached only at the configured local endpoint.
+    // LOCAL AI ONLY: the model was reached only at the configured endpoint, and
+    // that endpoint is a LOCAL one — the second half is the guarantee §16
+    // 2026-07-22 actually asks for, and the half that used to go unasserted.
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every((u) => u.startsWith('http://ollama.test:11434'))).toBe(true);
+    expect(calls.every((u) => u.startsWith(AI_ENDPOINT))).toBe(true);
+    expect(calls.every((u) => new URL(u).hostname === '127.0.0.1')).toBe(true);
   });
 
   it('rejects insights for a portfolio with no holdings (400, no completion spent)', async () => {
@@ -178,7 +189,8 @@ describe('AI features — NL conglomerate builder (§13.5 V5-P12 2/2)', () => {
     expect(nope.asset).toBeNull(); // unresolvable ⇒ flagged
     expect(nope.weightPct).toBe(40); // weight comes from the model
     // Only the configured local endpoint is ever reached.
-    expect(calls.every((u) => u.startsWith('http://ollama.test:11434'))).toBe(true);
+    expect(calls.every((u) => u.startsWith(AI_ENDPOINT))).toBe(true);
+    expect(calls.every((u) => new URL(u).hostname === '127.0.0.1')).toBe(true);
   });
 
   it('resolves intents catalog-only: a 50-intent draft spends no provider search and no enrichment budget (#1794)', async () => {
@@ -233,13 +245,19 @@ describe('AI features — NL conglomerate builder (§13.5 V5-P12 2/2)', () => {
 });
 
 describe('AI features — gating & cap (§13.5 V5-P12 2/2)', () => {
-  it('absent provider ⇒ capability disabled and both surfaces refuse (regression)', async () => {
+  /**
+   * The unconfigured regression, with the holding deliberately NOT seeded
+   * (#1656 defect 5). Seeding one was what let this pass while the refusal
+   * ORDERING was wrong: with data present, `AI_NO_DATA` never fired and the
+   * 503 at the end looked like the whole story. An EMPTY portfolio is the case
+   * that told the truth — it used to answer 400 `AI_NO_DATA`, a statement about
+   * the user's portfolio, on an install with no AI provider at all.
+   */
+  it('absent provider ⇒ capability disabled and both surfaces refuse, even for an EMPTY portfolio', async () => {
     const harness = await createTestApp({ marketData: stubMarket() }); // no AI env ⇒ unconfigured
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
-    const aaa = await seedAsset(harness, 'AAA');
-    await buy(agent, pid, aaa.id);
 
     // The single client gate reports disabled…
     const cap = aiCapabilityResponseSchema.parse((await agent.get('/api/v1/ai/capability')).body);
@@ -259,6 +277,53 @@ describe('AI features — gating & cap (§13.5 V5-P12 2/2)', () => {
       .send({ prompt: 'anything' });
     expect(draft.status).toBe(503);
     expect(draft.body.error.code).toBe('AI_UNAVAILABLE');
+  });
+
+  it('answers 503 — not 400 AI_NO_DATA — for a portfolio that DOES have holdings either', async () => {
+    const harness = await createTestApp({ marketData: stubMarket() }); // unconfigured
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const aaa = await seedAsset(harness, 'AAA');
+    await buy(agent, pid, aaa.id);
+
+    const res = await agent
+      .post('/api/v1/ai/insights')
+      .set(...XRW)
+      .send({ portfolioId: pid });
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('AI_UNAVAILABLE');
+  });
+
+  /**
+   * A local model that answers in prose instead of JSON used to spend a cap unit
+   * per attempt with no refund, so a user's whole daily budget drained while
+   * every call returned 502 (#1656 defect 5).
+   */
+  it('refunds the cap unit when the model produces nothing usable, and says so distinctly', async () => {
+    const { impl } = recordingAiFetch('I am terribly sorry, I cannot help with that.');
+    const harness = await createTestApp({
+      env: { ...AI_ENV, BT_AI_DAILY_CAP: '2' },
+      aiFetch: impl,
+    });
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const res = await agent
+        .post('/api/v1/ai/conglomerate-draft')
+        .set(...XRW)
+        .send({ prompt: 'something the model will not parse' });
+      // 422, not 502: the provider is healthy — the OUTPUT was unusable. A
+      // client can tell "rephrase" from "the local model is down".
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('AI_UNUSABLE_OUTPUT');
+    }
+
+    // Three failed attempts against a cap of 2, and the budget is untouched.
+    const cap = aiCapabilityResponseSchema.parse((await agent.get('/api/v1/ai/capability')).body);
+    expect(cap.used).toBe(0);
+    expect(cap.remaining).toBe(2);
   });
 
   it('enforces the per-user daily cap with the typed 429', async () => {
