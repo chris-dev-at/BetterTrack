@@ -114,6 +114,26 @@ export const usageAnalyticsResponseSchema = z.object({
    * is served as the nightly cron last materialized it. The read deliberately
    * survives that failure — the rest of the payload is unaffected — but the
    * staleness travels with the numbers rather than living only in a log line.
+   *
+   * REQUIRED ON PURPOSE — do not add `.default(false)` (#1952 item 3, rejected;
+   * the argument was forward compatibility for a new web bundle talking to an
+   * older API replica). This is a RESPONSE schema, and a default costs more
+   * than it buys on both of its two consumers:
+   *
+   *  - `adminRoutes.ts` re-parses `overview()`'s own output through this very
+   *    schema before serving it. While the field is required, that re-parse is
+   *    a real guard: a producer that stops emitting it fails loudly at the
+   *    boundary. A default turns the same regression into a silent `false` —
+   *    the page then reports FRESH numbers that are actually stale, which is
+   *    the one failure this field exists to make impossible.
+   *  - the schema is published as the `UsageAnalyticsResponse` OpenAPI
+   *    component (`http/openapi/document.ts`). A zod default makes the input
+   *    optional, so the generated component drops the field from `required` and
+   *    every client generated from the spec is told the server may omit it.
+   *
+   * The version-skew case it was meant to solve is also not real here: this is
+   * an admin-only surface, deployed as one API + one web bundle, and a replica
+   * old enough to omit the field predates the field existing at all.
    */
   todayRollupStale: z.boolean(),
   generatedAt: z.string().datetime(),
