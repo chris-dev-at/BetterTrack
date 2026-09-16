@@ -244,7 +244,15 @@ export async function createCaptureReceiver(): Promise<CaptureReceiver> {
   });
 
   const address = privateLanInterfaceAddress();
-  await new Promise<void>((resolve) => server.listen(0, address, resolve));
+  await new Promise<void>((resolve, reject) => {
+    // The bind can fail now that the address is variable (interface gone between
+    // enumeration and bind, a host firewall refusing non-loopback binds); without
+    // this handler the promise never settles and the spec dies at its timeout.
+    server.once('error', (err: Error) =>
+      reject(new Error(`E3: the capture receiver could not bind ${address}: ${err.message}`)),
+    );
+    server.listen(0, address, resolve);
+  });
   const { port } = server.address() as AddressInfo;
 
   return {
