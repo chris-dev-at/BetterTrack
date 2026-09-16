@@ -39,6 +39,7 @@ vi.mock('../../vault/export/deliver', () => ({
 import { webcrypto } from 'node:crypto';
 
 import { I18nProvider } from '../../../i18n';
+import { ApiError } from '../../../lib/apiClient';
 import { getMoneyCurrency, setMoneyCurrency } from '../../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../../lib/settingsApi';
 import { getProfileSettings, updateProfileSettings } from '../../../lib/socialApi';
@@ -337,6 +338,41 @@ describe('AccountPanel', () => {
       expect(screen.queryByRole('button', { name: 'Download export' })).not.toBeInTheDocument(),
     );
     expect(localStorage.getItem('bt.export.token')).toBeNull();
+  });
+
+  // FRONTEND-09 (#1548): the export re-auth box is an account-security control,
+  // so a refused credential has to name it — not just announce into the region.
+  test('a refused export re-auth marks, describes and focuses the password box', async () => {
+    vi.mocked(requestDataExport).mockRejectedValue(
+      new ApiError(401, 'INVALID_CREDENTIALS', 'nope'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(await screen.findByLabelText('Confirm your password'), 'wrong-password');
+    await user.click(screen.getByRole('button', { name: 'Export my data' }));
+
+    const field = await screen.findByLabelText('Confirm your password');
+    await waitFor(() => expect(field).toHaveAttribute('aria-invalid', 'true'));
+    expect(field).toHaveAccessibleDescription('Your password is incorrect.');
+    expect(field).toHaveFocus();
+  });
+
+  test('a rate-limited export stays form-level with no control blamed', async () => {
+    // The daily allowance judged nothing that was typed, so the summary takes
+    // focus and the password box is left alone.
+    vi.mocked(requestDataExport).mockRejectedValue(
+      new ApiError(429, 'EXPORT_RATE_LIMITED', 'slow down'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(await screen.findByLabelText('Confirm your password'), 'oldpassword1');
+    await user.click(screen.getByRole('button', { name: 'Export my data' }));
+
+    const alert = await screen.findByText(/once per day/i);
+    await waitFor(() => expect(alert.closest('[tabindex="-1"]')).toHaveFocus());
+    expect(screen.getByLabelText('Confirm your password')).not.toHaveAttribute('aria-invalid');
   });
 
   test('clears the legacy token on load and never restores download access from it', async () => {

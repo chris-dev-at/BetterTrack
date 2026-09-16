@@ -175,7 +175,9 @@ export function PortfolioCardsWidget({
             })}
           </p>
         ) : null}
-        {/* Every other `.bt-table` in the SPA sits in a `.bt-table-wrap`, which
+        {/* The four money columns do not fit a 390px viewport, so the table
+            scrolls locally rather than dragging the whole board sideways.
+            Every other `.bt-table` in the SPA sits in a `.bt-table-wrap`, which
             is where `overflow-x: auto` lives. Without it this table had nowhere
             to scroll and no way to compress (`.bt-table th` is `nowrap` and the
             100% width is a minimum under `table-layout: auto`), so a long
