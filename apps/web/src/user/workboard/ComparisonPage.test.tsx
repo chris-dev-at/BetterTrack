@@ -44,6 +44,7 @@ vi.mock('lightweight-charts', () => ({
   PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2, IndexedTo100: 3 },
 }));
 
+import { ApiError } from '../../lib/apiClient';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { compareConglomerates } from '../../lib/workboardApi';
 import { ComparisonPage } from './ComparisonPage';
@@ -114,6 +115,32 @@ function buildResponse(
     rebalance: 'none',
     series: ids.map((id) => seriesFor(id, baselineId, unresolvedById[id] ?? 0)),
   } as BacktestComparisonResponse;
+}
+
+/**
+ * The 422 the server raises when one compared basket does not cover the shared
+ * window (`BACKTEST_UNAVAILABLE`), carrying the structured `details` the client
+ * localizes from — never the English prose in `message` (#1659 defect 2).
+ */
+function windowMismatchError(
+  reason: 'clipped' | 'starts-late' | 'ends-early' = 'starts-late',
+  offender: { conglomerateId: string; name: string } = { conglomerateId: 'c3', name: 'Gamma' },
+) {
+  return new ApiError(
+    422,
+    'BACKTEST_UNAVAILABLE',
+    'Conglomerate Gamma does not cover the comparison window — its data starts 2025-08-01, after 2021-01-04.',
+    {
+      kind: 'comparison-window-mismatch',
+      conglomerateId: offender.conglomerateId,
+      name: offender.name,
+      reason,
+      windowStart: '2021-01-04',
+      windowEnd: '2026-01-05',
+      seriesStart: '2025-08-01',
+      seriesEnd: reason === 'ends-early' ? '2023-02-09' : null,
+    },
+  );
 }
 
 function makeQueryClient() {
@@ -329,5 +356,130 @@ describe('ComparisonPage', () => {
 
     await waitFor(() => expect(screen.getByText('Not enough blueprints yet')).toBeInTheDocument());
     expect(compareConglomerates).not.toHaveBeenCalled();
+  });
+
+  test('names the blueprint that broke the window, and offers the one action that fixes it (#1659)', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4), cong('c3', 'Gamma', 2)],
+    });
+    // Only a set containing Gamma is refused — exactly the server's behaviour.
+    vi.mocked(compareConglomerates).mockImplementation((body: BacktestComparisonRequest) =>
+      body.conglomerateIds.includes('c3')
+        ? Promise.reject(windowMismatchError())
+        : Promise.resolve(
+            buildResponse(body.conglomerateIds, body.baselineId ?? body.conglomerateIds[0]!),
+          ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Beta', 'Gamma']);
+
+    const alert = await screen.findByRole('alert');
+    // The offending basket is NAMED, with the dates that explain the refusal…
+    expect(alert).toHaveTextContent('Gamma');
+    expect(alert).toHaveTextContent('01.08.2025');
+    expect(alert).toHaveTextContent('04.01.2021');
+    // …and only it: the two baskets that DO cover the window are not blamed.
+    expect(alert).not.toHaveTextContent('Alpha');
+    expect(alert).not.toHaveTextContent('Beta');
+    // …nor is the server's English prose echoed into the page.
+    expect(alert).not.toHaveTextContent('Conglomerate Gamma does not cover');
+
+    // A retry would re-issue the identical request, so it is not offered…
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    // …the offered action is the one that actually changes the outcome.
+    const callsBefore = vi.mocked(compareConglomerates).mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Remove Gamma from the comparison' }));
+
+    const grid = await screen.findByRole('table', { name: 'Blueprint comparison statistics' });
+    expect(within(grid).getByText('Alpha')).toBeInTheDocument();
+    expect(within(grid).queryByText('Gamma')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(vi.mocked(compareConglomerates).mock.calls.length).toBeGreaterThan(callsBefore);
+    // The picker really deselected it — the refused basket is toggleable again.
+    expect(screen.getByRole('checkbox', { name: /Gamma/ })).not.toBeChecked();
+  });
+
+  test('explains a clipped and a delisted series in their own words (#1659)', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c3', 'Gamma', 2)],
+    });
+    vi.mocked(compareConglomerates).mockRejectedValue(windowMismatchError('ends-early'));
+    const user = userEvent.setup();
+    const { unmount } = renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Gamma']);
+
+    const delisted = await screen.findByRole('alert');
+    expect(delisted).toHaveTextContent('Gamma');
+    expect(delisted).toHaveTextContent('09.02.2023');
+    unmount();
+
+    // The clipped variant has no honest date to quote (the engine's notice is
+    // English prose), so it names the basket and stops there.
+    vi.mocked(compareConglomerates).mockRejectedValue(windowMismatchError('clipped'));
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Gamma']);
+
+    const clipped = await screen.findByRole('alert');
+    expect(clipped).toHaveTextContent('Gamma');
+    expect(clipped).not.toHaveTextContent('2025');
+  });
+
+  test('never leaves the window alert without an action when the named pick is not selected', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
+    });
+    // A refusal naming a basket this page does not hold (a stale error, an id
+    // the picker never had). There is nothing to drop, so the alert must fall
+    // back to the retry — which CAN succeed here, the next request differing.
+    vi.mocked(compareConglomerates).mockRejectedValueOnce(
+      windowMismatchError('starts-late', { conglomerateId: 'c9', name: 'Ghost' }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Beta']);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Ghost');
+    expect(screen.queryByRole('button', { name: /Remove .* from the comparison/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  });
+
+  test('keeps the generic window copy and its retry for a 422 that carries no structured cause', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
+    });
+    vi.mocked(compareConglomerates).mockRejectedValue(
+      new ApiError(422, 'BACKTEST_UNAVAILABLE', 'Conglomerate Alpha has no positions to backtest.'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Beta']);
+
+    expect(
+      await screen.findByText(
+        'One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 });

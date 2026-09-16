@@ -1,8 +1,10 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CASH_SYSTEM_TAGS,
+  CASH_TAGS_PER_USER_MAX,
   cashBudgetListResponseSchema,
   cashBudgetRawListResponseSchema,
   cashBudgetResponseSchema,
@@ -19,7 +21,7 @@ import {
   type CashTag,
 } from '@bettertrack/contracts';
 
-import { cashBudgetFires, expenseCategories, expenseTransactions } from '../data/schema';
+import { cashBudgetFires, cashTags, expenseCategories, expenseTransactions } from '../data/schema';
 import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -254,6 +256,60 @@ describe('cash tags', () => {
     // counting them.
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('CASH_TAG_NAME_TAKEN');
+  });
+
+  it('refuses a create once the account holds the maximum, and lets the last one in', async () => {
+    /**
+     * THE PER-USER TAG CAP OVER THE WIRE (#1963). The cap exists because the
+     * tag table is the supply side of the rule→tag fan-out #1954 capped, and
+     * because `GET /cash/tags` reads the whole set — but it is only a cap if the
+     * ROUTE applies it, so this drives the real request through the real service
+     * and the real repository count.
+     *
+     * The filler rows are written straight to the table: the point is the
+     * refusal at the boundary, not a thousand round trips to reach it.
+     */
+    const user = await harness.seedUser({
+      email: 'tagcap@bettertrack.test',
+      username: 'tagcapuser',
+    });
+    const agent = request.agent(harness.app);
+    const login = await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(login.status).toBe(200);
+
+    await harness.db.insert(cashTags).values(
+      Array.from({ length: CASH_TAGS_PER_USER_MAX - 1 }, (_unused, i) => ({
+        userId: user.id,
+        name: `filler-${i}`,
+        color: '#112233',
+        system: false,
+        systemKey: null,
+      })),
+    );
+
+    // The one that lands exactly ON the cap is still accepted.
+    const last = await agent
+      .post('/api/v1/cash/tags')
+      .set(...XRW)
+      .send({ name: 'the last one' });
+    expect(last.status).toBe(201);
+
+    const over = await agent
+      .post('/api/v1/cash/tags')
+      .set(...XRW)
+      .send({ name: 'one too many' });
+    expect(over.status).toBe(409);
+    expect(over.body.error.code).toBe('CASH_TAG_LIMIT_REACHED');
+
+    // And nothing was written for the refusal.
+    const held = await harness.db
+      .select({ id: cashTags.id })
+      .from(cashTags)
+      .where(eq(cashTags.userId, user.id));
+    expect(held).toHaveLength(CASH_TAGS_PER_USER_MAX);
   });
 
   it('never deletes an app-owned tag, but does let it be renamed', async () => {

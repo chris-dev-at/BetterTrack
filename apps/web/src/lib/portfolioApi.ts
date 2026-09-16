@@ -386,11 +386,22 @@ export async function clearPortfolioTaxOverride(
 /** `GET /portfolios/:id/cash?cursor=` — newest-first cash movement page + balance. */
 export async function getCashMovements(
   portfolioId: string,
-  params: CashMovementsQuery = {},
+  // `Partial`: `includeSourceTags` carries a schema default, so the parsed query
+  // type makes it required while most callers legitimately omit it.
+  params: Partial<CashMovementsQuery> = {},
   signal?: AbortSignal,
 ): Promise<CashMovementsResponse> {
   const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/cash`, {
-    query: params,
+    // `source` is the V5-P0c source-tag filter, `tag` the cash-flow label one;
+    // `includeSourceTags` opts into the portfolio-wide source facet and is sent
+    // as the string the query schema accepts (#1658).
+    query: {
+      cursor: params.cursor,
+      limit: params.limit,
+      source: params.source,
+      tag: params.tag,
+      includeSourceTags: params.includeSourceTags ? 'true' : undefined,
+    },
     signal,
   });
   return cashMovementsResponseSchema.parse(data);

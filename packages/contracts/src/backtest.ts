@@ -502,3 +502,62 @@ export const backtestComparisonResponseSchema = z
   })
   .strict();
 export type BacktestComparisonResponse = z.infer<typeof backtestComparisonResponseSchema>;
+
+// --- Comparison window refusals (§13.5 V5-P6 arc a, #1659) ------------------
+
+/**
+ * Why one compared series did not cover the shared window:
+ *
+ *  - `clipped` — the engine clipped it and said so in its own (English) notice;
+ *  - `starts-late` — its first covered day is materially after the window start;
+ *  - `ends-early` — its data stops inside the window (a delisting, a dead feed).
+ *
+ * The client renders its OWN localized sentence per reason. `clipped` carries no
+ * honest date of its own — the engine's explanation is prose, not a field — so a
+ * client must name the basket and stop there rather than quote a window bound as
+ * if it were the series' own.
+ */
+export const COMPARISON_WINDOW_MISMATCH_REASONS = ['clipped', 'starts-late', 'ends-early'] as const;
+export const comparisonWindowMismatchReasonSchema = z.enum(COMPARISON_WINDOW_MISMATCH_REASONS);
+export type ComparisonWindowMismatchReason = z.infer<typeof comparisonWindowMismatchReasonSchema>;
+
+/**
+ * The `details` payload of the 422 `BACKTEST_UNAVAILABLE` that `POST
+ * /backtest/compare` raises when one of the caller's own selected conglomerates
+ * does not cover the comparison window.
+ *
+ * The refusal is DETERMINISTIC — the same request fails the same way for as long
+ * as the basket's history does — so a client that can only read `message` has
+ * nothing to show but English prose and nothing to offer but a retry that cannot
+ * succeed. This names the offending basket structurally instead, so the SPA
+ * localizes the cause and can offer to drop that one pick.
+ *
+ * `conglomerateId` is a plain string rather than a UUID: it is error metadata a
+ * client uses only to look up a selection it already holds, and refusing to
+ * parse an unexpected id shape would silently degrade the message for no gain.
+ */
+export const comparisonWindowMismatchSchema = z
+  .object({
+    kind: z.literal('comparison-window-mismatch'),
+    conglomerateId: z.string().min(1),
+    name: z.string(),
+    reason: comparisonWindowMismatchReasonSchema,
+    /** The shared window the set was measured over. */
+    windowStart: z.string(),
+    windowEnd: z.string(),
+    /** The offending series' own span; `seriesEnd` is null when it reached the end. */
+    seriesStart: z.string().nullable(),
+    seriesEnd: z.string().nullable(),
+  })
+  .strict();
+export type ComparisonWindowMismatch = z.infer<typeof comparisonWindowMismatchSchema>;
+
+/**
+ * Narrow an `ApiError.details` of unknown shape to a window mismatch, or `null`.
+ * A server that predates the field, or any other 422 that happens to share the
+ * code, falls through to the caller's generic branch instead of throwing.
+ */
+export function parseComparisonWindowMismatch(details: unknown): ComparisonWindowMismatch | null {
+  const parsed = comparisonWindowMismatchSchema.safeParse(details);
+  return parsed.success ? parsed.data : null;
+}

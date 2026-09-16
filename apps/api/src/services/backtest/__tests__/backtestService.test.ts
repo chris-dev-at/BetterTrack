@@ -2,6 +2,7 @@ import {
   backtestComparisonResponseSchema,
   backtestResponseSchema,
   MAX_NESTING_DEPTH,
+  parseComparisonWindowMismatch,
   sharedSandboxAggregateResponseSchema,
   sharedSandboxPreviewRequestSchema,
   sharedSandboxPreviewResponseSchema,
@@ -618,6 +619,15 @@ describe('backtestService.runPreview — custom benchmarks (V4-P7)', () => {
       message:
         'Benchmark DELISTED does not cover the backtest window — its data ends 2025-06-15, before 2026-01-05.',
     });
+    // The structured cause (#1659) belongs to the COMPARISON path alone: a
+    // benchmark label may be a redacted subject and nothing on that surface acts
+    // on the identity, so this refusal carries no `details` at all.
+    await expect(
+      service.runPreview('u1', { ...primary, benchmark: { assetId: 'DELISTED' } }),
+    ).rejects.toSatisfy(
+      (err: unknown) => (err as { details?: unknown }).details === undefined,
+      'no structured details on the benchmark refusal',
+    );
   });
 
   it('tolerates a benchmark tail gap a trading calendar explains', async () => {
@@ -913,7 +923,30 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
         code: 'BACKTEST_UNAVAILABLE',
         message:
           'Conglomerate Gap Runner does not cover the comparison window — its data starts 2024-01-29, after 2024-01-02.',
+        // …and the refusal NAMES the offending basket structurally (#1659), so
+        // the SPA localizes its own sentence and can offer to drop that pick
+        // instead of echoing this prose beside a retry that cannot succeed. The
+        // refused basket is the gap one, whichever way the ids sort.
+        details: {
+          kind: 'comparison-window-mismatch',
+          conglomerateId: gapId,
+          name: 'Gap Runner',
+          reason: 'starts-late',
+          windowStart: '2024-01-02',
+          seriesStart: '2024-01-29',
+          seriesEnd: null,
+        },
       });
+
+      // …and the payload the SERVER sends really is the one the CLIENT parses.
+      // Both sides' own tests use hand-built fixtures, so without this the
+      // schema is only ever checked against itself: an extra server field would
+      // fail `.strict()` and silently demote every window refusal in the SPA to
+      // the generic "one of the selected blueprints" branch, with its retry.
+      const refusal = await run(longId, gapId).catch((err: unknown) => err);
+      expect(
+        parseComparisonWindowMismatch((refusal as { details?: unknown }).details),
+      ).not.toBeNull();
     }
   });
 

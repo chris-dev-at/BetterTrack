@@ -552,6 +552,19 @@ against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at.
 > is now `false` everywhere: a server the run did not start is never trusted, so
 > a leaked process fails the run instead of quietly answering for it.
 
+> **Who can reach the throwaway stack.** The e2e API (`BT_HOST`) and the BullMQ
+> worker wrapper's readiness endpoint listen on **127.0.0.1 only** — the browser,
+> the harness and both Vite servers never leave this box, and the stack boots with
+> repo-known seed-admin credentials plus `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`, so
+> an all-interfaces listener handed the developer's LAN an SSRF probe for the
+> length of a run. Production leaves `BT_HOST` empty, which binds every interface
+> exactly as before. The one thing that must **not** be on loopback is the webhook
+> specs' capture RECEIVER: the SSRF guard refuses `127.0.0.0/8` under every policy,
+> so `e2e/webhooks.spec.ts` needs this box to have a non-loopback **private**
+> (RFC1918) interface — a Docker bridge is enough — and fails with an explicit
+> error when it finds none. A listen address
+> constrains only who may dial in; the API still connects OUT to that receiver.
+
 It runs against two Playwright projects — `chromium`
 (`Desktop Chrome`) and `mobile-chromium` (`Pixel 7`, 412×839) — so the happy
 path is proven on a phone-width viewport as well as desktop. This is **not**

@@ -579,6 +579,43 @@ describe('empty variables', () => {
 });
 
 /**
+ * API listen address (#2004). The throwaway e2e stack narrows the listener to
+ * loopback, because it boots with repo-known seed-admin credentials and
+ * `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`; every shipped deployment leaves the key
+ * alone, and "left alone" MUST keep meaning the wildcard bind the API has always
+ * done. `undefined` is load-bearing, not cosmetic: `server.ts` branches on it to
+ * call `app.listen(port)` with no host, which is Node's DUAL-STACK wildcard —
+ * resolving it to `'0.0.0.0'` instead would quietly drop IPv6 in production.
+ *
+ * The empty-string case is the one that decides whether a stock box still boots:
+ * Compose renders `'${BT_HOST:-}'` as `BT_HOST=''` on every deployment that never
+ * set it, and a plain `.optional()` would reject that (see 'empty variables').
+ */
+describe('API listen address (#2004)', () => {
+  it('leaves the bind unset by default, so the listener stays on every interface', () => {
+    expect(config({}).host).toBeUndefined();
+  });
+
+  it("reads Compose's empty render as unset rather than as a bind to ''", () => {
+    expect(config({ BT_HOST: '' }).host).toBeUndefined();
+    expect(config({ BT_HOST: '   ' }).host).toBeUndefined();
+  });
+
+  it('carries an explicit narrowing address through to the server unchanged', () => {
+    expect(config({ BT_HOST: '127.0.0.1' }).host).toBe('127.0.0.1');
+    expect(config({ BT_HOST: '10.0.0.5' }).host).toBe('10.0.0.5');
+  });
+
+  it('does not let the metrics listener bind decide the API listener bind', () => {
+    // Sibling knobs with opposite defaults: BT_METRICS_HOST already defaults to
+    // loopback, BT_HOST must not inherit that or production would lose its door.
+    const cfg = config({ BT_METRICS_HOST: '0.0.0.0' });
+    expect(cfg.metrics.host).toBe('0.0.0.0');
+    expect(cfg.host).toBeUndefined();
+  });
+});
+
+/**
  * V5-P0 kill-switch vs. bot token (#1795). Two independent facts that used to be
  * ANDed into one flag: "does this build offer the channel" and "can it deliver".
  * The conflation made the documented `available: false` branch unreachable, and

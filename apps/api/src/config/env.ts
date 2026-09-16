@@ -51,6 +51,20 @@ const retentionDays = (defaultDays: number) =>
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
+  // Listen ADDRESS for the API's HTTP server (#2004). Unset — the default, and
+  // what the production Compose anchor renders — means `app.listen(port)` with
+  // no host argument: Node's dual-stack wildcard bind, exactly what every
+  // deploy has always done. Set it only to NARROW the door. The throwaway e2e
+  // stack pins `127.0.0.1` because it runs with repo-known seed-admin
+  // credentials and `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`, which together made
+  // it a LAN-reachable SSRF probe for the minutes a suite ran; a bare-metal
+  // self-host behind a local reverse proxy can use it the same way.
+  //
+  // Do NOT set it inside the shipped Compose topology: nginx reaches the api
+  // container across the service bridge, so a loopback bind there makes the API
+  // unreachable to the proxy and to the container healthcheck. Outbound
+  // connections are unaffected by this value.
+  BT_HOST: optionalNonEmpty,
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
   // 64 random bytes recommended; comma-separated to support key rotation.
@@ -754,6 +768,11 @@ export interface AppConfig {
   isProduction: boolean;
   isTest: boolean;
   port: number;
+  /**
+   * Bind address for the API listener (#2004). `undefined` ⇒ listen on all
+   * interfaces, which is what production does; a value narrows the bind.
+   */
+  host: string | undefined;
   databaseUrl: string;
   redisUrl: string;
   /** Base origin for generated links (invites, emails) — the user web origin. */
@@ -1449,6 +1468,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     isProduction,
     isTest,
     port: e.PORT,
+    host: e.BT_HOST,
     databaseUrl: e.DATABASE_URL,
     redisUrl: e.REDIS_URL,
     appOrigin: topology.webOrigin,

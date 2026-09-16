@@ -34,6 +34,14 @@ function constituentId(position: SharedSandboxConstituent): string {
 }
 
 /**
+ * One viewer re-weight, together with the SHARED weight it was made against.
+ * `sharedAt` is what makes a refetch decidable: equal to the new shared weight,
+ * the owner changed something else and the tweak stands; different, the ground
+ * the viewer was standing on moved and they are told so.
+ */
+type SandboxTweak = { weight: number; sharedAt: number };
+
+/**
  * Read-only view of a friend-shared conglomerate (PROJECTPLAN.md §6.9, §13.2
  * V2-P9): its positions with the embedded asset identity, exactly as the owner
  * sees them — no edit affordance anywhere. A non-friend / private / unknown
@@ -196,26 +204,97 @@ function WhatIfSandbox({
   const t = useT();
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState<BacktestPreviewRange>('MAX');
-  // Local weight overrides keyed by assetId/childId; seeded from the shared weights.
-  const [weights, setWeights] = useState<Record<string, number>>(() =>
-    Object.fromEntries(positions.map((p) => [constituentId(p), p.weightPct])),
-  );
+  // Only the constituents the viewer ACTUALLY re-weighted, keyed by
+  // assetId/childId. Seeding every row from the shared weights once (the
+  // pre-#1659 shape) froze the sandbox at mount: an owner-side re-weight then
+  // arrived in the read-only list above while these rows — and the curve and
+  // stats computed from them — still showed the weights captured at mount,
+  // presented as the shared basket. An absent entry means "no opinion", so an
+  // un-tweaked row simply follows its shared weight, forever.
+  const [tweaks, setTweaks] = useState<Record<string, SandboxTweak>>({});
+  // Rows whose SHARED weight moved while the viewer held a tweak on them. Their
+  // edit is kept (never silently discarded) and the notice says the baseline
+  // moved, so the two halves of the page can never disagree in silence.
+  const [supersededIds, setSupersededIds] = useState<string[]>([]);
+  const [syncedPositions, setSyncedPositions] = useState(positions);
 
-  // The tweak set is pinned to the CURRENT shared constituents: an un-tweaked (or
-  // newly-appeared) row falls back to its shared weight, so the request always
-  // covers exactly the shared basket — the server's exact-set guard is satisfied.
-  const weightFor = (id: string, fallback: number) => weights[id] ?? fallback;
+  // Re-seat the tweaks on refetched shared positions, during render so the very
+  // first paint after a refetch is already consistent (an effect would show one
+  // frame — and issue one preview request — at the superseded weights).
+  if (positions !== syncedPositions) {
+    setSyncedPositions(positions);
+    const shared = new Map(positions.map((p) => [constituentId(p), p.weightPct]));
+    const rebased: Record<string, SandboxTweak> = {};
+    const moved: string[] = [];
+    for (const [id, tweak] of Object.entries(tweaks)) {
+      const sharedNow = shared.get(id);
+      // The constituent left the shared basket: the tweak has nothing left to
+      // apply to, and dropping it here is what stops it resurrecting — silently,
+      // at a weight chosen against a basket that no longer held this row — if the
+      // owner adds the id back later.
+      if (sharedNow === undefined) continue;
+      // The owner landed ON the value the viewer had chosen. Keeping the entry
+      // would satisfy the letter of "the baseline moved" and contradict the page
+      // it sits on: every cell agrees, `isPristine` is true and Reset is
+      // DISABLED, yet the notice would tell the reader to press it — and, being
+      // carried forward by the filter below, would never clear. A converged row
+      // is the same "not an opinion" state `setTweak` drops, so drop it here too
+      // and there is nothing left to warn about.
+      if (tweak.weight === sharedNow) continue;
+      if (sharedNow !== tweak.sharedAt) moved.push(id);
+      rebased[id] = { weight: tweak.weight, sharedAt: sharedNow };
+    }
+    setTweaks(rebased);
+    setSupersededIds((previous) => [
+      ...previous.filter((id) => id in rebased),
+      ...moved.filter((id) => !previous.includes(id)),
+    ]);
+  }
+
+  /** Record a viewer edit, against the shared weight it was made from. */
+  const setTweak = (id: string, sharedWeight: number, weight: number) => {
+    const value = clampWeight(weight);
+    setTweaks((previous) => {
+      // Landing a row back on the weight it already shares with the basket is
+      // not an opinion — dragging a slider away and back must leave the row
+      // following the owner again, not frozen at a number that merely happens
+      // to match today.
+      if (value === sharedWeight) {
+        const rest = { ...previous };
+        delete rest[id];
+        return rest;
+      }
+      return { ...previous, [id]: { weight: value, sharedAt: sharedWeight } };
+    });
+    // A fresh edit on a superseded row IS the acknowledgement.
+    setSupersededIds((previous) => previous.filter((x) => x !== id));
+  };
+
+  const resetToShared = () => {
+    setTweaks({});
+    setSupersededIds([]);
+  };
+
+  // The request always covers exactly the CURRENT shared constituents: an
+  // un-tweaked (or newly-appeared) row falls back to its shared weight and a
+  // departed one contributes nothing, so the server's exact-set guard is
+  // satisfied on every refetch without a round trip through "reset".
+  const weightFor = (id: string, fallback: number) => tweaks[id]?.weight ?? fallback;
   const isPristine = positions.every(
     (position) => weightFor(constituentId(position), position.weightPct) === position.weightPct,
   );
+
+  const supersededLabels = positions
+    .filter((position) => supersededIds.includes(constituentId(position)))
+    .map((position) => (position.kind === 'asset' ? position.asset.symbol : position.child.name));
 
   const previewPositions = useMemo(
     () =>
       positions.map((position) => {
         const id = constituentId(position);
-        return { id, weight: weights[id] ?? position.weightPct };
+        return { id, weight: tweaks[id]?.weight ?? position.weightPct };
       }),
-    [positions, weights],
+    [positions, tweaks],
   );
   const allPositive = previewPositions.every((p) => p.weight > 0);
   const debouncedPositions = useDebounce(previewPositions, 400);
@@ -289,21 +368,24 @@ function WhatIfSandbox({
               }))}
               value={range}
             />
-            <Button
-              disabled={isPristine}
-              onClick={() =>
-                setWeights(
-                  Object.fromEntries(
-                    positions.map((position) => [constituentId(position), position.weightPct]),
-                  ),
-                )
-              }
-              size="sm"
-              variant="quiet"
-            >
+            <Button disabled={isPristine} onClick={resetToShared} size="sm" variant="quiet">
               {t('social.shared.sandbox.reset')}
             </Button>
           </div>
+
+          {supersededLabels.length > 0 ? (
+            // `role="status"` because this appears in response to a background
+            // refetch, not to anything the reader just did: without it the only
+            // signal that the ground moved under an edit is a silent repaint.
+            <p className="bt-gold-note" role="status" style={{ fontSize: 12 }}>
+              {t(
+                supersededLabels.length === 1
+                  ? 'social.shared.sandbox.sharedWeightsMovedOne'
+                  : 'social.shared.sandbox.sharedWeightsMovedOther',
+                { count: supersededLabels.length, names: supersededLabels.join(', ') },
+              )}
+            </p>
+          ) : null}
 
           <ul className="bt-band flex flex-col">
             {positions.map((position) => {
@@ -315,12 +397,7 @@ function WhatIfSandbox({
                   name={position.kind === 'asset' ? position.asset.name : undefined}
                   nested={position.kind === 'conglomerate'}
                   weight={weightFor(id, position.weightPct)}
-                  onWeight={(weight) =>
-                    setWeights((previous) => ({
-                      ...previous,
-                      [id]: clampWeight(weight),
-                    }))
-                  }
+                  onWeight={(weight) => setTweak(id, position.weightPct, weight)}
                 />
               );
             })}

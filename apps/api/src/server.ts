@@ -43,9 +43,19 @@ const app = createApp(ctx);
 // the queue holds events until a worker picks them up, so no notification is
 // ever lost to a restart on either side (#367's hard requirement).
 
-const server = app.listen(config.port, () => {
-  logger.info({ port: config.port }, 'BetterTrack API listening');
-});
+// `config.host` is unset in every shipped deployment, and the two-branch call
+// below is why: `listen(port)` with NO host argument is Node's dual-stack
+// wildcard bind, and passing `'0.0.0.0'` instead would silently drop IPv6 — a
+// container healthcheck or proxy dialling `[::1]`/`ip6-localhost` would start
+// failing. So the default path stays byte-for-byte the old call, and a set
+// BT_HOST narrows the bind (the e2e stack pins loopback, #2004).
+const server = config.host
+  ? app.listen(config.port, config.host, () => {
+      logger.info({ port: config.port, host: config.host }, 'BetterTrack API listening');
+    })
+  : app.listen(config.port, () => {
+      logger.info({ port: config.port }, 'BetterTrack API listening');
+    });
 
 // Attach the realtime gateway to the API's HTTP server (§4.5, V3-P7a). A no-op
 // when REALTIME_ENABLED=false — no socket server exists, zero behavior change.
