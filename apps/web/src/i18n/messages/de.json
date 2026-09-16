@@ -500,6 +500,8 @@
         "disconnected": "Drive-Konto getrennt. Seine Dateien bleiben in Google Drive.",
         "acknowledge": "Tresore verwenden diese Verbindung noch. Beim Trennen wird ihre Drive-Bindung entfernt und jede verifizierte Serverkopie bleibt genau so, wie sie ist — Änderungen, die nur Drive erreicht haben, bleiben zurück. Die verschlüsselten Dateien bleiben dein Eigentum in Google Drive.",
         "acknowledgeAction": "Trennen und Dateien in Drive behalten",
+        "acknowledgeStepUp": "Bestätige, dass du es bist, bevor diese Verbindung ihre Reichweite verliert: Es geht um eine der beiden Kopien deines Tresors.",
+        "acknowledgeStepUpError": "Die Bestätigung wurde nicht akzeptiert. Prüfe dein Passwort oder deinen Code und versuche es erneut.",
         "lastMedium": "Ein Tresor mit dieser Verbindung hat keine verifizierte Serverkopie, Drive hält also seine einzige Kopie. Das Medium „Server“ auszuwählen genügt nicht — dieser Tresor muss zuerst eine verifizierte Serverkopie abschließen oder in ein anderes Drive-Konto umziehen, bevor du trennst.",
         "error": "Die Drive-Verbindung konnte nicht geändert werden.",
         "bindings": "Drive-Bindungen der Tresore",

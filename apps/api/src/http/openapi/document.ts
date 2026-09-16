@@ -222,6 +222,8 @@ const componentSchemas = {
   PerVaultRetiredServerPurgeResponse: contracts.perVaultRetiredServerPurgeResponseSchema,
   DriveConnection: contracts.driveConnectionSchema,
   DriveConnectionListResponse: contracts.driveConnectionListResponseSchema,
+  DriveConnectionDisconnectAcknowledgedRequest:
+    contracts.driveConnectionDisconnectAcknowledgedRequestSchema,
   CreateDriveConnectionRequest: contracts.createDriveConnectionRequestSchema,
   CreateDriveConnectionResponse: contracts.createDriveConnectionResponseSchema,
 
@@ -4930,9 +4932,10 @@ const endpoints: EndpointDef[] = [
     tag: 'Vault',
     summary: 'Disconnect one caller-owned Drive identity without deleting the user’s Drive files.',
     description:
-      'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that hold a VERIFIED server copy: media must contain server AND mediaAttestedAt must be set, because a selected-but-never-attested server medium is a declaration, not a copy. Anything else — a Drive-only vault, or a server+drive vault whose full doc set has never attested — is refused as the last medium (PROJECTPLAN §16, 2026-08-21 and 2026-08-22). Takes no request body; a non-empty body is refused.',
+      'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that hold a VERIFIED server copy: media must contain server AND mediaAttestedAt must be set, because a selected-but-never-attested server medium is a declaration, not a copy. Anything else — a Drive-only vault, or a server+drive vault whose full doc set has never attested — is refused as the last medium (PROJECTPLAN §16, 2026-08-21 and 2026-08-22). The acknowledgement is a gated operation (paranoid design §15, #1632): acknowledgeBound=true MUST carry the in-body step-up credential {stepUp:{password|code|recoveryCode}}, verified inside the same account lock as the detach and refused generically onto a per-account progressive throttle. Without acknowledgeBound the request takes no body at all and a non-empty body is refused, so no method of this module accepts a Google token; the last-medium refusal is still decided before any credential is read.',
     params: contracts.driveConnectionIdParamSchema,
     query: contracts.driveConnectionDisconnectQuerySchema,
+    body: R.DriveConnectionDisconnectAcknowledgedRequest,
     status: 204,
   },
 
