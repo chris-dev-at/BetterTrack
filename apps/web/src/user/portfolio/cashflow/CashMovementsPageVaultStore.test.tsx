@@ -213,7 +213,7 @@ function renderPage(portfolioId: string, store?: PortfolioStore) {
           <CashMovementsPage />
         ) : (
           <PortfolioStoreProvider
-            capabilities={{ writes: false, rowReads: false }}
+            capabilities={{ writes: false, rowReads: false, serverPortfolioReads: false }}
             scope={[{ vaultAccess: 'vault-access-2006' }]}
             store={store}
           >
