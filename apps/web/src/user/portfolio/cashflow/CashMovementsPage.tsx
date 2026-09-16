@@ -187,9 +187,19 @@ export function CashMovementsPage() {
       />
 
       {tags.length > 1 || showSourceFilter ? (
+        /*
+         * `min-w-0` on each picker is load-bearing, not decoration. As a direct
+         * child of the page COLUMN a label stretched to the column's width and
+         * its select's `max-width: 100%` clamped against that. Inside this ROW a
+         * label is a main-axis item, so its default `min-width: auto` sizes it
+         * to content — a long label name then pushed the phone viewport into a
+         * horizontal scroll (the `mobile-overflow` gate's LONG_TAG_NAME
+         * fixture). `min-w-0` lets it shrink back to the line, and `flex-wrap`
+         * gives a picker that still cannot fit a line of its own.
+         */
         <div className="flex flex-wrap items-center gap-4">
           {tags.length > 1 ? (
-            <label className="bt-meta flex flex-wrap items-center gap-1.5">
+            <label className="bt-meta flex min-w-0 flex-wrap items-center gap-1.5">
               {t('cashflow.movements.filterLabel')}
               <select
                 className="bt-select"
@@ -208,7 +218,7 @@ export function CashMovementsPage() {
             </label>
           ) : null}
           {showSourceFilter ? (
-            <label className="bt-meta flex flex-wrap items-center gap-1.5">
+            <label className="bt-meta flex min-w-0 flex-wrap items-center gap-1.5">
               {t('portfolio.sourceTag.filterLabel')}
               <select
                 className="bt-select"
