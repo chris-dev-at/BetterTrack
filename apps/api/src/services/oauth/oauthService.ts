@@ -39,7 +39,11 @@ import type { OAuthClientRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
-import { AuditAction, type AuditService } from '../audit/auditService';
+import {
+  AuditAction,
+  type AuditService,
+  type BearerScopeDenialReason,
+} from '../audit/auditService';
 import { hashToken, sha256Base64Url } from '../crypto/tokens';
 import {
   createOAuthLogoFetcher,
@@ -148,11 +152,17 @@ export interface OAuthService {
     expiresAt: Date;
     scopes: ApiKeyScope[];
   }): Promise<OAuthPrincipal | null>;
-  /** Record a scope-denied OAuth bearer attempt (called by the scope middleware). */
+  /**
+   * Record a scope-denied OAuth bearer attempt (called by the scope middleware).
+   * `reason` discriminates a genuine missing scope from a first-party-only
+   * refusal of a grant that DOES hold the scope — i.e. a third-party app probing
+   * another app's grants (#1365).
+   */
   recordScopeDenied(input: {
     userId: string;
     grantId: string;
     requiredScope: string;
+    reason: BearerScopeDenialReason;
     method: string;
     path: string;
     ip?: string | null;
@@ -810,14 +820,14 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       };
     },
 
-    async recordScopeDenied({ userId, grantId, requiredScope, method, path, ip }) {
+    async recordScopeDenied({ userId, grantId, requiredScope, reason, method, path, ip }) {
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyScopeDenied,
         targetType: 'oauth_grant',
         targetId: grantId,
         ip: ip ?? null,
-        meta: { requiredScope, method, path, kind: 'oauth' },
+        meta: { requiredScope, reason, method, path, kind: 'oauth' },
       });
     },
   };
