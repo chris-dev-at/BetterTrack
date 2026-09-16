@@ -19,6 +19,7 @@ import {
   pinVerifyRequestSchema,
   rememberedDeviceHandleParamSchema,
   registerRequestSchema,
+  scopeSatisfies,
   sessionHandleParamSchema,
   setPinLockRequestSchema,
   setPinRequestSchema,
@@ -53,7 +54,7 @@ import {
   type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
-import { ApiError, badRequest, notFound, unauthorized } from '../../errors';
+import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -68,6 +69,10 @@ import {
   setRememberedDeviceCookie,
   setSessionCookie,
 } from '../cookies';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  passkeyManagementRouteAcceptsBearer,
+} from '../middleware/bearerAuth';
 import { requireAuth, requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
@@ -88,6 +93,35 @@ const securityMutationContextOf = (req: Request): SecurityMutationContext => {
   // authentication attached no generation proof, so a security write must fail
   // closed instead of silently falling back to an unfenced user-id update.
   throw unauthorized();
+};
+
+/**
+ * Router-local twin of the global passkey-management policy (#1365), the same
+ * shape the tax-documentation, mirrorchain and vault surfaces already carry.
+ * It independently re-checks credential kind, scope AND the exact method+path
+ * allowlist, so neither a policy-table reshuffle nor a direct router mount can
+ * hand a bearer the registration or sign-in ceremonies — or any future
+ * `/auth/passkeys/*` sibling — by accident. Live behavior is unchanged: the
+ * global rail resolves the same three routes and answers first.
+ */
+export const requireCookieSessionOrPasskeyManagementBearer: RequestHandler = (req, _res, next) => {
+  const bearerAllowed =
+    req.apiKey !== undefined &&
+    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
+    passkeyManagementRouteAcceptsBearer(
+      req.method,
+      `/auth${req.path === '/' || req.path === '' ? '' : req.path}`,
+    );
+  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
+    next();
+    return;
+  }
+  next(
+    forbidden(
+      'Passkey management requires the owning session or account-security access.',
+      'API_KEY_FORBIDDEN',
+    ),
+  );
 };
 
 /** Auth endpoints (PROJECTPLAN.md §6.1, §8). Controllers stay thin. */
@@ -610,13 +644,19 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
 
   // ── Passkeys / WebAuthn (§13.4 V4-P4) ───────────────────────────────────────
   // Existing-passkey management accepts the owning user session or an
-  // `account:security` bearer. Deleting remains re-auth-gated in the service —
+  // `account:security` bearer, through the router-local twin above as well as
+  // the global policy table. Deleting remains re-auth-gated in the service —
   // a fresh password or a 2FA factor — while rename deliberately is not.
   // Registration stays session-only and origin-bound; options are minted
   // server-side from `config.webauthn` with a single-use, short-TTL challenge.
-  router.get('/passkeys', requireUser, async (req, res) => {
-    res.json(await ctx.passkeys.list(req.authUser!.id));
-  });
+  router.get(
+    '/passkeys',
+    requireUser,
+    requireCookieSessionOrPasskeyManagementBearer,
+    async (req, res) => {
+      res.json(await ctx.passkeys.list(req.authUser!.id));
+    },
+  );
 
   router.post('/passkeys/register/options', requireUser, async (req, res) => {
     res.json(await ctx.passkeys.startRegistration(req.authUser!.id));
@@ -635,6 +675,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.patch(
     '/passkeys/:id',
     requireUser,
+    requireCookieSessionOrPasskeyManagementBearer,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyRenameRequestSchema),
     async (req, res) => {
@@ -647,6 +688,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.delete(
     '/passkeys/:id',
     requireUser,
+    requireCookieSessionOrPasskeyManagementBearer,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyDeleteRequestSchema),
     async (req, res) => {

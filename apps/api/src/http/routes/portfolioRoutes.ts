@@ -119,7 +119,7 @@ function requirePortfolioVaultTransitionBearerAccess(ctx: AppContext): RequestHa
       return;
     }
     if (!scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE)) {
-      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, path).then(
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, 'insufficient-scope', path).then(
         () =>
           next(
             forbidden(

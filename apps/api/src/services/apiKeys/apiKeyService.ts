@@ -27,7 +27,11 @@ import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import { API_KEY_LIMITER_NAMESPACE } from '../../http/middleware/rateLimit';
 import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
-import { AuditAction, type AuditService } from '../audit/auditService';
+import {
+  AuditAction,
+  type AuditService,
+  type BearerScopeDenialReason,
+} from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 
@@ -83,11 +87,16 @@ export interface ApiKeyService {
    * secret. Missing wiring deliberately fails closed.
    */
   revalidatePrincipal(input: { userId: string; keyId: string }): Promise<ApiKeyPrincipal | null>;
-  /** Record a scope-denied bearer attempt (called by the enforcement middleware). */
+  /**
+   * Record a scope-denied bearer attempt (called by the enforcement middleware).
+   * `reason` discriminates a genuine missing scope from a first-party-only
+   * refusal of a credential that DOES hold the scope (#1365).
+   */
   recordScopeDenied(input: {
     userId: string;
     keyId: string;
     requiredScope: string;
+    reason: BearerScopeDenialReason;
     method: string;
     path: string;
     ip?: string | null;
@@ -408,14 +417,14 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       return { user, keyId: key.id, scopes: key.scopes as ApiKeyScope[] };
     },
 
-    async recordScopeDenied({ userId, keyId, requiredScope, method, path, ip }) {
+    async recordScopeDenied({ userId, keyId, requiredScope, reason, method, path, ip }) {
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyScopeDenied,
         targetType: 'api_key',
         targetId: keyId,
         ip: ip ?? null,
-        meta: { requiredScope, method, path },
+        meta: { requiredScope, reason, method, path },
       });
     },
 

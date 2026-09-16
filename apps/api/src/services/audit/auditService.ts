@@ -156,6 +156,8 @@ export const AuditAction = {
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',
+  // `meta.reason` on the row above discriminates WHY the bearer was refused —
+  // see BEARER_SCOPE_DENIAL_REASONS below.
   // §13.5 V5-P10 (issue 2/2) key governance: admin rate-tier lifecycle + per-key
   // tier assignment.
   ApiKeyTierCreated: 'api_key_tier.created',
@@ -288,6 +290,19 @@ export const AUDIT_SIGNAL_ACTIONS = [
   AuditAction.ApiKeyScopeDenied,
   AuditAction.AdminLogin,
 ] as const;
+
+/**
+ * Why one bearer request was refused, recorded as `meta.reason` on every
+ * `api_key.scope_denied` row. Both refusals share the audit action because both
+ * are credential-boundary events the account owner must be able to trace, but
+ * they are NOT the same event: `insufficient-scope` means the credential simply
+ * lacks the scope, while `first-party-only` means it HOLDS the scope and was
+ * still refused because the route is reserved for trusted first-party clients —
+ * i.e. an app probing another app's grants. Keeping the discriminator in the
+ * meta makes that second, interesting event greppable (#1365).
+ */
+export const BEARER_SCOPE_DENIAL_REASONS = ['insufficient-scope', 'first-party-only'] as const;
+export type BearerScopeDenialReason = (typeof BEARER_SCOPE_DENIAL_REASONS)[number];
 
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;
