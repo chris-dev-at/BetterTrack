@@ -146,6 +146,50 @@ export const featureFlagStoredConfigSchema = z.object(featureFlagConfigShape);
 export type FeatureFlagConfigInput = z.input<typeof featureFlagConfigSchema>;
 export type FeatureFlagConfig = z.output<typeof featureFlagConfigSchema>;
 
+/**
+ * Error code a PATCH is refused with when the stored row cannot be read and the
+ * patch would have to INVENT the fields it omits (#1910 review B1).
+ *
+ * It lives in the contract rather than in the API service because BOTH sides
+ * need it: the API throws it, and the console matches on it to swap the generic
+ * "could not update" banner for copy that names the repair (#1950). Server error
+ * envelopes are authored in English and are not locale-aware, so the CODE is the
+ * only part of the refusal the SPA may render off.
+ */
+export const FEATURE_FLAG_CONFIG_UNREADABLE = 'FEATURE_FLAG_CONFIG_UNREADABLE';
+
+/**
+ * Error code a PATCH is refused with when the caller asserted a `repair` that no
+ * longer describes the row (#1950 M1). See {@link featureFlagRepairSchema}.
+ */
+export const FEATURE_FLAG_CONFIG_CHANGED = 'FEATURE_FLAG_CONFIG_CHANGED';
+
+/**
+ * How well one flag's stored row could be read, as reported to the admin console
+ * (#1950).
+ *
+ * The API already computes this to decide what it may honour; serving it is what
+ * lets the console tell a healthy row from one whose displayed rollout is a
+ * FALLBACK rather than what is on disk. Without it the two look identical and
+ * the only way to discover the damage is to attempt a write and collect a 409.
+ *
+ *  - `parsed` — every field understood. An unconfigured row reports this too:
+ *    "never configured" and "configured and fully understood" are the same thing
+ *    to an operator, namely nothing to repair.
+ *  - `salvaged` — `enabled` was readable and is honoured; the targeting fields
+ *    were not, so the rollout shown is the default.
+ *  - `unreadable` — nothing usable in the row, so everything shown is the
+ *    default.
+ *
+ * Both degraded values mean the same thing operationally: only a COMPLETE
+ * replacement (all four fields) can be written to that row.
+ */
+export const FEATURE_FLAG_STORED_READS = ['parsed', 'salvaged', 'unreadable'] as const;
+
+export const featureFlagStoredReadSchema = z.enum(FEATURE_FLAG_STORED_READS);
+
+export type FeatureFlagStoredRead = z.infer<typeof featureFlagStoredReadSchema>;
+
 /** One flag as the admin console lists it: state + targeting + change metadata. */
 export const adminFeatureFlagSchema = z
   .object({
@@ -159,6 +203,13 @@ export const adminFeatureFlagSchema = z
     rolloutPercent: z.number().int().min(0).max(100),
     allowUserIds: z.array(z.string().uuid()),
     denyUserIds: z.array(z.string().uuid()),
+    /**
+     * Whether the four fields above are what is STORED or what is being fallen
+     * back to. Required, not optional: an optional field would let a serving
+     * instance that has not been updated read as "healthy" on a console that
+     * has, which is precisely the false reassurance this reports away.
+     */
+    stored: featureFlagStoredReadSchema,
     /** Stable English metadata for API/audit consumers; the SPA renders i18n. */
     description: z.string(),
     updatedAt: z.string().datetime().nullable(),
@@ -181,11 +232,38 @@ export const featureFlagKeyParamSchema = z.object({ key: featureFlagKeySchema })
 export type FeatureFlagKeyParam = z.infer<typeof featureFlagKeyParamSchema>;
 
 /**
+ * The degraded state a complete replacement asserts it is repairing — the two
+ * outcomes of {@link featureFlagStoredReadSchema} that CAN be repaired.
+ * `parsed` is deliberately absent: a healthy row is not repaired, it is patched,
+ * so naming it here is an operator typo and earns a 400 like any other.
+ */
+export const featureFlagRepairSchema = z.enum(['salvaged', 'unreadable']);
+
+export type FeatureFlagRepair = z.infer<typeof featureFlagRepairSchema>;
+
+/**
  * `PATCH /admin/feature-flags/:key` — body. Every field is optional: the patch
  * merges onto the stored config, so flipping the kill switch does not reset a
  * rollout and editing a rollout does not touch the switch. `.strict()`, so an
  * unknown key (or a misspelt `allowUserIDs`) is a 400 rather than a silent no-op
  * on a security-relevant gate.
+ *
+ * `repair` is not one of the patched fields — it is a PRECONDITION on the write,
+ * and the only one this route has (#1950 M1).
+ *
+ * A complete body is the one write that inherits nothing from the stored row,
+ * which is what makes it the repair for a row that cannot be read — and, for the
+ * same reason, a full overwrite if the row is no longer the one the caller
+ * looked at. A console fetches its list on mount, so a tab that has been open a
+ * while can offer a "repair" for a row a colleague has since fixed and killed;
+ * sending it would revert their kill with a 200 and nothing but an audit row to
+ * show for it. `repair` names the degraded state the caller OBSERVED, and the
+ * server applies the write only while the row still reads that way.
+ *
+ * It rides the request body rather than an `If-Match` header on purpose: it is a
+ * precondition on a value the API already computes and already serves (the list's
+ * `stored`), not on an opaque entity tag, and keeping it in the body means the
+ * contract — not a header convention — is what says which values are legal.
  */
 export const updateFeatureFlagRequestSchema = z
   .object({
@@ -193,6 +271,7 @@ export const updateFeatureFlagRequestSchema = z
     rolloutPercent: z.number().int().min(0).max(100),
     allowUserIds: z.array(z.string().uuid()).max(FEATURE_FLAG_TARGET_LIST_MAX),
     denyUserIds: z.array(z.string().uuid()).max(FEATURE_FLAG_TARGET_LIST_MAX),
+    repair: featureFlagRepairSchema,
   })
   .partial()
   .strict();
