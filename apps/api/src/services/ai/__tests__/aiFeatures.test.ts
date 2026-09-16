@@ -9,7 +9,7 @@ import type {
 import { ApiError } from '../../../errors';
 import type { Logger } from '../../../logger';
 import { createAiFeaturesService } from '../aiFeaturesService';
-import { AiCapExceededError, AiUnavailableError } from '../errors';
+import { AiCapExceededError, AiUnavailableError, AiUnusableOutputError } from '../errors';
 import { computeInsights } from '../insightFacts';
 import { extractJsonObject, parseNlIntents } from '../nlIntent';
 
@@ -146,6 +146,7 @@ describe('aiFeaturesService.insights', () => {
   function make(
     overrides: {
       complete?: ReturnType<typeof vi.fn>;
+      assertAvailable?: ReturnType<typeof vi.fn>;
       getPortfolio?: ReturnType<typeof vi.fn>;
       getSeries?: ReturnType<typeof vi.fn>;
     } = {},
@@ -157,6 +158,8 @@ describe('aiFeaturesService.insights', () => {
         model: 'llama3.1:8b',
         provider: 'ollama',
       });
+    const assertAvailable = overrides.assertAvailable ?? vi.fn().mockResolvedValue(undefined);
+    const refundCompletion = vi.fn().mockResolvedValue(undefined);
     const getPortfolio =
       overrides.getPortfolio ??
       vi
@@ -167,13 +170,13 @@ describe('aiFeaturesService.insights', () => {
     const getSeries = overrides.getSeries ?? vi.fn().mockResolvedValue(seriesWithDrawdown(-12.5));
     const search = vi.fn();
     const service = createAiFeaturesService({
-      ai: { complete } as never,
+      ai: { assertAvailable, complete, refundCompletion } as never,
       portfolio: { getPortfolio } as never,
       analytics: { getSeries } as never,
       search: { search } as never,
       logger: noopLogger,
     });
-    return { service, complete, getPortfolio, getSeries };
+    return { service, complete, assertAvailable, refundCompletion, getPortfolio, getSeries };
   }
 
   it('renders service-computed observations phrased by the model (one cap unit)', async () => {
@@ -222,6 +225,43 @@ describe('aiFeaturesService.insights', () => {
     expect(complete).not.toHaveBeenCalled(); // no cap burned on nothing
   });
 
+  /**
+   * The refusal-ordering defect (#1656 defect 5). The availability check used to
+   * happen only inside `ai.complete`, at the very END — so an unconfigured
+   * install did a full portfolio + analytics load first, and an EMPTY portfolio
+   * answered 400 `AI_NO_DATA`: a substantive statement about the caller's data
+   * where the only true answer was "this feature is not available here".
+   */
+  it('refuses with the typed 503 BEFORE any portfolio or analytics read', async () => {
+    const assertAvailable = vi.fn().mockRejectedValue(new AiUnavailableError());
+    const { service, complete, getPortfolio, getSeries } = make({ assertAvailable });
+
+    await expect(service.insights('u1', { portfolioId: UUID_A })).rejects.toBeInstanceOf(
+      AiUnavailableError,
+    );
+    expect(getPortfolio).not.toHaveBeenCalled();
+    expect(getSeries).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('refuses an EMPTY portfolio with 503, not the 400 that describes the portfolio', async () => {
+    const { service, getPortfolio } = make({
+      assertAvailable: vi.fn().mockRejectedValue(new AiUnavailableError()),
+      getPortfolio: vi.fn().mockResolvedValue(portfolioWith()),
+    });
+    const err = await service.insights('u1', { portfolioId: UUID_A }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AiUnavailableError);
+    expect((err as AiUnavailableError).statusCode).toBe(503);
+    expect(getPortfolio).not.toHaveBeenCalled();
+  });
+
+  it('still reads the portfolio when AI IS available (the ordering is not a blanket refusal)', async () => {
+    const { service, getPortfolio, complete } = make();
+    await service.insights('u1', { portfolioId: UUID_A });
+    expect(getPortfolio).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates the typed unavailable / cap errors from the guarded path', async () => {
     const unavailable = make({ complete: vi.fn().mockRejectedValue(new AiUnavailableError()) });
     await expect(
@@ -235,14 +275,21 @@ describe('aiFeaturesService.insights', () => {
 });
 
 describe('aiFeaturesService.conglomerateDraft', () => {
-  function make(complete: ReturnType<typeof vi.fn>, search: ReturnType<typeof vi.fn>) {
-    return createAiFeaturesService({
-      ai: { complete } as never,
+  function build(complete: ReturnType<typeof vi.fn>, search: ReturnType<typeof vi.fn>) {
+    const assertAvailable = vi.fn().mockResolvedValue(undefined);
+    const refundCompletion = vi.fn().mockResolvedValue(undefined);
+    const service = createAiFeaturesService({
+      ai: { assertAvailable, complete, refundCompletion } as never,
       portfolio: { getPortfolio: vi.fn() } as never,
       analytics: { getSeries: vi.fn() } as never,
       search: { search } as never,
       logger: noopLogger,
     });
+    return { service, assertAvailable, refundCompletion };
+  }
+
+  function make(complete: ReturnType<typeof vi.fn>, search: ReturnType<typeof vi.fn>) {
+    return build(complete, search).service;
   }
 
   it('resolves intents through the local catalog and flags — never drops — unresolvable ones', async () => {
@@ -270,15 +317,55 @@ describe('aiFeaturesService.conglomerateDraft', () => {
     expect(res.lines[1]).toEqual({ query: 'unicorn dust', weightPct: 40, asset: null });
   });
 
-  it('raises a provider error when the model returns no usable intent', async () => {
+  /**
+   * A small local model that answers in prose instead of JSON used to spend a
+   * cap unit per attempt with NO refund, so a user's whole daily budget drained
+   * while every call returned 502 (#1656 defect 5). The unit comes back now, and
+   * the error is distinguishable from an unreachable provider.
+   */
+  it('refunds the cap unit — exactly once — when the model returns no usable intent', async () => {
     const complete = vi
       .fn()
       .mockResolvedValue({ text: 'I cannot help with that.', model: 'm', provider: 'ollama' });
     const search = vi.fn();
-    await expect(
-      make(complete, search).conglomerateDraft('u1', { prompt: 'hi' }),
-    ).rejects.toBeInstanceOf(ApiError);
+    const { service, refundCompletion } = build(complete, search);
+
+    const err = await service.conglomerateDraft('u1', { prompt: 'hi' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AiUnusableOutputError);
+    expect(err).toBeInstanceOf(ApiError);
+    // Distinguishable from an unreachable provider (502 AI_PROVIDER_ERROR).
+    expect((err as ApiError).statusCode).toBe(422);
+    expect((err as ApiError).code).toBe('AI_UNUSABLE_OUTPUT');
+    // ONE refund for the one consumed unit — never two, never none.
+    expect(refundCompletion).toHaveBeenCalledTimes(1);
+    expect(refundCompletion).toHaveBeenCalledWith('u1');
     expect(search).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refund a draft that produced usable intents', async () => {
+    const complete = vi.fn().mockResolvedValue({
+      text: '{"lines":[{"query":"nasdaq","weightPct":100}]}',
+      model: 'm',
+      provider: 'ollama',
+    });
+    const search = vi.fn().mockResolvedValue(searchHit(UUID_B, 'QQQ'));
+    const { service, refundCompletion } = build(complete, search);
+    await service.conglomerateDraft('u1', { prompt: '100% nasdaq' });
+    expect(refundCompletion).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `complete` already refunds on every path it THROWS on, so a second refund
+   * here would return a unit twice. The guard is structural — the refund lives
+   * after a successful `complete` — and this pins it.
+   */
+  it('does NOT refund when the provider itself failed (complete already did)', async () => {
+    const complete = vi.fn().mockRejectedValue(new AiCapExceededError(3600));
+    const { service, refundCompletion } = build(complete, vi.fn());
+    await expect(service.conglomerateDraft('u1', { prompt: 'x' })).rejects.toBeInstanceOf(
+      AiCapExceededError,
+    );
+    expect(refundCompletion).not.toHaveBeenCalled();
   });
 
   it('propagates the typed cap error from the guarded path', async () => {

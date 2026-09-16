@@ -14,7 +14,7 @@ import {
   workboardItems,
 } from '../schema';
 import type { FriendRequestRow } from '../schema';
-import { activeFriendOf } from './activeFriend';
+import { activeFriendOf, activeFriendPair } from './activeFriend';
 
 /**
  * Social-graph SQL (PROJECTPLAN.md §5.5, §6.9). All queries for
@@ -387,13 +387,32 @@ export function createFriendshipRepository(db: Database) {
       return row;
     },
 
-    /** Whether the two users are already friends (order-independent). */
+    /**
+     * Whether the two users are friends who COUNT — order-independent, and the
+     * same definition every other seam applies (#1897, #1949).
+     *
+     * This is the gate on chat (`openConversation`, `sendMessage`) and on mirror
+     * invites at both send and accept. It used to read the friendship row alone,
+     * with no account-status filter: the last place where "friend" meant
+     * something weaker here than it does at the seams that feed a circle. Not
+     * exploitable on its own — a `disabled` account authenticates nowhere — but
+     * it let an owner invite an account that can never join and open a thread
+     * with someone who can never read it.
+     *
+     * {@link activeFriendPair}, not `activeFriendOf`, because the untrusted party
+     * sits on either side here: `mirrorService` re-checks an invite as
+     * `areFriends(invite.fromUser, userId)`, where the side that may have been
+     * disabled since the invite was sent is the FIRST argument.
+     *
+     * Aliased FROM: the shared predicate re-declares `users` in its own scope, so
+     * the row this query anchors on needs a name of its own.
+     */
     async areFriends(a: string, b: string): Promise<boolean> {
-      const [lo, hi] = canonicalPair(a, b);
+      const party = alias(users, 'party');
       const [row] = await db
-        .select({ userA: friendships.userA })
-        .from(friendships)
-        .where(and(eq(friendships.userA, lo), eq(friendships.userB, hi)))
+        .select({ id: party.id })
+        .from(party)
+        .where(and(eq(party.id, a), activeFriendPair(a, b)))
         .limit(1);
       return row !== undefined;
     },

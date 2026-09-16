@@ -312,6 +312,22 @@ the standard rate limits are the spam guard, mirroring the friend-request
 pattern); invites expire with the standard token hygiene (30 days) and are
 revocable by owner/managers.
 
+**Authority binds at REDEMPTION, not at issue (#1612).** A pending invite is
+not a bearer credential for the authority its sender held when they sent it:
+the accept path re-reads the inviter's ACTIVE membership under the chain lock
+and refuses (`MIRROR_FORBIDDEN`, the invite retired) unless they still hold the
+§5 `invite` capability — so an inviter who has since been kicked, has left,
+whose manage rights were revoked, or who transferred ownership away and is now
+a plain member can no longer admit anyone. This is the same rule §5 states for
+the sibling race ("Bob's kick after the revoke is refused at append by the role
+check"), applied to the one membership write that used to escape it. The
+friends-only re-check is independent and still runs first. **Discovery:**
+`GET …/{chainId}/members` carries `pendingInvites` — every still-open invite on
+the chain, including ones the caller did not send — for callers holding the §5
+`invite` capability and for nobody else, since reading and revoking are that
+same capability. Without it revocation was open in principle but unreachable in
+practice: an owner could revoke any invite by id and had no way to learn the id.
+
 **Friction ladder placement:** chain membership is person-specific
 (specific-friends rung ⇒ no extra nag), BUT joining goes beyond passive sharing
 — other members' writes will land in the joiner's own books, and the joiner's
@@ -374,6 +390,18 @@ transactions, dividends, movements, sources, snapshots, source tags
 links (so "added by alice" still renders in the fork's history), and the copy's
 complete `audit_log` trail. The fork is a fully working, fully editable normal
 portfolio from the first second — nothing to migrate, nothing to rebuild.
+
+**How the fork's attribution reads (#1612 — resolves the apparent tension with
+§10).** The §10 sentence "attribution renders only to viewers who are themselves
+active members of the chain" binds THIRD-PARTY VIEWERS of a shared or public
+copy; it never binds the holder of the copy itself. The holder of a fork keeps
+seeing the attribution on their own rows — that is this section's promise and it
+is the more specific one. The fork reads it FROZEN: the identity stored on
+`mirror_rows` (`created_by` + the denormalized `created_by_username`) and
+nothing live. No co-member's current profile icon (that would keep tracking a
+person the fork holder may no longer even be friends with) and no chain op
+`version` (that would keep ticking as the remaining members edit the shared
+book) — both are live chain reads, and this section severs those.
 
 **What is severed:** the active membership (chain queries exclude it),
 replication both ways (their future writes stay local; chain ops no longer
@@ -500,7 +528,9 @@ their portfolio, their audience controls, their friction ladder. Binding rule:
 **attribution renders only to viewers who are themselves active members of the
 chain**; any other viewer of a shared/public copy sees the rows with actor
 identity stripped (a generic "group member" chip) — a member may expose their
-own book, never their co-members' identities. The share dialog for a synced
+own book, never their co-members' identities. This rule is about VIEWERS, not
+about copies: the holder of a copy is never the third party it guards against,
+so it does not reach a fork holder reading their own book (§6, #1612). The share dialog for a synced
 copy states this in one line. Per-copy audit trail: every applied op writes an
 `audit_log` row on every copy (§2), actor-attributed, surviving forks and
 account deletions — the "per-copy audit trail is complete" test enumerates one

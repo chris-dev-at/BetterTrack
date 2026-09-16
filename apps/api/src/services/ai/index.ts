@@ -24,6 +24,18 @@ export {
 } from './dailyCap';
 export { createAiRegistry, type AiRegistry, type AiRegistryDeps } from './registry';
 export {
+  AiInvalidResponseError,
+  AiResponseStatusError,
+  AI_DETAIL_INVALID_RESPONSE,
+  AI_DETAIL_NOT_LOCAL,
+  AI_DETAIL_UNREACHABLE,
+  assertWritableLocalAiEndpoint,
+  providerErrorDetail,
+  redactEndpoint,
+  resolveLocalAiEndpoint,
+  type LocalAiEndpointGuardDeps,
+} from './endpointPolicy';
+export {
   createAiService,
   type AiService,
   type AiServiceActor,
