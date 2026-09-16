@@ -2935,7 +2935,18 @@ export function createParanoidRehydrationService(
         // ledger rather than trusted from a client-held document (a tampered
         // vault could otherwise suppress a real alert forever); the cost is at
         // most one re-alert of a month that is genuinely over budget.
-        await sourceRows.restoreCashTags(rows(entities, 'cashTag'));
+        const cashTagService = createCashTagService({
+          tags: createCashTagRepository(tx),
+          rules: createCashRuleRepository(tx),
+        });
+        // Through the service, like the rules below: the tag TABLE is capped per
+        // account (#1963), and a restore is the one path that reaches it without
+        // passing `createTag`. It is the supply side of the rule→tag fan-out
+        // #1954 capped — a document free to carry 20 000 tags is what made
+        // 20 000 links to one rule reachable.
+        await cashTagService.restoreTags(userId, rows(entities, 'cashTag'), {
+          insertTags: (restoredRows) => sourceRows.restoreCashTags(restoredRows),
+        });
         await stage('cashTags');
 
         // Same gate as the expense rules above, for the same reason.
@@ -2944,14 +2955,27 @@ export function createParanoidRehydrationService(
           matchType: entity.data.matchType,
           pattern: entity.data.pattern,
         }));
-        const cashTagService = createCashTagService({
-          tags: createCashTagRepository(tx),
-          rules: createCashRuleRepository(tx),
-        });
         await cashTagService.restoreRules(userId, restoredCashRules, {
           insertRules: (restoredRows) => sourceRows.restoreCashRules(restoredRows),
         });
-        await sourceRows.restoreCashRuleTags(rows(entities, 'cashRuleTag'));
+        // …and the LINKS through their own gate (#1954). `restoreRules` caps how
+        // many rules a document may install; this caps how many TAGS each rule
+        // carries, which is the other factor of the same product — `loadRules`
+        // aggregates a rule's tags with an unbounded `array_agg` and
+        // `applyCashRuleTags` writes one pair per tag per matched movement. The
+        // document schema refuses an over-tagged rule at parse time; this is the
+        // gate on the TABLE, for any caller that did not come through that parse.
+        // It also refuses a REPEATED `(ruleId, tagId)` pair (#1963), which the
+        // table's unique index would otherwise turn into a driver error — and a
+        // 500 — from inside this open transaction.
+        const restoredCashRuleTags = rows(entities, 'cashRuleTag').map((entity) => ({
+          ...entity,
+          ruleId: entity.data.ruleId,
+          tagId: entity.data.tagId,
+        }));
+        await cashTagService.restoreRuleTags(userId, restoredCashRuleTags, {
+          insertRuleTags: (restoredRows) => sourceRows.restoreCashRuleTags(restoredRows),
+        });
         await stage('cashRules');
 
         await sourceRows.restoreCashBudgets(rows(entities, 'cashBudget'));
