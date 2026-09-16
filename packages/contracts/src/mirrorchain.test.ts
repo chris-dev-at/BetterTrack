@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MIRROR_ATTRIBUTION_STATES,
   MIRROR_CHAIN_OP_KINDS,
   MIRROR_LEDGER_OP_KINDS,
   MIRROR_OP_KINDS,
   MIRROR_OP_VERSION,
+  MIRROR_STRIPPED_ATTRIBUTION_USERNAME,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   mirrorAttributionSchema,
   mirrorInviteListResponseSchema,
   mirrorInviteSchema,
   mirrorOpPayloadSchema,
   mirrorRowInfoSchema,
+  strippedMirrorAttribution,
 } from './mirrorchain';
 
 const MIRROR_A = '018f0000-0000-7000-8000-00000000000a';
@@ -167,14 +170,70 @@ describe('mirrorOpPayloadSchema — opVersion + discrimination', () => {
 
 describe('additive DTO field schemas', () => {
   it('mirror.version + attribution chip parse (design §3/§11)', () => {
-    const attribution = { userId: USER_A, username: 'alice', profileIcon: null };
+    const attribution = { state: 'shown', userId: USER_A, username: 'alice', profileIcon: null };
     expect(mirrorAttributionSchema.safeParse(attribution).success).toBe(true);
-    // Account-deleted actor: userId null, denormalized username kept.
-    expect(mirrorAttributionSchema.safeParse({ ...attribution, userId: null }).success).toBe(true);
+    // Account-deleted actor: userId null, denormalized username kept (§6/§7).
+    expect(
+      mirrorAttributionSchema.safeParse({ ...attribution, state: 'deleted', userId: null }).success,
+    ).toBe(true);
     expect(
       mirrorRowInfoSchema.safeParse({ mirrorId: MIRROR_A, version: 41, addedBy: attribution })
         .success,
     ).toBe(true);
+  });
+
+  it('separates the two null-actor states instead of collapsing them (#2009)', () => {
+    // The whole point of `state`: `userId: null` is reachable two ways, and the
+    // chip must render them differently. Neither is a substring of the other.
+    const deleted = mirrorAttributionSchema.parse({
+      state: 'deleted',
+      userId: null,
+      username: 'alice',
+      profileIcon: null,
+    });
+    expect(deleted.username).toBe('alice');
+    expect(deleted.state).not.toBe(strippedMirrorAttribution.state);
+    expect(strippedMirrorAttribution.username).toBe(MIRROR_STRIPPED_ATTRIBUTION_USERNAME);
+    expect(MIRROR_ATTRIBUTION_STATES).toEqual(['shown', 'stripped', 'deleted']);
+    // The constant the service hands a non-member is itself a legal DTO.
+    expect(mirrorAttributionSchema.safeParse(strippedMirrorAttribution).success).toBe(true);
+  });
+
+  it('refuses a stripped attribution that still carries the actor (design §10)', () => {
+    // The §10 boundary made structural: a service regression that forgot to
+    // replace the actor cannot serialize as `stripped`. NEGATIVE SPACE — each
+    // clause is probed alone so one over-broad check cannot pass for the wrong
+    // reason.
+    const stripped = {
+      state: 'stripped' as const,
+      userId: null,
+      username: MIRROR_STRIPPED_ATTRIBUTION_USERNAME,
+      profileIcon: null,
+    };
+    expect(mirrorAttributionSchema.safeParse(stripped).success).toBe(true);
+    // …the frozen name of an account-deleted author is exactly what may not ride along.
+    expect(mirrorAttributionSchema.safeParse({ ...stripped, username: 'alice' }).success).toBe(
+      false,
+    );
+    expect(mirrorAttributionSchema.safeParse({ ...stripped, profileIcon: 'fox' }).success).toBe(
+      false,
+    );
+    expect(mirrorAttributionSchema.safeParse({ ...stripped, userId: USER_A }).success).toBe(false);
+  });
+
+  it('refuses an account id on a deleted actor and a missing one on a shown actor', () => {
+    const base = { userId: null, username: 'alice', profileIcon: null };
+    expect(mirrorAttributionSchema.safeParse({ ...base, state: 'deleted' }).success).toBe(true);
+    // No account ids are added by this DTO — a deleted actor has none to give.
+    expect(
+      mirrorAttributionSchema.safeParse({ ...base, state: 'deleted', userId: USER_A }).success,
+    ).toBe(false);
+    // …and the live case is the mirror image: `shown` without an id is a bug.
+    expect(mirrorAttributionSchema.safeParse({ ...base, state: 'shown' }).success).toBe(false);
+    // An unknown state is not silently tolerated either.
+    expect(mirrorAttributionSchema.safeParse({ ...base, state: 'anonymized' }).success).toBe(false);
+    // …nor is the pre-#2009 shape that had no state at all.
+    expect(mirrorAttributionSchema.safeParse(base).success).toBe(false);
   });
 });
 

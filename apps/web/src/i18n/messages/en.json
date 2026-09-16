@@ -3695,7 +3695,8 @@
     },
     "attribution": {
       "by": "Added by {{username}}",
-      "groupMember": "Group member"
+      "groupMember": "Group member",
+      "accountDeleted": "{{username}} (account deleted)"
     },
     "role": {
       "owner": "Owner",

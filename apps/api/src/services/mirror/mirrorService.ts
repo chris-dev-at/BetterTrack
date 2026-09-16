@@ -291,7 +291,9 @@ export interface MirrorService {
    * by the copy-local row id, so ledger read paths can attach `mirror` cheaply
    * by localId lookup. Non-synced portfolios short-circuit to empty maps.
    * `stripAttribution` swaps every `addedBy` for the generic "group member"
-   * chip (design §10) — used when a non-member views a shared/public copy.
+   * chip (design §10) — used when a non-member views a shared/public copy — and
+   * outranks the `deleted` state, so a third-party viewer never receives the
+   * frozen name of an author whose account is gone (#2009).
    */
   overlayForPortfolio(
     portfolioId: string,
@@ -1643,6 +1645,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
    * exposes their own book, never their co-members' identities. The holder of a
    * copy, fork included, is never that third-party viewer.
    *
+   * Orthogonal again to BOTH: `state: 'deleted'` (#2009), which says the
+   * author's ACCOUNT is gone (§6/§7) rather than that this viewer may not see
+   * it. A frozen fork read and a deleted author are independent — a fork can
+   * hold rows by a living co-member and by a deleted one at once — so the row
+   * loop below derives `deleted` per row from the stored `created_by`, not from
+   * the copy's membership status.
+   *
    * NOTE: no wire path exposes chain-copy ledger rows to non-members today —
    * `getSharedPortfolio` in the social service only ships holdings/history/
    * totals, never per-row DTOs. `stripAttribution` is a keystone the guard
@@ -1678,13 +1687,35 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     const frozen = membership.status !== 'active';
     const rows = await repo.listMirrorRowInfoForPortfolio(portfolioId, { frozen });
     for (const row of rows) {
+      // THREE states, two of which carry no actor id (#2009, contracts
+      // `mirrorAttributionState`). Order matters and is a privacy decision:
+      //
+      //  1. `stripped` FIRST — §10 is about the VIEWER. A third-party viewer of
+      //     a shared copy gets the constant chip even when the author's account
+      //     is gone, because the frozen `created_by_username` is exactly the
+      //     co-member identity §10 forbids handing them. Swapping these two
+      //     branches would leak a name to the one reader who may not have it.
+      //  2. `deleted` — `mirror_rows.created_by` SET-NULLed when the author's
+      //     user row went away (§6/§7). The denormalized username survives on
+      //     the row itself, so an entitled viewer keeps reading
+      //     "alice (account deleted)". No live icon exists to read (the `users`
+      //     LEFT JOIN yields null); we pin it null rather than trust the join.
+      //  3. `shown` — a live actor the viewer is entitled to see.
       const addedBy: MirrorAttribution = opts?.stripAttribution
         ? strippedMirrorAttribution
-        : {
-            userId: row.createdBy,
-            username: row.createdByUsername,
-            profileIcon: row.profileIcon,
-          };
+        : row.createdBy === null
+          ? {
+              state: 'deleted',
+              userId: null,
+              username: row.createdByUsername,
+              profileIcon: null,
+            }
+          : {
+              state: 'shown',
+              userId: row.createdBy,
+              username: row.createdByUsername,
+              profileIcon: row.profileIcon,
+            };
       const info: MirrorRowInfo = {
         mirrorId: row.mirrorId,
         version: row.latestSeq,
