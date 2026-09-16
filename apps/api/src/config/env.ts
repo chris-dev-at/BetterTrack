@@ -745,6 +745,7 @@ export const REQUEST_COST_KEYS = [
   'analyticsSeries',
   'importCreate',
   'importRowResolve',
+  'cashRulesApply',
 ] as const;
 export type RequestCostKey = (typeof REQUEST_COST_KEYS)[number];
 
@@ -1294,6 +1295,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
   // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    7  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
+  // | POST /cash/rules/apply                    | cashRulesApply  |   10  | a keyset walk over the caller's noted movements in every portfolio they own, matched against every enabled rule — bounded since #1743, and `general` never metered the bearer caller at all (#1954) |
   //
   // `backtestCompare` and `backtestPreview` are the table's PER-UNIT-OF-WORK
   // weights. A flat price would either overcharge a two-basket comparison or
@@ -1338,8 +1340,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //   * reworking the audience on a couple of shared items        =  2 × 20 =  40
   //   * an Invest Calculator run plus two re-runs from changing
   //     the budget or toggling whole-shares (#1877)               =  3 × 15 =  45
+  //   * one press of "apply my rules now" after writing a rule —
+  //     a deliberate act on a back catalogue, not a poll (#1954)  =  1 × 10 =  10
   //
-  //   ⇒ worst realistic 1 min ≈ 1318 units → expensive 4000  (3.0×)
+  //   ⇒ worst realistic 1 min ≈ 1328 units → expensive 4000  (3.0×)
   //
   // The ceiling and the FLOOR move together, which is why #1855 could raise it
   // at all. A weight only binds while `expensive.limit / weight` stays under
@@ -1713,6 +1717,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         analyticsSeries: 10,
         importCreate: 100,
         importRowResolve: 7,
+        // `POST /cash/rules/apply` (#1954), until now metered by nothing but the
+        // request COUNT — and `general` skips bearer callers entirely, so an
+        // API-key caller had no guard on it at all.
+        //
+        // 10 prices the NORMAL press, alongside `analyticsSeries`, whose fan-out
+        // is likewise one account's worth of rows: a personal ledger's noted
+        // movements are a page or two of the keyset walk, matched against a rule
+        // set that stops in the dozens.
+        //
+        // IT DOES NOT PRICE THE BOUND, and that is a deliberate limitation worth
+        // reading. At the ceilings — CASH_RULE_APPLY_MOVEMENT_SCAN_MAX (20 000)
+        // scanned notes × CASH_RULES_PER_USER_MAX (200) rules — one press is
+        // ~0.6-2.4 s of synchronous RE2 matching, dearer than a CSV upload. The
+        // honest weight for THAT press is importCreate's 100, and it does not
+        // fit: the modelled minute below already stands at 1318 of the 1333 a
+        // 3x-headroom budget allows, so a 100-unit term would need the ceiling
+        // raised (and the floor with it, per the note at the end of the table) —
+        // a §10 cost-table decision, not a follow-up detail. What bounds the
+        // pathological press meanwhile is the scan cap itself plus the 400
+        // presses/min this weight allows, both well inside `general`.
+        cashRulesApply: 10,
       },
       // Provider search, per user (§6.2). 300/min — its own generous budget
       // rather than a share of `general`, because the read is cheap and bounded:

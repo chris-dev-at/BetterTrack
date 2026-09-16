@@ -30,6 +30,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
+import type { RateLimiters } from '../middleware/rateLimit';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
@@ -53,7 +54,7 @@ import type { AppContext } from '../context';
  * centralized in `bearerAuth.ts`: cash:read covers reads (including the
  * read-only POST preview), while cash:write covers mutations.
  */
-export function createCashRouter(ctx: AppContext): Router {
+export function createCashRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
@@ -188,7 +189,15 @@ export function createCashRouter(ctx: AppContext): Router {
   // tagging alone can never reach a back catalogue. Additive and idempotent: it
   // attaches tags, never removes one, so a second press honestly reports 0.
   // No body — rules are per user, so this covers every portfolio they own.
-  router.post('/rules/apply', async (req, res) => {
+  //
+  // COST-METERED (§10 COST TABLE, #1954). It is the one endpoint in this router
+  // whose work is not O(the request): it walks the caller's noted movements in
+  // every portfolio they own and matches each against every enabled rule —
+  // bounded since #1743, but bounded HIGH (20 000 × 200), and freely repeatable.
+  // The `general` guard could not describe that, and it skips bearer callers
+  // outright, so an API-key caller was metered by nothing at all; the cost guard
+  // keys per user for cookie and bearer alike.
+  router.post('/rules/apply', limiters.cost('cashRulesApply'), async (req, res) => {
     res.json(await ctx.cashTags.applyRules(req.authUser!.id));
   });
 
