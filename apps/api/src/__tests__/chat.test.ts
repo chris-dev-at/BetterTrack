@@ -604,3 +604,71 @@ describe('chat ban enforcement', () => {
     expect(restored.status).toBe(201);
   });
 });
+
+// ── One definition of an active friend reaches chat too (#1897 → #1949) ──────
+
+/**
+ * `areFriends` — the gate on opening a conversation and on every send — was the
+ * last seam still reading a bare friendship row with no account-status filter,
+ * the same split #1897 removed from the nine seams that feed a circle. Not
+ * exploitable on its own (a `disabled` account authenticates on no credential
+ * path, so it cannot read the thread it was invited into), but the owner-facing
+ * behaviour was wrong in both directions: a thread could be opened with someone
+ * who can never answer, while the roster surfaces had already dropped them.
+ *
+ * Unfriending is the precedent this now matches exactly: history stays readable,
+ * new messages do not.
+ */
+describe('chat — a disabled friend is not a friend who counts (#1949)', () => {
+  async function disable(userId: string): Promise<void> {
+    await harness.db
+      .update(schema.users)
+      .set({ status: 'disabled' })
+      .where(eq(schema.users.id, userId));
+  }
+
+  it('closes the thread to new messages and refuses a fresh conversation, history intact', async () => {
+    const alice = await seedPerson('alice');
+    const bob = await seedPerson('bob');
+    await befriend(alice, bob);
+    const opened = await openConversation(alice.agent, bob.id);
+    expect(opened.status).toBe(201);
+    const conversationId = opened.body.conversation.id as string;
+    expect((await sendMessage(alice.agent, conversationId, { body: 'while active' })).status).toBe(
+      201,
+    );
+
+    await disable(bob.id);
+
+    // Opening resolves the pair fresh every call, so it now 404s exactly like a
+    // non-friend's — never a 403, never data (§6.9).
+    expect((await openConversation(alice.agent, bob.id)).status).toBe(404);
+    // Sending is refused the way unfriending refuses it…
+    expect((await sendMessage(alice.agent, conversationId, { body: 'you there?' })).status).toBe(
+      403,
+    );
+    // …and the history alice already has stays readable.
+    const thread = await getThread(alice.agent, conversationId);
+    expect(thread.status).toBe(200);
+    expect(thread.body.messages).toHaveLength(1);
+  });
+
+  it('leaves every still-active friend chattable (the gate did not over-filter)', async () => {
+    const alice = await seedPerson('alice');
+    const bob = await seedPerson('bob');
+    const carol = await seedPerson('carol');
+    await befriend(alice, bob);
+    await befriend(alice, carol);
+    await disable(bob.id);
+
+    const withCarol = await openConversation(alice.agent, carol.id);
+    expect(withCarol.status).toBe(201);
+    const conversationId = withCarol.body.conversation.id as string;
+    expect((await sendMessage(alice.agent, conversationId, { body: 'still here' })).status).toBe(
+      201,
+    );
+    // …and carol can answer: the predicate is symmetric, so it must not depend on
+    // which side of the pair asks.
+    expect((await sendMessage(carol.agent, conversationId, { body: 'yes' })).status).toBe(201);
+  });
+});

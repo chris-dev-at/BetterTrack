@@ -208,9 +208,14 @@ export function createShareAudienceRepository(db: Database) {
 
   /**
    * Friendship-exists predicate between one bound user id and a column holding
-   * the other side. The pair is stored once and read order-independently, so it
-   * serves both the authorization queries (viewer id × subject-owner column) and
-   * the owner-facing membership read (owner id × member column).
+   * the other side. The pair is stored once and read order-independently.
+   *
+   * Scope, since #1897 (corrected #1949): the VIEWER-side authorization queries
+   * only — viewer id × subject-owner column, each of which pairs this with its
+   * own `users.status = 'active'` join on the owner. The owner-facing membership
+   * read it used to serve as well now goes through {@link activeFriendOf}, which
+   * carries the account-status half of the definition itself; re-pointing a
+   * membership read back here would re-open the split #1897 closed.
    */
   function friendshipWith(userId: string, otherCol: AnyPgColumn) {
     return or(
@@ -974,9 +979,14 @@ export function createShareAudienceRepository(db: Database) {
      *
      * That includes the friendship join (#1780): the `group` rung used to be the
      * ONE rung whose reported reach trusted a roster row instead of deriving
-     * friendship, inside the very select that derives it for named friends. Only
-     * the share's own owner can point an audience at a circle, so the friendship
-     * is between `share_audiences.owner_id` and the member — exactly the pair
+     * friendship, inside the very select that derives it for named friends. The
+     * friendship a roster row stands on is the one between the CIRCLE'S OWNER and
+     * the member — `friendGroups.ownerId`, which is already left-joined here and
+     * is the column every other group seam in `friendGroupRepository` reads
+     * (#1949). It used to read `shareAudiences.ownerId` instead: the same value
+     * in practice, but only because `setAudience` validates `ownsGroup` in a
+     * different file. Deriving the count from the group itself removes that
+     * unstated cross-file dependency — exactly the pair
      * `friendGroupRepository.rostersOf` joins.
      *
      * `group` is `null` for a non-`group` audience AND for a `group` share whose
@@ -1011,7 +1021,7 @@ export function createShareAudienceRepository(db: Database) {
             select count(*)
             from ${friendGroupMembers}
             where ${friendGroupMembers.groupId} = ${friendGroups.id}
-              and ${activeFriendOf(shareAudiences.ownerId, friendGroupMembers.memberId)}
+              and ${activeFriendOf(friendGroups.ownerId, friendGroupMembers.memberId)}
           )`.mapWith(Number),
         })
         .from(shareAudiences)
