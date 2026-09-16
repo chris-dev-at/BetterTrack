@@ -75,6 +75,15 @@ describe('COMMON_SYMBOLS_SEED (§6.2(c) content)', () => {
 });
 
 describe('seedAssetCatalog with the shipped list', () => {
+  // Seeding the shipped list walks one entry at a time through the repository, and
+  // an unchanged re-seed still costs two statements per existing row — so the three
+  // seed passes dominate this test (locally ~1.5 s of seeding against ~0.2 s of
+  // acceptance queries). On a loaded CI runner that walk alone passes the 20 s
+  // default (it timed out on 2026-09-15 across unrelated PRs). The real fix — a
+  // batched seed — is already written on branch `hygiene/catalog-seed-batch` and
+  // tracked by #1922 (split out of #1737 at review, so #1737 itself does not carry
+  // it); until it lands this test gets the budget the walk actually needs so a slow
+  // runner does not read as a failure.
   it('fills the catalog with instant, enrichment-free local hits', async () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const repo = createAssetRepository(h.db);
@@ -131,5 +140,5 @@ describe('seedAssetCatalog with the shipped list', () => {
     });
     const rows = await h.db.select({ id: schema.assets.id }).from(schema.assets);
     expect(rows).toHaveLength(COMMON_SYMBOLS_SEED.length);
-  });
+  }, 90_000);
 });

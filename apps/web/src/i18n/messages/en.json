@@ -5219,6 +5219,10 @@
       "views": "{{count}} views",
       "eventsLabel": "Events",
       "activeUsersLabel": "Active users",
+      "todayStale": {
+        "badge": "Stale",
+        "tooltip": "Today's numbers may be behind — the last refresh failed; the next scheduled rollup will catch up."
+      },
       "stage": {
         "registered": "Registered",
         "activated": "Activated",

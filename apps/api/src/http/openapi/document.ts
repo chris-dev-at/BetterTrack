@@ -839,6 +839,13 @@ interface EndpointDef {
    */
   bodyContentType?: string;
   status: number;
+  /**
+   * Description for a primary status that is NOT a success. A 4xx/5xx `status`
+   * marks a route that stays mounted but permanently refuses — the retired
+   * `/expenses/import/*` lane (#1660) — so it is documented with the shared
+   * error envelope rather than a success body the route can never send.
+   */
+  statusDescription?: string;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
   /** Headers present on the success response, including empty 204 responses. */
@@ -873,6 +880,12 @@ interface EndpointDef {
    */
   idempotent?: boolean;
 }
+
+/**
+ * The one code every `/expenses` write and the whole retired `/expenses/import/*`
+ * lane answers with (`expensesRoutes.ts`, §16 2026-07-31).
+ */
+const EXPENSE_AREA_RETIRED_CODE = 'EXPENSE_AREA_RETIRED';
 
 const endpoints: EndpointDef[] = [
   // Meta (§5)
@@ -3618,47 +3631,42 @@ const endpoints: EndpointDef[] = [
     params: contracts.expenseRuleIdParamSchema,
     status: 204,
   },
+  // The `/expenses/import/*` lane is RETIRED with the expense area (#1660).
+  // Documented as the 410 it really answers rather than deleted: the paths stay
+  // mounted, so a published 200 here would tell an SDK author that bank import
+  // works. It re-lands on the cash ledger (§6.8.3, issue #964).
   {
     method: 'get',
     path: '/expenses/import/banks',
     tag: 'Expenses',
-    summary: 'The supported bank-statement CSV mappers (Erste/George, ELBA, N26, Revolut).',
-    status: 200,
-    response: R.ExpenseBankListResponse,
+    summary:
+      'Retired (410 EXPENSE_AREA_RETIRED). Bank-statement import went with the expense area; this no longer lists mappers.',
+    status: 410,
+    statusDescription:
+      'Gone — the expense area is retired and no bank-statement import is available.',
+    errorCodes: [EXPENSE_AREA_RETIRED_CODE],
   },
   {
     method: 'post',
     path: '/expenses/import/preview',
     tag: 'Expenses',
     summary:
-      'Upload a bank CSV: autodetect (or pick) the bank, normalize + auto-categorize its rows, flag duplicates, and return the staged preview. Nothing is persisted.',
-    body: contracts.expenseImportPreviewFieldsSchema.extend({
-      file: z.string().openapi({
-        type: 'string',
-        format: 'binary',
-        description: 'The bank statement CSV export (UTF-8, ≤ 5 MB).',
-      }),
-    }),
-    bodyContentType: 'multipart/form-data',
-    status: 200,
-    response: R.ExpenseImportPreviewResponse,
+      'Retired (410 EXPENSE_AREA_RETIRED). No CSV is parsed, previewed or staged; the request is refused before any body is read.',
+    status: 410,
+    statusDescription:
+      'Gone — the expense area is retired and no bank-statement import is available.',
+    errorCodes: [EXPENSE_AREA_RETIRED_CODE],
   },
   {
     method: 'post',
     path: '/expenses/import/apply',
     tag: 'Expenses',
     summary:
-      'Confirm an import: re-upload the same CSV (+ optional per-row category overrides) and book the non-duplicate rows as expense transactions, tagged import:<bank>. Idempotent via content hashing.',
-    body: contracts.expenseImportApplyFieldsSchema.extend({
-      file: z.string().openapi({
-        type: 'string',
-        format: 'binary',
-        description: 'The same bank statement CSV re-uploaded (UTF-8, ≤ 5 MB).',
-      }),
-    }),
-    bodyContentType: 'multipart/form-data',
-    status: 200,
-    response: R.ExpenseImportApplyResponse,
+      'Retired (410 EXPENSE_AREA_RETIRED). Nothing is booked; expense writes ended with the cash fusion (§16 2026-07-31).',
+    status: 410,
+    statusDescription:
+      'Gone — the expense area is retired and no bank-statement import is available.',
+    errorCodes: [EXPENSE_AREA_RETIRED_CODE],
   },
   {
     method: 'get',
@@ -5512,15 +5520,20 @@ for (const ep of endpoints) {
     : ep.responseHeaders;
   const successHeaders = responseHeaders ? { headers: responseHeaders } : {};
   const errorHeaders = ep.noStore ? noStoreResponseHeaders : undefined;
-  responses[ep.status] = ep.response
-    ? {
-        description: 'Success.',
-        ...successHeaders,
-        content: ep.responseContentType
-          ? { [ep.responseContentType]: { schema: ep.response } }
-          : jsonContent(ep.response),
-      }
-    : { description: 'No content.', ...successHeaders };
+  // A 4xx/5xx primary status is a route that is mounted and always refuses
+  // (#1660): it carries the shared error envelope, never a success body.
+  responses[ep.status] =
+    ep.status >= 400
+      ? errorResponse(ep.statusDescription ?? 'Error envelope.', errorHeaders)
+      : ep.response
+        ? {
+            description: 'Success.',
+            ...successHeaders,
+            content: ep.responseContentType
+              ? { [ep.responseContentType]: { schema: ep.response } }
+              : jsonContent(ep.response),
+          }
+        : { description: 'No content.', ...successHeaders };
   if (ep.body || ep.query || ep.params) {
     responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).', errorHeaders);
   }

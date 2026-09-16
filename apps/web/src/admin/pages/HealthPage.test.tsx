@@ -214,7 +214,13 @@ test('shows the backup and restore-drill evidence the Overview links to', async 
   renderPage();
 
   const panel = await screen.findByRole('region', { name: 'Backup & restore drill' });
-  expect(within(panel).getByText('Ready')).toBeInTheDocument();
+  // The region renders while its queries are still in flight (`aria-busy`), so
+  // the FIRST read inside it has to wait for the data, not merely for the
+  // region — a sync `getByText` here raced the fetch on a loaded CI runner
+  // (2026-09-16, run 35037493776). The rule, applied to every anchor in this
+  // file: await the data you are about to assert on, never just its container
+  // or the page chrome.
+  expect(await within(panel).findByText('Ready')).toBeInTheDocument();
   expect(
     within(panel).getByText('A recent dump exists and a recent restore drill proved it.'),
   ).toBeInTheDocument();
@@ -232,7 +238,7 @@ test('a critical backup verdict reads red with its reason, without breaking the 
   renderPage();
 
   const panel = await screen.findByRole('region', { name: 'Backup & restore drill' });
-  expect(within(panel).getByText('Not ready')).toBeInTheDocument();
+  expect(await within(panel).findByText('Not ready')).toBeInTheDocument();
   expect(
     within(panel).getByText('The backup scheduler reports a problem with the stored backup.'),
   ).toBeInTheDocument();
@@ -398,7 +404,12 @@ test('refreshing re-reads every panel so the cockpit shows one moment', async ()
 
   const before = vi.mocked(api.getAdminHealth).mock.calls.length;
   const beforeJobs = vi.mocked(api.getOpsJobs).mock.calls.length;
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  // Refresh is `disabled={busy}` for all four reads at once, so `Database`
+  // (health alone) does not prove it is clickable yet — clicking it early is a
+  // silent no-op, not a failure.
+  const refresh = screen.getByRole('button', { name: 'Refresh' });
+  await waitFor(() => expect(refresh).toBeEnabled());
+  fireEvent.click(refresh);
 
   await waitFor(() => {
     expect(vi.mocked(api.getAdminHealth).mock.calls.length).toBe(before + 1);
@@ -412,6 +423,6 @@ test('localizes the cockpit into German', async () => {
   expect(
     await screen.findByRole('heading', { level: 1, name: 'Zustand & Warteschlangen' }),
   ).toBeInTheDocument();
-  expect(screen.getByText('Geplante Läufe')).toBeInTheDocument();
+  expect(await screen.findByText('Geplante Läufe')).toBeInTheDocument();
   expect(screen.getByText('Endgültige Fehlschläge')).toBeInTheDocument();
 });
