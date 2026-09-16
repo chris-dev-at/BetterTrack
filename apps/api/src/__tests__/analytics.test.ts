@@ -1,4 +1,3 @@
-import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -20,8 +19,13 @@ const cached = <T>(value: T) => ({ value, stale: false, asOf: Date.now() });
 const historyOf = (closes: number[]) =>
   cached(closes.map((close, i) => ({ time: `${dayOffset(-6 + i)}T00:00:00.000Z`, close })));
 
-async function loginAgent(app: Application, identifier: string, password: string) {
-  const agent = request.agent(app);
+// Agents come off the harness's long-lived server (#2020). `request.agent(app)`
+// shares one server across the agent's requests and closes it as soon as the
+// first one finishes: the fan-out of two below survives that, but only just —
+// four resets a quarter of the time, six nearly half. An agent on an
+// already-listening server closes nothing, at any width.
+async function loginAgent(h: TestHarness, identifier: string, password: string) {
+  const agent = h.agent();
   const res = await agent
     .post('/api/v1/auth/login')
     .set(...XRW)
@@ -119,7 +123,7 @@ describe('analytics — filtered series, stats & contributions', () => {
   beforeEach(async () => {
     harness = await createTestApp({ marketData: stubMarket() });
     const user = await harness.seedUser();
-    agent = await loginAgent(harness.app, user.email, user.password);
+    agent = await loginAgent(harness, user.email, user.password);
     pid = await defaultPortfolioId(agent);
     aaa = (await seedAsset(harness, { symbol: 'AAA', providerRef: 'AAA', type: 'stock' })).id;
     bbb = (
@@ -306,7 +310,7 @@ describe('analytics — filtered series, stats & contributions', () => {
 
   it('404s a portfolio the caller does not own', async () => {
     const other = await harness.seedUser({ email: 'other@bt.test', username: 'otheruser' });
-    const otherAgent = await loginAgent(harness.app, other.email, other.password);
+    const otherAgent = await loginAgent(harness, other.email, other.password);
     const otherPid = await defaultPortfolioId(otherAgent);
     const res = await agent.get(`/api/v1/analytics/portfolios/${otherPid}/series`);
     expect(res.status).toBe(404);
@@ -326,7 +330,7 @@ describe('analytics — staggered buy dates (hide the earliest-held asset)', () 
   beforeEach(async () => {
     harness = await createTestApp({ marketData: stubMarket() });
     const user = await harness.seedUser();
-    agent = await loginAgent(harness.app, user.email, user.password);
+    agent = await loginAgent(harness, user.email, user.password);
     pid = await defaultPortfolioId(agent);
     aaa = (await seedAsset(harness, { symbol: 'AAA', providerRef: 'AAA', type: 'stock' })).id;
     bbb = (
@@ -395,7 +399,7 @@ describe('analytics — compare targets', () => {
     harness = await createTestApp({ marketData: stubMarket() });
     const user = await harness.seedUser();
     userId = user.id;
-    agent = await loginAgent(harness.app, user.email, user.password);
+    agent = await loginAgent(harness, user.email, user.password);
     pid = await defaultPortfolioId(agent);
     aaa = (await seedAsset(harness, { symbol: 'AAA', providerRef: 'AAA', type: 'stock' })).id;
     bbb = (
@@ -469,7 +473,7 @@ describe('analytics — compare targets', () => {
 
   it('rejects a foreign portfolio or conglomerate compare id (404)', async () => {
     const other = await harness.seedUser({ email: 'foreign@bt.test', username: 'foreigner' });
-    const otherAgent = await loginAgent(harness.app, other.email, other.password);
+    const otherAgent = await loginAgent(harness, other.email, other.password);
     const otherPid = await defaultPortfolioId(otherAgent);
     const otherCong = await harness.ctx.conglomerate.create(other.id, { name: 'Theirs' });
     await harness.ctx.conglomerate.replacePositions(other.id, otherCong.id, [
@@ -491,7 +495,7 @@ describe('analytics — custom-asset smoothing (real manual provider)', () => {
   it('respects the smoothing toggle: interpolated between marks, exact on mark days', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
-    const agent = await loginAgent(harness.app, user.email, user.password);
+    const agent = await loginAgent(harness, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
 
     const created = await agent
@@ -556,7 +560,7 @@ describe('analytics — bearer scope', () => {
   beforeEach(async () => {
     harness = await createTestApp({ marketData: stubMarket() });
     const user = await harness.seedUser();
-    agent = await loginAgent(harness.app, user.email, user.password);
+    agent = await loginAgent(harness, user.email, user.password);
     pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness, { symbol: 'AAA', providerRef: 'AAA' });
     await buy(agent, pid, asset.id, 1, 100);
@@ -595,7 +599,7 @@ describe('analytics — time-weighted return (#1759)', () => {
   beforeEach(async () => {
     harness = await createTestApp({ marketData: stubMarket() });
     const user = await harness.seedUser();
-    agent = await loginAgent(harness.app, user.email, user.password);
+    agent = await loginAgent(harness, user.email, user.password);
     pid = await defaultPortfolioId(agent);
   });
 

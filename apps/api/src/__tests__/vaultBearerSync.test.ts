@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 
 import { and, eq } from 'drizzle-orm';
-import type { Application, Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -77,11 +77,15 @@ function bearer(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };
 }
 
+// Agents come off the harness's long-lived server (#2020). `request.agent(app)`
+// shares one server across the agent's requests and closes it as soon as the
+// first one finishes, so fanning out over one is bounded by luck. An agent on
+// an already-listening server closes nothing, at any width.
 async function loginAgent(
-  app: Application,
+  h: TestHarness,
   user: Pick<SeededUser, 'email' | 'password'>,
 ): Promise<Agent> {
-  const agent = request.agent(app);
+  const agent = h.agent();
   const response = await agent
     .post('/api/v1/auth/login')
     .set(...XRW)
@@ -187,7 +191,7 @@ async function mintFirstPartyVaultToken(): Promise<{ user: SeededUser; token: st
   await seedFirstPartyClients(createOAuthRepository(harness.db));
 
   const user = await seedUser('mobilevault');
-  const agent = await loginAgent(harness.app, user);
+  const agent = await loginAgent(harness, user);
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
   const authorize = {
@@ -787,7 +791,7 @@ describe('#1043 bearer vault synchronization', () => {
 
     // The browser wizard reads its normal-data CAS token, stages the encrypted
     // server copy through its cookie session, then commits the mode transition.
-    const agent = await loginAgent(harness.app, user);
+    const agent = await loginAgent(harness, user);
     const refusedCookieRead = await agent.get('/api/v1/vault');
     expect(refusedCookieRead.status, JSON.stringify(refusedCookieRead.body)).toBe(409);
     expect(refusedCookieRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
@@ -853,7 +857,7 @@ describe('#1043 bearer vault synchronization', () => {
 
   it('expires an abandoned owner staging window and deletes its ciphertext', async () => {
     const { user, token } = await mintPersonalToken(['vault:sync'], 'expiredstage');
-    const agent = await loginAgent(harness.app, user);
+    const agent = await loginAgent(harness, user);
     await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
     await agent
       .put('/api/v1/vault')
@@ -1096,7 +1100,7 @@ describe('#1043 bearer vault synchronization', () => {
     expect(await storedProofKey(user.id)).toBeNull();
 
     // The owning browser session still enrols its own verifier afterwards.
-    const agent = await loginAgent(harness.app, user);
+    const agent = await loginAgent(harness, user);
     const enrolled = await agent
       .put('/api/v1/vault')
       .set(...XRW)
@@ -1185,7 +1189,7 @@ describe('#1497 bearer vault config reads', () => {
   it('serves a vault:sync bearer exactly the list and config body the owning session gets', async () => {
     const { user, token } = await mintPersonalToken(['vault:sync'], 'pervault-config-read');
     const vaultId = await createRealPerVault(user.id, 'QR handoff vault');
-    const agent = await loginAgent(harness.app, user);
+    const agent = await loginAgent(harness, user);
 
     const [bearerList, sessionList] = await Promise.all([
       request(harness.app).get('/api/v1/vaults').set(bearer(token)),
