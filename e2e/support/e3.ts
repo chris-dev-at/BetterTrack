@@ -18,8 +18,10 @@
  *    address-pinned transport, and drives `deliver()` with explicit attempt contexts —
  *    so the retry boundary (`attempt < max ⇒ retry`, terminal ⇒ log + streak) and
  *    the auto-disable threshold are exercised deterministically, in-process,
- *    against a {@link createCaptureReceiver} listening on an ephemeral localhost
- *    port. The subscription itself is created through the real Settings UI; the
+ *    against a {@link createCaptureReceiver} listening on an ephemeral port of
+ *    this host's own private LAN address — NOT loopback, which the API's egress
+ *    guard refuses outright (see that function). The subscription itself is
+ *    created through the real Settings UI; the
  *    signing secret is read back by DECRYPTING the stored envelope with the same
  *    key the API derives ({@link harnessConfig}) — the modal's one-time plaintext
  *    is never scraped — so the receiver can independently verify the HMAC.
@@ -36,7 +38,8 @@
  */
 import { createHmac } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { BlockList, isIP, type AddressInfo } from 'node:net';
+import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os';
 
 import type { APIRequestContext } from '@playwright/test';
 
@@ -128,7 +131,7 @@ export interface CapturedDelivery {
 }
 
 export interface CaptureReceiver {
-  /** `http://127.0.0.1:<port>` — the Payload URL the webhook is created with. */
+  /** `http://<private-lan-address>:<port>` — the Payload URL the webhook is created with. */
   readonly url: string;
   /** Every delivery POST this receiver has answered, in arrival order. */
   readonly requests: CapturedDelivery[];
@@ -137,12 +140,91 @@ export interface CaptureReceiver {
   close(): Promise<void>;
 }
 
+// RFC1918 + unique-local, spelled exactly as the API's egress guard spells the
+// ranges its webhook policy un-blocks (`LAN_ALLOWED_*` in
+// `apps/api/src/services/security/outboundUrlGuard.ts`). Two lists, one per
+// family, for the reason the guard keeps two: Node's `BlockList` treats IPv4
+// input as IPv4-mapped IPv6 as soon as a list carries a mapped-v6 rule.
+const PRIVATE_LAN_IPV4 = new BlockList();
+PRIVATE_LAN_IPV4.addSubnet('10.0.0.0', 8, 'ipv4');
+PRIVATE_LAN_IPV4.addSubnet('172.16.0.0', 12, 'ipv4');
+PRIVATE_LAN_IPV4.addSubnet('192.168.0.0', 16, 'ipv4');
+const PRIVATE_LAN_IPV6 = new BlockList();
+PRIVATE_LAN_IPV6.addSubnet('fc00::', 7, 'ipv6');
+
+function isPrivateLanAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return PRIVATE_LAN_IPV4.check(address, 'ipv4');
+  if (family === 6) return PRIVATE_LAN_IPV6.check(address, 'ipv6');
+  return false;
+}
+
 /**
- * A local HTTP receiver on an ephemeral loopback port that records each delivery
- * and replies with the current `status`. In-process and loopback-only — a
- * delivery can never leave the host. The handler captures BEFORE it responds, so
- * once a `deliver()` call resolves its request is already in `requests` (no poll,
- * no sleep).
+ * This host's first non-loopback private (RFC1918 / `fc00::/7`) interface
+ * address — the only kind of address the API will accept as a webhook receiver
+ * on a single box. IPv4 wins when both families are present: it is what every
+ * runner and developer box has, and it keeps the advertised URL free of the
+ * bracket spelling.
+ *
+ * Throws when the box has none rather than falling back to loopback. The
+ * fallback is what would re-hide #1991: a loopback receiver is refused at CREATE
+ * by the egress guard, the signing-secret dialog never appears, and the failure
+ * surfaces three layers away from its cause.
+ */
+function privateLanInterfaceAddress(
+  interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces(),
+): string {
+  const candidates: NetworkInterfaceInfo[] = [];
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.internal || !isPrivateLanAddress(entry.address)) continue;
+      candidates.push(entry);
+    }
+  }
+  const chosen = candidates.find((entry) => isIP(entry.address) === 4) ?? candidates[0];
+  if (!chosen) {
+    throw new Error(
+      'E3: this host has no non-loopback private network interface, so the webhook ' +
+        'capture receiver has no address the API would accept. The receiver must sit on ' +
+        'an RFC1918 (10/8, 172.16/12, 192.168/16) or unique-local (fc00::/7) address: the ' +
+        'egress guard on user-supplied webhook URLs refuses loopback under every policy ' +
+        '(apps/api/src/services/security/outboundUrlGuard.ts, #1556), so a loopback ' +
+        'receiver fails the create with WEBHOOK_URL_BLOCKED. Attach this box to a private ' +
+        'network — a Docker bridge is enough — and re-run.',
+    );
+  }
+  return chosen.address;
+}
+
+/** `10.0.0.5` → `10.0.0.5`; `fd00::5` → `[fd00::5]` (RFC 3986 host spelling). */
+function urlHost(address: string): string {
+  return isIP(address) === 6 ? `[${address}]` : address;
+}
+
+/**
+ * A local HTTP receiver on an ephemeral port of this host's own private LAN
+ * address that records each delivery and replies with the current `status`. The
+ * handler captures BEFORE it responds, so once a `deliver()` call resolves its
+ * request is already in `requests` (no poll, no sleep).
+ *
+ * WHY NOT LOOPBACK (#1991). The subscription is created through the real product
+ * API, which runs the SSRF guard on the user-supplied URL (#1556) and refuses
+ * 127.0.0.0/8 under every policy — so a loopback receiver never gets a webhook
+ * at all. The webhook policy DOES allow a private LAN receiver over plain http
+ * (`WEBHOOK_RECEIVER_URL_POLICY`, the owner-recorded self-hosted-receiver
+ * contract), which is exactly what this is, and the same address then passes the
+ * dispatcher's per-attempt guard and its address pin (#1702) at delivery time.
+ * The remaining obstacle — #1864 refusing the deployment's OWN interface network
+ * — is opted out of for this throwaway stack in `playwright.config.ts`; the
+ * guard itself is not weakened anywhere.
+ *
+ * TRADE-OFF, stated plainly: for the seconds a webhook spec runs, this listener
+ * is reachable from the host's LAN rather than from the host alone. It holds no
+ * secret (the signing secret is read by decrypting the stored envelope, never
+ * from the wire) and it only appends to `requests` and echoes a status, so the
+ * worst a LAN peer could do is add a junk entry and fail the spec. Loopback is
+ * not available here for the reason above, and silently falling back to it would
+ * put the suite back to being green-by-never-running.
  */
 export async function createCaptureReceiver(): Promise<CaptureReceiver> {
   const requests: CapturedDelivery[] = [];
@@ -161,11 +243,12 @@ export async function createCaptureReceiver(): Promise<CaptureReceiver> {
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = privateLanInterfaceAddress();
+  await new Promise<void>((resolve) => server.listen(0, address, resolve));
   const { port } = server.address() as AddressInfo;
 
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://${urlHost(address)}:${port}`,
     requests,
     setStatus(next) {
       status = next;
