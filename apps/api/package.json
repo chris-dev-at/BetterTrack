@@ -58,7 +58,7 @@
   },
   "devDependencies": {
     "@bettertrack/config": "workspace:*",
-    "@electric-sql/pglite": "^0.2.17",
+    "@electric-sql/pglite": "^0.5.8",
     "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.0",
     "@types/ioredis-mock": "^8.2.8",
