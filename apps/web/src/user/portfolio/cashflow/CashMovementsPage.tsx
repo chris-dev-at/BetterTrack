@@ -18,12 +18,12 @@ import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
 import { CASH_TAGS_QUERY_KEY, listCashTags } from '../../../lib/cashApi';
 import { EM_DASH, formatDate } from '../../../lib/format';
-import { getCashMovements } from '../../../lib/portfolioApi';
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, PageHead } from '../../../ui/origin';
 import { SourceBadge, sourceTagLabel } from '../SourceBadge';
+import { usePortfolioStore, usePortfolioStoreScope } from '../PortfolioStoreProvider';
 import { usePreservedSearch } from '../../components/LocalNav';
 import { useCreateIntent } from '../../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../../routeParams';
@@ -61,19 +61,39 @@ function isEditable(kind: CashMovement['kind']): boolean {
 
 /**
  * The tagged cash ledger (V5 cash fusion): every movement in this portfolio,
- * newest first, with its tags as chips and inline tag editing. Reads through
- * the existing paged `GET /portfolios/:id/cash` and joins the page's tag ids to
- * `GET /cash/tags` client-side.
+ * newest first, with its tags as chips and inline tag editing. The ledger read
+ * goes through `usePortfolioStore()`, so an account portfolio is served by the
+ * paged `GET /portfolios/:id/cash` and a VAULTED one by the vault twin out of
+ * its authenticated document; the page's tag ids are joined to the user-wide
+ * `GET /cash/tags` client-side either way.
  */
 export function CashMovementsPage() {
   const t = useT();
   const phone = usePhoneShell();
   const queryClient = useQueryClient();
+  // The ledger is portfolio-scoped row data, and for a vaulted portfolio the
+  // server has no rows to answer with (§6.16 kills server-computed reads for
+  // it) — `createVaultedPortfolioRouteGuard` reads the id off the path and
+  // answers 403 VAULTED_PORTFOLIO. Read straight from `portfolioApi` this page
+  // was therefore server-only: empty ledger, no source picker, a doomed request
+  // per mount. `useActivePortfolio` beside it has always resolved the roster
+  // through the store; the movements read now does the same, which is the whole
+  // point of the seam — the surface states which store it wants instead of
+  // calling the server and catching the refusal (#1416, failure map #7).
+  const store = usePortfolioStore();
+  // Extra key segments that pin a cached answer to the store that produced it.
+  // Empty (`[]`) for the account-level API store, so every key below is byte
+  // for byte the key it was before; a per-portfolio vault access appends its own
+  // identity, so a disposed resolution's rejection is never read back as the
+  // freshly unlocked store's answer (paranoid-UX failure map #1).
+  const storeScope = usePortfolioStoreScope();
   const { portfoliosQuery, portfolioId } = useActivePortfolio();
   const [tagFilter, setTagFilter] = useState<string>(ALL_FILTER);
   // Source-tag filter (V5-P0c, #1658). This page already rendered the
   // `SourceBadge`, so "Imported · Flatex" was readable here and actionable only
-  // on the older accounts page. The server applies it before paging.
+  // on the older accounts page. Whichever store answers applies it before
+  // paging — the server in `cashMovementRepository`, the vault twin in
+  // `vaultPortfolioStore.getCashMovements`.
   const [sourceFilter, setSourceFilter] = useState<string>(ALL_FILTER);
   const [editing, setEditing] = useState<CashMovement | null>(null);
   const [tagging, setTagging] = useState<CashMovement | null>(null);
@@ -91,16 +111,24 @@ export function CashMovementsPage() {
   useCreateIntent(CREATE_INTENT.movement, () => setRecording(true));
 
   const movementsQuery = useInfiniteQuery({
-    queryKey: ['portfolio', portfolioId, 'cash', 'movements', tagFilter, sourceFilter],
+    queryKey: [
+      'portfolio',
+      portfolioId,
+      'cash',
+      'movements',
+      tagFilter,
+      sourceFilter,
+      ...storeScope,
+    ],
     queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) =>
-      getCashMovements(
+      store.getCashMovements(
         portfolioId!,
         {
           cursor: pageParam,
           limit: CASH_MOVEMENTS_DEFAULT_LIMIT,
           tag: tagFilter === ALL_FILTER ? undefined : tagFilter,
           source: sourceFilter === ALL_FILTER ? undefined : sourceFilter,
-          // The options come from the server's portfolio-wide facet, not from
+          // The options come from the store's portfolio-wide facet, not from
           // the rows this page happens to have paged in (V5-P0c, #1658). Only
           // the first page asks for it — it is the only one read back, and an
           // invalidation refetches page one anyway, so "load more" never pays
