@@ -1,10 +1,12 @@
 import { randomBytes } from 'node:crypto';
 
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createApiKeyResponseSchema } from '@bettertrack/contracts';
 
+import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -30,6 +32,15 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * Personal keys throughout: `enforceApiKeyScope` is one rail for both credential
  * kinds, and the OAuth-specific decisions (first-party grant management) are
  * pinned against real registered clients in `oauthGrantBearer.test.ts`.
+ *
+ * #1958 extends it the same way, for the same reason: converting the FIFTH twin
+ * (tax-year documentation) to a `ctx` factory and giving all five twins the
+ * portfolio-vault twin's `admin → 404` backstop are both refusal-path changes,
+ * so the table grows the rows that would catch either one moving a decision —
+ * the tax-year route's off-allowlist siblings, and an admin-role principal of
+ * BOTH kinds on every one of the five twin surfaces. Still no new behavior, and
+ * still importing nothing either issue touches, so this file keeps running
+ * unmodified against the parent commit.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -44,7 +55,7 @@ beforeEach(async () => {
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
 /** Seed a fresh account and mint a personal key holding exactly these scopes. */
-async function mintKey(scopes: string[]): Promise<string> {
+async function mintKeyForUser(scopes: string[]): Promise<{ token: string; userId: string }> {
   const tag = randomBytes(5).toString('hex');
   const user = await harness.seedUser({
     email: `parity-${tag}@bettertrack.test`,
@@ -61,8 +72,10 @@ async function mintKey(scopes: string[]): Promise<string> {
     .set(...XRW)
     .send({ name: 'parity', scopes });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
-  return createApiKeyResponseSchema.parse(created.body).token;
+  return { token: createApiKeyResponseSchema.parse(created.body).token, userId: user.id };
 }
+
+const mintKey = async (scopes: string[]): Promise<string> => (await mintKeyForUser(scopes)).token;
 
 type Method = 'get' | 'post' | 'patch' | 'delete';
 
@@ -319,6 +332,44 @@ const ROWS: readonly ParityRow[] = [
     without: [403, 'INSUFFICIENT_SCOPE'],
     with: [200, null],
   },
+
+  // ── #1958: the fifth twin's surface, and the three things around it that
+  //    must NOT inherit the carve-out. The twin is method- and path-aware, so
+  //    an off-allowlist method or a `/{year}/…` sibling is session-only — not a
+  //    scope denial, and never audited. `account:security` is likewise not a
+  //    key to the tax REGIME next door, which is portfolio-scoped (#1730).
+  {
+    name: 'tax-year documentation, off-allowlist method',
+    method: 'post',
+    path: '/settings/taxes/years',
+    scope: 'account:security',
+    without: [403, 'API_KEY_FORBIDDEN'],
+    with: [403, 'API_KEY_FORBIDDEN'],
+  },
+  {
+    name: 'tax-year documentation, future per-year sibling',
+    method: 'get',
+    path: '/settings/taxes/years/2025/export',
+    scope: 'account:security',
+    without: [403, 'API_KEY_FORBIDDEN'],
+    with: [403, 'API_KEY_FORBIDDEN'],
+  },
+  {
+    name: 'tax regime read never inherits the documentation carve-out',
+    method: 'get',
+    path: '/settings/taxes',
+    scope: 'account:security',
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [403, 'INSUFFICIENT_SCOPE'],
+  },
+  {
+    name: 'tax regime read on its own portfolio scope',
+    method: 'get',
+    path: '/settings/taxes',
+    scope: 'portfolio:read',
+    without: [403, 'INSUFFICIENT_SCOPE'],
+    with: [200, null],
+  },
   {
     name: 'first-run completion',
     method: 'post',
@@ -442,5 +493,71 @@ describe('#1951 bearer admission parity (golden — must not move)', () => {
       row.with[0],
       row.with[1],
     ]);
+  });
+});
+
+/**
+ * #1958 — the account-kind boundary on all five twins, both principal kinds.
+ *
+ * The portfolio-vault and per-vault twins already carried an `admin → 404`
+ * backstop; #1958 gives the passkey, grant and tax-year twins the same one
+ * through a shared predicate. That is a narrowing *inside* three handlers, so
+ * the thing to prove is that it narrows NOTHING an HTTP caller can observe: on
+ * both sides of the change an admin-role principal is refused before routing —
+ * a bearer by the global rail, a session by `requireUser` — and the answers
+ * below are byte-identical on the parent commit.
+ *
+ * Which is exactly why the backstop is worth adding: it is unreachable today,
+ * and it exists for the day one of those two rails is remounted or regresses.
+ */
+const TWIN_SURFACES = [
+  { name: 'tax-year documentation twin', path: '/settings/taxes/years' },
+  { name: 'oauth grant twin', path: '/settings/oauth-grants' },
+  { name: 'passkey management twin', path: '/auth/passkeys' },
+  { name: 'portfolio-vault twin', path: `/portfolios/${MISSING_ID}/vault/revision` },
+  { name: 'per-vault twin', path: `/vaults/${MISSING_ID}` },
+] as const;
+
+/** Every scope any of the five surfaces could ask for, so a refusal is never about scope. */
+const TWIN_SCOPES = ['account:security', 'vault:sync'] as const;
+
+describe('#1958 admin-role principals on all five twins (golden — must not move)', () => {
+  it.each(TWIN_SURFACES)('404s an admin-role BEARER on the $name', async (surface) => {
+    // Promote the account directly in the table, deliberately bypassing
+    // `userRepo.setRole` — which bumps `securityGeneration` and would revoke the
+    // token first. This constructs the one principal shape the boundary exists
+    // for: a live bearer on an account that is already `role = 'admin'`.
+    const { token, userId } = await mintKeyForUser([...TWIN_SCOPES]);
+    await harness.db.update(schema.users).set({ role: 'admin' }).where(eq(schema.users.id, userId));
+
+    const res = await request(harness.app).get(`/api/v1${surface.path}`).set(bearer(token));
+    expect(answerOf(res), surface.path).toEqual([404, 'NOT_FOUND']);
+
+    // A 404 across the account-kind boundary is not a scope event: neither the
+    // rail nor any twin audits it, so the trail stays empty.
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, userId),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(rows).toHaveLength(0);
+  });
+
+  it('403s an admin-kind SESSION on every one of the five, with the admin-area pointer', async () => {
+    // One (expensive) admin login drives all five surfaces: `loginAdmin` has to
+    // enroll TOTP and re-authenticate through the §6.12 admin 2FA gate.
+    const adminAgent = await harness.loginAdmin(await harness.seedAdmin());
+
+    for (const surface of TWIN_SURFACES) {
+      const res = await adminAgent.get(`/api/v1${surface.path}`);
+      // `requireUser` refuses an admin-kind session before any twin runs, so the
+      // backstop is never what answers a cookie caller — and must not become it.
+      expect(answerOf(res), surface.path).toEqual([403, 'ADMIN_ACCOUNT_KIND']);
+      expect(res.body.error.message, surface.path).toMatch(/admin area/i);
+    }
   });
 });

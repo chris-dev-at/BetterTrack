@@ -18,7 +18,10 @@ import { forbidden } from '../errors';
 import { createErrorHandler } from '../http/errorHandler';
 import { ACCOUNT_SECURITY_SCOPE, recordBearerScopeDenied } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrPasskeyManagementBearer } from '../http/routes/authRoutes';
-import { requireCookieSessionOrFirstPartyOAuthGrant } from '../http/routes/settingsRoutes';
+import {
+  requireCookieSessionOrFirstPartyOAuthGrant,
+  requireCookieSessionOrTaxYearDocumentationBearer,
+} from '../http/routes/settingsRoutes';
 import { parseBearerScopeDeniedMeta } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -32,6 +35,10 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * grant and a personal key on the first-party-only grant routes, the #1324
  * surface a personal key must still be ADMITTED to, a secret smuggled in a query
  * string, and the failure mode of the vocabulary fence itself.
+ *
+ * #1958 adds the fifth twin — tax-year documentation — to the last section:
+ * the same rail-bypassed count that is the whole point of the change, plus the
+ * live end-to-end refusal proving the rail and the twin never both write.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -426,6 +433,7 @@ describe('#1951 the TWIN is what writes the row when the rail is bypassed', () =
     guard: ReturnType<typeof requireCookieSessionOrFirstPartyOAuthGrant>,
     req: Record<string, unknown>,
   ) => {
+    // All five twins share this signature; the alias above just names one.
     const next = vi.fn();
     guard(req as unknown as Request, {} as Response, next);
     await vi.waitFor(() => expect(next).toHaveBeenCalled());
@@ -480,5 +488,99 @@ describe('#1951 the TWIN is what writes the row when the rail is bypassed', () =
       reason: 'insufficient-scope',
       path: '/auth/passkeys',
     });
+  });
+
+  it('#1958 the tax-year twin writes exactly one row for a refusal the rail never saw', async () => {
+    const { token, keyId, user } = await mintPersonalKey(['market:read']);
+    const next = await driveTwin(requireCookieSessionOrTaxYearDocumentationBearer(harness.ctx), {
+      authUser: { id: user.id, role: 'user' },
+      apiKey: { id: keyId, scopes: ['market:read'], kind: 'personal', securityGeneration: 0 },
+      method: 'GET',
+      path: '/taxes/years',
+    });
+
+    // The HTTP answer is byte-identical to the one this twin has always given.
+    expect(next.mock.calls[0]?.[0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+    const rows = await scopeDeniedRows(user.id);
+    expect(rows).toHaveLength(1); // parent: 0 — it refused silently
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      method: 'GET',
+      // The ROUTE the allowlist is written against, not the mount-relative path.
+      path: '/settings/taxes/years',
+    });
+    // §10: the row names the key by id and nothing else about the credential.
+    expect(rows[0]!.targetType).toBe('api_key');
+    expect(rows[0]!.targetId).toBe(keyId);
+    const serialized = JSON.stringify(rows[0]);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain(hashToken(token));
+    expect(Object.keys(rows[0]!.meta as object).sort()).toEqual([
+      'method',
+      'path',
+      'reason',
+      'requiredScope',
+    ]);
+  });
+
+  it('#1958 the tax-year twin writes NOTHING for the refusals that are not scope events', async () => {
+    const { keyId, user } = await mintPersonalKey([ACCOUNT_SECURITY_SCOPE]);
+    const guard = requireCookieSessionOrTaxYearDocumentationBearer(harness.ctx);
+
+    for (const probe of [
+      // Off-allowlist method and two future per-year siblings: the global table
+      // calls these session-only and audits nothing, so neither may the twin.
+      { method: 'POST', path: '/taxes/years', role: 'user' as const },
+      { method: 'GET', path: '/taxes/years/2025/export', role: 'user' as const },
+      { method: 'POST', path: '/taxes/years/2025/change', role: 'user' as const },
+      // The #1958 backstop: a 404 across the account-kind boundary is not a
+      // scope denial either, on the twin any more than on the rail.
+      { method: 'GET', path: '/taxes/years', role: 'admin' as const },
+    ]) {
+      const next = await driveTwin(guard, {
+        authUser: { id: user.id, role: probe.role },
+        apiKey: {
+          id: keyId,
+          scopes: [ACCOUNT_SECURITY_SCOPE],
+          kind: 'personal',
+          securityGeneration: 0,
+        },
+        method: probe.method,
+        path: probe.path,
+      });
+      expect(next.mock.calls[0]?.[0], `${probe.role} ${probe.method} ${probe.path}`).toMatchObject({
+        statusCode: probe.role === 'admin' ? 404 : 403,
+      });
+    }
+
+    expect(await scopeDeniedRows(user.id)).toHaveLength(0);
+  });
+
+  it('#1958 writes exactly one row for a LIVE tax-year refusal — the rail, not the rail plus the twin', async () => {
+    // End-to-end: the global guard answers before routing, so the twin never
+    // runs. One refusal, one row — never two.
+    const { token, keyId, user } = await mintPersonalKey(['market:read']);
+    const refused = await request(harness.app)
+      .get('/api/v1/settings/taxes/years')
+      .set(bearer(token));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const rows = await scopeDeniedRows(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.targetId).toBe(keyId);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      method: 'GET',
+      path: '/settings/taxes/years',
+    });
+    const serialized = JSON.stringify(rows[0]);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain(hashToken(token));
   });
 });

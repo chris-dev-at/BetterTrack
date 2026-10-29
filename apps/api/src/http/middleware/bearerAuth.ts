@@ -1062,6 +1062,37 @@ export function openApiPathTemplateAcceptsBearer(path: string, method = 'GET'): 
 }
 
 /**
+ * The user/admin account-kind boundary for BEARER principals (#1365, #1958).
+ *
+ * Bearer credentials are a user-app rail. An account promoted to admin may
+ * still have a not-yet-revoked personal key or OAuth grant; disclose no user
+ * surface to that principal, just as `/admin/*` discloses nothing to a bearer
+ * regardless of its scopes.
+ *
+ * Defense-in-depth, not a live path: a real promotion goes through
+ * `userRepo.setRole`, which bumps `securityGeneration` and therefore already
+ * invalidates every outstanding token of that account before it can reach this
+ * predicate. Read it (and its tests) as the fence that survives a future role
+ * write which forgets the generation bump — never as proof that admin-role
+ * bearers are reaching the user API today.
+ *
+ * It is exported because all five router-local twins apply the SAME boundary:
+ * the portfolio-vault and per-vault twins always did, and #1958 gives the
+ * passkey, grant and tax-year twins the identical backstop so a remount or a
+ * regression of the global table cannot leave one twin answering a question the
+ * rail refuses. One predicate, one definition — the twins cannot drift from the
+ * rail they mirror.
+ *
+ * Deliberately `false` for a request carrying no bearer: cookie sessions are
+ * not this boundary's business. An admin-KIND session is refused earlier and
+ * more loudly by `requireUser` (403 `ADMIN_ACCOUNT_KIND`, §6.12), which is the
+ * boundary the user app actually runs on.
+ */
+export function isAdminRoleBearerPrincipal(req: Request): boolean {
+  return req.apiKey !== undefined && req.authUser?.role === 'admin';
+}
+
+/**
  * Scope enforcement for API-key requests (§6.13, V2-P12). A no-op for cookie
  * sessions (full access). For a bearer request it maps the path+method to the
  * required scope and rejects — with an audited `403 INSUFFICIENT_SCOPE` — when
@@ -1074,18 +1105,10 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       next();
       return;
     }
-    // Bearer credentials are a user-app rail. An account promoted to admin may
-    // still have a not-yet-revoked personal key or OAuth grant; disclose no
-    // user surface to that principal, just as `/admin/*` discloses nothing to a
-    // bearer regardless of its scopes.
-    //
-    // Defense-in-depth, not a live path: a real promotion goes through
-    // `userRepo.setRole`, which bumps `securityGeneration` and therefore already
-    // invalidates every outstanding token of that account before it can reach
-    // this branch. Read the branch (and its test) as the fence that survives a
-    // future role write which forgets the generation bump — never as proof that
-    // admin-role bearers are reaching the user API today (#1365).
-    if (req.authUser?.role === 'admin') {
+    // The account-kind boundary, shared verbatim with the five router-local
+    // twins. See {@link isAdminRoleBearerPrincipal} for why it exists and why
+    // it is not a live path.
+    if (isAdminRoleBearerPrincipal(req)) {
       next(notFound());
       return;
     }
