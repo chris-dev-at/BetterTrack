@@ -70,6 +70,7 @@ import { withLockedPrivacyModes } from '../../../data/repositories/paranoidEnfor
 import { PARANOID_RETIRED_EXPORT_ERROR } from '../../../data/repositories/paranoidTransitionRepository';
 import { withPortfolioVaultTransitionTransaction } from '../../../data/repositories/portfolioVaultTransitionRepository';
 import { createVaultBlobRepository } from '../../../data/repositories/vaultBlobRepository';
+import { createVaultRepository } from '../../../data/repositories/vaultRepository';
 import {
   assertVaultedPortfolioHasNoCleartext,
   vaultedPortfolioStubName,
@@ -4119,5 +4120,69 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
       TEST_VECTOR.targetPortfolioId,
     );
     expect(importBatchCount).toBe(2);
+  });
+});
+
+describe('#1610 vault deletion vs an in-flight move-in', () => {
+  const deleteTargetVault = () =>
+    createVaultRepository(h.db).delete({
+      userId: user.id,
+      vaultId: TEST_VECTOR.vaultId,
+      // The §15 verifier itself is covered by the E1 suite; this pins the gates after it.
+      verifyStepUp: async () => undefined,
+      now: () => TEST_VECTOR.at,
+    });
+
+  it('refuses the delete while the capture is live and the staged move-in still commits', async () => {
+    const request = await stageMoveIn();
+    const [captureBefore] = await h.db
+      .select()
+      .from(portfolioVaultTransitionStates)
+      .where(eq(portfolioVaultTransitionStates.portfolioId, TEST_VECTOR.targetPortfolioId));
+
+    await expect(deleteTargetVault()).resolves.toEqual({
+      status: 'move_in_pending',
+      portfolioIds: [TEST_VECTOR.targetPortfolioId],
+    });
+    const [captureAfter] = await h.db
+      .select()
+      .from(portfolioVaultTransitionStates)
+      .where(eq(portfolioVaultTransitionStates.portfolioId, TEST_VECTOR.targetPortfolioId));
+    expect(captureAfter).toEqual(captureBefore);
+
+    await expect(
+      h.ctx.portfolioVaultTransitions.moveIn(user.id, TEST_VECTOR.targetPortfolioId, request),
+    ).resolves.toMatchObject({
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      vaultId: TEST_VECTOR.vaultId,
+      idempotent: false,
+    });
+    // Once the portfolio is a member, the ordinary member gate takes over.
+    await expect(deleteTargetVault()).resolves.toEqual({ status: 'referenced' });
+  });
+
+  it('deletes past an expired capture, unbinds it, and the late commit is a typed refusal', async () => {
+    const request = await stageMoveIn(undefined, {
+      expiresAt: new Date(TEST_VECTOR.at.getTime() - 1),
+    });
+
+    await expect(deleteTargetVault()).resolves.toEqual({ status: 'ok' });
+    const [capture] = await h.db
+      .select()
+      .from(portfolioVaultTransitionStates)
+      .where(eq(portfolioVaultTransitionStates.portfolioId, TEST_VECTOR.targetPortfolioId));
+    expect(capture).toMatchObject({
+      captureVaultId: null,
+      captureMediaAttestedAt: null,
+      captureMediaAttestedDriveConnectionId: null,
+    });
+
+    await expect(
+      h.ctx.portfolioVaultTransitions.moveIn(user.id, TEST_VECTOR.targetPortfolioId, request),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    // The capture re-opens instead of the permanent 500 #1610 reported.
+    await expect(
+      h.ctx.portfolioVaultTransitions.revision(user.id, TEST_VECTOR.targetPortfolioId),
+    ).resolves.toMatchObject({ importBatchCount: expect.any(Number) });
   });
 });

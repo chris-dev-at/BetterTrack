@@ -295,6 +295,7 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
         const result = await deps.configs.delete({
           userId,
           vaultId,
+          now,
           verifyStepUp: (auth, tx) =>
             deps.deleteReauth.verifyVaultDelete({
               userId,
