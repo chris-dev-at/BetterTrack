@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { eq } from 'drizzle-orm';
 import postgres from 'postgres';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '../data/db';
 import { newId } from '../data/ids';
@@ -49,22 +49,25 @@ async function waitForDriveLockWaiters(
   predicate: (rows: DatabaseLockWait[]) => boolean,
   description: string,
 ): Promise<DatabaseLockWait[]> {
-  const deadline = Date.now() + 4_000;
-  let observed: DatabaseLockWait[] = [];
-  while (Date.now() < deadline) {
-    observed = await observer<DatabaseLockWait[]>`
+  // `vi.waitFor` polls on a bounded schedule and rethrows the LAST failure at
+  // the deadline, so the diagnostic below still reaches the report — the loop
+  // this replaces bought the same thing with a sleep inside it (#1622).
+  return vi.waitFor(
+    async () => {
+      const observed = await observer<DatabaseLockWait[]>`
       SELECT pid, query, wait_event AS "waitEvent"
       FROM pg_stat_activity
       WHERE datname = current_database()
         AND wait_event_type = 'Lock'
     `;
-    if (predicate(observed)) return observed;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(
-    `Timed out waiting for ${description}; observed ${JSON.stringify(
-      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
-    )}`,
+      if (predicate(observed)) return observed;
+      throw new Error(
+        `Timed out waiting for ${description}; observed ${JSON.stringify(
+          observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+        )}`,
+      );
+    },
+    { timeout: 4_000, interval: 10 },
   );
 }
 

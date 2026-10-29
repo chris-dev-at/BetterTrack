@@ -14,6 +14,7 @@ import { runAlertsEvaluation } from '../services/alerts/alertEvaluator';
 import type { AlertFollowerFanoutDeps } from '../services/alerts/alertFollowerFanout';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { flushMacrotasks } from '../test/waitFor';
 
 /**
  * Alert follows (#455): per-followed-person `notifyOnAlertCreate` /
@@ -503,7 +504,9 @@ describe('visibility — the owner controls whether followers get anything', () 
         createSettled = true;
       })
       .catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // One event-loop turn, not a window: the create is parked on the follower's
+    // privacy lock, which THIS test holds, and the release is asserted below.
+    await flushMacrotasks();
     expect(createSettled).toBe(false);
     await followerTransition.finish();
     await create;
@@ -519,7 +522,7 @@ describe('visibility — the owner controls whether followers get anything', () 
         tickSettled = true;
       })
       .catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushMacrotasks();
     expect(tickSettled).toBe(false);
     await ownerTransition.finish();
     await expect(tick).resolves.toEqual({ evaluated: 2, fired: 2 });

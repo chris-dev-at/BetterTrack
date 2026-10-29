@@ -28,6 +28,7 @@ import { withExclusiveParanoidTransitionTestLock } from '../../data/repositories
 import { assets, users } from '../../data/schema';
 import { realtimeAdmissionKeys } from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import { waitForSocketAck } from '../../test/waitFor';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
 import { REALTIME_LIVE_FANOUT_CHANNEL } from '../gateway';
 
@@ -64,15 +65,39 @@ let historyBars: PricePoint[] = [];
 let historyGate: Promise<void> | null = null;
 let historyError: Error | null = null;
 
+/**
+ * Upstream polls counted PER asset, which `stub.calls.poll` cannot do.
+ *
+ * The auto-stop tests need two facts at once: the loop under test is frozen,
+ * and enough poll intervals have actually elapsed for a live loop to have
+ * ticked. The second fact needs a live loop to count (see {@link pollClock}),
+ * and a shared counter would mix the two.
+ */
+const pollsByRef = new Map<string, number>();
+/** The provider ref `seedAsset` gave an asset id — the key into `pollsByRef`. */
+const refByAssetId = new Map<string, string>();
+
+/** Upstream polls issued for `assetId` so far. */
+function pollsFor(assetId: string): number {
+  const ref = refByAssetId.get(assetId);
+  if (ref === undefined) throw new Error(`no provider ref recorded for asset ${assetId}`);
+  return pollsByRef.get(ref) ?? 0;
+}
+
 beforeEach(async () => {
   let price = 100;
   historyBars = [];
   historyGate = null;
   historyError = null;
   commandClockMs = null;
+  pollsByRef.clear();
+  refByAssetId.clear();
   stub = createStubMarketData({
     quote: () => quoteResult(price),
-    poll: () => quoteResult(price++),
+    poll: (ref) => {
+      pollsByRef.set(ref.providerRef, (pollsByRef.get(ref.providerRef) ?? 0) + 1);
+      return quoteResult(price++);
+    },
     history: async () => {
       if (historyGate) await historyGate;
       if (historyError) throw historyError;
@@ -112,6 +137,7 @@ async function seedAsset(suffix = ''): Promise<string> {
     exchange: 'XETRA',
     currency: 'EUR',
   });
+  refByAssetId.set(row.id, providerRef);
   return row.id;
 }
 
@@ -158,23 +184,46 @@ function watch(
   window: string,
   rate?: LiveRate,
 ): Promise<RealtimeLiveWatchAck> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for live.watch ack')), 3000);
-    socket.emit(
-      REALTIME_CLIENT_EVENTS.liveWatch,
-      rate === undefined ? { assetId, window } : { assetId, window, rate },
-      (ack: RealtimeLiveWatchAck) => {
-        clearTimeout(timer);
-        resolve(ack);
-      },
-    );
-  });
+  return waitForSocketAck<RealtimeLiveWatchAck>(
+    socket,
+    REALTIME_CLIENT_EVENTS.liveWatch,
+    rate === undefined ? { assetId, window } : { assetId, window, rate },
+  );
 }
 
 function unwatch(socket: ClientSocket, assetId: string): Promise<unknown> {
-  return new Promise((resolve) => {
-    socket.emit(REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId }, (ack: unknown) => resolve(ack));
-  });
+  return waitForSocketAck<unknown>(socket, REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId });
+}
+
+/**
+ * A live loop on its own asset, used as a CLOCK.
+ *
+ * "Give it five poll intervals and check nothing moved" cannot be written as a
+ * fixed sleep without lying (#1622): `POLL_MS * 5` is five intervals on an idle
+ * laptop and less than one on a loaded runner, which is how a timing-only
+ * failure gets mistaken for a regression. A second asset that is still being
+ * watched runs on exactly the same scheduler as the loop under test, so waiting
+ * for IT to complete N further polls proves N intervals really elapsed — and
+ * stretches with the machine instead of flaking on it.
+ *
+ * Returns `elapse(intervals)`; the clock's own socket is closed by the suite's
+ * `afterEach` with every other open socket.
+ */
+async function pollClock(): Promise<(intervals: number) => Promise<void>> {
+  const clockAssetId = await seedAsset('-clock');
+  const clockSocket = await connectUser('pollclock@bt.test', 'pollclock');
+  expect(await watch(clockSocket, clockAssetId, '10m')).toMatchObject({ ok: true });
+  await vi.waitFor(() => expect(pollsFor(clockAssetId)).toBeGreaterThanOrEqual(1));
+  return async (intervals: number) => {
+    const from = pollsFor(clockAssetId);
+    await vi.waitFor(
+      () => expect(pollsFor(clockAssetId)).toBeGreaterThanOrEqual(from + intervals),
+      {
+        timeout: 10_000,
+        interval: 5,
+      },
+    );
+  };
 }
 
 function collectFrames(socket: ClientSocket): RealtimeLiveFrame[] {
@@ -276,13 +325,14 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
   });
 
   it('polling auto-stops when the last watcher leaves; provider calls cease', async () => {
+    const elapse = await pollClock();
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
     const bob = await connectUser('bob@bt.test', 'bob');
 
     await watch(alice, assetId, '10m');
     await watch(bob, assetId, '10m');
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(pollsFor(assetId)).toBeGreaterThanOrEqual(2));
 
     await unwatch(alice, assetId);
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1); // still hot
@@ -291,13 +341,28 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     bob.disconnect();
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
-      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+      // Scoped to THIS asset: the poll clock's own asset is legitimately still
+      // in the global watch set, and a bare `zcard` would fold the two together.
+      expect(
+        await harness.ctx.redis.zscore(
+          realtimeAdmissionKeys.globalWatches,
+          admissionAssetId(assetId),
+        ),
+      ).toBeNull();
+      expect(
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(assetId)),
+        ),
+      ).toBe(0);
     });
+    // `unwatch` clears the loop's timer and drops it from the map synchronously,
+    // so the cadence going null is the loop's own "cold" signal.
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBeNull();
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2)); // drain in-flight tick
-    const frozen = stub.calls.poll;
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
-    expect(stub.calls.poll).toBe(frozen);
+    await elapse(2); // drain any in-flight tick
+    const frozen = pollsFor(assetId);
+    await elapse(5); // five more real intervals: an orphaned loop would tick
+    expect(pollsFor(assetId)).toBe(frozen);
   });
 
   it('a window switch re-backfills without restarting or duplicating the loop', async () => {
@@ -503,6 +568,7 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
   });
 
   it('two un-acked watches for the same asset register ONE count (TOCTOU regression)', async () => {
+    const elapse = await pollClock();
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
 
@@ -523,11 +589,12 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
     alice.disconnect();
     await vi.waitFor(() => expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0));
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBeNull();
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2)); // drain in-flight tick
-    const frozen = stub.calls.poll;
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
-    expect(stub.calls.poll).toBe(frozen);
+    await elapse(2); // drain any in-flight tick
+    const frozen = pollsFor(assetId);
+    await elapse(5);
+    expect(pollsFor(assetId)).toBe(frozen);
   });
 
   it('rejects watch-start work beyond the bounded per-socket queue', async () => {
@@ -690,6 +757,8 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
       })
       .returning();
     const frames = collectFrames(socket);
+    refByAssetId.set(customAsset!.id, customAsset!.providerRef);
+    const elapse = await pollClock();
 
     await expect(watch(socket, customAsset!.id, '10m')).resolves.toMatchObject({ ok: true });
     await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
@@ -717,19 +786,25 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     });
     await locked;
 
-    // The next frame queues behind the winning transition. Once it commits,
-    // authorization fails closed before fan-out and releases the only loop ref.
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2));
+    // The next frame queues behind the winning transition. Its POLL is the
+    // observable start of that frame — the authorization read after it is what
+    // blocks on the lock — so wait for the poll rather than for a guessed
+    // number of milliseconds.
+    const polledUnderLock = pollsFor(customAsset!.id);
+    await vi.waitFor(() => expect(pollsFor(customAsset!.id)).toBeGreaterThan(polledUnderLock));
+    // Once the transition commits, authorization fails closed before fan-out
+    // and releases the only loop ref.
     releaseTransition();
     await transition;
     await vi.waitFor(() => expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0));
+    expect(harness.ctx.liveMode.pollIntervalMs(customAsset!.id)).toBeNull();
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2));
+    await elapse(2); // drain any in-flight tick
     const frameCount = frames.length;
-    const pollCount = stub.calls.poll;
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
+    const pollCount = pollsFor(customAsset!.id);
+    await elapse(5);
     expect(frames).toHaveLength(frameCount);
-    expect(stub.calls.poll).toBe(pollCount);
+    expect(pollsFor(customAsset!.id)).toBe(pollCount);
   });
 
   it('blocks an owned custom-asset live read for paranoid accounts but keeps global quotes', async () => {
@@ -875,7 +950,19 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     });
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
-      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+      // Scoped to THIS asset: the poll clock's own asset is legitimately still
+      // in the global watch set, and a bare `zcard` would fold the two together.
+      expect(
+        await harness.ctx.redis.zscore(
+          realtimeAdmissionKeys.globalWatches,
+          admissionAssetId(assetId),
+        ),
+      ).toBeNull();
+      expect(
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(assetId)),
+        ),
+      ).toBe(0);
     });
   });
 
@@ -903,7 +990,19 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     });
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
-      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+      // Scoped to THIS asset: the poll clock's own asset is legitimately still
+      // in the global watch set, and a bare `zcard` would fold the two together.
+      expect(
+        await harness.ctx.redis.zscore(
+          realtimeAdmissionKeys.globalWatches,
+          admissionAssetId(assetId),
+        ),
+      ).toBeNull();
+      expect(
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(assetId)),
+        ),
+      ).toBe(0);
     });
   });
 });
