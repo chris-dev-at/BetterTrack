@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { Database } from '../../data/db';
 import {
   createAuditRepository,
@@ -303,6 +305,105 @@ export const AUDIT_SIGNAL_ACTIONS = [
  */
 export const BEARER_SCOPE_DENIAL_REASONS = ['insufficient-scope', 'first-party-only'] as const;
 export type BearerScopeDenialReason = (typeof BEARER_SCOPE_DENIAL_REASONS)[number];
+
+/**
+ * The closed `reason` vocabulary as a runtime check (#1951 §1).
+ *
+ * {@link BEARER_SCOPE_DENIAL_REASONS} alone is a COMPILE-time fence: a caller
+ * reaching the writer through `as never`, an untyped boundary or a future JS
+ * consumer could persist `reason: 'totally-made-up'` unchallenged, and the row
+ * is durable for the full audit retention. The enum below is the same list,
+ * enforced where the row is actually built.
+ */
+export const bearerScopeDenialReasonSchema = z.enum(BEARER_SCOPE_DENIAL_REASONS);
+
+/**
+ * The `meta` contract for an `api_key.scope_denied` row — the personal-key
+ * shape and its OAuth twin, which differ only by the `kind` discriminator the
+ * OAuth writer stamps.
+ *
+ * STRICT, with its reach stated precisely. `.strict()` fires on the object
+ * handed to `parse`, so it guards the shape a future writer is most likely to
+ * reach for — spreading caller input into the meta (`{ ...input, reason }`),
+ * which is how a presented credential would end up in a 400-day store. It does
+ * NOT fire for the two writers that exist today: both destructure a fixed field
+ * list, so an extra property is dropped before the parse ever sees it. The row
+ * is clean either way; only one of the two paths is clean *because of* this
+ * schema, and `bearerDenialAudit.test.ts` pins both facts rather than letting a
+ * reader assume the stronger one.
+ *
+ * Nor does anything bind `action: ApiKeyScopeDenied` to this schema — an audit
+ * row written for that action through `audit.record()` directly bypasses it.
+ * The two service writers are the only production path, and the contract lives
+ * where they call it.
+ *
+ * `requiredScope` is a scope NAME, never a secret; the credential itself is
+ * identified only by the row's own `targetId` (the key/grant id).
+ */
+export const bearerScopeDeniedMetaSchema = z
+  .object({
+    requiredScope: z.string().min(1),
+    reason: bearerScopeDenialReasonSchema,
+    method: z.string().min(1),
+    path: z.string(),
+    kind: z.literal('oauth').optional(),
+  })
+  .strict();
+
+export type BearerScopeDeniedMeta = z.infer<typeof bearerScopeDeniedMetaSchema>;
+
+/**
+ * Field paths + issue codes of a schema failure, with NO values.
+ *
+ * An invalid `api_key.scope_denied` meta is precisely where a mis-wired writer
+ * might have put credential material, and this string travels to the log and to
+ * the admin Problems page. So the report says WHICH field and WHAT KIND of
+ * failure — plus, for an unrecognized key, the offending key NAME, which is the
+ * one fact that makes the defect fixable and is never itself a secret.
+ */
+function describeMetaIssues(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.join('.') || '<root>';
+      return issue.code === 'unrecognized_keys'
+        ? `${path}:unrecognized_keys(${issue.keys.join(',')})`
+        : `${path}:${issue.code}`;
+    })
+    .join('; ');
+}
+
+/**
+ * Why these throw a PLAIN `Error` rather than the `ZodError` or an `ApiError`
+ * (#1951 L1).
+ *
+ * `createErrorHandler` answers a `ZodError` with `400 VALIDATION_ERROR` and
+ * returns BEFORE `reportUnexpected` — and it returns early for `ApiError` too.
+ * Either shape would mean that the day this fence finally catches a bad writer,
+ * the only symptom is a refusal path quietly answering 400 with no Problems row
+ * and no log line: the fence would hide exactly the defect it exists to expose.
+ * A plain `Error` is the one shape the handler reports, so it becomes
+ * `500 INTERNAL` *and* a captured problem. The refusal still stands either way —
+ * the guard never admits the request — but now it is loud.
+ */
+export function parseBearerScopeDeniedMeta(writer: string, meta: unknown): BearerScopeDeniedMeta {
+  const parsed = bearerScopeDeniedMetaSchema.safeParse(meta);
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `${writer}: refused to write an api_key.scope_denied row — ${describeMetaIssues(parsed.error)}`,
+  );
+}
+
+/** The reason half of the contract, checked at the shared rail. See above. */
+export function parseBearerScopeDenialReason(
+  writer: string,
+  reason: unknown,
+): BearerScopeDenialReason {
+  const parsed = bearerScopeDenialReasonSchema.safeParse(reason);
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `${writer}: refused to audit a bearer scope denial — reason:${describeMetaIssues(parsed.error)}`,
+  );
+}
 
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;

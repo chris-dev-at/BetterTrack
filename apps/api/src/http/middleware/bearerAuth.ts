@@ -7,7 +7,10 @@ import {
   isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
-import type { BearerScopeDenialReason } from '../../services/audit/auditService';
+import {
+  parseBearerScopeDenialReason,
+  type BearerScopeDenialReason,
+} from '../../services/audit/auditService';
 import { normalizeRoutePath } from '../../services/security/routePath';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
@@ -1167,14 +1170,23 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
  * principal kinds: an owner reading `api_key.scope_denied` must be able to tell
  * "the credential lacked the scope" from "the credential HELD the scope and was
  * refused because the route is first-party-only" (#1365).
+ *
+ * The vocabulary is checked HERE as well as in the two writers (#1951 §1): this
+ * is the single rail every guard — global and router-local twin — funnels
+ * through, so an out-of-vocabulary reason is refused before either credential
+ * kind is dispatched to. `async` so that refusal surfaces as a rejection on the
+ * promise callers already branch on, not as a synchronous throw some of them
+ * would handle differently — every caller routes that rejection to `next`,
+ * where it becomes a REPORTED 500 (#1951 L1) and never an admission.
  */
-export function recordBearerScopeDenied(
+export async function recordBearerScopeDenied(
   ctx: AppContext,
   req: Request,
   requiredScope: string,
   reason: BearerScopeDenialReason,
   path = req.path,
 ): Promise<void> {
+  parseBearerScopeDenialReason('recordBearerScopeDenied', reason);
   const common = {
     userId: req.authUser!.id,
     requiredScope,

@@ -72,6 +72,7 @@ import {
 import {
   ACCOUNT_SECURITY_SCOPE,
   passkeyManagementRouteAcceptsBearer,
+  recordBearerScopeDenied,
 } from '../middleware/bearerAuth';
 import { requireAuth, requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
@@ -98,35 +99,67 @@ const securityMutationContextOf = (req: Request): SecurityMutationContext => {
 /**
  * Router-local twin of the global passkey-management policy (#1365), the same
  * shape the tax-documentation, mirrorchain and vault surfaces already carry.
- * It independently re-checks credential kind, scope AND the exact method+path
- * allowlist, so neither a policy-table reshuffle nor a direct router mount can
- * hand a bearer the registration or sign-in ceremonies — or any future
- * `/auth/passkeys/*` sibling — by accident. Live behavior is unchanged: the
- * global rail resolves the same three routes and answers first.
+ *
+ * It independently re-checks scope AND the exact method+path allowlist, so
+ * neither a policy-table reshuffle nor a direct router mount can hand a bearer
+ * the registration or sign-in ceremonies — or any future `/auth/passkeys/*`
+ * sibling — by accident. Live behavior is unchanged: the global rail resolves
+ * the same three routes and answers first.
+ *
+ * It deliberately does NOT re-check credential KIND (#1951 §3). #1324 widened
+ * this surface to every `account:security` bearer — a personal API key and a
+ * delegated OAuth token are equally admitted here, exactly as the global table
+ * admits them — so a kind check would be a narrowing this twin never had and
+ * must not acquire. The grant twin in `settingsRoutes.ts` is the one that is
+ * kind- and first-party-aware, because ITS global policy is.
+ *
+ * ## Why it takes `ctx` (#1951 §2)
+ *
+ * The global rail audits the identical refusal; a silent twin would drop that
+ * `api_key.scope_denied` row precisely when the table it backstops has
+ * regressed. So the twin writes it through the same
+ * {@link recordBearerScopeDenied} rail — and only for a real scope denial: a
+ * bearer refused on a route the allowlist ACCEPTS. A bearer on an off-allowlist
+ * `/auth/passkeys/*` path (a registration or login ceremony) is not a scope
+ * event at all — the global table classifies those session-only and audits
+ * nothing — and an unauthenticated caller has no principal to audit.
+ *
+ * Exactly one row per refusal: the global guard short-circuits before routing
+ * whenever it answers, so the two writers can never both run for one request.
  */
-export const requireCookieSessionOrPasskeyManagementBearer: RequestHandler = (req, _res, next) => {
-  const bearerAllowed =
-    req.apiKey !== undefined &&
-    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-    passkeyManagementRouteAcceptsBearer(
-      req.method,
-      `/auth${req.path === '/' || req.path === '' ? '' : req.path}`,
-    );
-  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
-    next();
-    return;
-  }
-  next(
-    forbidden(
+export function requireCookieSessionOrPasskeyManagementBearer(ctx: AppContext): RequestHandler {
+  return function requireCookieSessionOrPasskeyManagementBearer(req, _res, next) {
+    const path = `/auth${req.path === '/' || req.path === '' ? '' : req.path}`;
+    const routeAccepted = passkeyManagementRouteAcceptsBearer(req.method, path);
+    const scoped =
+      req.apiKey !== undefined && scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE);
+    if ((!req.apiKey && req.sessionId) || (scoped && routeAccepted)) {
+      next();
+      return;
+    }
+    const refusal = forbidden(
       'Passkey management requires the owning session or account-security access.',
       'API_KEY_FORBIDDEN',
-    ),
-  );
-};
+    );
+    if (req.apiKey !== undefined && routeAccepted) {
+      // Reachable only with `!scoped` — the admit branch above took the scoped
+      // case — so this is the rail's `insufficient-scope`, one row, same reason.
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, 'insufficient-scope', path).then(
+        () => next(refusal),
+        next,
+      );
+      return;
+    }
+    next(refusal);
+  };
+}
 
 /** Auth endpoints (PROJECTPLAN.md §6.1, §8). Controllers stay thin. */
 export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
+  // Built once per router, not per request: the guard closes over `ctx` only to
+  // reach the audit rail.
+  const passkeyManagementAccess = requireCookieSessionOrPasskeyManagementBearer(ctx);
 
   /**
    * Stamp `paranoidFreshStartPending` onto a session payload (PARANOID E9, §17
@@ -649,14 +682,9 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // a fresh password or a 2FA factor — while rename deliberately is not.
   // Registration stays session-only and origin-bound; options are minted
   // server-side from `config.webauthn` with a single-use, short-TTL challenge.
-  router.get(
-    '/passkeys',
-    requireUser,
-    requireCookieSessionOrPasskeyManagementBearer,
-    async (req, res) => {
-      res.json(await ctx.passkeys.list(req.authUser!.id));
-    },
-  );
+  router.get('/passkeys', requireUser, passkeyManagementAccess, async (req, res) => {
+    res.json(await ctx.passkeys.list(req.authUser!.id));
+  });
 
   router.post('/passkeys/register/options', requireUser, async (req, res) => {
     res.json(await ctx.passkeys.startRegistration(req.authUser!.id));
@@ -675,7 +703,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.patch(
     '/passkeys/:id',
     requireUser,
-    requireCookieSessionOrPasskeyManagementBearer,
+    passkeyManagementAccess,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyRenameRequestSchema),
     async (req, res) => {
@@ -688,7 +716,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.delete(
     '/passkeys/:id',
     requireUser,
-    requireCookieSessionOrPasskeyManagementBearer,
+    passkeyManagementAccess,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyDeleteRequestSchema),
     async (req, res) => {
