@@ -9,13 +9,31 @@ import { ApiError } from '../errors';
  * The account-disable route must also fall back to this same bound for callers
  * with nothing to restore. Multiple literals would drift; one cannot.
  */
-export const GLOBAL_JSON_BODY_LIMIT = '100kb';
+export const GLOBAL_JSON_BODY_LIMIT = 100 * 1024;
 
 /** Bounded plaintext expansion allowance shared by both unlocked restore routes. */
 export const PARANOID_RESTORE_PLAINTEXT_FACTOR = 8;
 
 export const paranoidRestoreJsonLimitBytes = (encryptedMaxBytes: number): number =>
   encryptedMaxBytes * PARANOID_RESTORE_PLAINTEXT_FACTOR + 64 * 1024;
+
+/** Decoded byte length of each request body a route-local restore parser read. */
+const parsedJsonBodyBytes = new WeakMap<object, number>();
+
+/**
+ * `verify` hook for the two restore routes' JSON parsers. body-parser calls it
+ * with the decoded body just before `JSON.parse`, so the length recorded here is
+ * exactly the text the document was parsed from — the input to the restore
+ * document's byte-derived collection ceilings (`vaultStrictDocumentEntitiesCeiling`
+ * in contracts).
+ */
+export const recordParsedJsonBodyBytes = (req: object, _res: unknown, body: Buffer): void => {
+  parsedJsonBodyBytes.set(req, body.length);
+};
+
+/** The byte length {@link recordParsedJsonBodyBytes} saw for `req`, if it ran. */
+export const parsedJsonBodyByteLength = (req: Request): number | undefined =>
+  parsedJsonBodyBytes.get(req);
 
 /**
  * The `body-parser` (via `http-errors`) failure types that describe a request
