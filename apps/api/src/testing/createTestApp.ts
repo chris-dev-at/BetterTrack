@@ -1,3 +1,4 @@
+import type http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +39,12 @@ import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard'
 import type { WebhookTransport } from '../services/webhooks';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import { liveHarnesses, type HarnessDisposer } from './harnessRegistry';
+import {
+  closeSharedServer,
+  createSharedServerSlot,
+  sharedTestServer,
+  type SharedServerSlot,
+} from './sharedTestServer';
 
 /**
  * Offline DNS for the webhook outbound guard: every hostname resolves to one
@@ -176,8 +183,22 @@ const testPasswordHasher = createPasswordHasher({ memoryCost: 4096, timeCost: 1 
  * real client is the worker-shared singleton and must outlive every harness
  * (#1485), while the PGlite path's `RedisMock` is built per harness and is the
  * harness's to close.
+ *
+ * `serverSlot` is the harness's long-lived HTTP server (#2020), or the box it
+ * will land in. A slot rather than a closure precisely because of the paragraph
+ * above: an empty slot retains nothing, where a `close()` defined next to the
+ * express app would put the app back in this scope for the life of the file.
+ * `sharedTestServer.ts` carries the mechanism.
+ *
+ * Release order is creation-inverse: the server is the last thing a harness
+ * binds and the only one the outside world can still reach, so it goes first —
+ * and a `finally` chain means a throw anywhere still releases the rest.
  */
-function createHarnessDisposer(events: EventBus, ownedRedis: Redis | null): HarnessDisposer {
+function createHarnessDisposer(
+  events: EventBus,
+  ownedRedis: Redis | null,
+  serverSlot: SharedServerSlot,
+): HarnessDisposer {
   let disposed = false;
 
   const dispose: HarnessDisposer = async () => {
@@ -187,9 +208,13 @@ function createHarnessDisposer(events: EventBus, ownedRedis: Redis | null): Harn
     // nothing to do even if the release below throws.
     liveHarnesses.forget(dispose);
     try {
-      await events.close();
+      await closeSharedServer(serverSlot);
     } finally {
-      if (ownedRedis) await ownedRedis.quit();
+      try {
+        await events.close();
+      } finally {
+        if (ownedRedis) await ownedRedis.quit();
+      }
     }
   };
 
@@ -228,10 +253,37 @@ export interface TestHarness {
   ctx: AppContext;
   db: Database;
   /**
-   * Releases only resources owned by this harness: the event bus's own
-   * publisher/subscriber pair (`redis.duplicate()` x2 in `buildContext`) and,
-   * on the PGlite path, the per-harness `RedisMock`. The real-service Redis
-   * client is process-shared and is deliberately left open (#1485, #1914).
+   * This harness's long-lived HTTP server (#2020), bound on first use and
+   * released by `dispose()`. Reach for `agent()`/`request()` instead unless you
+   * genuinely need the server object.
+   */
+  server(): http.Server;
+  /**
+   * A cookie-jar supertest agent bound to {@link server}, i.e. the safe
+   * replacement for `request.agent(harness.app)`.
+   *
+   * **Fan out through this one.** `request.agent(app)` shares one server across
+   * the agent's requests and closes it when the FIRST-constructed request
+   * finishes, so `Promise.all` of four or more on one such agent resets the
+   * rest (46 % of them at fan-out 6, 58 % at 8). An agent on an already-listening server
+   * never opens or closes anything, so any fan-out width is safe.
+   * `sharedTestServer.ts` carries the mechanism and the measurements.
+   */
+  agent(): ReturnType<typeof request.agent>;
+  /**
+   * A cookie-less supertest handle on the same server — the drop-in for
+   * `request(harness.app)`. That form was never reset-prone (supertest builds a
+   * fresh server per request there), but it binds and unbinds an ephemeral port
+   * every time; this one is ~1 ms/request cheaper.
+   */
+  request(): ReturnType<typeof request.agent>;
+  /**
+   * Releases only resources owned by this harness: the long-lived HTTP server
+   * if `server()`/`agent()`/`request()` ever bound one (#2020), the event bus's
+   * own publisher/subscriber pair (`redis.duplicate()` x2 in `buildContext`)
+   * and, on the PGlite path, the per-harness `RedisMock`. The real-service
+   * Redis client is process-shared and is deliberately left open (#1485,
+   * #1914).
    * Idempotent: a second call is a no-op. Terminal: after `dispose()` the
    * harness must not be used again — `ctx.events.publish()` rejects once the
    * bus pair is closed, while `ctx.db`/`ctx.redis` would still answer.
@@ -248,7 +300,8 @@ export interface TestHarness {
   /**
    * Log a freshly-seeded admin in AND satisfy the mandatory admin-login 2FA gate
    * (§6.12, #400) by enrolling TOTP, then performing the mandatory fresh login
-   * after that security transition. Returns the authenticated post-2FA agent.
+   * after that security transition. Returns the authenticated post-2FA agent —
+   * one of {@link TestHarness.agent}'s, so fanning requests out over it is safe.
    * Use this wherever a test needs an admin that can call ordinary admin routes.
    */
   loginAdmin(admin: SeededAdmin): Promise<ReturnType<typeof request.agent>>;
@@ -429,10 +482,17 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
   // Registered before `createApp` so a harness is reapable from the moment it
   // owns anything: most callers never call `dispose()`, and the shared setup
   // file releases whatever is still live at file teardown (#1936).
-  const dispose = createHarnessDisposer(ctx.events, realRedisUrl ? null : redis);
+  // Allocated before the app exists so the disposer can close over the box
+  // alone (#2020, and #1936's retention rule); nothing binds a port until a
+  // test asks for a server.
+  const serverSlot = createSharedServerSlot();
+  const dispose = createHarnessDisposer(ctx.events, realRedisUrl ? null : redis, serverSlot);
   liveHarnesses.register(dispose);
 
   const app = createApp(ctx);
+
+  const harnessServer = () => sharedTestServer(serverSlot, app);
+  const harnessAgent = () => request.agent(harnessServer());
 
   const userRepo = createUserRepository(db);
   const hasher = testPasswordHasher;
@@ -470,7 +530,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
   }
 
   async function loginAdmin(admin: SeededAdmin): Promise<ReturnType<typeof request.agent>> {
-    const agent = request.agent(app);
+    const agent = harnessAgent();
     const res = await agent
       .post('/api/v1/auth/login')
       .set('X-Requested-With', 'BetterTrack')
@@ -513,5 +573,16 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     return agent;
   }
 
-  return { app, ctx, db, dispose, seedAdmin, seedUser, loginAdmin };
+  return {
+    app,
+    ctx,
+    db,
+    server: harnessServer,
+    agent: harnessAgent,
+    request: () => request(harnessServer()),
+    dispose,
+    seedAdmin,
+    seedUser,
+    loginAdmin,
+  };
 }
