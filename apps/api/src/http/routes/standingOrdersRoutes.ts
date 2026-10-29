@@ -92,7 +92,12 @@ export function createStandingOrdersRouter(ctx: AppContext): Router {
     res.json(result);
   });
 
-  // POST /standing-orders/:id/resume — resume firing from the current period on.
+  // POST /standing-orders/:id/resume — resume a paused order with no back-fill:
+  // a period whose anchor day fell before the resume day (Europe/Vienna) is
+  // never booked; the next booking is the first anchor on or after the resume
+  // day — an anchor ON the resume day still books, as a daily order resumed
+  // mid-day books that day. Resuming an order that is already active changes
+  // nothing. (Verbatim with `StandingOrderService.resume`, #1116.)
   router.post('/:id/resume', validateParams(standingOrderIdParamSchema), async (req, res) => {
     const { id } = req.valid?.params as StandingOrderIdParam;
     const result = await ctx.standingOrders.resume(req.authUser!.id, id);

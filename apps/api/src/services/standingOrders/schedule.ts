@@ -200,11 +200,24 @@ export function dueOccurrence(spec: ScheduleSpec, today: string): string | null 
 }
 
 /**
+ * The newest scheduled occurrence strictly before `today` (capped by the end
+ * date), or null when none has elapsed yet — the no-back-fill boundary shared
+ * by archive restore and resume (#1116). Everything up to and including it is
+ * closed with a no-money claim; an occurrence ON `today` is deliberately not
+ * included, so a period due on the restore/resume day itself still books.
+ */
+export function newestElapsedOccurrence(spec: ScheduleSpec, today: string): string | null {
+  return dueOccurrence(spec, prevDay(today));
+}
+
+/**
  * The next calendar day this order will fire as of `today`, for display
- * (`nextRunDate`). An unbooked due occurrence (overdue, will fire on the next
- * job run) is surfaced as-is; otherwise the next occurrence strictly after
- * today, capped by the end date (null once the schedule is exhausted). `paused`
- * orders never have a next run.
+ * (`nextRunDate`) — never a day before `today` (#1116). An occurrence that is
+ * owed but not yet booked (today's own, or an earlier one a deferral is still
+ * retrying) fires on the next job run, so it reads as `today` rather than as
+ * its anchor day; otherwise the next occurrence strictly after today, capped
+ * by the end date (null once the schedule is exhausted). `paused` orders never
+ * have a next run.
  */
 export function nextRunDate(
   spec: ScheduleSpec,
@@ -217,8 +230,10 @@ export function nextRunDate(
   // same calendar-day standard as the schedule itself.
   assertSchedule(spec, today, lastPeriodKey);
   const due = dueOccurrence(spec, today);
-  // A due occurrence not yet booked fires on the next run — surface it directly.
-  if (due !== null && (lastPeriodKey === null || lastPeriodKey < due)) return due;
+  // A due occurrence not yet booked fires on the next run. `due` is never after
+  // today, so that run is today: surfacing the anchor itself printed a "Next
+  // run" that had already passed (an owed Aug 1 read on Aug 5 showed Aug 1).
+  if (due !== null && (lastPeriodKey === null || lastPeriodKey < due)) return today;
   const start = today < spec.startDate ? prevDay(spec.startDate) : today;
   const next = firstAfter(spec, start);
   if (spec.endDate !== null && next > spec.endDate) return null;
@@ -226,9 +241,9 @@ export function nextRunDate(
 }
 
 /**
- * The calendar day before `iso` (used to include `startDate` itself in a scan;
- * exported so the restore boundary can resolve the newest strictly-past
- * occurrence via `dueOccurrence(spec, prevDay(today))`).
+ * The calendar day before `iso` (used to include `startDate` itself in a scan,
+ * and by {@link newestElapsedOccurrence} to resolve the newest strictly-past
+ * occurrence).
  */
 export function prevDay(iso: string): string {
   const { year, month, day } = parseDay(iso);

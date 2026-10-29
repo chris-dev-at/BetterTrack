@@ -80,7 +80,11 @@ export async function pauseStandingOrder(id: string): Promise<StandingOrder> {
   return standingOrderSchema.parse(data);
 }
 
-/** `POST /standing-orders/:id/resume` — resume firing from the current period on. */
+/**
+ * `POST /standing-orders/:id/resume` — resume with no back-fill: a period whose
+ * anchor day fell before the resume day is never booked; the next booking is
+ * the first anchor on or after the resume day (the server route is canonical).
+ */
 export async function resumeStandingOrder(id: string): Promise<StandingOrder> {
   const data = await apiRequest<unknown>(`/standing-orders/${encodeURIComponent(id)}/resume`, {
     method: 'POST',

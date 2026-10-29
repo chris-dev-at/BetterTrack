@@ -3324,7 +3324,9 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/standing-orders/{id}/resume',
     tag: 'Standing orders',
-    summary: 'Resume a paused standing order (fires from the current period onward).',
+    summary: 'Resume a paused standing order (no back-fill of periods that elapsed while paused).',
+    description:
+      'Resume a paused order with no back-fill: a period whose anchor day fell before the resume day (Europe/Vienna) is never booked; the next booking is the first anchor on or after the resume day — an anchor ON the resume day still books, as a daily order resumed mid-day books that day. Resuming an order that is already active changes nothing.',
     params: contracts.standingOrderIdParamSchema,
     status: 200,
     response: R.StandingOrder,
