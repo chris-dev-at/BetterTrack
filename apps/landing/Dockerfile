@@ -7,6 +7,11 @@
 # Build from the repo root so the compose `context: ..` resolves this path:
 #   docker build -f apps/landing/Dockerfile -t bettertrack-landing .
 FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS runner
+# Base-image lag: alpine 3.24 ships brotli-libs 1.2.1-r0 (CVE-2026-111497, CRITICAL)
+# but even the newest nginx:alpine digest (1.31.8, 2026-10-28) still carries
+# 1.2.0-r1, so the nightly Trivy gate stays red until the package is upgraded
+# here. Drop this line once the pinned digest ships brotli-libs >= 1.2.1-r0.
+RUN apk upgrade --no-cache brotli-libs
 
 # Static site content → nginx web root. The canonical legal directories under
 # site/ are copied with the landing pages, so nginx resolves /<page>/ and
