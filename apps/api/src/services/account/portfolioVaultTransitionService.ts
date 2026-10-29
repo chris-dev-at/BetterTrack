@@ -95,7 +95,9 @@ export type PortfolioVaultTransitionFailure =
   | 'RESTORE_SOLVENCY'
   | 'RESTORE_PROVENANCE'
   | 'POSSESSION_PROOF_INVALID'
-  | 'CAPTURE_UNSERVABLE';
+  | 'CAPTURE_UNSERVABLE'
+  | 'PORTFOLIO_NAME_TAKEN'
+  | 'RESTORE_ID_TAKEN';
 
 export class PortfolioVaultTransitionError extends Error {
   constructor(
@@ -173,6 +175,17 @@ export const PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS = {
   POSSESSION_PROOF_INVALID: {
     status: 412,
     code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.possessionProofInvalid,
+  },
+  // #2039 review: two keys only the table can see, both refused before the
+  // first restore write. 409, not 400: the document is well-formed, and what it
+  // conflicts with is server state.
+  PORTFOLIO_NAME_TAKEN: {
+    status: 409,
+    code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.portfolioNameTaken,
+  },
+  RESTORE_ID_TAKEN: {
+    status: 409,
+    code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.restoreIdTaken,
   },
 } as const satisfies Record<PortfolioVaultTransitionFailure, { status: number; code: string }>;
 
@@ -303,6 +316,10 @@ function mapRestoreValidationError(error: unknown): never {
 function mapRestoreWriteError(error: unknown): never {
   if (!(error instanceof PortfolioVaultRestoreWriteError)) throw error;
   if (error.code === 'IMPORT_NOT_HISTORICAL') fail('RESTORE_INVALID', error.message);
+  // Each keeps its own code (#2039 review): the owner can act on "that name is
+  // taken" (rename one portfolio), which a generic transition conflict hides.
+  if (error.code === 'PORTFOLIO_NAME_TAKEN') fail('PORTFOLIO_NAME_TAKEN', error.message);
+  if (error.code === 'RESTORE_ID_TAKEN') fail('RESTORE_ID_TAKEN', error.message);
   fail('TRANSITION_CONFLICT', error.message);
 }
 

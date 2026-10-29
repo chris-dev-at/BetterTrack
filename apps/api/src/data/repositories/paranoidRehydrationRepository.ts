@@ -1,6 +1,7 @@
 import type { MirrorMemberStatus, VaultMirrorProvenance } from '@bettertrack/contracts';
 import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
 import { and, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
 
@@ -17,6 +18,8 @@ import {
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  importBatches,
+  importRows,
   mirrorChainMembers,
   mirrorChainOps,
   mirrorRows,
@@ -46,11 +49,49 @@ export interface ParanoidRehydrationReferencedAsset {
   currency: string;
 }
 
+/**
+ * Every restored entity kind whose row is inserted under the DOCUMENT's own `id`
+ * as its primary key, mapped to that table. `customAsset` is the exception and
+ * is handled on its own (it has a second claim table, `asset_identities`).
+ */
+const RESTORED_ID_TABLES = {
+  portfolio: portfolios,
+  cashSource: portfolioCashSources,
+  transaction: transactions,
+  dividend: dividends,
+  cashMovement: portfolioCashMovements,
+  standingOrder: standingOrders,
+  standingOrderRun: standingOrderRuns,
+  expenseCategory: expenseCategories,
+  expenseTransaction: expenseTransactions,
+  expenseRule: expenseRules,
+  expenseBudget: expenseBudgets,
+  cashTag: cashTags,
+  cashRule: cashRules,
+  cashRuleTag: cashRuleTags,
+  cashBudget: cashBudgets,
+  cashMovementTag: cashMovementTags,
+  importBatch: importBatches,
+  importRow: importRows,
+} as const satisfies Partial<Record<Entity['kind'], PgTable & { id: AnyPgColumn }>>;
+
+/** A restored kind whose row keeps the document's `id` as its primary key. */
+export type RestoredIdKind = keyof typeof RESTORED_ID_TABLES | 'customAsset';
+
 export interface ParanoidRehydrationSourceRepository {
   findReferencedGlobalAssets(
     assetIds: readonly string[],
   ): Promise<readonly ParanoidRehydrationReferencedAsset[]>;
   hasExistingRestorableRows(userId: string): Promise<boolean>;
+  /**
+   * The first of `kinds` whose restored `id` an EXISTING row already holds, or
+   * `null` (#2039 review). See the implementation for the custom-asset rule.
+   */
+  findTakenRestoredId(
+    userId: string,
+    entities: readonly Entity[],
+    kinds: readonly RestoredIdKind[],
+  ): Promise<RestoredIdKind | null>;
   listRetainedCustomAssetIdentityIds(userId: string): Promise<readonly string[]>;
   retireRetainedCustomAssetIdentities(userId: string, assetIds: readonly string[]): Promise<void>;
   restoreCustomAssets(rows: readonly EntityOf<'customAsset'>[]): Promise<void>;
@@ -141,6 +182,72 @@ export function createParanoidRehydrationSourceRepository(
           .limit(1),
       ]);
       return present.some((records) => records.length > 0);
+    },
+
+    /**
+     * PRIMARY KEYS AGAINST THE TABLE, NOT THE DOCUMENT (#2039 review).
+     *
+     * `validateUniqueRestoredIds` proves an id is not repeated WITHIN a
+     * document, and that is all a document check can prove. An id an existing
+     * row already holds passed every gate and then raised `23505 <table>_pkey`
+     * from the insert, inside the open restore transaction, as a 500. Examples
+     * are a global catalog asset's id (readable by every client) and a
+     * sibling portfolio's transaction id (readable by its owner). This probes
+     * each target table once per chunk, inside the caller's locked transaction
+     * and before its first write, so the caller can refuse with a code.
+     *
+     * A custom asset has a SECOND claim table. Its id is taken when any
+     * `assets` row holds it, or when `asset_identities` holds it under an
+     * owner other than the caller. The second case is the opaque claim the
+     * AFTER INSERT identity trigger (migration 0071) would otherwise refuse as
+     * `23503`, also a 500. The caller's OWN retained identity is not a
+     * conflict: same-owner reconnection is exactly what that table exists for.
+     *
+     * Read-only and unlocked, deliberately. A held id is refused, so there is
+     * no row to lock, and an absent one has no row to lock either. The
+     * residual is a DIFFERENT transaction inserting the same client-chosen id
+     * between this probe and the insert. That needs a second writer to pick
+     * this exact UUID and stays a loud `23505`, never a silent overwrite.
+     */
+    async findTakenRestoredId(userId, entities, kinds) {
+      for (const kind of kinds) {
+        const ids = entities.filter((entity) => entity.kind === kind).map(({ id }) => id);
+        if (ids.length === 0) continue;
+        let taken = false;
+        await forEachChunk(ids, async (chunk) => {
+          if (taken) return;
+          if (kind === 'customAsset') {
+            const [held] = await tx
+              .select({ id: assets.id })
+              .from(assets)
+              .where(inArray(assets.id, [...chunk]))
+              .limit(1);
+            const [claimed] = held
+              ? []
+              : await tx
+                  .select({ id: assetIdentities.id })
+                  .from(assetIdentities)
+                  .where(
+                    and(
+                      inArray(assetIdentities.id, [...chunk]),
+                      sql`${assetIdentities.ownerId} is distinct from cast(${userId} as uuid)`,
+                    ),
+                  )
+                  .limit(1);
+            taken = held !== undefined || claimed !== undefined;
+            return;
+          }
+          const table: PgTable & { id: AnyPgColumn } = RESTORED_ID_TABLES[kind];
+          const [held] = await tx
+            .select({ id: table.id })
+            .from(table)
+            .where(inArray(table.id, [...chunk]))
+            .limit(1);
+          taken = held !== undefined;
+        });
+        if (taken) return kind;
+      }
+      return null;
     },
 
     async listRetainedCustomAssetIdentityIds(userId) {
@@ -457,14 +564,14 @@ export function createParanoidRehydrationSourceRepository(
     // transaction — a 500 for a payload the server could name at the door, and,
     // on the paranoid exit, a dead end with no code the client can show.
     //
-    // EVERY unique key reachable from a client-authored document is now refused
-    // twice before reaching this file, each with its own stable 400 code: by
-    // `vaultStrictDocumentV1Schema` at parse time, and by
-    // `assertRestoredUniqueKeys` (`paranoidRehydrationService`) before the
-    // transaction opens. Both call one function —
-    // `findRestoredUniqueKeyViolation` in `@bettertrack/contracts` — which
-    // carries the complete key table and says where the keys proved elsewhere
-    // (`validateGraph`, `validateUniqueRestoredIds`) are proved.
+    // EVERY unique key a client-authored document can break on its own is now
+    // refused before this file, each with its own stable 400 code, by
+    // `vaultStrictDocumentV1Schema` (`findRestoredUniqueKeyViolation` in
+    // `@bettertrack/contracts`, which carries the complete key table and says
+    // where the keys proved elsewhere are proved). Every restore path parses
+    // that schema before it writes. The keys only the TABLE can see, restored
+    // ids an existing row holds, are refused by `findTakenRestoredId` above,
+    // inside this same transaction, before the first insert (#2039 review).
     //
     // THE INSERTS BELOW STAY CONFLICT-FREE DELIBERATELY. Absorbing a duplicate
     // with `onConflictDoNothing` would silently accept a document nothing

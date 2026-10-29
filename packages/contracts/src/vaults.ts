@@ -11,6 +11,7 @@ import {
 import {
   VAULT_CONTENT_CIPHER,
   VAULT_ENTITY_ROW_SCHEMAS,
+  VAULT_RESTORE_ID_TAKEN,
   VAULT_VERSION_MAX,
   VaultEnvelopeError,
   decodeVaultEnvelope,
@@ -1795,6 +1796,22 @@ export const PORTFOLIO_VAULT_TRANSITION_ERROR_CODES = {
    * capturable" instead of reporting its own request as invalid.
    */
   captureUnservable: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
+  /**
+   * #2039 review: the move-out would restore a portfolio name the owner reused
+   * while it was vaulted. Move-in parks the stub under an opaque name, so the
+   * real one is free in the meantime. A `409` before any restore write, and
+   * DELIBERATELY the code portfolio create and rename already answer, so the
+   * web's existing handling applies. The owner renames one of the two
+   * portfolios; the server never renames either silently.
+   */
+  portfolioNameTaken: 'PORTFOLIO_NAME_TAKEN',
+  /**
+   * #2039 review: a restored row's `id` is already held by a row the document
+   * does not carry, such as an id copied from a sibling portfolio. Shared
+   * verbatim with the paranoid exit so one code means one thing on both
+   * restore routes.
+   */
+  restoreIdTaken: VAULT_RESTORE_ID_TAKEN,
 } as const;
 export type PortfolioVaultTransitionErrorCode =
   (typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES)[keyof typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES];

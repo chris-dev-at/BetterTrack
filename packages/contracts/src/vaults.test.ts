@@ -1027,6 +1027,11 @@ describe('move-in / move-out / step-up bodies (§9, §10, §15)', () => {
       restoreProvenance: 'PORTFOLIO_VAULT_RESTORE_PROVENANCE_INVALID',
       possessionProofInvalid: 'PORTFOLIO_VAULT_POSSESSION_PROOF_INVALID',
       captureUnservable: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
+      // #2039 review: two keys only the table can see. Deliberately SHARED
+      // wire strings, not new `PORTFOLIO_VAULT_*` ones: the create/rename name
+      // code the web already handles, and the paranoid exit's id code.
+      portfolioNameTaken: 'PORTFOLIO_NAME_TAKEN',
+      restoreIdTaken: 'VAULT_RESTORE_ID_TAKEN',
     });
   });
 });

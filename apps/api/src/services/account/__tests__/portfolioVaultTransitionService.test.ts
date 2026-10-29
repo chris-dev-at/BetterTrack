@@ -4121,3 +4121,155 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
     expect(importBatchCount).toBe(2);
   });
 });
+
+/**
+ * KEYS ONLY THE DATABASE CAN SEE, ON THE E4 MOVE-OUT (#2039 review, findings 2
+ * and 3).
+ *
+ * `validateGraph` and `validateUniqueRestoredIds` compare a document's rows
+ * with EACH OTHER. A move-out carries exactly one portfolio and is written into
+ * an account that keeps living while the portfolio is vaulted, so two keys can
+ * meet a row the document does not carry. Both used to surface as a `23505`
+ * from inside the open move-out transaction, rethrown untouched by
+ * `mapRestoreWriteError`, so the client got a 500.
+ *
+ *  - `portfolios_user_name_unique`. Move-in parks the stub under an opaque name,
+ *    so the real name is FREE for as long as the portfolio is vaulted, and an
+ *    owner may legitimately create another portfolio with it. This is an
+ *    ordinary user flow, not a crafted document.
+ *  - the `id` primary keys. A row id copied from a live sibling portfolio — every
+ *    id the owner can read — passes every document check.
+ *
+ * Each case proves the TYPED refusal, that it lands before the first restore
+ * write (the stub is still a vaulted stub, nothing of the graph exists), and that
+ * the row the document collided with is exactly what it was. Neither refusal
+ * renames or rewrites anything on the owner's behalf.
+ */
+describe('portfolio vault move-out refuses the keys no document check can see', () => {
+  async function stubSnapshot() {
+    const [stub] = await h.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.id, TEST_VECTOR.targetPortfolioId));
+    return stub;
+  }
+
+  it('refuses a name the owner reused while the portfolio was vaulted with a typed 409, not a 23505', async () => {
+    await moveTargetIn();
+    const before = await stubSnapshot();
+    // While vaulted, the target row is a stub under an opaque name, so the real
+    // name is free and an ordinary create may take it.
+    expect(before?.name).not.toBe(TARGET_NAME);
+    const reused = await h.ctx.portfolio.createPortfolio(user.id, { name: TARGET_NAME });
+
+    let raised: unknown;
+    try {
+      await h.ctx.portfolioVaultTransitions.moveOut(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        moveOutRequest(minimalDocument()),
+      );
+    } catch (err) {
+      raised = err;
+    }
+    const cause = (raised as { cause?: { code?: string } } | undefined)?.cause;
+    expect(cause?.code).not.toBe('23505');
+    expect(raised).toMatchObject({ code: 'PORTFOLIO_NAME_TAKEN' });
+    expect(PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS.PORTFOLIO_NAME_TAKEN).toEqual({
+      status: 409,
+      code: 'PORTFOLIO_NAME_TAKEN',
+    });
+
+    // Before any write: the stub is untouched and still vaulted, nothing of the
+    // graph was restored, and the owner's new portfolio keeps its name.
+    expect(await stubSnapshot()).toEqual(before);
+    expect(
+      await h.db
+        .select()
+        .from(portfolioCashSources)
+        .where(eq(portfolioCashSources.portfolioId, TEST_VECTOR.targetPortfolioId)),
+    ).toEqual([]);
+    const [kept] = await h.db
+      .select({ name: portfolios.name })
+      .from(portfolios)
+      .where(eq(portfolios.id, reused.id));
+    expect(kept?.name).toBe(TARGET_NAME);
+  });
+
+  it('restores normally once the reused name is gone — the refusal is the name and nothing else', async () => {
+    await moveTargetIn();
+    // A name that merely RESEMBLES the restored one is not the key: the index is
+    // exact, so a case variant does not collide and must not be refused.
+    await h.ctx.portfolio.createPortfolio(user.id, { name: TARGET_NAME.toUpperCase() });
+
+    await expect(
+      h.ctx.portfolioVaultTransitions.moveOut(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        moveOutRequest(minimalDocument()),
+      ),
+    ).resolves.toMatchObject({ idempotent: false });
+    expect((await stubSnapshot())?.name).toBe(TARGET_NAME);
+  });
+
+  it('refuses a row id copied from a live sibling portfolio with a typed 409, not a 23505', async () => {
+    await moveTargetIn();
+    const before = await stubSnapshot();
+    const [siblingBefore] = await h.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, TEST_VECTOR.siblingDepositId));
+    expect(siblingBefore?.portfolioId).toBe(TEST_VECTOR.siblingPortfolioId);
+
+    // An otherwise ordinary, solvent deposit into the target — carrying the
+    // sibling's movement id.
+    const copied = strictEntity(TEST_VECTOR.siblingDepositId, 'cashMovement', {
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      sourceId: TEST_VECTOR.targetSourceId,
+      kind: 'deposit',
+      amountEur: '25.000000',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt: TEST_VECTOR.depositAt.toISOString(),
+      note: null,
+      source: 'manual',
+      dedupHash: null,
+      originalCurrency: null,
+      createdAt: TEST_VECTOR.at.toISOString(),
+    });
+
+    let raised: unknown;
+    try {
+      await h.ctx.portfolioVaultTransitions.moveOut(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        moveOutRequest(minimalDocument(copied)),
+      );
+    } catch (err) {
+      raised = err;
+    }
+    const cause = (raised as { cause?: { code?: string } } | undefined)?.cause;
+    expect(cause?.code).not.toBe('23505');
+    expect(raised).toMatchObject({ code: 'RESTORE_ID_TAKEN' });
+    expect(PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS.RESTORE_ID_TAKEN).toEqual({
+      status: 409,
+      code: 'VAULT_RESTORE_ID_TAKEN',
+    });
+
+    expect(await stubSnapshot()).toEqual(before);
+    expect(
+      await h.db
+        .select()
+        .from(portfolioCashSources)
+        .where(eq(portfolioCashSources.portfolioId, TEST_VECTOR.targetPortfolioId)),
+    ).toEqual([]);
+    const [siblingAfter] = await h.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, TEST_VECTOR.siblingDepositId));
+    expect(siblingAfter).toEqual(siblingBefore);
+  });
+});

@@ -1861,7 +1861,9 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
  *  - `assets_global_provider_ref_unique` — unreachable: partial, `where owner_id
  *    is null`, and a restored custom asset always carries an owner.
  *  - `price_history_asset_date_pk` — `validateGraph`, custom-asset value keys.
- *  - `portfolios_user_name_unique` — `validateGraph`, portfolio name keys.
+ *  - `portfolios_user_name_unique` — `validateGraph`, portfolio name keys,
+ *    WITHIN the document. Against an EXISTING row it is reachable on the E4
+ *    move-out — see "keys no document check can see" below.
  *  - `portfolio_cash_sources_portfolio_name_unique` — `validateGraph`.
  *  - `portfolio_cash_sources_main_unique` — `validateGraph`, exactly one active
  *    main source per portfolio.
@@ -1874,7 +1876,9 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
  *    category.
  *  - every remaining table (`transactions`, `dividends`, `standing_orders`,
  *    `cash_rules`, `expense_rules`) carries an `id` primary key and nothing
- *    else — `validateUniqueRestoredIds`.
+ *    else. An id repeated WITHIN the document — `validateUniqueRestoredIds`;
+ *    an id an EXISTING row already holds — see below. That second half holds
+ *    for every restored `id` primary key on every table in this list.
  *  - `portfolio_cash_movements_dedup_unique` — HERE,
  *    `CASH_MOVEMENT_DEDUP_DUPLICATE`.
  *  - `cash_tags_user_name_lower_unique` — HERE, `CASH_TAG_NAME_DUPLICATE`.
@@ -1893,15 +1897,39 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
  * and are deliberately NOT restored (derived exactly-once alert bookkeeping,
  * rebuilt from the live ledger), so no document can reach them.
  *
+ * ── KEYS NO DOCUMENT CHECK CAN SEE (#2039 review) ───────────────────────────
+ *
+ * Everything above is a fact about the document alone. Two kinds of key also
+ * meet rows the document does not carry, which no parser can see. Each writer
+ * checks those against the table inside its own locked transaction, before its
+ * first write, and answers with a code rather than a `23505`:
+ *
+ *  - every restored `id` PRIMARY KEY (`assets_pkey` and the rest), against an
+ *    id the caller copied from a row that already exists — a global catalog
+ *    asset (every client can read those ids), a sibling portfolio's
+ *    transaction. `findTakenRestoredId` in `paranoidRehydrationRepository.ts`;
+ *    both restore routes answer `409` {@link VAULT_RESTORE_ID_TAKEN}.
+ *  - `portfolios_user_name_unique` on the E4 move-out. Move-in parks the stub
+ *    under an opaque name, so the real name is FREE for as long as the
+ *    portfolio is vaulted, and the owner may legitimately reuse it.
+ *    `restorePortfolioVaultGraph` answers `409 PORTFOLIO_NAME_TAKEN` — the code
+ *    create and rename already answer — and never renames anything silently.
+ *
+ * Every OTHER key above has no existing row to meet: the v1 exit restores into
+ * an account its enable purged (and enforcement keeps empty), and an E4 move-in
+ * purged every per-portfolio row of the portfolio its move-out restores.
+ *
  * ── WHY A FUNCTION AND NOT A REFINEMENT BODY ────────────────────────────────
  *
- * Two seams must state the SAME invariant, and the schema is the one that can be
- * bypassed: `vaultStrictDocumentV1Schema` guards the HTTP restore route, and
- * `validateParanoidRestoreDocument` guards the TABLE for any caller that parsed
- * somewhere else (§13.5 is "the server does not trust a vault payload", not "the
- * server trusts one parser"). Written twice they would drift; written once, the
- * API service turns the returned violation into a 400 carrying the very code the
- * zod issue carries.
+ * So the key table is stated once, beside the code that enforces it, and can be
+ * tested on its own. There is ONE gate and it is the schema: every restore path
+ * parses `vaultStrictDocumentV1Schema` before it writes — the HTTP validator
+ * first, then each service's own re-parse — so a second walk over the same
+ * parsed entities in the API service could never fire (the #2039 review found
+ * the one that existed was dead code, and it is gone). The issue carries
+ * `params.apiErrorCode`, the field the HTTP adapter
+ * (`apps/api/src/http/middleware/validate.ts`) lifts into the 400, so the
+ * client receives the key's own code rather than `VALIDATION_ERROR`.
  *
  * ── LIVE ROWS ONLY ──────────────────────────────────────────────────────────
  *
@@ -1920,23 +1948,29 @@ export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultM
  * ── THE ONE RESIDUAL, NAMED ─────────────────────────────────────────────────
  *
  * `cash_tags_user_name_lower_unique` indexes `lower(name)` — PostgreSQL's fold,
- * under the database's collation. This compares `String.prototype.toLowerCase`,
- * which is Unicode FULL case mapping, while a libc collation folds per code
- * point (SIMPLE mapping). They agree on ordinary text, but code points exist
- * where libc equates two names JavaScript does not (U+0130 LATIN CAPITAL LETTER
- * I WITH DOT ABOVE is the textbook case), and such a document would still reach
- * the index.
+ * which under the database's libc collation maps each code point on its own,
+ * with no context. {@link foldCashTagName} folds per code point for that reason
+ * (#2039 review). Calling `toLowerCase()` on the WHOLE name would apply
+ * Unicode's one context-sensitive rule, final sigma, and equate `ΑΣ` with `ας`,
+ * a pair Postgres keeps apart. That would refuse an exit the index would
+ * accept, which is the graver direction.
  *
- * It cuts the other way too on a handful of code points — JavaScript can fold a
- * pair Postgres keeps apart — but there the answer is a refusal the owner can
- * clear by renaming one tag, not a 500 and not lost data.
+ * What remains is FULL case mapping's multi-code-point expansions, which a
+ * per-code-point `toLowerCase()` still applies. U+0130 LATIN CAPITAL LETTER I
+ * WITH DOT ABOVE folds to `i̇` here and to `i` under libc, so a document naming
+ * one tag `İ` and another `i` still reaches the index, as a loud failure. On a
+ * handful of code points the error runs the other way: a character newer than
+ * the database's libc tables, which JavaScript folds and libc does not. That is
+ * a refusal the owner clears by renaming one tag, not a 500 and not lost data.
  *
  * The residual is accepted rather than guessed at, and this is the direction to
  * accept it in: an approximation folding MORE than Postgres would refuse
  * legitimate documents wholesale on the exit path — the failure this lane treats
  * as graver than a loud one, because a refused exit is an account that cannot
- * get its data back. `cashTagRepository.ensureSystemTags` already answers the
- * same question with the same `toLowerCase()`, so the two agree with each other.
+ * get its data back. `cashTagRepository.ensureSystemTags` still folds whole
+ * names, and the two still agree on every comparison it makes: it only ever
+ * asks whether a held name equals an ASCII seed name, and final sigma cannot
+ * make a non-ASCII name equal an ASCII one.
  */
 export const VAULT_RESTORE_UNIQUE_KEY_CODES = {
   cashTagName: 'CASH_TAG_NAME_DUPLICATE',
@@ -1952,8 +1986,42 @@ export const VAULT_RESTORE_UNIQUE_KEY_CODES = {
 export type VaultRestoreUniqueKeyCode =
   (typeof VAULT_RESTORE_UNIQUE_KEY_CODES)[keyof typeof VAULT_RESTORE_UNIQUE_KEY_CODES];
 
+/**
+ * A restored row's `id` is already held by a row the document does not carry
+ * (#2039 review): a global catalog asset's id, or a transaction id copied from a
+ * sibling portfolio. The document is well-formed; it conflicts with server state
+ * no parser can see, so both restore routes answer `409`, before any write. See
+ * "keys no document check can see" on {@link VAULT_RESTORE_UNIQUE_KEY_CODES}.
+ */
+export const VAULT_RESTORE_ID_TAKEN = 'VAULT_RESTORE_ID_TAKEN';
+
+/**
+ * Every refusal code a restore DOCUMENT can draw on either restore route
+ * (`POST /account/paranoid/disable`, `POST /portfolios/{id}/vault/move-out`),
+ * published as both operations' `x-error-codes`.
+ */
+export const VAULT_RESTORE_DOCUMENT_ERROR_CODES = [
+  ...Object.values(VAULT_RESTORE_UNIQUE_KEY_CODES),
+  VAULT_RESTORE_ID_TAKEN,
+] as const;
+
+/**
+ * `lower(name)` as `cash_tags_user_name_lower_unique` computes it under a libc
+ * collation: one code point at a time, so Unicode's final-sigma context rule
+ * cannot equate two names Postgres keeps apart. The residual is named on
+ * {@link VAULT_RESTORE_UNIQUE_KEY_CODES}.
+ */
+function foldCashTagName(name: string): string {
+  let folded = '';
+  for (const codePoint of name) folded += codePoint.toLowerCase();
+  return folded;
+}
+
 export interface VaultRestoreUniqueKeyViolation {
-  /** The stable client-facing code; identical on the zod issue and on the 400. */
+  /**
+   * The stable client-facing code. The zod issue carries it as
+   * `params.apiErrorCode`, which the HTTP validator answers the 400 with.
+   */
   readonly code: VaultRestoreUniqueKeyCode;
   /** The PostgreSQL unique index this document would otherwise have hit. */
   readonly index: string;
@@ -1999,7 +2067,7 @@ export function findRestoredUniqueKeyViolation(
       case 'cashTag': {
         const nameClash = claim(
           tagNames,
-          `${entity.data.userId}\u0000${entity.data.name.toLowerCase()}`,
+          `${entity.data.userId}\u0000${foldCashTagName(entity.data.name)}`,
           VAULT_RESTORE_UNIQUE_KEY_CODES.cashTagName,
           'cash_tags_user_name_lower_unique',
           'An account may hold only one cash tag per name.',
@@ -2176,14 +2244,17 @@ function refineRestoredCashSets(
   value: { readonly entities: readonly VaultStrictEntity[] },
   ctx: z.RefinementCtx,
 ): void {
-  // Walk one: identity. Every restore-reachable unique key, in the one function
-  // the API service's pre-transaction gate calls too, so the two cannot drift.
+  // Walk one: identity. Every restore-reachable unique key, stated once.
   const violation = findRestoredUniqueKeyViolation(value.entities);
   if (violation) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['entities'],
-      params: { code: violation.code },
+      // `apiErrorCode` is the house convention (`feedback.ts`): it is the ONE
+      // field `validate.ts` lifts into the 400, so without it every key below
+      // reaches the client as a bare `VALIDATION_ERROR` (#2039 review).
+      // `code` stays for callers that already read it.
+      params: { code: violation.code, apiErrorCode: violation.code },
       message: violation.message,
     });
     return;

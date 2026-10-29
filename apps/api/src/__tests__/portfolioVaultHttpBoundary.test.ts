@@ -291,6 +291,93 @@ describe('E4 portfolio-vault HTTP boundary', () => {
     expect(Number(afterStateCount?.value ?? 0)).toBe(Number(beforeStateCount?.value ?? 0));
   });
 
+  it('answers a restore document that breaks a unique key with THAT key’s code, before the service runs', async () => {
+    /**
+     * #2039 review, finding 1. The document contract names every
+     * restore-reachable unique key with its own code, but the HTTP validator
+     * lifts only `params.apiErrorCode` into the 400, and the contract had set
+     * `params.code`. So this request answered `400 VALIDATION_ERROR`, which a
+     * client cannot act on. This pins the code the client actually receives on
+     * the move-out route. The paranoid-exit twin is
+     * `paranoidRestoreRefusalCodes.test.ts`.
+     */
+    const harness = await createTestApp();
+    const { user, portfolioId, agent } = await seedPrincipal(harness, 'unique-key');
+    const spies = stubTransitions(harness, portfolioId);
+    const tag = (id: string, name: string) =>
+      ({
+        id,
+        kind: 'cashTag',
+        rev: 1,
+        editedAt: EDITED_AT,
+        editedBy: DEVICE_ID,
+        deletedAt: null,
+        data: {
+          userId: user.id,
+          name,
+          color: '#112233',
+          system: false,
+          systemKey: null,
+          createdAt: EDITED_AT,
+          updatedAt: EDITED_AT,
+        },
+      }) as VaultStrictDocumentV1['entities'][number];
+    const TAG_A = '018f0000-0000-7000-8000-00000000e4a1';
+    const TAG_B = '018f0000-0000-7000-8000-00000000e4a2';
+
+    const duplicate = moveOutBody(user.id, portfolioId, user.password);
+    duplicate.document.entities.push(tag(TAG_A, 'Groceries'), tag(TAG_B, 'GROCERIES'));
+    const refused = await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
+      .set(...XRW)
+      .send(duplicate);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    expect(refused.body.error.code).toBe('CASH_TAG_NAME_DUPLICATE');
+    expect(refused.headers['cache-control']).toContain('no-store');
+    expect(spies.moveOut).not.toHaveBeenCalled();
+
+    // Control: the same body with distinct names clears the validator and
+    // reaches the (stubbed) service — the 400 above was the key, nothing else.
+    const distinct = moveOutBody(user.id, portfolioId, user.password);
+    distinct.document.entities.push(tag(TAG_A, 'Groceries'), tag(TAG_B, 'Fuel'));
+    const accepted = await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
+      .set(...XRW)
+      .send(distinct);
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(spies.moveOut).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['PORTFOLIO_NAME_TAKEN', 'PORTFOLIO_NAME_TAKEN'],
+    ['RESTORE_ID_TAKEN', 'VAULT_RESTORE_ID_TAKEN'],
+  ] as const)(
+    'maps the move-out %s refusal to a typed 409 %s on the wire, never a 500',
+    async (failure, wireCode) => {
+      // #2039 review, findings 2 and 3: two keys only the DATABASE can see — a
+      // name the owner reused while the portfolio was vaulted, an id an existing
+      // row already holds. The service refuses both before its first write; this
+      // pins the status and code the web receives for each.
+      const harness = await createTestApp();
+      const { user, portfolioId, agent } = await seedPrincipal(
+        harness,
+        failure === 'PORTFOLIO_NAME_TAKEN' ? 'taken-name' : 'taken-id',
+      );
+      const spies = stubTransitions(harness, portfolioId);
+      spies.moveOut.mockRejectedValueOnce(
+        new PortfolioVaultTransitionError(failure, 'TEST VECTOR taken'),
+      );
+
+      const res = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
+        .set(...XRW)
+        .send(moveOutBody(user.id, portfolioId, user.password));
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error.code).toBe(wireCode);
+      expect(res.headers['cache-control']).toContain('no-store');
+    },
+  );
+
   it('admits account:security bearers, reports the missing scope, and default-closes a future sibling', async () => {
     const harness = await createTestApp();
     const { user, portfolioId } = await seedPrincipal(harness, 'bearer');

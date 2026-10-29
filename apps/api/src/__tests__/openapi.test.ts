@@ -762,6 +762,42 @@ describe('OpenAPI document', () => {
     expect(JSON.stringify(transition.description)).toContain('portfolioIds');
   });
 
+  it('publishes every restore-document refusal code on BOTH restore routes', () => {
+    // #1973 asked for the restore unique-key codes to be documented in OpenAPI;
+    // `check:openapi-coverage` counts routes only, so nothing caught that they
+    // were not (#2039 review). Literals on purpose: this pins the WIRE strings
+    // a generated client keys on, not whatever a constant happens to hold.
+    const restoreDocumentCodes = [
+      'CASH_TAG_NAME_DUPLICATE',
+      'CASH_TAG_SYSTEM_KEY_DUPLICATE',
+      'CASH_MOVEMENT_DEDUP_DUPLICATE',
+      'CASH_MOVEMENT_TAG_DUPLICATE',
+      'CASH_BUDGET_PERIOD_DUPLICATE',
+      'CASH_BUDGET_RECURRING_DUPLICATE',
+      'CASH_RULE_TAG_DUPLICATE',
+      'VAULT_RESTORE_ID_TAKEN',
+    ];
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const disable = (paths['/account/paranoid/disable'] as JsonObject).post as JsonObject;
+    const moveOut = (paths['/portfolios/{portfolioId}/vault/move-out'] as JsonObject)
+      .post as JsonObject;
+
+    expect(disable['x-error-codes']).toEqual(expect.arrayContaining(restoreDocumentCodes));
+    expect(moveOut['x-error-codes']).toEqual(
+      // Move-out alone can also meet a name the owner reused while vaulted.
+      expect.arrayContaining([...restoreDocumentCodes, 'PORTFOLIO_NAME_TAKEN']),
+    );
+    // The contract's own list is the source the routes draw on; a code added to
+    // it must reach both operations without a second hand-written edit.
+    expect(disable['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.VAULT_RESTORE_DOCUMENT_ERROR_CODES]),
+    );
+    expect(moveOut['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.VAULT_RESTORE_DOCUMENT_ERROR_CODES]),
+    );
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI

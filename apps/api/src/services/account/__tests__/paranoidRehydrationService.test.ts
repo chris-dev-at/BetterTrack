@@ -1149,9 +1149,14 @@ describe('paranoid rehydration service', () => {
     const victimBefore = await retainedCustomAssetState(harness);
     restoreUserId = attacker.id;
 
+    // Refused BEFORE the insert since the #2039 review, as a typed 409 the
+    // client can show, rather than by the AFTER INSERT identity trigger's
+    // `23503` (a 500). The trigger still guards every other asset writer and is
+    // pinned on its own in `assetIdentityMigration.test.ts`; the security
+    // property below is the same either way.
     await expect(
       createParanoidRehydrationService({ db: harness.db }).rehydrate(attacker.id, request()),
-    ).rejects.toThrow(/claimed by another account/);
+    ).rejects.toMatchObject({ statusCode: 409, code: 'VAULT_RESTORE_ID_TAKEN' });
 
     expect(await retainedCustomAssetState(harness)).toEqual(victimBefore);
     expect(await harness.db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
@@ -4252,9 +4257,18 @@ describe('restored cash tags and rule links', () => {
  * that is a dead end: the one mode where the server holds no second copy,
  * answering with no code the client can show.
  *
- * Each case proves the same three things: the restore is REFUSED, NOTHING is
- * written, and the account is still exactly where it was — ciphertext intact,
- * still paranoid — so the user can fix the document and come back.
+ * Each case proves the same four things: WHICH check refused (the strict
+ * document schema, with that key's own code and no other issue), that the
+ * restore is REFUSED, that NOTHING is written, and that the account is still
+ * exactly where it was — ciphertext intact, still paranoid — so the user can fix
+ * the document and come back.
+ *
+ * The service collapses every strict-parse failure into one `INVALID_REFERENCE`,
+ * which any malformed document produces, so on its own that refusal cannot say
+ * which check fired (#2039 review). The per-key code is therefore asserted on
+ * the schema issue the service refused on. What a CLIENT receives — the same
+ * code as `body.error.code` — is pinned on the real route in
+ * `src/__tests__/paranoidRestoreRefusalCodes.test.ts`.
  */
 describe('restored documents cannot reach a unique index', () => {
   const TAG_A = '018f0000-0000-7000-8000-a00000000001';
@@ -4313,20 +4327,24 @@ describe('restored documents cannot reach a unique index', () => {
    */
   const OFFENDERS: readonly {
     readonly index: string;
+    readonly code: string;
     readonly rows: () => readonly StrictEntity[];
   }[] = [
     {
       index: 'cash_tags_user_name_lower_unique',
+      code: 'CASH_TAG_NAME_DUPLICATE',
       // Case-insensitively: two tags the user cannot tell apart would silently
       // split every budget counting them.
       rows: () => [tagEntity(TAG_A, 'Groceries'), tagEntity(TAG_B, 'GROCERIES')],
     },
     {
       index: 'cash_tags_user_system_key_unique',
+      code: 'CASH_TAG_SYSTEM_KEY_DUPLICATE',
       rows: () => [tagEntity(TAG_A, 'Fees', 'fees'), tagEntity(TAG_B, 'Fees (built-in)', 'fees')],
     },
     {
       index: 'portfolio_cash_movements_dedup_unique',
+      code: 'CASH_MOVEMENT_DEDUP_DUPLICATE',
       // The import idempotency key: two rows carrying it are the duplicate a
       // re-imported bank statement would otherwise book twice.
       rows: () => [depositEntity(SECOND_MOVEMENT_ID, 'statement-row-7')],
@@ -4334,6 +4352,7 @@ describe('restored documents cannot reach a unique index', () => {
     },
     {
       index: 'cash_movement_tags_movement_tag_unique',
+      code: 'CASH_MOVEMENT_TAG_DUPLICATE',
       rows: () => [
         tagEntity(TAG_A, 'Groceries'),
         movementTagEntity('018f0000-0000-7000-8000-a00000000011', MOVEMENT_ID, TAG_A),
@@ -4342,6 +4361,7 @@ describe('restored documents cannot reach a unique index', () => {
     },
     {
       index: 'cash_budgets_portfolio_tag_period_unique',
+      code: 'CASH_BUDGET_PERIOD_DUPLICATE',
       rows: () => [
         tagEntity(TAG_A, 'Groceries'),
         budgetEntity('018f0000-0000-7000-8000-a00000000021', TAG_A, '2026-01'),
@@ -4350,6 +4370,7 @@ describe('restored documents cannot reach a unique index', () => {
     },
     {
       index: 'cash_budgets_portfolio_tag_recurring_unique',
+      code: 'CASH_BUDGET_RECURRING_DUPLICATE',
       // NULLs are distinct, so the three-column index above cannot see this pair
       // at all — the partial index is the one that would have raised.
       rows: () => [
@@ -4369,30 +4390,41 @@ describe('restored documents cannot reach a unique index', () => {
     }
   }
 
-  it.each(OFFENDERS)('refuses $index before it writes a row', async ({ index, rows }) => {
-    const { db, user } = await makeParanoid();
-    const input = request();
-    if (index === 'portfolio_cash_movements_dedup_unique') withDedupHash(input);
-    input.document.entities.push(...rows());
-    const service = createParanoidRehydrationService({ db });
+  it.each(OFFENDERS)(
+    'refuses $index as $code before it writes a row',
+    async ({ index, code, rows }) => {
+      const { db, user } = await makeParanoid();
+      const input = request();
+      if (index === 'portfolio_cash_movements_dedup_unique') withDedupHash(input);
+      input.document.entities.push(...rows());
+      const service = createParanoidRehydrationService({ db });
 
-    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
-      code: 'INVALID_REFERENCE',
-    });
+      // WHICH check refuses: the strict schema, on this key, and nothing else in
+      // the document. `apiErrorCode` is the field the HTTP validator answers with.
+      const parsed = paranoidDisableRehydrationRequestSchema.safeParse(input);
+      expect(parsed.success).toBe(false);
+      const issues = parsed.success ? [] : parsed.error.issues;
+      expect(issues).toHaveLength(1);
+      expect((issues[0] as { params?: { apiErrorCode?: string } }).params?.apiErrorCode).toBe(code);
 
-    // Non-destructive, exactly as a refused restore must be: nothing written,
-    // the ciphertext still there, the account still paranoid.
-    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
-    expect(await db.select().from(cashTags).where(eq(cashTags.userId, user.id))).toEqual([]);
-    expect(
-      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
-    ).toHaveLength(1);
-    const [account] = await db
-      .select({ mode: users.privacyMode })
-      .from(users)
-      .where(eq(users.id, user.id));
-    expect(account?.mode).toBe('paranoid');
-  });
+      await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+        code: 'INVALID_REFERENCE',
+      });
+
+      // Non-destructive, exactly as a refused restore must be: nothing written,
+      // the ciphertext still there, the account still paranoid.
+      expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+      expect(await db.select().from(cashTags).where(eq(cashTags.userId, user.id))).toEqual([]);
+      expect(
+        await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+      ).toHaveLength(1);
+      const [account] = await db
+        .select({ mode: users.privacyMode })
+        .from(users)
+        .where(eq(users.id, user.id));
+      expect(account?.mode).toBe('paranoid');
+    },
+  );
 
   it('restores the same rows once the keys are distinct', async () => {
     // The negative space of all six refusals in one document: a tag set, an
@@ -4460,5 +4492,163 @@ describe('restored documents cannot reach a unique index', () => {
     expect(driverError(raised)).toMatchObject({
       constraint: 'cash_tags_user_name_lower_unique',
     });
+  });
+});
+
+/**
+ * RESTORED IDS AN EXISTING ROW ALREADY HOLDS (#2039 review, finding 3).
+ *
+ * `validateUniqueRestoredIds` proves an id is not repeated WITHIN the document,
+ * and that is all a document check can prove. It cannot see an id that already
+ * belongs to a row the document does not carry. Every such id passed every gate
+ * and then raised `23505 <table>_pkey` inside the open rehydration transaction,
+ * which is a 500 for the caller's own exit. For a custom asset whose retained
+ * identity another account claims, the AFTER INSERT identity trigger raised
+ * `23503` instead, also a 500.
+ *
+ * The exit restores into an account its enable purged, so any such id belongs
+ * to SOMEONE ELSE: a global catalog asset (every client can read those ids) or
+ * another account's row. The service now probes the target tables inside its
+ * locked transaction, before the first write, and refuses with
+ * `409 VAULT_RESTORE_ID_TAKEN`. Each case proves the refusal, that nothing was
+ * written, and that the foreign row is exactly what it was.
+ */
+describe('restored ids an existing row already holds', () => {
+  async function expectNothingRestored(
+    db: Awaited<ReturnType<typeof makeParanoid>>['db'],
+    userId: string,
+  ): Promise<void> {
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, userId))).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.ownerId, userId))).toEqual([]);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId)),
+    ).toHaveLength(1);
+    const [account] = await db
+      .select({ mode: users.privacyMode })
+      .from(users)
+      .where(eq(users.id, userId));
+    expect(account?.mode).toBe('paranoid');
+  }
+
+  it('refuses a manual custom asset whose id is a GLOBAL catalog asset id, as a 409 and not a 23505', async () => {
+    const { db, user } = await makeParanoid();
+    const [market] = await db
+      .insert(assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'ACME',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'ACME',
+        name: 'Acme',
+        exchange: 'XETRA',
+        currency: 'EUR',
+      })
+      .returning();
+    if (!market) throw new Error('expected market asset');
+    const input = request();
+    input.document.entities.push(
+      entity(market.id, 'customAsset', {
+        providerId: 'manual',
+        providerRef: market.id,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'X',
+        name: 'Shadow',
+        exchange: null,
+        currency: 'EUR',
+        meta: { category: 'other', smoothing: false, recategorize: false },
+        searchText: "'x':1 'shadow':2",
+      }),
+    );
+
+    let raised: unknown;
+    try {
+      await createParanoidRehydrationService({ db }).rehydrate(user.id, input);
+    } catch (err) {
+      raised = err;
+    }
+    expect(isDriverErrorCode(raised, UNIQUE_VIOLATION)).toBe(false);
+    expect(raised).toMatchObject({ statusCode: 409, code: 'VAULT_RESTORE_ID_TAKEN' });
+
+    await expectNothingRestored(db, user.id);
+    const [after] = await db.select().from(assets).where(eq(assets.id, market.id));
+    expect(after).toMatchObject({ ownerId: null, providerId: 'yahoo', symbol: 'ACME' });
+  });
+
+  it('refuses a custom asset id whose retained identity ANOTHER account claims, before the trigger can raise', async () => {
+    const { db, user, seedUser } = await makeParanoid();
+    const other = await seedUser({ email: 'other@bettertrack.test', username: 'otheruser' });
+    // A detached identity: no `assets` row (so no primary key to meet), only
+    // the opaque (id, owner) claim the identity trigger guards.
+    const CLAIMED_ID = '018f0000-0000-7000-8000-a00000000101';
+    await db.insert(assetIdentities).values({ id: CLAIMED_ID, ownerId: other.id });
+    const input = request();
+    input.document.entities.push(
+      entity(CLAIMED_ID, 'customAsset', {
+        providerId: 'manual',
+        providerRef: CLAIMED_ID,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'CLAIM',
+        name: 'Claimed elsewhere',
+        exchange: null,
+        currency: 'EUR',
+        meta: { category: 'other', smoothing: false, recategorize: false },
+        searchText: "'claim':1 'claimed':2 'elsewhere':3",
+      }),
+    );
+
+    let raised: unknown;
+    try {
+      await createParanoidRehydrationService({ db }).rehydrate(user.id, input);
+    } catch (err) {
+      raised = err;
+    }
+    // Not the trigger's `23503 assets_id_asset_identity_owner_guard`.
+    expect(isDriverErrorCode(raised, '23503')).toBe(false);
+    expect(raised).toMatchObject({ statusCode: 409, code: 'VAULT_RESTORE_ID_TAKEN' });
+
+    await expectNothingRestored(db, user.id);
+    expect(
+      await db.select().from(assetIdentities).where(eq(assetIdentities.id, CLAIMED_ID)),
+    ).toEqual([{ id: CLAIMED_ID, ownerId: other.id }]);
+  });
+
+  it('refuses a cash-source id another account’s row already holds — every restored table, not only assets', async () => {
+    const { db, user, seedUser } = await makeParanoid();
+    const other = await seedUser({ email: 'other@bettertrack.test', username: 'otheruser' });
+    const [foreignPortfolio] = await db
+      .insert(portfolios)
+      .values({ userId: other.id, name: 'Foreign' })
+      .returning();
+    if (!foreignPortfolio) throw new Error('expected foreign portfolio');
+    // The document's own cash source id, already a row of another account.
+    await db.insert(portfolioCashSources).values({
+      id: CASH_SOURCE_ID,
+      portfolioId: foreignPortfolio.id,
+      name: 'Foreign main',
+      type: 'cash',
+      isMain: true,
+    });
+
+    let raised: unknown;
+    try {
+      await createParanoidRehydrationService({ db }).rehydrate(user.id, request());
+    } catch (err) {
+      raised = err;
+    }
+    expect(isDriverErrorCode(raised, UNIQUE_VIOLATION)).toBe(false);
+    expect(raised).toMatchObject({ statusCode: 409, code: 'VAULT_RESTORE_ID_TAKEN' });
+
+    await expectNothingRestored(db, user.id);
+    expect(
+      await db
+        .select()
+        .from(portfolioCashSources)
+        .where(eq(portfolioCashSources.id, CASH_SOURCE_ID)),
+    ).toEqual([
+      expect.objectContaining({ portfolioId: foreignPortfolio.id, name: 'Foreign main' }),
+    ]);
   });
 });

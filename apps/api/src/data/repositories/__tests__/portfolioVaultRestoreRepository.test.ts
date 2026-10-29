@@ -578,3 +578,51 @@ describe('portfolio vault restore repository', () => {
     ).toEqual([{ name: vaultedPortfolioStubName(TEST_VECTOR.portfolioId) }]);
   });
 });
+
+/**
+ * `portfolios_user_name_unique` ON THE STUB WRITE ITSELF (#2039 review, finding
+ * 2).
+ *
+ * The move-out probes the restored name before its first write and refuses a
+ * reused one as `PORTFOLIO_NAME_TAKEN` (pinned end to end in
+ * `portfolioVaultTransitionService.test.ts`). A probe cannot stop a CONCURRENT
+ * portfolio create from committing that name after it has run, because create
+ * does not take the owner lock the move-out holds. This drives that exact
+ * interleaving deterministically. The `commonFacts` stage hook runs after the
+ * probe and before the stub UPDATE, and it commits the name there. The
+ * refusal must stay the typed one, not the bare `23505` a client would get as
+ * a 500.
+ */
+describe('portfolio vault restore repository — the stub write meets a concurrently taken name', () => {
+  it('maps a name committed between the probe and the stub UPDATE to PORTFOLIO_NAME_TAKEN', async () => {
+    const restored = portfolioEntity(TEST_VECTOR.portfolioId, userId);
+
+    let raised: unknown;
+    try {
+      await restorePortfolioVaultGraph({
+        tx: h.db,
+        userId,
+        portfolioId: TEST_VECTOR.portfolioId,
+        vaultId: TEST_VECTOR.vaultId,
+        entities: [restored],
+        afterCashMovements: async () => undefined,
+        afterStage: async (stage) => {
+          if (stage !== 'commonFacts') return;
+          await h.db.insert(portfolios).values({ userId, name: restored.data.name });
+        },
+      });
+    } catch (err) {
+      raised = err;
+    }
+
+    expect((raised as { cause?: { code?: string } } | undefined)?.cause?.code).not.toBe('23505');
+    expect(raised).toMatchObject({ code: 'PORTFOLIO_NAME_TAKEN' });
+    // The stub was never renamed.
+    expect(
+      await h.db
+        .select({ name: portfolios.name })
+        .from(portfolios)
+        .where(eq(portfolios.id, TEST_VECTOR.portfolioId)),
+    ).toEqual([{ name: vaultedPortfolioStubName(TEST_VECTOR.portfolioId) }]);
+  });
+});

@@ -756,7 +756,8 @@ describe('a restored rule→tag link is UNIQUE per pair (#1963)', () => {
     expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('custom');
     expect(
       parsed.success === false &&
-        (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code,
+        (parsed.error.issues[0] as { params?: { apiErrorCode?: string } } | undefined)?.params
+          ?.apiErrorCode,
     ).toBe('CASH_RULE_TAG_DUPLICATE');
     expect(parsed.success === false && parsed.error.issues[0]?.path).toEqual(['entities']);
     expect(parsed.success === false && parsed.error.issues).toHaveLength(1);
@@ -809,7 +810,8 @@ describe('a restored rule→tag link is UNIQUE per pair (#1963)', () => {
     expect(parsed.success === false && parsed.error.issues[0]?.code).toBe('custom');
     expect(
       parsed.success === false &&
-        (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code,
+        (parsed.error.issues[0] as { params?: { apiErrorCode?: string } } | undefined)?.params
+          ?.apiErrorCode,
     ).toBe('CASH_RULE_TAG_DUPLICATE');
   });
 });
@@ -938,7 +940,15 @@ describe('every restore-reachable unique key is a document invariant (#1973)', (
     mirrorProvenance: [],
   });
 
-  /** The stable code on the refusal, or `null` when the document parsed. */
+  /**
+   * The stable code on the refusal, or `null` when the document parsed.
+   *
+   * Read from `params.apiErrorCode` — the ONE field the HTTP validator lifts
+   * into the 400 (`apps/api/src/http/middleware/validate.ts`). The #2039 review
+   * found every code here set on `params.code` instead, which the adapter
+   * ignores, so each refusal reached a client as a bare `VALIDATION_ERROR`
+   * while this helper, reading the wrong field, stayed green.
+   */
   function refusalCode(...entities: unknown[]): string | null {
     const parsed = vaultStrictDocumentV1Schema.safeParse(documentWith(...entities));
     if (parsed.success) return null;
@@ -946,7 +956,8 @@ describe('every restore-reachable unique key is a document invariant (#1973)', (
     expect(parsed.error.issues[0]?.path).toEqual(['entities']);
     expect(parsed.error.issues[0]?.code).toBe('custom');
     return (
-      (parsed.error.issues[0] as { params?: { code?: string } } | undefined)?.params?.code ?? null
+      (parsed.error.issues[0] as { params?: { apiErrorCode?: string } } | undefined)?.params
+        ?.apiErrorCode ?? null
     );
   }
 
@@ -975,6 +986,26 @@ describe('every restore-reachable unique key is a document invariant (#1973)', (
     expect(
       refusalCode(cashTag(1, 'Groceries', null, TOMBSTONED), cashTag(2, 'Groceries')),
     ).toBeNull();
+  });
+
+  it('folds tag names per code point, the way `lower()` does under libc — final sigma included', () => {
+    /**
+     * #2039 review. Whole-string `toLowerCase()` applies Unicode's final-sigma
+     * CONTEXT rule: `'ΑΣ'.toLowerCase() === 'ας'`. PostgreSQL's `lower()` under
+     * a libc collation maps one code point at a time, so `Σ` is `σ` wherever it
+     * stands: `ΑΣ` folds to `ασ`, which is NOT `ας`. Postgres therefore lets
+     * `ΑΣ` and `ας` coexist, and a gate that called them one name would refuse
+     * the paranoid exit of an account whose table already holds both — the
+     * refused-exit direction this lane treats as the graver one.
+     */
+    expect(refusalCode(cashTag(1, 'ΑΣ'), cashTag(2, 'ας'))).toBeNull();
+
+    // Precision: the pair Postgres DOES equate is still refused — `Σ` and `σ`
+    // fold to the same code point however they are cased.
+    expect(refusalCode(cashTag(1, 'ΑΣ'), cashTag(2, 'ασ'))).toBe('CASH_TAG_NAME_DUPLICATE');
+    expect(refusalCode(cashTag(1, 'Ölkosten'), cashTag(2, 'ÖLKOSTEN'))).toBe(
+      'CASH_TAG_NAME_DUPLICATE',
+    );
   });
 
   it('cash_tags_user_system_key_unique — one tag per built-in key, NULLs distinct', () => {
