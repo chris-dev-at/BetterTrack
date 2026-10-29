@@ -543,35 +543,131 @@ describe('#1043 vault bearer policy', () => {
     ).resolves.toMatchObject({ statusCode: 403, code: 'API_KEY_FORBIDDEN' });
   });
 
-  it('keeps the router-local guard default-closed independently of global scope policy', () => {
-    const guard = (apiKey: { id: string; scopes: string[] }, method: string, path: string) => {
+  it('keeps the router-local guard default-closed independently of global scope policy', async () => {
+    // A real account and a real key id: since #1965 the refusal path WRITES an
+    // `api_key.scope_denied` row, and `audit_log.actor_id` is a foreign key onto
+    // `users`. The scopes under test are the ones on the synthetic request, not
+    // the ones the minted key happens to carry.
+    const { user, id } = await mintPersonalToken(['vault:sync'], 'local-vault-sync-guard');
+    const twin = requireCookieSessionOrVaultSync(harness.ctx);
+    const drive = async (
+      input: {
+        scopes?: string[];
+        role?: 'user' | 'admin';
+        sessionId?: string;
+      },
+      method: string,
+      path: string,
+    ) => {
       const next = vi.fn();
-      requireCookieSessionOrVaultSync(
-        { apiKey, method, path } as unknown as Request,
+      twin(
+        {
+          authUser: { id: user.id, role: input.role ?? 'user', privacyMode: 'normal' },
+          apiKey: input.scopes
+            ? {
+                id,
+                scopes: input.scopes,
+                kind: 'personal',
+                firstParty: false,
+                securityGeneration: 0,
+              }
+            : undefined,
+          sessionId: input.sessionId,
+          method,
+          path,
+          ip: '127.0.0.1',
+        } as unknown as Request,
         {} as Response,
         next,
       );
+      // The audited branch reaches `next` only after its write resolves.
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
       return next;
     };
-    const syncKey = { id: 'key', scopes: ['vault:sync'] };
+    const syncScoped = { scopes: ['vault:sync'] };
+    const auditRows = () =>
+      harness.db
+        .select({ meta: auditLog.meta, targetId: auditLog.targetId })
+        .from(auditLog)
+        .where(and(eq(auditLog.targetId, id), eq(auditLog.action, 'api_key.scope_denied')));
+
+    // The admitted paths, unchanged: the owning browser session, and a bearer
+    // holding `vault:sync` on an allowlisted route.
+    expect(await drive({ sessionId: 'session' }, 'PUT', '/')).toHaveBeenCalledWith();
+    expect(await drive(syncScoped, 'PUT', '/')).toHaveBeenCalledWith();
 
     // Unlisted route: refused even though the token holds the right scope.
-    const rejected = guard(syncKey, 'PATCH', '/media');
+    const rejected = await drive(syncScoped, 'PATCH', '/media');
     expect(rejected).toHaveBeenCalledOnce();
     expect(rejected.mock.calls[0]![0]).toMatchObject({
       statusCode: 403,
       code: 'API_KEY_FORBIDDEN',
     });
 
+    // …and an off-allowlist refusal is not a scope event, so it writes nothing:
+    // the global table calls that route session-only and audits nothing either.
+    expect(await auditRows()).toHaveLength(0);
+
     // Allowlisted route, wrong scope: the guard is scope-aware too, so a global
     // policy-table regression alone cannot hand the vault to an unrelated token.
-    const wrongScope = guard({ id: 'key', scopes: ['market:read'] }, 'PUT', '/');
+    const wrongScope = await drive({ scopes: ['market:read'] }, 'PUT', '/');
     expect(wrongScope.mock.calls[0]![0]).toMatchObject({
       statusCode: 403,
       code: 'API_KEY_FORBIDDEN',
     });
 
-    expect(guard(syncKey, 'PUT', '/')).toHaveBeenCalledWith();
+    // THAT one is a scope event, and since #1965 the twin writes it itself —
+    // exactly one row, naming the route rather than the mount-relative path.
+    const rows = await auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: 'vault:sync',
+      method: 'PUT',
+      path: '/vault',
+    });
+  });
+
+  it('#1965 404s a bearer-backed admin principal on the vault-sync twin, with no audit row', async () => {
+    // Adversarial on purpose: the principal holds BOTH scopes any vault surface
+    // could ask for, so a refusal here can never be about scope. The control run
+    // with `role: 'user'` is ADMITTED, which is what proves the 404 is the
+    // account-kind boundary answering and not some unrelated refusal.
+    const { user, id } = await mintPersonalToken(['vault:sync'], 'vault-sync-admin-backstop');
+    const twin = requireCookieSessionOrVaultSync(harness.ctx);
+    const drive = async (role: 'user' | 'admin') => {
+      const next = vi.fn();
+      twin(
+        {
+          authUser: { id: user.id, role, privacyMode: 'normal' },
+          apiKey: {
+            id,
+            scopes: ['vault:sync', 'account:security'],
+            kind: 'personal',
+            firstParty: false,
+            securityGeneration: 0,
+          },
+          method: 'GET',
+          path: '/',
+          ip: '127.0.0.1',
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
+      return next;
+    };
+
+    expect((await drive('admin')).mock.calls[0]![0]).toMatchObject({ statusCode: 404 });
+    expect(await drive('user')).toHaveBeenCalledWith();
+
+    // A 404 across the account-kind boundary is not a scope event: the rail does
+    // not audit it, and neither does the twin.
+    const rows = await harness.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.targetId, id), eq(auditLog.action, 'api_key.scope_denied')));
+    expect(rows).toHaveLength(0);
   });
 
   it('makes the per-vault local guard hide admin principals and audit INSUFFICIENT_SCOPE', async () => {

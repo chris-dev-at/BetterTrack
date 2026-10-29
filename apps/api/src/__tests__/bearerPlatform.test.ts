@@ -53,7 +53,10 @@ import {
   requireCookieSessionOrFirstPartyOAuthGrant,
   requireCookieSessionOrTaxYearDocumentationBearer,
 } from '../http/routes/settingsRoutes';
-import { requireCookieSessionOrPerVaultAccess } from '../http/routes/vaultRoutes';
+import {
+  requireCookieSessionOrPerVaultAccess,
+  requireCookieSessionOrVaultSync,
+} from '../http/routes/vaultRoutes';
 import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import {
   BEARER_SCOPE_DENIAL_REASONS,
@@ -842,12 +845,13 @@ describe('#1324 account:security parity for native account state', () => {
     expect(JSON.stringify(rows[0])).not.toContain(principal.token);
   });
 
-  it('#1958 404s a bearer-backed admin principal on ALL FIVE router-local twins', async () => {
+  it('#1958/#1965 404s a bearer-backed admin principal on ALL SIX router-local twins', async () => {
     // The portfolio-vault and per-vault twins always carried this backstop; the
-    // passkey, grant and tax-year twins gained it in #1958 so the five are
-    // alike. It is only reachable by driving a guard directly: in production the
-    // global rail 404s the same principal before routing, which is exactly why
-    // the admission set does not move (pinned in `bearerAdmissionParity`).
+    // passkey, grant and tax-year twins gained it in #1958 and the vault-sync
+    // twin in #1965, so the six are alike. It is only reachable by driving a
+    // guard directly: in production the global rail 404s the same principal
+    // before routing, which is exactly why the admission set does not move
+    // (pinned in `bearerAdmissionParity`).
     const user = await seedFreshUser();
     const vaultId = '22222222-2222-4222-8222-222222222222';
     const twins = [
@@ -881,6 +885,13 @@ describe('#1324 account:security parity for native account state', () => {
         method: 'GET',
         path: `/${vaultId}`,
       },
+      {
+        name: 'vault-sync',
+        guard: requireCookieSessionOrVaultSync(harness.ctx),
+        method: 'GET',
+        // Mount-relative: `/` is `GET /vault`, the account-singleton envelope.
+        path: '/',
+      },
     ] as const;
 
     const drive = async (
@@ -894,7 +905,7 @@ describe('#1324 account:security parity for native account state', () => {
           authUser: { id: user.id, role },
           apiKey: {
             id: MISSING_ID,
-            // Every scope any of the five could ask for, so a refusal here is
+            // Every scope any of the six could ask for, so a refusal here is
             // never about scope — precision, not just recall.
             scopes: [ACCOUNT_SECURITY_SCOPE, VAULT_SYNC_SCOPE],
             kind: firstParty ? 'oauth' : 'personal',

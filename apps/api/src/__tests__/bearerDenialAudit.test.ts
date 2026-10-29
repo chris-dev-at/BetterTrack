@@ -16,12 +16,17 @@ import {
 import * as schema from '../data/schema';
 import { forbidden } from '../errors';
 import { createErrorHandler } from '../http/errorHandler';
-import { ACCOUNT_SECURITY_SCOPE, recordBearerScopeDenied } from '../http/middleware/bearerAuth';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  VAULT_SYNC_SCOPE,
+  recordBearerScopeDenied,
+} from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrPasskeyManagementBearer } from '../http/routes/authRoutes';
 import {
   requireCookieSessionOrFirstPartyOAuthGrant,
   requireCookieSessionOrTaxYearDocumentationBearer,
 } from '../http/routes/settingsRoutes';
+import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
 import { parseBearerScopeDeniedMeta } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -39,6 +44,11 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * #1958 adds the fifth twin — tax-year documentation — to the last section:
  * the same rail-bypassed count that is the whole point of the change, plus the
  * live end-to-end refusal proving the rail and the twin never both write.
+ *
+ * #1965 adds the sixth — `requireCookieSessionOrVaultSync`, the legacy
+ * account-singleton `/vault` surface — the same three ways, plus the failure
+ * mode of its audit write: a rejected write is a REPORTED 500, never a 400 and
+ * never an admission to vault bytes.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -557,6 +567,161 @@ describe('#1951 the TWIN is what writes the row when the rail is bypassed', () =
       });
     }
 
+    expect(await scopeDeniedRows(user.id)).toHaveLength(0);
+  });
+
+  it('#1965 the vault-sync twin writes exactly one row for a refusal the rail never saw', async () => {
+    const { token, keyId, user } = await mintPersonalKey(['market:read']);
+    const next = await driveTwin(requireCookieSessionOrVaultSync(harness.ctx), {
+      authUser: { id: user.id, role: 'user' },
+      apiKey: { id: keyId, scopes: ['market:read'], kind: 'personal', securityGeneration: 0 },
+      method: 'GET',
+      // Mount-relative: `/` is `GET /vault`, the account-singleton envelope read.
+      path: '/',
+    });
+
+    // The HTTP answer is byte-identical to the one this twin has always given.
+    expect(next.mock.calls[0]?.[0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+    const rows = await scopeDeniedRows(user.id);
+    expect(rows).toHaveLength(1); // parent: PARENT_VAULT_SYNC_TWIN_AUDIT_ROWS=0
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: VAULT_SYNC_SCOPE,
+      method: 'GET',
+      // The ROUTE the allowlist is written against, not the mount-relative path.
+      path: '/vault',
+    });
+    // §10: the row names the key by id and nothing else about the credential.
+    expect(rows[0]!.targetType).toBe('api_key');
+    expect(rows[0]!.targetId).toBe(keyId);
+    const serialized = JSON.stringify(rows[0]);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain(hashToken(token));
+    expect(Object.keys(rows[0]!.meta as object).sort()).toEqual([
+      'method',
+      'path',
+      'reason',
+      'requiredScope',
+    ]);
+  });
+
+  it('#1965 the vault-sync twin writes NOTHING for the refusals that are not scope events', async () => {
+    const { keyId, user } = await mintPersonalKey([VAULT_SYNC_SCOPE]);
+    const guard = requireCookieSessionOrVaultSync(harness.ctx);
+
+    for (const probe of [
+      // Off-allowlist method on an allowlisted path, a `{version}` that is not a
+      // positive integer, a future sibling, and the media transition that stays
+      // session-only: the global table calls all four session-only and audits
+      // nothing, so neither may the twin.
+      { method: 'POST', path: '/', role: 'user' as const },
+      { method: 'GET', path: '/history/latest', role: 'user' as const },
+      { method: 'GET', path: '/future-sibling', role: 'user' as const },
+      { method: 'PATCH', path: '/media', role: 'user' as const },
+      // The #1965 backstop: a 404 across the account-kind boundary is not a
+      // scope denial either, on the twin any more than on the rail.
+      { method: 'GET', path: '/', role: 'admin' as const },
+    ]) {
+      const next = await driveTwin(guard, {
+        authUser: { id: user.id, role: probe.role },
+        apiKey: {
+          id: keyId,
+          scopes: [VAULT_SYNC_SCOPE],
+          kind: 'personal',
+          securityGeneration: 0,
+        },
+        method: probe.method,
+        path: probe.path,
+      });
+      expect(next.mock.calls[0]?.[0], `${probe.role} ${probe.method} ${probe.path}`).toMatchObject({
+        statusCode: probe.role === 'admin' ? 404 : 403,
+      });
+    }
+
+    expect(await scopeDeniedRows(user.id)).toHaveLength(0);
+  });
+
+  it('#1965 writes exactly one row for a LIVE vault refusal — the rail, not the rail plus the twin', async () => {
+    // End-to-end: the global guard answers before routing, so the twin never
+    // runs. One refusal, one row — never two.
+    const { token, keyId, user } = await mintPersonalKey(['market:read']);
+    const refused = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const rows = await scopeDeniedRows(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.targetId).toBe(keyId);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: VAULT_SYNC_SCOPE,
+      method: 'GET',
+      path: '/vault',
+    });
+    const serialized = JSON.stringify(rows[0]);
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain(hashToken(token));
+  });
+
+  it('#1965 reports a rejected vault-sync audit write as 500 — never 400, never an admission', async () => {
+    // The twin's own `reason` is a compile-time constant inside the vocabulary,
+    // so a meta-schema failure can only originate in a MIS-WIRED WRITER. This
+    // simulates exactly that: the writer is replaced by one that hands the real
+    // contract a meta carrying credential material, which is the shape
+    // `.strict()` exists to refuse (#1951 §1). What matters is what the twin
+    // does with the rejection — 500 through the real error handler, no row, and
+    // above all no admission to vault bytes.
+    const { user, keyId } = await mintPersonalKey(['market:read']);
+    let admitted = false;
+    vi.spyOn(harness.ctx.apiKeys, 'recordScopeDenied').mockImplementation(async (input) => {
+      parseBearerScopeDeniedMeta('misWiredWriter.recordScopeDenied', {
+        requiredScope: input.requiredScope,
+        reason: input.reason,
+        method: input.method,
+        path: input.path,
+        token: SMUGGLED_SECRET,
+      });
+    });
+
+    // Mounted at `/` so `req.path` — a read-only getter on the real request —
+    // is the mount-relative path of `GET /vault`, exactly as in production.
+    const app = express();
+    app.get('/', (req, res, next) => {
+      Object.assign(req, {
+        authUser: { id: user.id, role: 'user' },
+        apiKey: { id: keyId, scopes: ['market:read'], kind: 'personal', securityGeneration: 0 },
+      });
+      requireCookieSessionOrVaultSync(harness.ctx)(req, res, (error?: unknown) => {
+        if (error === undefined) admitted = true;
+        next(error);
+      });
+    });
+    app.use(
+      createErrorHandler(harness.ctx.logger, (err, context) =>
+        harness.ctx.problems.captureError(err, context),
+      ),
+    );
+
+    const res = await request(app).get('/');
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL');
+    // The regression this pins: a raw ZodError would have produced 400 here,
+    // and the twin would have hidden its own defect behind a validation error.
+    expect(res.status).not.toBe(400);
+    expect(res.body.error.code).not.toBe('VALIDATION_ERROR');
+    // The one outcome that would be a security defect rather than a bug.
+    expect(admitted).toBe(false);
+
+    await harness.ctx.problems.flush();
+    const captured = await harness.db.select().from(schema.problems);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.message).toContain('misWiredWriter.recordScopeDenied');
+    // The message travels to the log and the admin Problems page: the KEY name
+    // is what makes the defect fixable, the VALUE must never travel with it.
+    expect(captured[0]!.message).not.toContain(SMUGGLED_SECRET);
     expect(await scopeDeniedRows(user.id)).toHaveLength(0);
   });
 
