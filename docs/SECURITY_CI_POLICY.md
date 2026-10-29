@@ -45,7 +45,7 @@ Three dependencies sit partly outside the automated lanes and are therefore
   minor will not open a PR on its own** — check the drizzle releases when one
   is reported and raise the upgrade issue manually.
 - `shell-quote` is pinned forward in the root `pnpm.overrides` block
-  (GHSA-395f-4hp3-45gv). Nothing here depends on it directly:
+  (GHSA-395f-4hp3-45gv, raised to ^1.11.0 for GHSA-pqg4-j6r4-53mv). Nothing here depends on it directly:
   `drizzle-orm`'s optional `gel` peer drags it onto the **production** audit
   path, so the pin is what keeps `pnpm audit --prod` clean without a waiver.
   Drop the override only after confirming the package has left the production
