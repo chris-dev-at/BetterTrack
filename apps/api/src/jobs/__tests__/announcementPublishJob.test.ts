@@ -712,7 +712,7 @@ describe('announcements.publishDue — the targeted enqueue is deduped by job id
     await enqueue({ announcementId: 'a-1', attempt: 1, delayMs: 60_000 });
     await enqueue({ announcementId: 'a-2', attempt: 0 });
     // A publish window later (the queue keeps completed jobs, so a bare
-    // `<id>:<attempt>` would be refused forever after the first one).
+    // `<id>-<attempt>` would be refused forever after the first one).
     clock = t0 + ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS * 2;
     await enqueue({ announcementId: 'a-1', attempt: 0 });
 

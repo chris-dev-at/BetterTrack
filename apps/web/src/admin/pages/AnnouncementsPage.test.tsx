@@ -389,7 +389,7 @@ test('confirms the retry, queues it, and reports what was queued', async () => {
   vi.mocked(api.listAnnouncements).mockResolvedValue({ announcements: [failedDelivery] });
   vi.mocked(api.redeliverAnnouncement).mockResolvedValue({
     announcementId: failedDelivery.id,
-    jobId: 'announcements.publishDue:cc:2:1',
+    jobId: 'announcements.publishDue-cc-2-1',
     attempt: 2,
     failedCount: 3,
     deliveredCount: 125,
@@ -432,7 +432,7 @@ test('confirms the retry, queues it, and reports what was queued', async () => {
   // recipients — not that they have been delivered to — and it names the pass,
   // so a collapsed re-click below is recognisable rather than silent.
   const banner = await screen.findByText(/Retrying delivery to 3 recipients/);
-  expect(banner).toHaveTextContent('announcements.publishDue:cc:2:1');
+  expect(banner).toHaveTextContent('announcements.publishDue-cc-2-1');
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   // And the list is re-read, because the counts change on the worker.
   expect(api.listAnnouncements).toHaveBeenCalledTimes(2);
@@ -488,7 +488,7 @@ test('says a collapsed re-click is the same pass, and counts one recipient in th
   vi.mocked(api.listAnnouncements).mockResolvedValue({ announcements: [singleFailure] });
   vi.mocked(api.redeliverAnnouncement).mockResolvedValue({
     announcementId: singleFailure.id,
-    jobId: 'announcements.publishDue:cc:2:7',
+    jobId: 'announcements.publishDue-cc-2-7',
     attempt: 2,
     failedCount: 1,
     deliveredCount: 127,
@@ -510,7 +510,7 @@ test('says a collapsed re-click is the same pass, and counts one recipient in th
   await user.click(within(dialog).getByRole('button', { name: confirm }));
 
   const first = await screen.findByText(/Retrying delivery to 1 recipient —/);
-  expect(first).toHaveTextContent('announcements.publishDue:cc:2:7');
+  expect(first).toHaveTextContent('announcements.publishDue-cc-2-7');
   expect(first).not.toHaveTextContent('1 recipients');
 
   // Same window, same job id back: the second click queued nothing new, and the
@@ -522,7 +522,7 @@ test('says a collapsed re-click is the same pass, and counts one recipient in th
     }),
   );
   const second = await screen.findByText(/same pass your last click queued/);
-  expect(second).toHaveTextContent('announcements.publishDue:cc:2:7');
+  expect(second).toHaveTextContent('announcements.publishDue-cc-2-7');
   expect(api.redeliverAnnouncement).toHaveBeenCalledTimes(2);
 });
 
