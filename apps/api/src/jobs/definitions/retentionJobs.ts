@@ -75,10 +75,12 @@ export interface DataRetentionCleanupJobDeps {
   digestQueue: Pick<NotificationDigestRepository, 'deleteDeliveredOlderThan'>;
   /**
    * Re-servable OAuth successor pairs past the refresh grace window. Their
-   * lifetime is enforced on read and when the successor rotates; this pass
-   * catches the rows nobody touches again, so a sealed pair is never kept
-   * longer than one daily run past its window. It only nulls the envelope —
-   * the token rows (and the reuse detection they carry) are kept.
+   * lifetime is otherwise enforced on read, when the successor rotates and
+   * after every successful rotation on the instance (best-effort); this pass is
+   * the backstop for an instance with no refresh traffic at all, so an
+   * unservable sealed pair is never kept longer than one daily run past its
+   * window. It only nulls the envelope — the token rows (and the reuse
+   * detection they carry) are kept.
    */
   oauthGraceEnvelopes: Pick<OAuthRepository, 'clearExpiredSuccessorEnvelopes'>;
   /** Batched account lookup for the remembered-device sweep. */

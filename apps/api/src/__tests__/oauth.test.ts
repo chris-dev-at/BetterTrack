@@ -45,7 +45,10 @@ import {
   FIRST_PARTY_CLIENTS,
   seedFirstPartyClients,
 } from '../services/oauth/firstPartyClients';
-import { createOAuthService } from '../services/oauth/oauthService';
+import {
+  POST_ROTATION_ENVELOPE_SWEEP_BATCH,
+  createOAuthService,
+} from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -1061,10 +1064,14 @@ describe('first-party grant scope healing (#1393)', () => {
  * that revoked the grant on ANY reuse signed the user out everywhere whenever
  * one HTTP answer was lost, or two refreshes raced. Pinned here:
  *  - a replay of the token that was JUST rotated, inside the window, gets the
- *    IDENTICAL successor pair (expires_in recomputed) and revokes nothing;
- *  - past the window, or for an older token in the chain, reuse is still theft;
+ *    IDENTICAL successor tokens (expires_in and scope recomputed) and revokes
+ *    nothing;
+ *  - past the window, for an older token in the chain, or for a token rotated
+ *    before the window existed, reuse is still theft;
  *  - the concurrent loser gets the winner's pair and never revokes;
- *  - the sealed pair lives only as long as the window;
+ *  - the sealed pair is never served past the window, and is dropped at rest
+ *    on the successor's rotation, on a read past the window and after the next
+ *    rotation anywhere (real-Postgres races: oauthRefreshGraceRace.test.ts);
  *  - nothing is served to the wrong client, and an unreadable envelope refuses
  *    the caller without signing anybody else out.
  * Every timing is an injected, frozen clock — no sleeps.
@@ -1084,16 +1091,16 @@ describe('refresh-token rotation', () => {
     harness = await createTestApp({ oauthNow });
   });
 
-  async function issueFirstPair(): Promise<{
+  async function issueFirstPair(scopes: string[] = ['portfolio:read']): Promise<{
     clientId: string;
     clientSecret: string;
     first: ReturnType<typeof oauthTokenResponseSchema.parse>;
   }> {
-    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { agent, clientId, clientSecret } = await registerClient({ scopes });
     const { code } = await approveAndGetCode(agent, {
       client_id: clientId,
       redirect_uri: HTTPS_REDIRECT,
-      scope: 'portfolio:read',
+      scope: scopes.join(' '),
     });
     const res = await tokenRequest({
       grant_type: 'authorization_code',
@@ -1324,6 +1331,106 @@ describe('refresh-token rotation', () => {
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).not.toBeNull();
     await rotate(clientId, clientSecret, next.refresh_token);
     expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('treats a token rotated BEFORE the window existed (no successor recorded) as theft, even inside it', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    // Exactly the shape of a row consumed by the pre-0118 code: consumed, with
+    // neither a successor link nor an envelope.
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ successorId: null, successorEnvelope: null })
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(first.refresh_token)));
+
+    advance(5);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(400);
+    expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('advertises the CURRENT scope on a replay after the app was partly narrowed inside the window', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair([
+      'portfolio:read',
+      'feedback:write',
+    ]);
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    expect(next.scope.split(' ')).toContain('feedback:write');
+
+    // The admin narrows the app between the lost answer and its replay.
+    await harness.db
+      .update(schema.oauthClients)
+      .set({ scopes: ['portfolio:read'] })
+      .where(eq(schema.oauthClients.clientId, clientId));
+
+    advance(5);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(200);
+    const again = oauthTokenResponseSchema.parse(replay.body);
+    // The tokens are re-served verbatim; what they are advertised to carry is not.
+    expect(again.access_token).toBe(next.access_token);
+    expect(again.refresh_token).toBe(next.refresh_token);
+    expect(again.expires_in).toBe(OAUTH_ACCESS_TOKEN_TTL_SECONDS - 5);
+    expect(again.scope).toBe('portfolio:read');
+
+    // …which is exactly what a fresh refresh at the same instant advertises.
+    const fresh = await rotate(clientId, clientSecret, again.refresh_token);
+    expect(fresh.scope).toBe(again.scope);
+  });
+
+  it('clears expired envelopes anywhere on the instance after a successful rotation', async () => {
+    // Pair A rotates once and its device goes quiet: nobody ever reads A0 again
+    // and A1 never rotates, so neither the read path nor the successor's
+    // rotation would ever drop A0's envelope.
+    const a = await issueFirstPair();
+    await rotate(a.clientId, a.clientSecret, a.first.refresh_token);
+    expect((await refreshRow(a.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+
+    advance(OAUTH_REFRESH_TOKEN_GRACE_SECONDS + 1);
+    // Any other rotation on the instance now takes A0's envelope with it, and
+    // leaves its own (still inside the window) alone.
+    const b = await issueFirstPair();
+    await rotate(b.clientId, b.clientSecret, b.first.refresh_token);
+    expect((await refreshRow(a.first.refresh_token)).successorEnvelope).toBeNull();
+    expect((await refreshRow(b.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+  });
+
+  it('never fails a refresh because the post-rotation sweep failed', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const clearExpiredSuccessorEnvelopes = vi.fn(async () => {
+      throw new Error('sweep unavailable');
+    });
+    const warn = vi.fn();
+    const service = createOAuthService({
+      repo: { ...createOAuthRepository(harness.db), clearExpiredSuccessorEnvelopes },
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+      logger: { warn },
+      now: oauthNow,
+    });
+
+    const next = await service.exchangeToken({
+      body: {
+        grant_type: 'refresh_token',
+        refresh_token: first.refresh_token,
+        client_id: clientId,
+        client_secret: clientSecret,
+      },
+    });
+    expect(next.refresh_token).not.toBe(first.refresh_token);
+    expect(clearExpiredSuccessorEnvelopes).toHaveBeenCalledWith(
+      new Date(clockMs - OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000),
+      POST_ROTATION_ENVELOPE_SWEEP_BATCH,
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'oauth post-rotation grace-envelope sweep failed',
+    );
+    expect(await service.authenticateToken(next.access_token)).not.toBeNull();
   });
 
   /**

@@ -22,7 +22,9 @@ import {
  * OAuth 2.0 provider persistence (PROJECTPLAN.md §6.13, §14, V2-P12). Only
  * token/secret *hashes* are stored — the one exception is a rotated refresh
  * token's `successor_envelope`, an AES-256-GCM envelope (sealed by the service)
- * of the pair it was rotated into, kept only for the refresh grace window.
+ * of the pair it was rotated into, served only inside the refresh grace window
+ * and nulled once it has passed (on read, on the successor's rotation, after
+ * the next rotation anywhere, and by the daily sweep).
  * Single-use codes and rotating refresh tokens
  * are consumed with an atomic `UPDATE … WHERE consumed_at IS NULL RETURNING`, so
  * a concurrent double-exchange can only ever win once. Every token lookup joins
@@ -224,8 +226,9 @@ const successorTokens = alias(oauthRefreshTokens, 'successor_tokens');
  * Read one refresh token with its grant, user and successor, enforcing the
  * envelope-lifetime rule on the way: a row whose grace window has passed loses
  * its `successor_envelope` on this very read (and the caller never sees it), so
- * the re-servable pair cannot outlive the window merely because nothing else
- * touched the row. Every refresh-token read goes through here.
+ * a read past the window can never be the one that serves it. Rows nobody
+ * reads again are left to the post-rotation and daily sweeps. Every
+ * refresh-token read goes through here.
  */
 async function readRefreshToken(
   executor: Pick<Database, 'select' | 'update'>,

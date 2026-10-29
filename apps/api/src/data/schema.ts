@@ -3107,8 +3107,9 @@ export const oauthRefreshTokens = pgTable(
     successorId: uuid('successor_id'),
     // secretBox v2 envelope (BT_DATA_ENCRYPTION_KEY keyring) of the exact
     // successor token response, so a lost answer can be re-served verbatim.
-    // Lives only for the grace window: nulled when the successor itself
-    // rotates, on any read past the window, and by the daily retention sweep.
+    // Never served past the grace window; at rest it is nulled when the
+    // successor itself rotates, on any read past the window, after the next
+    // successful rotation anywhere on the instance, and by the daily sweep.
     successorEnvelope: text('successor_envelope'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

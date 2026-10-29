@@ -34,10 +34,14 @@ export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
  * Refresh-rotation grace window (seconds). For this long after a refresh token
  * is rotated, re-presenting it (a lost HTTP answer, or the losing side of two
  * concurrent refreshes) returns the IDENTICAL successor pair it was rotated
- * into — with `expires_in` recomputed — provided that successor has not itself
+ * into — `expires_in` and `scope` recomputed — provided that successor has not itself
  * been rotated yet. Reuse past the window, or of any older token in the chain,
- * is still treated as theft and revokes the grant. The server never keeps the
- * re-servable pair longer than this.
+ * is still treated as theft and revokes the grant. The re-servable pair is never
+ * SERVED past this window. At rest it is encrypted and is nulled when the
+ * successor rotates, on any read past the window, after the next successful
+ * rotation anywhere on the instance, and by the daily retention sweep — so on
+ * an instance with no refresh traffic at all it can stay (unservable) until
+ * that daily sweep.
  */
 export const OAUTH_REFRESH_TOKEN_GRACE_SECONDS = 60;
 /** Authorization-code lifetime (seconds) — very short, single-use. */

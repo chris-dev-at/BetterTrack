@@ -13,11 +13,14 @@
 --                        cascades into its predecessor.
 --   successor_envelope — a secretBox v2 envelope (AES-256-GCM under the
 --                        BT_DATA_ENCRYPTION_KEY keyring) of the exact successor
---                        token response. Never plaintext. It is nulled when the
---                        successor itself rotates (same transaction), on any
---                        read once the window has passed, and by the daily
---                        `data.retentionCleanup` sweep — it does not outlive the
---                        window it exists for.
+--                        token response. Never plaintext, and never SERVED past
+--                        the window. At rest it is nulled when the successor
+--                        itself rotates (same transaction), on any read once
+--                        the window has passed, after the next successful
+--                        rotation anywhere on the instance (best-effort), and
+--                        by the daily `data.retentionCleanup` sweep — on an
+--                        instance with no refresh traffic at all an unservable
+--                        envelope can therefore stay until that daily sweep.
 --
 -- Both columns are NULLABLE with no default and NO backfill: every row rotated
 -- before this migration simply has no successor recorded, and re-presenting

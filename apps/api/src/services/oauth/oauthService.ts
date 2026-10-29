@@ -207,6 +207,9 @@ interface PreparedTokenPair {
 
 const REFRESH_GRACE_MS = OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000;
 
+/** Envelopes one successful rotation clears, best-effort, on its way out. */
+export const POST_ROTATION_ENVELOPE_SWEEP_BATCH = 100;
+
 /**
  * The plaintext sealed into `oauth_refresh_tokens.successor_envelope`: the exact
  * successor response, plus the row ids it belongs to so an envelope can only
@@ -228,7 +231,7 @@ type RefreshGraceEnvelope = z.infer<typeof refreshGraceEnvelopeSchema>;
 
 /**
  * What the grace rule decided for a consumed refresh token.
- *  - `served`      — the identical successor pair, `expires_in` recomputed.
+ *  - `served`      — the identical successor tokens, `expires_in` + `scope` recomputed.
  *  - `reuse`       — evidence of reuse: the window has passed, the successor has
  *                    itself been rotated (an older token in the chain), or no
  *                    successor was ever recorded (rotated before this rule).
@@ -380,8 +383,8 @@ function emptyEffectiveScope(): ApiError {
  * Refresh reuse (RFC 6819 §5.2.2.3, RFC 9700 §4.14.2) has a grace window of
  * {@link OAUTH_REFRESH_TOKEN_GRACE_SECONDS}: re-presenting the token that was
  * JUST rotated — a lost response, or the losing side of two concurrent
- * refreshes — returns the identical successor pair (with `expires_in`
- * recomputed), as long as that successor has not itself been rotated and the
+ * refreshes — returns the identical successor pair (with `expires_in` and
+ * `scope` recomputed), as long as that successor has not itself been rotated and the
  * same client authenticates. Any other reuse — past the window, or of an older
  * token in the chain — is treated as theft and revokes the whole grant (one
  * grant per client+user; per-install token families are a later change). A
@@ -606,7 +609,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
    *   - the envelope opens under the keyring and names exactly this row, this
    *     successor and the successor's stored hash;
    *   - the successor's access row still exists on this grant and is unexpired.
-   * Nothing here writes; the caller decides what a non-`served` outcome costs.
+   * The answer is the identical tokens with `expires_in` and `scope` recomputed
+   * for this instant. Nothing here writes; the caller decides what a
+   * non-`served` outcome costs.
    */
   async function replayWithinGrace(
     lookup: OAuthRefreshTokenLookup,
@@ -655,6 +660,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     }
     const expiresIn = Math.floor((access.token.expiresAt.getTime() - at.getTime()) / 1000);
     if (expiresIn <= 0) return { kind: 'unavailable' };
+    // The TOKENS are re-served verbatim, but what they are advertised to carry
+    // is recomputed exactly like `expires_in`: the sealed scope intersected with
+    // what a fresh refresh would mint NOW (the grant clamped to the app's current
+    // ceiling). An admin narrowing inside the window therefore shows up in the
+    // answer, as it would on a fresh refresh; enforcement never depended on it
+    // (the bearer path clamps every request to the current ceiling).
+    const current = new Set<string>(
+      withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes)),
+    );
+    const advertised = sealed.scope.split(' ').filter((scope) => current.has(scope));
+    // Nothing left in common: never answer 200 with a scopeless grant. The
+    // emptied-ceiling case is retired before this runs (#1985); this is the
+    // residue of a grant re-consented to a disjoint set inside the window.
+    if (advertised.length === 0) return { kind: 'unavailable' };
     return {
       kind: 'served',
       response: {
@@ -662,7 +681,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         token_type: 'Bearer',
         expires_in: expiresIn,
         refresh_token: sealed.refreshToken,
-        scope: sealed.scope,
+        scope: advertised.join(' '),
       },
     };
   }
@@ -1339,6 +1358,28 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       ip,
       meta: { clientId: client.clientId },
     });
+    await sweepExpiredGraceEnvelopes(pair.issuedAt);
     return pair.response;
+  }
+
+  /**
+   * Best-effort, AFTER the rotation committed: null up to
+   * {@link POST_ROTATION_ENVELOPE_SWEEP_BATCH} envelopes anywhere on the
+   * instance whose window has passed. A sealed pair on a row nobody re-reads
+   * and whose successor never rotates (a phone that got its answer and went
+   * idle) would otherwise sit at rest until the daily sweep — and the nightly
+   * dump runs before that. Any refresh traffic now bounds that to minutes.
+   * Served by the partial live-envelope index; idempotent; a failure here is
+   * logged and never fails the refresh that already succeeded.
+   */
+  async function sweepExpiredGraceEnvelopes(rotatedAt: Date): Promise<void> {
+    try {
+      await repo.clearExpiredSuccessorEnvelopes(
+        new Date(rotatedAt.getTime() - REFRESH_GRACE_MS),
+        POST_ROTATION_ENVELOPE_SWEEP_BATCH,
+      );
+    } catch (err) {
+      logger?.warn({ err }, 'oauth post-rotation grace-envelope sweep failed');
+    }
   }
 }
