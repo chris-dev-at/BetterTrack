@@ -1,10 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
 
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 
 import type { VaultStrictEntity } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { driverError, isDriverErrorCode, UNIQUE_VIOLATION } from '../driverError';
 import {
   assetIdentities,
   assets,
@@ -14,12 +15,20 @@ import {
   portfolios,
   priceHistory,
 } from '../schema';
-import { createParanoidRehydrationSourceRepository } from './paranoidRehydrationRepository';
+import {
+  createParanoidRehydrationSourceRepository,
+  type RestoredIdKind,
+} from './paranoidRehydrationRepository';
 import { entitiesOf } from './portfolioVaultTransitionRepository';
 
 export class PortfolioVaultRestoreWriteError extends Error {
   constructor(
-    readonly code: 'COMMON_FACT_CONFLICT' | 'IMPORT_NOT_HISTORICAL' | 'STUB_LOST',
+    readonly code:
+      | 'COMMON_FACT_CONFLICT'
+      | 'IMPORT_NOT_HISTORICAL'
+      | 'STUB_LOST'
+      | 'PORTFOLIO_NAME_TAKEN'
+      | 'RESTORE_ID_TAKEN',
     message: string,
   ) {
     super(message);
@@ -49,6 +58,34 @@ function sameDecimal(left: string, right: string): boolean {
 function commonFactConflict(message: string): never {
   throw new PortfolioVaultRestoreWriteError('COMMON_FACT_CONFLICT', message);
 }
+
+const PORTFOLIO_NAME_UNIQUE = 'portfolios_user_name_unique';
+
+function portfolioNameTaken(): never {
+  throw new PortfolioVaultRestoreWriteError(
+    'PORTFOLIO_NAME_TAKEN',
+    'Another portfolio already uses this name. Rename one of them, then move this portfolio out again.',
+  );
+}
+
+/**
+ * The kinds this writer INSERTS under the document's own id. Not
+ * `customAsset` (an existing row is verified against the snapshot above and
+ * only a missing one is inserted), not `cashTag` (a snapshot that must already
+ * exist), and not the portfolio (its stub is UPDATED in place).
+ */
+const MOVE_OUT_INSERTED_ID_KINDS = [
+  'cashSource',
+  'transaction',
+  'dividend',
+  'cashMovement',
+  'standingOrder',
+  'standingOrderRun',
+  'importBatch',
+  'importRow',
+  'cashBudget',
+  'cashMovementTag',
+] as const satisfies readonly RestoredIdKind[];
 
 /**
  * Recreate the strict, already-validated source graph in dependency order.
@@ -205,6 +242,43 @@ export async function restorePortfolioVaultGraph(input: {
       );
     }
   }
+
+  // ── KEYS ONLY THE TABLE CAN SEE (#2039 review) ─────────────────────────────
+  // Both checks run after every refusal above and before the FIRST write below,
+  // inside the transaction that already holds the owner, vault and portfolio
+  // locks, so a refused move-out writes nothing. Both used to be a `23505`
+  // from a write further down, rethrown untouched as a 500.
+  //
+  // `portfolios_user_name_unique`. Move-in parks the stub under an opaque
+  // name, so the real name is FREE while the portfolio is vaulted, and an
+  // owner may legitimately reuse it in the meantime. Refused with the code
+  // create and rename already answer, never resolved by renaming either
+  // portfolio behind the owner's back. Exact match, because the index is
+  // exact. All rows count, archived included, because the index spans them.
+  const [nameHolder] = await tx
+    .select({ id: portfolios.id })
+    .from(portfolios)
+    .where(
+      and(
+        eq(portfolios.userId, userId),
+        eq(portfolios.name, portfolioEntity.data.name),
+        ne(portfolios.id, portfolioId),
+      ),
+    )
+    .limit(1);
+  if (nameHolder) portfolioNameTaken();
+
+  // Every inserted `id` primary key. Move-in purged this portfolio's own rows,
+  // so an id that exists belongs to another portfolio, typically one copied
+  // from a live sibling, which passes every document check.
+  const takenKind = await source.findTakenRestoredId(userId, entities, MOVE_OUT_INSERTED_ID_KINDS);
+  if (takenKind !== null) {
+    throw new PortfolioVaultRestoreWriteError(
+      'RESTORE_ID_TAKEN',
+      `A restored ${takenKind} id is already in use by another row.`,
+    );
+  }
+
   const restoredCustomAssets = customAssets.filter((entity) => !existingById.has(entity.id));
   await source.restoreCustomAssets(restoredCustomAssets);
 
@@ -254,6 +328,11 @@ export async function restorePortfolioVaultGraph(input: {
   }
   await stage('commonFacts');
 
+  // The name probe above cannot stop a CONCURRENT create committing the same
+  // name between the probe and this write: portfolio create does not take the
+  // owner lock this transaction holds. That one race is mapped too, by its
+  // constraint name only, so it still answers `409 PORTFOLIO_NAME_TAKEN` and
+  // never a 500. Every other driver error stays loud.
   const [updatedStub] = await tx
     .update(portfolios)
     .set({
@@ -276,7 +355,16 @@ export async function restorePortfolioVaultGraph(input: {
         eq(portfolios.vaultId, vaultId),
       ),
     )
-    .returning({ id: portfolios.id });
+    .returning({ id: portfolios.id })
+    .catch((error: unknown) => {
+      if (
+        isDriverErrorCode(error, UNIQUE_VIOLATION) &&
+        (driverError(error) as { constraint?: unknown }).constraint === PORTFOLIO_NAME_UNIQUE
+      ) {
+        portfolioNameTaken();
+      }
+      throw error;
+    });
   if (!updatedStub) {
     throw new PortfolioVaultRestoreWriteError('STUB_LOST', 'The locked portfolio stub changed.');
   }

@@ -1065,6 +1065,13 @@ const endpoints: EndpointDef[] = [
     body: R.ParanoidDisableRequest,
     status: 200,
     response: R.ParanoidDisableResponse,
+    errorResponses: {
+      400: 'The request or strict restore document is invalid. A document that breaks a restore-reachable unique key answers with that key’s own code (CASH_TAG_NAME_DUPLICATE, CASH_TAG_SYSTEM_KEY_DUPLICATE, CASH_MOVEMENT_DEDUP_DUPLICATE, CASH_MOVEMENT_TAG_DUPLICATE, CASH_BUDGET_PERIOD_DUPLICATE, CASH_BUDGET_RECURRING_DUPLICATE, CASH_RULE_TAG_DUPLICATE); any other malformed body answers VALIDATION_ERROR.',
+      409: 'A restored row id is already held by a row the document does not carry (VAULT_RESTORE_ID_TAKEN), or the account is not in a state that can be rehydrated. Nothing is written.',
+    },
+    // #2039 review: the unique-key codes existed on the contract but reached no
+    // client and no document; `check:openapi-coverage` counts routes only.
+    errorCodes: contracts.VAULT_RESTORE_DOCUMENT_ERROR_CODES,
   },
   {
     method: 'get',
@@ -5306,13 +5313,17 @@ const endpoints: EndpointDef[] = [
     response: R.PortfolioVaultMoveOutResponse,
     noStore: true,
     errorResponses: {
-      400: 'The request or strict restore graph is invalid, insolvent, or fails retained fork-provenance validation.',
+      400: 'The request or strict restore graph is invalid, insolvent, or fails retained fork-provenance validation. A document that breaks a restore-reachable unique key answers with that key’s own code (the CASH_*_DUPLICATE family).',
       404: 'The vaulted portfolio or vault is absent or not owned.',
-      409: 'The portfolio is not vaulted, media are not verified, or another transition/history write conflicts.',
+      409: 'The portfolio is not vaulted, media are not verified, or another transition/history write conflicts; the owner reused this portfolio’s name while it was vaulted (PORTFOLIO_NAME_TAKEN — rename one of them); or a restored row id is already held by another row (VAULT_RESTORE_ID_TAKEN). The last two are refused before any restore write.',
       412: 'The encrypted document set changed or the graph-bound phrase-possession proof is invalid.',
       413: 'The decrypted restore document exceeds the bounded portfolio restore payload ceiling.',
       429: 'Step-up verification or the dedicated move-out transition throttle was exceeded.',
     },
+    errorCodes: [
+      ...contracts.VAULT_RESTORE_DOCUMENT_ERROR_CODES,
+      contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.portfolioNameTaken,
+    ],
   },
 
   // Legacy account-singleton paranoid vault — kept unchanged through E9.

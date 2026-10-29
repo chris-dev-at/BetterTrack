@@ -16,6 +16,7 @@ import {
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
   VAULT_MIRROR_PROVENANCE_ENTITY_KINDS,
+  VAULT_RESTORE_ID_TAKEN,
   vaultStrictDocumentV1Schema,
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN, floorCents } from '@bettertrack/domain/cashLedger';
@@ -33,6 +34,7 @@ import {
   createParanoidRehydrationSourceRepository,
   type ParanoidForkProvenanceRepository,
   type ParanoidRehydrationSourceRepository,
+  type RestoredIdKind,
 } from '../../data/repositories/paranoidRehydrationRepository';
 import {
   createParanoidRehydrationTransactionRepository,
@@ -40,6 +42,7 @@ import {
 } from '../../data/repositories/paranoidVaultRepository';
 import { createCashRuleRepository } from '../../data/repositories/cashRuleRepository';
 import { createCashTagRepository } from '../../data/repositories/cashTagRepository';
+import { conflict } from '../../errors';
 import { createCashTagService } from '../cash/cashTagService';
 import { createExpenseBudgetService } from '../expenses/budgetService';
 import { createExpenseService } from '../expenses/expenseService';
@@ -527,7 +530,7 @@ const RESTORED_ID_KINDS = [
   'cashBudget',
   'cashRule',
   'cashRuleTag',
-] as const satisfies readonly Entity['kind'][];
+] as const satisfies readonly RestoredIdKind[];
 
 function validateUniqueRestoredIds(entities: readonly Entity[]): void {
   for (const kind of RESTORED_ID_KINDS) {
@@ -2712,6 +2715,12 @@ export async function validateParanoidRestoreDocument(
   // Account disable must retain its historical "one active portfolio" guard.
   // A per-portfolio move-out may legitimately restore an archived portfolio.
   validateGraph(input.userId, entities, input.portfolioId === undefined);
+  // The restore-reachable unique keys (#1973) were proved by the strict parse
+  // above: `vaultStrictDocumentV1Schema` runs `findRestoredUniqueKeyViolation`
+  // over these same live rows. The HTTP validator has already answered such a
+  // document with the key's own code before any service runs. A second walk
+  // here could never fire; the one that stood here was removed as dead code
+  // (#2039 review).
 
   // Authentication precedes option-B solvency: only a movement proved against
   // the retained append-only chain may carry the replica-force waiver.
@@ -2824,6 +2833,20 @@ export function createParanoidRehydrationService(
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await ensureNoExistingRestorableRows(sourceRows, userId);
+        // Primary keys against the TABLE (#2039 review): an id the document
+        // repeats is refused by `validateUniqueRestoredIds`, but an id an
+        // EXISTING row holds is invisible to any document check. Under the
+        // account lock and before the first insert, so the refusal writes
+        // nothing; `409` because the document is well-formed and conflicts
+        // with server state. This enable purged the account, so any such row
+        // belongs to someone else (a global catalog asset, another account).
+        const takenKind = await sourceRows.findTakenRestoredId(userId, entities, RESTORED_ID_KINDS);
+        if (takenKind !== null) {
+          throw conflict(
+            `A restored ${takenKind} id is already in use by another row.`,
+            VAULT_RESTORE_ID_TAKEN,
+          );
+        }
         const retainedIdentityIds = await sourceRows.listRetainedCustomAssetIdentityIds(userId);
         const retireIdentityIds = discarding
           ? retainedIdentityIds
