@@ -138,6 +138,37 @@ interface RequestOptions {
 }
 
 /**
+ * The request-option fragment EVERY §15 step-up-gated call spreads in — vault
+ * deletion, portfolio move-in, portfolio move-out, the acknowledged Drive
+ * disconnect, and the locked-vault discard (`docs/paranoid-design.md` §15/§17).
+ *
+ * All five carry an in-body credential (`{ password? | code? | recoveryCode? }`)
+ * that the server verifies inside the same account lock as the transition and
+ * refuses GENERICALLY — it never says which factor was wrong, and a wrong one
+ * comes back as `401 INVALID_CREDENTIALS`. Under the app-wide policy that 401 is
+ * indistinguishable from an expired session, so a typo in a confirmation dialog
+ * used to tear the session down and bounce the owner to the login screen with
+ * their half-finished ceremony gone (#2000). It is an in-form error, exactly as
+ * on `/auth/change-password`, so these calls opt out of the policy.
+ *
+ * ONE definition on purpose. Five copies of `suppressAuthRedirect: true` is five
+ * chances for the next gated operation to be added without it — which is
+ * precisely how move-in, move-out and vault deletion were missed when #1632
+ * fixed the disconnect. A new §15 call spreads this constant or it is wrong.
+ *
+ * The trade-off, accepted deliberately: a session that has GENUINELY expired
+ * while a gated dialog was open now shows that dialog's generic step-up error
+ * instead of bouncing. Nothing is lost — the credential is refused either way,
+ * and the very next non-suppressed request (every surrounding read: the vault
+ * list, the portfolio roster, the endpoint-state poll) still bounces to login.
+ * Silently destroying a destructive ceremony on a typo is the worse failure.
+ */
+export const STEP_UP_GATED_REQUEST = { suppressAuthRedirect: true } as const satisfies Pick<
+  RequestOptions,
+  'suppressAuthRedirect'
+>;
+
+/**
  * The single place for app-wide auth/redirect/toast policy (PROJECTPLAN.md §7.1, §7.4).
  * A mounted auth layer registers handlers; the request chokepoint invokes them
  * when a response demands a session transition or a user-visible notification:
