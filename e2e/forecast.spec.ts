@@ -74,7 +74,9 @@ async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }
     },
   );
 
-  await page.route('**/api/v1/assets/portfolio/dividend-projection', async (route) => {
+  // Since #1693 the Forecast reads the projection scoped to the shown portfolio
+  // (`?portfolioId=`); a query-less glob never matches that URL.
+  await page.route(/\/api\/v1\/assets\/portfolio\/dividend-projection(?:\?.*)?$/, async (route) => {
     dividendProjectionRequests += 1;
     await route.fulfill({
       json: {
@@ -82,6 +84,10 @@ async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }
         currency: 'EUR',
         monthlyTotalBase: 0,
         yearlyTotalBase: 0,
+        // Required by the strict `projectedDividendIncomeResponseSchema`
+        // (packages/contracts/src/marketIntel.ts); without it the SPA's parse
+        // throws and the factor silently reads as "no market intel".
+        basis: null,
         holdings: [],
       },
     });

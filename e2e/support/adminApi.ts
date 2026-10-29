@@ -462,9 +462,11 @@ export async function setChatBanByUsername(
   const body = (await list.json()) as { users: Array<{ id: string; username: string }> };
   const target = body.users.find((u) => u.username === username);
   if (!target) throw new Error(`Admin user not found for chat ban: ${username}`);
+  // A ban is a moderating write and must carry a reason since #1938 (ADMIN-W5,
+  // `updateUserRequestSchema`); the reversal stays reason-optional.
   const res = await request.patch(`${API_BASE_URL}/api/v1/admin/users/${target.id}`, {
     headers: CSRF_HEADERS,
-    data: { chatBanned: banned },
+    data: banned ? { chatBanned: true, reason: 'E2E chat-ban fixture' } : { chatBanned: false },
   });
   if (!res.ok()) {
     throw new Error(`Setting chat ban for ${username} failed: ${res.status()} ${await res.text()}`);
