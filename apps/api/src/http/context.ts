@@ -730,6 +730,12 @@ export interface BuildContextDeps {
   aiFetch?: typeof fetch;
   /** Test seam for save-time OAuth logo fetching; production uses guarded HTTPS. */
   oauthLogoFetcher?: OAuthLogoFetcher;
+  /**
+   * Test seam: the OAuth service's clock — token/code TTLs and the refresh
+   * grace window derive from it, so they are provable without wall-clock
+   * waits. Defaults to the real time.
+   */
+  oauthNow?: () => Date;
 }
 
 /** Composition root: repositories → services → context. */
@@ -866,6 +872,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     events,
     logger,
     logoFetcher: deps.oauthLogoFetcher,
+    // Seals a rotated refresh token's successor pair for the grace window.
+    recordEncryption: config.recordEncryption,
+    now: deps.oauthNow,
   });
   const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 

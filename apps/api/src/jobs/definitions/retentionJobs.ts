@@ -1,6 +1,9 @@
+import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
+
 import type { AuditRepository } from '../../data/repositories/auditRepository';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
+import type { OAuthRepository } from '../../data/repositories/oauthRepository';
 import type { ParanoidVaultRepository } from '../../data/repositories/paranoidVaultRepository';
 import type { ProblemRepository } from '../../data/repositories/problemRepository';
 import type { UsageAnalyticsRepository } from '../../data/repositories/usageAnalyticsRepository';
@@ -70,6 +73,14 @@ export interface DataRetentionCleanupJobDeps {
    * table with no sweep, growing per notification × outbound channel forever.
    */
   digestQueue: Pick<NotificationDigestRepository, 'deleteDeliveredOlderThan'>;
+  /**
+   * Re-servable OAuth successor pairs past the refresh grace window. Their
+   * lifetime is enforced on read and when the successor rotates; this pass
+   * catches the rows nobody touches again, so a sealed pair is never kept
+   * longer than one daily run past its window. It only nulls the envelope —
+   * the token rows (and the reuse detection they carry) are kept.
+   */
+  oauthGraceEnvelopes: Pick<OAuthRepository, 'clearExpiredSuccessorEnvelopes'>;
   /** Batched account lookup for the remembered-device sweep. */
   users: Pick<UserRepository, 'listByIds'>;
   /** Whole days; `0` explicitly means retain audit rows forever. */
@@ -164,6 +175,14 @@ export function createDataRetentionCleanupJob(
         batchSize,
         maxRowsPerRun,
       );
+      // Idempotent by construction: each batch clears envelopes that then no
+      // longer match, so a re-run (or a run racing a refresh) converges.
+      const oauthGraceEnvelopes = await deleteInBatches(
+        deps.oauthGraceEnvelopes.clearExpiredSuccessorEnvelopes.bind(deps.oauthGraceEnvelopes),
+        new Date(runAt - OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000),
+        batchSize,
+        maxRowsPerRun,
+      );
       const devices = await sweepLegacyRememberedDeviceBindings(ctx.redis, deps.users);
 
       if (
@@ -173,7 +192,8 @@ export function createDataRetentionCleanupJob(
         vaultCandidates.deleted > 0 ||
         problems.deleted > 0 ||
         usageEvents.deleted > 0 ||
-        digestQueue.deleted > 0
+        digestQueue.deleted > 0 ||
+        oauthGraceEnvelopes.deleted > 0
       ) {
         ctx.logger.info(
           {
@@ -185,6 +205,7 @@ export function createDataRetentionCleanupJob(
             problemsPruned: problems.deleted,
             usageEventsPruned: usageEvents.deleted,
             digestQueuePruned: digestQueue.deleted,
+            oauthGraceEnvelopesCleared: oauthGraceEnvelopes.deleted,
             // A capped run leaves eligible rows behind on purpose; the next
             // scheduled run continues, so this must be visible in the log.
             deferredToNextRun:
@@ -194,7 +215,8 @@ export function createDataRetentionCleanupJob(
               vaultCandidates.capped ||
               problems.capped ||
               usageEvents.capped ||
-              digestQueue.capped,
+              digestQueue.capped ||
+              oauthGraceEnvelopes.capped,
           },
           'expired audit, email-log, problem, usage-event and delivered digest-queue rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
         );
@@ -215,6 +237,7 @@ export function createDataRetentionCleanupJob(
         problemsPruned: problems.deleted,
         usageEventsPruned: usageEvents.deleted,
         digestQueuePruned: digestQueue.deleted,
+        oauthGraceEnvelopesCleared: oauthGraceEnvelopes.deleted,
         legacyDeviceBindingsRetired: devices.legacy,
         deferredToNextRun:
           audit.capped ||
@@ -223,7 +246,8 @@ export function createDataRetentionCleanupJob(
           vaultCandidates.capped ||
           problems.capped ||
           usageEvents.capped ||
-          digestQueue.capped
+          digestQueue.capped ||
+          oauthGraceEnvelopes.capped
             ? 1
             : 0,
       };

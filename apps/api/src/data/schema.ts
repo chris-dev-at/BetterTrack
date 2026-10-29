@@ -3100,11 +3100,35 @@ export const oauthRefreshTokens = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     // Rotation: stamped when this token is exchanged for a fresh pair.
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    // Refresh-rotation grace (OAUTH_REFRESH_TOKEN_GRACE_SECONDS): the row this
+    // token was rotated INTO, set in the rotating transaction. Kept after the
+    // window as a plain lineage link (it carries no secret); NULL on every row
+    // that was never rotated and on rows rotated before the grace window existed.
+    successorId: uuid('successor_id'),
+    // secretBox v2 envelope (BT_DATA_ENCRYPTION_KEY keyring) of the exact
+    // successor token response, so a lost answer can be re-served verbatim.
+    // Lives only for the grace window: nulled when the successor itself
+    // rotates, on any read past the window, and by the daily retention sweep.
+    successorEnvelope: text('successor_envelope'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('oauth_refresh_tokens_token_hash_unique').on(t.tokenHash),
     index('oauth_refresh_tokens_grant_id_idx').on(t.grantId),
+    // Covers the FK below and the "null my predecessor's envelope" write that
+    // runs on every rotation (`WHERE successor_id = <rotated token>`).
+    index('oauth_refresh_tokens_successor_id_idx').on(t.successorId),
+    // PARTIAL: only rows still holding an envelope — a handful at any moment —
+    // so the retention sweep's stale-envelope walk is an index scan whatever
+    // size the (never-pruned) token table grows to.
+    index('oauth_refresh_tokens_live_envelope_idx')
+      .on(t.consumedAt)
+      .where(sql`${t.successorEnvelope} is not null`),
+    foreignKey({
+      name: 'oauth_refresh_tokens_successor_id_fk',
+      columns: [t.successorId],
+      foreignColumns: [t.id],
+    }).onDelete('set null'),
   ],
 );
 

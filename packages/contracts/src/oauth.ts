@@ -30,6 +30,16 @@ export const OAUTH_REFRESH_TOKEN_PREFIX = 'btr_';
 export const OAUTH_ACCESS_TOKEN_TTL_SECONDS = 3600;
 /** Refresh-token lifetime (seconds) — 30 days, rotated on every use. */
 export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
+/**
+ * Refresh-rotation grace window (seconds). For this long after a refresh token
+ * is rotated, re-presenting it (a lost HTTP answer, or the losing side of two
+ * concurrent refreshes) returns the IDENTICAL successor pair it was rotated
+ * into — with `expires_in` recomputed — provided that successor has not itself
+ * been rotated yet. Reuse past the window, or of any older token in the chain,
+ * is still treated as theft and revokes the grant. The server never keeps the
+ * re-servable pair longer than this.
+ */
+export const OAUTH_REFRESH_TOKEN_GRACE_SECONDS = 60;
 /** Authorization-code lifetime (seconds) — very short, single-use. */
 export const OAUTH_AUTH_CODE_TTL_SECONDS = 60;
 
