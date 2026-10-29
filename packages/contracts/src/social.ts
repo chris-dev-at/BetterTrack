@@ -647,6 +647,22 @@ export const FRIEND_GROUP_MEMBERS_MAX = 200;
 export const FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE = 'FRIEND_GROUP_MEMBER_LIMIT_REACHED';
 
 /**
+ * The typed refusal `PUT /social/audience/:kind/:subjectId` answers with when a
+ * `group` write names no circle the caller currently owns — deleted since the
+ * picker's cached list was read, or never theirs (§8 error envelope, §6.9). The
+ * two cases deliberately share ONE code: naming a stranger's circle must never
+ * confirm that it exists.
+ *
+ * Shared, like the roster ceiling above, because the SPA branches on it: it is
+ * the one audience refusal the owner can repair from inside the dialog (drop
+ * the dead selection, refresh the stale list, re-pick), so it must not arrive as
+ * the generic "could not update sharing" (#1899). Defined here and ONLY here —
+ * a server rename that skips this constant fails the contracts pin instead of
+ * silently reducing the picker to the generic retry loop (#1978).
+ */
+export const GROUP_AUDIENCE_INVALID_ERROR_CODE = 'GROUP_AUDIENCE_INVALID';
+
+/**
  * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
  * one user, its members are a subset of the owner's accepted friends, and it is
  * private to the owner — nobody else can see or use it. `members` is the current
