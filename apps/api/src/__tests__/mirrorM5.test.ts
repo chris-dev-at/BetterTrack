@@ -1,15 +1,18 @@
 import request from 'supertest';
 import type { Application } from 'express';
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   MIRROR_CONFLICT,
   MIRROR_STRIPPED_ATTRIBUTION_USERNAME,
   mirrorRowInfoSchema,
+  strippedMirrorAttribution,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import type { MirrorOverlayViewer } from '../services/mirror';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -264,7 +267,9 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
   it('a kicked member keeps "added by …" on all four kinds, and the chip survives the HTTP read', async () => {
     const { alice, bob, aPid, bPid, chain } = await chainWithOneOfEach();
 
-    const beforeKick = attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid));
+    const beforeKick = attributionOf(
+      await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: bob.id }),
+    );
     // Non-empty on every kind, or the assertion below is vacuous.
     expect(beforeKick.transactions.length).toBeGreaterThan(0);
     expect(beforeKick.dividends.length).toBeGreaterThan(0);
@@ -275,13 +280,17 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
 
     // The whole pre-fork history is attributed exactly as it was, localId for
     // localId — Alice's rows still say Alice, Bob's still say Bob.
-    const afterKick = attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid));
+    const afterKick = attributionOf(
+      await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: bob.id }),
+    );
     expect(afterKick).toEqual(beforeKick);
     expect(afterKick.transactions.some((row) => row.endsWith(':aliceM5'))).toBe(true);
     expect(afterKick.cashSources.some((row) => row.endsWith(':bobM5'))).toBe(true);
 
     // Identical on the branch that stayed: the fork is not a degraded copy.
-    const onTheChain = attributionOf(await harness.ctx.mirror.overlayForPortfolio(aPid));
+    const onTheChain = attributionOf(
+      await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: alice.id }),
+    );
     const kinds = ['transactions', 'dividends', 'cashMovements'] as const;
     for (const kind of kinds) {
       const forkNames = afterKick[kind].map((row) => row.split(':')[1]).sort();
@@ -314,7 +323,7 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
     const { alice, bob, asset, aPid, bPid, chain } = await chainWithOneOfEach();
     await harness.ctx.mirror.leaveChain(bob.id, chain.id);
 
-    const fork = await harness.ctx.mirror.overlayForPortfolio(bPid);
+    const fork = await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: bob.id });
     const forkRows = [...fork.transactions.values()];
     expect(forkRows.length).toBeGreaterThan(0);
     for (const info of forkRows) {
@@ -328,7 +337,11 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
     }
 
     // The still-active copy is unaffected — it keeps the live version.
-    const active = [...(await harness.ctx.mirror.overlayForPortfolio(aPid)).transactions.values()];
+    const active = [
+      ...(
+        await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: alice.id })
+      ).transactions.values(),
+    ];
     expect(active.every((info) => info.version > 0)).toBe(true);
 
     // No cross-fork leakage in either direction after the severance.
@@ -344,9 +357,9 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
       },
     ]);
     await harness.ctx.mirror.replicateChain(chain.id);
-    expect(attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid))).toEqual(
-      forkKeysBefore,
-    );
+    expect(
+      attributionOf(await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: bob.id })),
+    ).toEqual(forkKeysBefore);
 
     // Bob's own post-fork write is a plain local row: his fork is an ordinary
     // portfolio again, so it carries no chain attribution at all.
@@ -360,11 +373,11 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
         executedAt: '2026-03-02T10:00:00.000Z',
       },
     ]);
-    const afterOwnWrite = await harness.ctx.mirror.overlayForPortfolio(bPid);
+    const afterOwnWrite = await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: bob.id });
     expect(afterOwnWrite.transactions.has(bobTx!.id)).toBe(false);
     // …and it never reaches the chain's copy.
     await harness.ctx.mirror.replicateChain(chain.id);
-    const aliceAfter = await harness.ctx.mirror.overlayForPortfolio(aPid);
+    const aliceAfter = await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: alice.id });
     expect([...aliceAfter.transactions.keys()]).not.toContain(bobTx!.id);
   });
 
@@ -374,7 +387,7 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
       username: 'strangerM5',
     });
     const pid = await harness.ctx.portfolio.getDefaultPortfolioId(stranger.id);
-    const overlay = await harness.ctx.mirror.overlayForPortfolio(pid);
+    const overlay = await harness.ctx.mirror.overlayForPortfolio(pid, { viewerId: stranger.id });
     expect(attributionOf(overlay)).toEqual({
       transactions: [],
       dividends: [],
@@ -384,32 +397,196 @@ describe('mirrorchain M5 — a fork keeps its attribution (#1612, design §6)', 
   });
 });
 
-describe('mirrorchain M5 — attribution stripping (design §10)', () => {
-  it('overlayForPortfolio({ stripAttribution }) replaces every actor with the generic chip', async () => {
-    const { alice, aPid, chain, asset } = await setupChain();
+describe('mirrorchain M5 — attribution is derived from the VIEWER (design §10, #2033)', () => {
+  /**
+   * §10: "attribution renders only to viewers who are themselves active members
+   * of the chain", and §6/#1612: the holder of a copy — fork included — is never
+   * the third party it guards against. `overlayForPortfolio` derives that from
+   * the viewer + the roster; it used to be an opt-in `stripAttribution` boolean
+   * that defaulted to FULL, so the first shared-ledger caller that forgot it
+   * would have handed a third party every co-member's name and id.
+   *
+   * Every stripped assertion is paired with a negative-space scan of the whole
+   * serialized overlay for each identity term it must NOT carry.
+   */
+  async function chainWithEveryKind() {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    // A live icon, so "a stripped row carries no icon" is not vacuously true.
+    await harness.db
+      .update(schema.users)
+      .set({ profileIcon: 'fox' })
+      .where(eq(schema.users.id, alice.id));
     await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
       {
         assetId: asset.id,
         side: 'buy',
-        quantity: 1,
-        price: 10,
+        quantity: 4,
+        price: 20,
         fee: 0,
-        executedAt: new Date().toISOString(),
+        executedAt: '2026-02-01T10:00:00.000Z',
       },
     ]);
-    await harness.ctx.mirror.replicateChain(chain.id);
-    const stripped = await harness.ctx.mirror.overlayForPortfolio(aPid, {
-      stripAttribution: true,
+    await harness.ctx.mirror.submitDividendRecord(alice.id, aPid, {
+      assetId: asset.id,
+      grossAmountEur: 12,
     });
-    for (const info of stripped.transactions.values()) {
-      expect(info.addedBy.userId).toBeNull();
-      expect(info.addedBy.username).toBe(MIRROR_STRIPPED_ATTRIBUTION_USERNAME);
-      expect(info.addedBy.profileIcon).toBeNull();
+    await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 250 });
+    await harness.ctx.mirror.submitSourceCreate(bob.id, bPid, {
+      name: 'Broker cash',
+      type: 'bank',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+    // The third party: a real user who is on no chain at all.
+    const carol = await harness.seedUser({
+      email: 'carol-m5@bettertrack.test',
+      username: 'carolM5',
+    });
+    return { alice, bob, carol, aPid, bPid, chain };
+  }
+
+  type Overlay = Awaited<ReturnType<TestHarness['ctx']['mirror']['overlayForPortfolio']>>;
+
+  /** Stripped on all four kinds, and no identity term anywhere in the payload. */
+  function expectStripped(
+    overlay: Overlay,
+    members: ReadonlyArray<{ id: string; username: string }>,
+  ) {
+    const kinds = ['transactions', 'dividends', 'cashMovements', 'cashSources'] as const;
+    for (const kind of kinds) {
+      // Non-empty on every kind, or the loop below is vacuous.
+      expect(overlay[kind].size).toBeGreaterThan(0);
+      for (const info of overlay[kind].values()) {
+        expect(info.addedBy).toEqual(strippedMirrorAttribution);
+      }
     }
-    // Sanity: without the flag the actor is preserved.
-    const kept = await harness.ctx.mirror.overlayForPortfolio(aPid);
-    for (const info of kept.transactions.values()) {
-      expect(info.addedBy.username).toBe('aliceM5');
+    const serialized = JSON.stringify(kinds.map((kind) => [...overlay[kind].values()]));
+    for (const member of members) {
+      expect(serialized).not.toContain(member.id);
+      expect(serialized).not.toContain(member.username);
+    }
+    expect(serialized).not.toContain('fox');
+  }
+
+  it('KEYSTONE: a viewer who is not an active member gets stripped rows by construction', async () => {
+    const { alice, bob, carol, aPid } = await chainWithEveryKind();
+    const overlay = await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: carol.id });
+    expectStripped(overlay, [alice, bob]);
+  });
+
+  it('no caller-supplied flag widens it — the old opt-in and bypass-looking keys are inert', async () => {
+    const { alice, bob, carol, aPid } = await chainWithEveryKind();
+    const typed = await harness.ctx.mirror.overlayForPortfolio(aPid, {
+      viewerId: carol.id,
+      // @ts-expect-error — §10 entitlement is derived from the viewer, never requested (#2033).
+      stripAttribution: false,
+    });
+    expectStripped(typed, [alice, bob]);
+    // An untyped caller smuggling keys past the compiler gets the same answer.
+    const smuggled = await harness.ctx.mirror.overlayForPortfolio(aPid, {
+      viewerId: carol.id,
+      stripAttribution: false,
+      ownerRead: true,
+      full: true,
+    } as unknown as MirrorOverlayViewer);
+    expectStripped(smuggled, [alice, bob]);
+  });
+
+  it('an anonymous reader and a malformed call fail CLOSED (stripped), not open or crashing', async () => {
+    const { alice, bob, aPid } = await chainWithEveryKind();
+    expectStripped(await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: null }), [
+      alice,
+      bob,
+    ]);
+    // The paranoid service binding forwards raw args; a caller that drops the
+    // viewer must land on the restrictive side.
+    expectStripped(await harness.ctx.mirror.overlayForPortfolio(aPid, undefined as never), [
+      alice,
+      bob,
+    ]);
+    expectStripped(
+      await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: '' } as MirrorOverlayViewer),
+      [alice, bob],
+    );
+  });
+
+  it('an ACTIVE co-member viewing a copy that is not theirs reads full attribution (the roster grant)', async () => {
+    const { alice, bob, aPid } = await chainWithEveryKind();
+    const overlay = await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: bob.id });
+    const aliceTx = [...overlay.transactions.values()];
+    expect(aliceTx.length).toBeGreaterThan(0);
+    for (const info of aliceTx) {
+      expect(info.addedBy).toEqual({ userId: alice.id, username: 'aliceM5', profileIcon: 'fox' });
+    }
+    expect(
+      [...overlay.cashSources.values()].some(
+        (info) => info.addedBy.userId === bob.id && info.addedBy.username === 'bobM5',
+      ),
+    ).toBe(true);
+  });
+
+  it('a kicked member loses the grant on the chain copy but keeps it on their own fork (§10 vs §6)', async () => {
+    const { alice, bob, carol, aPid, bPid, chain } = await chainWithEveryKind();
+    await harness.ctx.mirror.removeMember(alice.id, chain.id, bob.id);
+
+    // Off the roster → a third party to Alice's still-active copy.
+    expectStripped(await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: bob.id }), [
+      alice,
+      bob,
+    ]);
+    // …but the holder of the fork keeps the frozen attribution on their own book.
+    const fork = await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: bob.id });
+    const forkTx = [...fork.transactions.values()];
+    expect(forkTx.length).toBeGreaterThan(0);
+    for (const info of forkTx) {
+      expect(info.addedBy).toEqual({ userId: alice.id, username: 'aliceM5', profileIcon: null });
+    }
+    // A non-member reading the fork (a shared fork) is still a third party.
+    expectStripped(await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: carol.id }), [
+      alice,
+      bob,
+    ]);
+  });
+
+  it('a copy whose membership lost its user (SET NULL) never matches an anonymous reader', async () => {
+    // Synthetic: account deletion normally takes the copy with it. This pins the
+    // structural trap itself — `membership.userId === viewerId` with both null
+    // must never read as "the viewer holds this copy".
+    const { alice, bob, bPid, chain } = await chainWithEveryKind();
+    await harness.ctx.mirror.removeMember(alice.id, chain.id, bob.id);
+    await harness.db
+      .update(schema.mirrorChainMembers)
+      .set({ userId: null })
+      .where(eq(schema.mirrorChainMembers.portfolioId, bPid));
+    expectStripped(await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: null }), [
+      alice,
+      bob,
+    ]);
+  });
+
+  it('the four owner-scoped ledger routes still hand the holder full attribution; a non-member gets 404', async () => {
+    const { alice, carol, aPid } = await chainWithEveryKind();
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
+    type Row = { mirror?: { addedBy: { userId: string | null; username: string } } };
+    const routes: Array<[string, (body: Record<string, Row[]>) => Row[]]> = [
+      ['transactions', (b) => b.items!],
+      ['cash', (b) => [...b.movements!, ...b.sources!]],
+      ['cash/sources', (b) => b.sources!],
+      ['dividends', (b) => b.dividends!],
+    ];
+    for (const [path, rowsOf] of routes) {
+      const res = await aliceAgent.get(`/api/v1/portfolios/${aPid}/${path}`).set(...XRW);
+      expect(res.status).toBe(200);
+      const attributed = rowsOf(res.body).filter((row) => row.mirror);
+      expect(attributed.length, path).toBeGreaterThan(0);
+      for (const row of attributed) {
+        expect(row.mirror!.addedBy.userId, path).not.toBeNull();
+        expect(['aliceM5', 'bobM5'], path).toContain(row.mirror!.addedBy.username);
+      }
+      // Ownership scoping, not the strip, is what keeps Carol off these routes.
+      const foreign = await carolAgent.get(`/api/v1/portfolios/${aPid}/${path}`).set(...XRW);
+      expect(foreign.status, path).toBe(404);
+      expect(JSON.stringify(foreign.body), path).not.toContain('aliceM5');
     }
   });
 });
@@ -469,7 +646,7 @@ describe('mirrorchain M5 — a deleted author is not a stripped one (#2009, §6/
     expect((await repo.getChain(chain.id))!.status).toBe('active');
     expect((await repo.listActiveMembers(chain.id)).map((m) => m.userId)).toEqual([alice.id]);
 
-    const overlay = await harness.ctx.mirror.overlayForPortfolio(aPid);
+    const overlay = await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: alice.id });
     const bobRows = [...overlay.cashSources.values()].filter(
       (info) => info.addedBy.username === deletedUsername,
     );
@@ -522,9 +699,7 @@ describe('mirrorchain M5 — a deleted author is not a stripped one (#2009, §6/
     expect(activeMemberIds).not.toContain(carol.id);
     expect(activeMemberIds).toContain(alice.id);
 
-    const stripped = await harness.ctx.mirror.overlayForPortfolio(aPid, {
-      stripAttribution: true,
-    });
+    const stripped = await harness.ctx.mirror.overlayForPortfolio(aPid, { viewerId: carol.id });
     const all = [
       ...stripped.transactions.values(),
       ...stripped.dividends.values(),

@@ -509,7 +509,9 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
         tag,
         includeSourceTags,
       });
-      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId, {
+        viewerId: req.authUser!.id,
+      });
       const movements = cash.movements.map((m) => {
         const mirror = overlay.cashMovements.get(m.id);
         return mirror ? { ...m, mirror } : m;
@@ -642,7 +644,9 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
       const list = await ctx.portfolio.listCashSources(req.authUser!.id, portfolioId, {
         includeArchived,
       });
-      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId, {
+        viewerId: req.authUser!.id,
+      });
       const sources = list.sources.map((s) => {
         const mirror = overlay.cashSources.get(s.id);
         return mirror ? { ...s, mirror } : s;
@@ -790,7 +794,9 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const { source } = req.valid?.query as DividendListQuery;
       const list = await ctx.tax.listDividends(req.authUser!.id, portfolioId, { source });
-      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId, {
+        viewerId: req.authUser!.id,
+      });
       const dividends = list.dividends.map((d) => {
         const mirror = overlay.dividends.get(d.id);
         return mirror ? { ...d, mirror } : d;
@@ -925,7 +931,9 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
         order,
         includeSourceTags,
       });
-      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId, {
+        viewerId: req.authUser!.id,
+      });
       const items = page.items.map((tx) => {
         const mirror = overlay.transactions.get(tx.id);
         return mirror ? { ...tx, mirror } : tx;
