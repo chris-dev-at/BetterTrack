@@ -81,9 +81,12 @@ export async function pauseStandingOrder(id: string): Promise<StandingOrder> {
 }
 
 /**
- * `POST /standing-orders/:id/resume` — resume with no back-fill: a period whose
- * anchor day fell before the resume day is never booked; the next booking is
- * the first anchor on or after the resume day (the server route is canonical).
+ * `POST /standing-orders/:id/resume` — resume a paused order with no back-fill:
+ * a period whose anchor day fell before the resume day (Europe/Vienna) is never
+ * booked; the next booking is the first anchor on or after the resume day — an
+ * anchor on the resume day still books at the next 07:00 scan; a daily order
+ * resumed after that day's scan first books the following day. Resuming an
+ * order that is already active changes nothing. (The server route is canonical.)
  */
 export async function resumeStandingOrder(id: string): Promise<StandingOrder> {
   const data = await apiRequest<unknown>(`/standing-orders/${encodeURIComponent(id)}/resume`, {

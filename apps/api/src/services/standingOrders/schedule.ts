@@ -218,6 +218,12 @@ export function newestElapsedOccurrence(spec: ScheduleSpec, today: string): stri
  * its anchor day; otherwise the next occurrence strictly after today, capped
  * by the end date (null once the schedule is exhausted). `paused` orders never
  * have a next run.
+ *
+ * `today` therefore means "owed now", not "books today": the only scan is
+ * 07:00 Europe/Vienna, so once today's scan has passed (it deferred the
+ * period, or the order was resumed or created after it) the next attempt is
+ * tomorrow's 07:00 scan — and for a daily order that scan books tomorrow's own
+ * period instead. This function sees calendar days only, never the hour.
  */
 export function nextRunDate(
   spec: ScheduleSpec,

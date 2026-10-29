@@ -359,18 +359,19 @@ describe('standing orders — pause / resume', () => {
     expect((await run('2026-04-03T12:00:00Z')).booked).toBe(0);
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
 
-    // Resumed on Apr 4, before that day's scan. Resume reads the injected clock
-    // (#1116): which periods elapsed while paused depends on the resume day.
-    portfolioNow = Date.parse('2026-04-04T06:00:00Z');
+    // Resumed on Apr 4 at 06:00 Vienna (CEST), before that day's 07:00 scan.
+    // Resume reads the injected clock (#1116): which periods elapsed while
+    // paused depends on the resume day.
+    portfolioNow = Date.parse('2026-04-04T04:00:00Z');
     expect((await agent.post(`/api/v1/standing-orders/${id}/resume`).set(...XRW)).status).toBe(200);
-    expect((await run('2026-04-04T12:00:00Z')).booked).toBe(1);
+    expect((await run('2026-04-04T05:00:00Z')).booked).toBe(1);
 
     // Exactly the current period was booked on resume — never Apr 2 / Apr 3.
     expect(
       (await cashRows(pid, SOURCE_TAG_STANDING_ORDER))
         .map((row) => row.executedAt.toISOString())
         .sort(),
-    ).toEqual(['2026-04-01T12:00:00.000Z', '2026-04-04T12:00:00.000Z']);
+    ).toEqual(['2026-04-01T12:00:00.000Z', '2026-04-04T05:00:00.000Z']);
     // Apr 3 — the newest day that elapsed while paused — carries the same
     // no-money claim an archive restore leaves, so no later scan can reach it.
     const keys = (await runPeriodKeys()).map((r) => r.key).sort();
@@ -468,6 +469,63 @@ describe('standing orders — pause / resume', () => {
       '2026-04-01',
       '2026-05-01',
       '2026-06-01',
+    ]);
+  });
+
+  it('a daily order resumed after that day’s 07:00 scan first books the following day', async () => {
+    const { agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      label: 'daily saving',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.id as string;
+    // Production scan instants: 07:00 Europe/Vienna is 05:00Z in April (CEST).
+    expect((await run('2026-04-01T05:00:00Z')).booked).toBe(1);
+
+    portfolioNow = Date.parse('2026-04-01T10:00:00Z');
+    expect((await agent.post(`/api/v1/standing-orders/${id}/pause`).set(...XRW)).status).toBe(200);
+    expect((await run('2026-04-04T05:00:00Z')).booked).toBe(0);
+
+    // Resumed at 14:00 Vienna on Apr 4, after that day's scan ran while paused.
+    portfolioNow = Date.parse('2026-04-04T12:00:00Z');
+    const resumed = await agent.post(`/api/v1/standing-orders/${id}/resume`).set(...XRW);
+    expect(resumed.status).toBe(200);
+    // Apr 3 is closed; Apr 4 is owed now, which `nextRunDate` reads as today
+    // (it sees calendar days, never the hour — see its doc).
+    expect(resumed.body).toMatchObject({
+      status: 'active',
+      lastPeriodKey: '2026-04-03',
+      nextRunDate: '2026-04-04',
+    });
+
+    // The next scan is Apr 5's, and its due period is Apr 5: Apr 4 is never
+    // booked, and the user is told so — one dropped period, not the paused ones.
+    expect((await run('2026-04-05T05:00:00Z')).booked).toBe(1);
+    expect(
+      (await cashRows(pid, SOURCE_TAG_STANDING_ORDER))
+        .map((row) => row.executedAt.toISOString())
+        .sort(),
+    ).toEqual(['2026-04-01T05:00:00.000Z', '2026-04-05T05:00:00.000Z']);
+    expect((await runPeriodKeys(id)).map((row) => row.key).sort()).toEqual([
+      '2026-04-01',
+      '2026-04-03',
+      '2026-04-05',
+    ]);
+    expect(await standingOrderNotifications(agent)).toEqual([
+      expect.objectContaining({
+        type: 'standing_order.skipped',
+        payload: expect.objectContaining({
+          standingOrderId: id,
+          periodKey: '2026-04-04',
+          outcome: 'dropped',
+          droppedCount: 1,
+        }),
+      }),
     ]);
   });
 
