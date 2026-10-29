@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   MIRROR_MAX_MEMBERS,
+  type MirrorAttribution,
   type MirrorChainPendingInvite,
   type MirrorInvite,
   type MirrorMember,
@@ -156,27 +157,39 @@ export function MirrorForkProvenanceLine({ fork }: { fork: PortfolioForkProvenan
 
 /**
  * Small actor chip rendered on chain rows in the transaction / dividend / cash
- * lists (design §10/§11): who added the row. On a shared copy viewed by a
- * non-member, the server replaces the actor with a stripped attribution
- * (userId: null) — a member may expose their own book, never their co-members'
- * identities (design §10, enforced server-side). The chip renders the DE/EN
- * i18n string in that stripped case so the raw English server literal never
- * reaches the UI.
+ * lists (design §10/§11): who added the row. It renders on `attribution.state`,
+ * NOT on `userId === null` — two unrelated mechanisms null the actor id and the
+ * design gives them opposite renderings (#2009):
+ *
+ * - `stripped` (design §10): this viewer is not an active member of the chain,
+ *   so the server replaced the actor wholesale — a member may expose their own
+ *   book, never their co-members' identities. The chip renders the DE/EN i18n
+ *   string so the raw English server literal never reaches the UI, and there is
+ *   no real name on the DTO to render even by accident.
+ * - `deleted` (design §6/§7): the author's ACCOUNT is gone. The denormalized
+ *   name survives on the row, so the chip keeps the promised history rendering
+ *   "alice (account deleted)". This is not a privacy state — an entitled viewer
+ *   saw that name yesterday and still sees it today.
  */
-export function MirrorAttributionChip({
-  attribution,
-}: {
-  attribution: { userId: string | null; username: string; profileIcon: string | null };
-}) {
+export function MirrorAttributionChip({ attribution }: { attribution: MirrorAttribution }) {
   const t = useT();
-  const stripped = attribution.userId === null;
-  const label = stripped ? t('mirrorchain.attribution.groupMember') : attribution.username;
+  // The avatar and the `title` seed off the bare actor name; only the visible
+  // label carries the "(account deleted)" suffix, so a deleted author's chip
+  // keeps the same silhouette as everyone else's.
+  const name =
+    attribution.state === 'stripped'
+      ? t('mirrorchain.attribution.groupMember')
+      : attribution.username;
+  const label =
+    attribution.state === 'deleted'
+      ? t('mirrorchain.attribution.accountDeleted', { username: name })
+      : name;
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full bg-neutral-800 py-0.5 pl-0.5 pr-2 text-xs text-neutral-300"
       title={t('mirrorchain.attribution.by', { username: label })}
     >
-      <Avatar name={label} iconId={attribution.profileIcon} size="sm" className="!h-4 !w-4" />
+      <Avatar name={name} iconId={attribution.profileIcon} size="sm" className="!h-4 !w-4" />
       <span className="truncate max-w-[9rem]">{label}</span>
     </span>
   );
