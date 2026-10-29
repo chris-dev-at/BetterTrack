@@ -796,6 +796,15 @@ function resolveAuthPolicy(
   if (path === '/auth/first-run/complete' && requestMethod.toUpperCase() === 'POST') {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
+  // The §17 fresh-start notice acknowledgement (PARANOID E9) has the same
+  // contract as first-run completion: it stamps the caller's OWN wipe receipt
+  // (no id in the payload), set-once under `notice_acknowledged_at IS NULL`. A
+  // native client reads the bit from `GET /auth/me` and must be able to clear
+  // it, so only this exact POST is widened; every other method on the path, and
+  // any sibling under `/auth/fresh-start-notice/`, stays session-only.
+  if (path === '/auth/fresh-start-notice/acknowledge' && requestMethod.toUpperCase() === 'POST') {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
   // The native Google LINK start is authenticated account-security state
   // (#1328). Admit only the exact POST; the public Google return leg carries no
   // bearer, and the legacy `/auth/google/start` must keep demoting bearers to an

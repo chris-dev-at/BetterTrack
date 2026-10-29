@@ -163,6 +163,7 @@ describe('OpenAPI document', () => {
       ['patch', '/auth/passkeys/{id}'],
       ['delete', '/auth/passkeys/{id}'],
       ['post', '/auth/first-run/complete'],
+      ['post', '/auth/fresh-start-notice/acknowledge'],
       ['get', '/settings/taxes/years'],
     ] as const;
     for (const [method, path] of nativeAccountSecurityOperations) {
@@ -172,6 +173,13 @@ describe('OpenAPI document', () => {
         { apiKeyBearer: [] },
       ]);
     }
+    // E9: the bearer scheme carries no per-operation scope list (it is an http
+    // bearer scheme, not oauth2), so the required scope is stated in the prose
+    // the mobile team reads — and the path documents only the one POST.
+    const freshStartAck = paths['/auth/fresh-start-notice/acknowledge'] as JsonObject;
+    expect(Object.keys(freshStartAck)).toEqual(['post']);
+    expect((freshStartAck.post as JsonObject).description).toContain('account:security');
+    expect((freshStartAck.post as JsonObject).description).toContain('INSUFFICIENT_SCOPE');
     expect(paths['/settings/taxes/years/{year}/unlock']).toBeUndefined();
     expect(paths['/settings/taxes/years/{year}/relock']).toBeUndefined();
 

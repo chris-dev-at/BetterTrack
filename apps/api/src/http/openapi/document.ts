@@ -1140,6 +1140,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/fresh-start-notice/acknowledge',
     tag: 'Auth',
     summary: 'Acknowledge the one-time paranoid fresh-start notice (§17, idempotent, set-once).',
+    description:
+      'Available to an owning session or a bearer holding account:security (this POST only; every other method on the path stays session-only). Stamps the caller’s own wipe receipt — there is no id in the payload — and a replay never moves the timestamp. Returns the refreshed session payload with paranoidFreshStartPending false. A bearer without account:security gets 403 INSUFFICIENT_SCOPE.',
     status: 200,
     response: R.MeResponse,
   },
