@@ -29,6 +29,7 @@ import {
   costBasisOverTime,
   dailyCloseSeries,
   netFlowsOverTime,
+  QTY_EPSILON,
   valueOverTime,
   type FlowPoint,
   type PricePoint,
@@ -37,8 +38,8 @@ import {
   type ValuePoint,
 } from '../../domain/holdings';
 import type { Logger } from '../../logger';
-import { rangeStartMs, type MarketDataService } from '../../providers';
-import type { CurrencyService } from '../currency/currencyService';
+import { isNotFoundError, rangeStartMs, type MarketDataService } from '../../providers';
+import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import { daysBefore } from './portfolioService';
 
 /**
@@ -171,8 +172,19 @@ export interface PortfolioSnapshotService {
   /**
    * Recompute every portfolio with history (the backfill / nightly roll).
    * Failures are collected per portfolio, never aborting the sweep.
+   *
+   * `degraded` lists the portfolios that persisted NOTHING because the run was
+   * missing a currency: FX was unavailable ({@link fxProbeFailure}), or the rows
+   * would have dropped a still-held asset the last kept row carries
+   * ({@link findVanishedHoldings}, whatever the classification said). Those are
+   * not failures — nothing threw and reads stay correct — but they are not
+   * converged either: each keeps its marker and re-runs the engine on every
+   * read until the currency converts again. Reporting them keeps a long outage
+   * from reading as a clean sweep.
    */
-  recomputeAll(opts?: RecomputeOptions): Promise<{ total: number; failures: string[] }>;
+  recomputeAll(
+    opts?: RecomputeOptions,
+  ): Promise<{ total: number; failures: string[]; degraded: string[] }>;
 }
 
 /**
@@ -247,9 +259,159 @@ function toDomainMovement(r: CashMovementRecord): SourcedCashMovement {
 /** One asset row as the portfolio repository returns it. */
 type AssetRecord = Awaited<ReturnType<PortfolioRepository['assetsByIds']>>[number];
 
+/** How deep {@link fxProbeFailure} walks an error's `cause` chain. */
+const FX_CAUSE_DEPTH = 4;
+
+/**
+ * Why a currency failed the §5.4 convertibility probe.
+ *
+ *  - `unconvertible` — a property of the CURRENCY: the provider positively
+ *    answers "no such symbol" for its `EUR{ccy}=X` pair, or the code itself is
+ *    not convertible money. Dropping the asset is the permanent, correct answer
+ *    and the run it produces is a faithful computation.
+ *  - `unavailable` — a property of the MOMENT: {@link FxRateUnavailableError}
+ *    from an outage past the stale window, a spot quote older than the bound, or
+ *    no close near the date. The same probe will succeed once FX recovers, so
+ *    the artifacts it yields are degraded and must never be frozen into the
+ *    snapshot table as a clean computation.
+ *
+ * The split is a cause-chain heuristic, and it has three KNOWN residues. Each is
+ * a deliberate choice, not an oversight:
+ *
+ *  1. A pair whose provider answers with an EMPTY series instead of a 404 raises
+ *     the causeless `No EUR{ccy}=X close on or within N days` throw
+ *     (`marketDataFxSource`), so a permanently dead pair classifies
+ *     `unavailable`: that portfolio then persists nothing and stays dirty
+ *     indefinitely — correct on every read, but uncached. Deriving
+ *     `unconvertible` from an empty series was rejected because a cached-empty
+ *     outage has the same shape, and re-freezing an outage is the strictly worse
+ *     failure (this is defect 1 of issue #1729). Yahoo's answer for an unknown
+ *     pair is the 404, so this is the corner, not the common case. The way out
+ *     is an escalation rather than a reclassification (N consecutive degraded
+ *     runs on one pair), which is tracked as #1933 together with bounding the
+ *     `warn` volume the degraded path costs on every read.
+ *  2. A SPURIOUS upstream 404 is negative-cached and re-thrown as
+ *     `AssetNotFoundError` (`providers/cache.ts`), so a probe inside that window
+ *     reads a transient 404 as permanent. The classifier alone cannot tell, so
+ *     the persist-time guard ({@link findVanishedHoldings}) refuses such a run
+ *     whenever a kept row still carries the asset it dropped; what remains is a
+ *     run with no such row to compare against (a first computation, or one
+ *     invalidated from before the asset's first day), bounded by the TTL.
+ *  3. Anything that is not an `FxRateUnavailableError` — an invalid currency
+ *     code, but also `currencyService.getRate`'s non-finite/≤0 rate guard —
+ *     classifies `unconvertible`. That keeps those inputs on the pre-fix
+ *     drop-and-persist behaviour the issue requires to stay unregressed.
+ */
+function fxProbeFailure(err: unknown): 'unavailable' | 'unconvertible' {
+  if (!(err instanceof FxRateUnavailableError)) return 'unconvertible';
+  let cause: unknown = err.cause;
+  for (let depth = 0; depth < FX_CAUSE_DEPTH && cause != null; depth += 1) {
+    if (isNotFoundError(cause)) return 'unconvertible';
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
+  return 'unavailable';
+}
+
+/**
+ * The earliest day a computation can write, given the state it read and the
+ * nightly heal floor: `saveComputation` re-deletes from the seen `dirty_from`,
+ * overwrites from `healFrom`, and inserts every day past `computed_through`.
+ * Days before this floor keep the rows already persisted (insert-missing-only),
+ * so the last of them is what the run must continue from. Null when there is
+ * no state row and no heal floor — a portfolio with no rows to continue from.
+ */
+function persistWriteFloor(
+  seen: { dirtyFrom: string | null; computedThrough: string | null },
+  healFrom: string | null,
+): string | null {
+  const candidates = [
+    seen.dirtyFrom,
+    healFrom,
+    seen.computedThrough === null ? null : daysBefore(seen.computedThrough, -1),
+  ].filter((day): day is string => day !== null);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((a, b) => (a < b ? a : b));
+}
+
+/** A held asset a computation dropped — see {@link findVanishedHoldings}. */
+export interface VanishedHolding {
+  assetId: string;
+  /** The first day to be written on which the asset is held yet has no value. */
+  day: string;
+}
+
+/**
+ * The persist-time guard against a computation that LOST a holding (issue
+ * #1729, guard (a)). Independent of why the asset dropped out — it is the
+ * backstop for every case {@link fxProbeFailure} classifies `unconvertible`
+ * although the currency converted yesterday (the negative-cached spurious 404
+ * is the known one), and for any future degrade path that removes an asset from
+ * the engine's universe.
+ *
+ * The invariant it leans on: the engine emits an asset's per-asset value on
+ * EVERY day from its first transaction through today (`valueOverTime`, 0 once
+ * the position is flat), so a usable asset is keyed in `asset_values` of every
+ * row from its first day on. `anchor` is the last row this persist leaves in
+ * place; every asset keyed there must stay keyed on each later row this
+ * computation writes — unless it is not HELD on that row's day, in which case
+ * its value is 0 either way and dropping the key loses nothing.
+ *
+ * "Held" mirrors the engine's own quantity walk in `valueOverTime` (per day,
+ * sorted by day, a flat or uncovered position clamps to exactly 0, held means
+ * above {@link QTY_EPSILON}) over the CURRENT transactions — so a position that
+ * was fully sold, or whose transactions were deleted, is never mistaken for a
+ * drop, while a position the transactions still carry is.
+ *
+ * Returns one entry per vanished asset (its first such day), in anchor-key
+ * order; empty means the computation may be persisted.
+ */
+export function findVanishedHoldings(
+  anchor: Pick<SnapshotRowRecord, 'date' | 'assetValues'>,
+  rows: readonly Pick<NewSnapshotRow, 'date' | 'assetValues'>[],
+  txns: readonly Pick<TransactionRecord, 'assetId' | 'side' | 'quantity' | 'executedAt'>[],
+): VanishedHolding[] {
+  const written = rows
+    .filter((r) => r.date > anchor.date)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const candidates = Object.keys(anchor.assetValues).filter((assetId) =>
+    written.some((r) => !Object.hasOwn(r.assetValues, assetId)),
+  );
+  const vanished: VanishedHolding[] = [];
+  for (const assetId of candidates) {
+    // Stable sort by day only, exactly like `valueOverTime`'s cursor.
+    const assetTxns = txns
+      .filter((t) => t.assetId === assetId)
+      .map((t) => ({ day: t.executedAt.toISOString().slice(0, 10), t }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+    let qty = 0;
+    let idx = 0;
+    for (const row of written) {
+      while (idx < assetTxns.length) {
+        const next = assetTxns[idx];
+        if (next === undefined || next.day > row.date) break;
+        qty += next.t.side === 'buy' ? next.t.quantity : -next.t.quantity;
+        if (qty < QTY_EPSILON) qty = 0;
+        idx += 1;
+      }
+      if (qty > QTY_EPSILON && !Object.hasOwn(row.assetValues, assetId)) {
+        vanished.push({ assetId, day: row.date });
+        break;
+      }
+    }
+  }
+  return vanished;
+}
+
 /** Everything one engine run produces — the writer persists, the fallback serves. */
 interface EngineArtifacts {
   today: string;
+  /**
+   * At least one currency dropped out of the run because FX was UNAVAILABLE
+   * rather than unconvertible ({@link fxProbeFailure}). The artifacts are still
+   * served — the reader sees what is priceable right now — but they are not a
+   * faithful computation and {@link persist} refuses to write them.
+   */
+  fxUnavailable: boolean;
   /** The ledgers the run read, handed to the caller (see {@link PortfolioSeries}). */
   txns: TransactionRecord[];
   cashRecords: CashMovementRecord[];
@@ -302,6 +464,10 @@ export function createPortfolioSnapshotService(
    * the full engine and the fresh "today" leg so both agree on the universe —
    * persisted rows can never define it, because an asset first transacted
    * today appears in no row yet.
+   *
+   * A failed probe also reports WHY (`fxUnavailable`): the same drop means
+   * "this currency has no market" on one day and "the FX provider is down" on
+   * the next, and only the first may be persisted (see {@link fxProbeFailure}).
    */
   async function resolveUsableAssets(
     txns: readonly TransactionRecord[],
@@ -310,19 +476,25 @@ export function createPortfolioSnapshotService(
     assetsById: Map<string, AssetRecord>;
     usableAssetIds: string[];
     usableIdSet: Set<string>;
+    fxUnavailable: boolean;
   }> {
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
     const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
 
     const convertible = new Map<string, boolean>();
+    let fxUnavailable = false;
     for (const asset of assetsById.values()) {
       const ccy = asset.currency;
       if (ccy === baseCurrency || convertible.has(ccy)) continue;
       try {
         await currencyService.toBase(1, ccy, { date: today });
         convertible.set(ccy, true);
-      } catch {
+      } catch (err) {
         convertible.set(ccy, false);
+        if (fxProbeFailure(err) === 'unavailable') {
+          fxUnavailable = true;
+          logger?.warn({ err, currency: ccy }, 'FX unavailable for snapshot convertibility probe');
+        }
       }
     }
     const isConvertible = (ccy: string): boolean =>
@@ -332,7 +504,7 @@ export function createPortfolioSnapshotService(
       const asset = assetsById.get(id);
       return asset !== undefined && isConvertible(asset.currency);
     });
-    return { assetsById, usableAssetIds, usableIdSet: new Set(usableAssetIds) };
+    return { assetsById, usableAssetIds, usableIdSet: new Set(usableAssetIds), fxUnavailable };
   }
 
   /**
@@ -353,14 +525,25 @@ export function createPortfolioSnapshotService(
     usableAssetIds: string[];
     usableIdSet: Set<string>;
     firstTxnDay: string;
+    fxUnavailable: boolean;
   }> {
-    const { assetsById, usableAssetIds, usableIdSet } = await resolveUsableAssets(txns, today);
+    const { assetsById, usableAssetIds, usableIdSet, fxUnavailable } = await resolveUsableAssets(
+      txns,
+      today,
+    );
     const firstTxnDay = txns
       .map((t) => t.executedAt.toISOString().slice(0, 10))
       .reduce((a, b) => (a < b ? a : b));
 
     if (usableAssetIds.length === 0) {
-      return { assetsById, valueAssets: [], usableAssetIds, usableIdSet, firstTxnDay };
+      return {
+        assetsById,
+        valueAssets: [],
+        usableAssetIds,
+        usableIdSet,
+        firstTxnDay,
+        fxUnavailable,
+      };
     }
 
     const priceRows = await portfolioRepo.pricesForAssets(usableAssetIds);
@@ -404,7 +587,7 @@ export function createPortfolioSnapshotService(
       };
     });
 
-    return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay };
+    return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay, fxUnavailable };
   }
 
   /**
@@ -472,9 +655,15 @@ export function createPortfolioSnapshotService(
     let flows: FlowPoint[] = [];
     let perAsset: PortfolioSeriesAsset[] = [];
     let costBasis: Awaited<ReturnType<typeof costBasisOverTime>> = [];
+    let fxUnavailable = false;
 
     if (txns.length > 0) {
-      const { valueAssets, usableIdSet } = await buildValueAssets(txns, today);
+      const {
+        valueAssets,
+        usableIdSet,
+        fxUnavailable: fxDown,
+      } = await buildValueAssets(txns, today);
+      fxUnavailable = fxDown;
       if (valueAssets.length > 0) {
         const usableRecords = txns.filter((t) => usableIdSet.has(t.assetId));
         const usableTxns = usableRecords.map(recordToDomain);
@@ -544,6 +733,7 @@ export function createPortfolioSnapshotService(
 
     return {
       today,
+      fxUnavailable,
       txns,
       cashRecords,
       points,
@@ -591,21 +781,77 @@ export function createPortfolioSnapshotService(
       });
   }
 
-  /** Persist an engine run; `applied: false` means an invalidation raced it. */
+  /**
+   * Persist an engine run.
+   *
+   * `raced` means an invalidation landed mid-compute; `degraded` means FX was
+   * unavailable for at least one currency, so the artifacts are missing whole
+   * assets from the WHOLE history (value, cost basis and external flows alike).
+   * Writing those rows would freeze a provider outage into the table and clear
+   * `dirty_from` on top of it — and since the nightly roll only overwrites the
+   * trailing heal window, every older day would stay wrong forever. The read
+   * path still serves the degraded artifacts (best available right now) and the
+   * state stays dirty, so the next run after FX recovers rewrites the range.
+   *
+   * `vanished` is the second, classification-independent refusal: the rows
+   * would drop an asset that the last row left in place carries and that the
+   * transactions still hold ({@link findVanishedHoldings}). The classifier can
+   * call a drop `unconvertible` for a currency that converted yesterday (a
+   * spurious 404 replayed from the negative cache is the known case), and a run
+   * persisted then freezes its oldest written day forever — the hole issue
+   * #1729's owner report traced. Same refusal shape as `degraded`: nothing
+   * written, `dirty_from` (if any) kept, the served read unaffected.
+   *
+   * The anchor is read outside `saveComputation`'s transaction, after the state
+   * read the compare-and-set fences on. That is sound because every writer of
+   * snapshot rows also moves the state row (`markDirty`, `saveComputation`,
+   * `clear`, the vault/paranoid purges, the cash-fusion catch-up): an anchor
+   * changed after `seen` was read fails the CAS, so a persist that passes it
+   * was checked against the rows it actually continues from.
+   */
   async function persist(
     portfolioId: string,
     artifacts: EngineArtifacts,
-    seen: { updatedAt: Date | null; dirtyFrom: string | null },
+    seen: { version: string | null; dirtyFrom: string | null; computedThrough: string | null },
     healFrom: string | null,
-  ): Promise<{ applied: boolean }> {
-    return snapshotRepo.saveComputation({
+  ): Promise<{ applied: boolean; reason?: 'raced' | 'degraded' | 'vanished' }> {
+    if (artifacts.fxUnavailable) {
+      logger?.warn(
+        { portfolioId },
+        'snapshot persist skipped: FX unavailable, engine run degraded',
+      );
+      return { applied: false, reason: 'degraded' };
+    }
+    const rows = buildRows(artifacts);
+    const anchor = await snapshotRepo.lastRowBefore(portfolioId, persistWriteFloor(seen, healFrom));
+    if (anchor !== null) {
+      const vanished = findVanishedHoldings(anchor, rows, artifacts.txns);
+      if (vanished.length > 0) {
+        logger?.warn(
+          {
+            portfolioId,
+            guard: 'vanished_holding',
+            anchorDay: anchor.date,
+            vanishedCount: vanished.length,
+            // Bounded: the first few are what an operator needs to start from.
+            vanished: vanished.slice(0, 5),
+            dirtyFrom: seen.dirtyFrom,
+            healFrom,
+          },
+          'snapshot persist refused: a held asset vanished from the recomputed rows',
+        );
+        return { applied: false, reason: 'vanished' };
+      }
+    }
+    const result = await snapshotRepo.saveComputation({
       portfolioId,
-      rows: buildRows(artifacts),
+      rows,
       computedThrough: daysBefore(artifacts.today, 1),
-      seenUpdatedAt: seen.updatedAt,
+      seenVersion: seen.version,
       seenDirtyFrom: seen.dirtyFrom,
       healFrom,
     });
+    return result.applied ? { applied: true } : { applied: false, reason: 'raced' };
   }
 
   /**
@@ -807,7 +1053,24 @@ export function createPortfolioSnapshotService(
     }
   }
 
-  async function recompute(portfolioId: string, opts: RecomputeOptions = {}): Promise<void> {
+  /**
+   * What one recompute did — see {@link PortfolioSnapshotService.recomputeAll}.
+   * `degraded` covers both refusals of a run missing a currency: unavailable FX
+   * and the vanished-holding guard.
+   */
+  type RecomputeOutcome = 'persisted' | 'raced' | 'degraded' | 'skipped';
+
+  /**
+   * One portfolio's recompute, reporting its outcome so the sweep can COUNT the
+   * degraded runs. `skipped` covers the paths that legitimately write no rows:
+   * a paranoid portfolio, a portfolio the policy gate refused, and a history
+   * that vanished entirely (state cleared instead).
+   */
+  async function recomputeOne(
+    portfolioId: string,
+    opts: RecomputeOptions = {},
+  ): Promise<RecomputeOutcome> {
+    let outcome: RecomputeOutcome = 'skipped';
     const apply = async () => {
       if (await deps.isParanoidPortfolio?.(portfolioId)) return;
       const state = await snapshotRepo.getState(portfolioId);
@@ -820,18 +1083,37 @@ export function createPortfolioSnapshotService(
       const result = await persist(
         portfolioId,
         artifacts,
-        { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
+        {
+          version: state?.version ?? null,
+          dirtyFrom: state?.dirtyFrom ?? null,
+          computedThrough: state?.computedThrough ?? null,
+        },
         opts.healFrom ?? null,
       );
-      if (!result.applied) {
-        logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
+      if (result.applied) {
+        outcome = 'persisted';
+        return;
       }
+      outcome = result.reason === 'raced' ? 'raced' : 'degraded';
+      logger?.info(
+        { portfolioId, reason: result.reason },
+        result.reason === 'degraded'
+          ? 'snapshot recompute degraded by unavailable FX; left dirty for a later run'
+          : result.reason === 'vanished'
+            ? 'snapshot recompute dropped a held asset; refused persist, left for a later run'
+            : 'snapshot recompute raced an invalidation; skipped persist',
+      );
     };
     if (deps.runIfAllowedPortfolio) {
       await deps.runIfAllowedPortfolio(portfolioId, apply);
     } else {
       await apply();
     }
+    return outcome;
+  }
+
+  async function recompute(portfolioId: string, opts: RecomputeOptions = {}): Promise<void> {
+    await recomputeOne(portfolioId, opts);
   }
 
   return {
@@ -867,11 +1149,7 @@ export function createPortfolioSnapshotService(
           // nothing moved; otherwise fall through to the engine (whose persist
           // CAS fails against the bumped state — correct either way).
           const recheck = await snapshotRepo.getState(portfolioId);
-          if (
-            recheck !== null &&
-            recheck.dirtyFrom === null &&
-            recheck.updatedAt.getTime() === state.updatedAt.getTime()
-          ) {
+          if (recheck !== null && recheck.dirtyFrom === null && recheck.version === state.version) {
             return reconstruct(txns, cashRecords, rows, today);
           }
         }
@@ -886,7 +1164,11 @@ export function createPortfolioSnapshotService(
         await persist(
           portfolioId,
           artifacts,
-          { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
+          {
+            version: state?.version ?? null,
+            dirtyFrom: state?.dirtyFrom ?? null,
+            computedThrough: state?.computedThrough ?? null,
+          },
           null,
         );
       } catch (err) {
@@ -952,9 +1234,12 @@ export function createPortfolioSnapshotService(
     async recomputeAll(opts = {}) {
       const targets = await snapshotRepo.listSnapshotTargets();
       const failures: string[] = [];
+      const degraded: string[] = [];
       for (const target of targets) {
         try {
-          await recompute(target.portfolioId, opts);
+          if ((await recomputeOne(target.portfolioId, opts)) === 'degraded') {
+            degraded.push(target.portfolioId);
+          }
         } catch (err) {
           failures.push(target.portfolioId);
           logger?.warn(
@@ -963,7 +1248,7 @@ export function createPortfolioSnapshotService(
           );
         }
       }
-      return { total: targets.length, failures };
+      return { total: targets.length, failures, degraded };
     },
   };
 }
