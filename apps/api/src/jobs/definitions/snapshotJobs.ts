@@ -1,5 +1,12 @@
+import {
+  FX_HOLE_REPAIR_RUN_ID,
+  runFxHoleRepair,
+  type FxHoleRepairDeps,
+} from '../../services/portfolio/fxHoleRepair';
 import type { PortfolioSnapshotService } from '../../services/portfolio/portfolioSnapshots';
-import { QUEUE_NAMES, type JobDefinition } from '../types';
+import { QUEUE_JOB_OPTIONS } from '../options';
+import type { QueueRegistry } from '../queues';
+import { QUEUE_NAMES, type JobDefinition, type JobRunSummary } from '../types';
 
 /**
  * The V5-P1 daily-snapshot job bodies (issue #553, §16 2026-07-17):
@@ -125,4 +132,71 @@ export function createSnapshotsBackfillJob(
       }
     },
   };
+}
+
+export type SnapshotFxHoleRepairJobDeps = Omit<FxHoleRepairDeps, 'logger' | 'attempt'>;
+
+/**
+ * `snapshots.repairFxHoles` — the ONE-OFF repair of the FX-probe history holes
+ * (issue #1729; algorithm, gate and idempotency argument in
+ * `services/portfolio/fxHoleRepair.ts`). Not scheduled: the worker enqueues it
+ * once at boot under the deterministic job id {@link FX_HOLE_REPAIR_RUN_ID}, so
+ * BullMQ coalesces every later boot's enqueue into the retained finished job.
+ *
+ * Idempotency key: the run id for the job as a whole; per portfolio, the
+ * `least()` dirty marker and the `(portfolio_id, date)` rows the guarded
+ * recompute converges on — a re-run finds no hole and records zeros.
+ *
+ * Throws only when the run could not do the part nothing else will: read a
+ * portfolio (`scanFailed`) or mark its hole dirty (`unmarked`). That engages
+ * the retry → dead-letter path (this queue's own ladder, five attempts 1-8
+ * minutes apart, because a permanently failed job keeps the fixed id and later
+ * boots never re-add it), which puts a persistent failure on the admin
+ * Problems page. A recompute that was refused or threw is NOT retried here: its
+ * marker is already down, so every read and the nightly roll heal it.
+ *
+ * Returns numbers only (#1406 W4): the admin cockpit may read them.
+ */
+export function createSnapshotsFxHoleRepairJob(
+  deps: SnapshotFxHoleRepairJobDeps,
+): JobDefinition<'snapshots.repairFxHoles'> {
+  return {
+    name: QUEUE_NAMES.snapshotsRepairFxHoles,
+    // Five attempts, 1-8 minutes apart: a permanent failure burns the fixed id.
+    jobOptions: QUEUE_JOB_OPTIONS[QUEUE_NAMES.snapshotsRepairFxHoles],
+    async handler(job, ctx): Promise<JobRunSummary> {
+      const report = await runFxHoleRepair({
+        ...deps,
+        logger: ctx.logger,
+        attempt: job.attemptsMade + 1,
+      });
+      if (report.status === 'skipped') return { skipped: 1 };
+      if (report.scanFailed > 0 || report.unmarked > 0) {
+        throw new Error(
+          `snapshots.repairFxHoles: ${report.scanFailed} unreadable and ${report.unmarked} unmarked portfolios; retrying`,
+        );
+      }
+      return {
+        portfoliosScanned: report.portfoliosScanned,
+        portfoliosWithHoles: report.portfoliosWithHoles,
+        usersAffected: report.usersAffected,
+        repaired: report.repaired,
+        refused: report.refused,
+        failed: report.failed,
+        skippedVaulted: report.skippedVaulted,
+        skippedParanoid: report.skippedParanoid,
+        durationMs: report.durationMs,
+      };
+    },
+  };
+}
+
+/**
+ * Enqueue the one-off repair under its deterministic job id. Called once per
+ * worker boot; a no-op while BullMQ retains the finished (or permanently
+ * failed) job, which with the §9 retention counts on a queue that only ever
+ * holds this one job is indefinitely.
+ */
+export async function enqueueFxHoleRepair(registry: Pick<QueueRegistry, 'enqueue'>): Promise<void> {
+  await registry.enqueue(QUEUE_NAMES.snapshotsRepairFxHoles, {}, { jobId: FX_HOLE_REPAIR_RUN_ID });
 }

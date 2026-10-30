@@ -35,6 +35,10 @@ export const QUEUE_NAMES = {
   // portfolio, and the nightly roll/backfill sweep over every portfolio.
   snapshotsRecompute: 'snapshots.recompute',
   snapshotsBackfill: 'snapshots.backfill',
+  // Issue #1729: the ONE-OFF repair of the FX-probe history holes pre-fix
+  // builds froze into the snapshot table. Enqueued once at worker boot under a
+  // deterministic job id, gated on the fix being present in the running build.
+  snapshotsRepairFxHoles: 'snapshots.repairFxHoles',
   // E4: durable recovery for move-outs whose cleartext restore committed but
   // whose derived-state rebuild/final membership flip has not yet converged.
   portfolioVaultFinalize: 'portfolioVault.finalize',
@@ -119,6 +123,7 @@ export const QUEUE_FEATURE_FLAGS: Readonly<Record<QueueName, FeatureFlagKey | nu
   'data.exportCleanup': null,
   'snapshots.recompute': null,
   'snapshots.backfill': null,
+  'snapshots.repairFxHoles': null,
   'portfolioVault.finalize': null,
   'usage.rollup': null,
   'notifications.earningsRemind': null,
@@ -166,6 +171,7 @@ export interface JobPayloads {
   'data.exportCleanup': Record<string, never>;
   'snapshots.recompute': { portfolioId: string };
   'snapshots.backfill': Record<string, never>;
+  'snapshots.repairFxHoles': Record<string, never>;
   'portfolioVault.finalize': Record<string, never>;
   'usage.rollup': Record<string, never>;
   'notifications.earningsRemind': Record<string, never>;
