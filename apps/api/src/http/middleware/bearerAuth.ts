@@ -1,6 +1,6 @@
 import type { Request, RequestHandler } from 'express';
 
-import { scopeSatisfies } from '@bettertrack/contracts';
+import { isOAuthFirstPartyOnlyScope, scopeSatisfies } from '@bettertrack/contracts';
 
 import { forbidden, notFound, unauthorized } from '../../errors';
 import {
@@ -534,6 +534,12 @@ export const MODULE_POLICIES = [
     kind: 'session-only',
     reason: 'Authentication defaults closed; native account-security carve-outs resolve first.',
   },
+  // Account lifecycle: `DELETE /account` (deletion) and `/account/export*` (the
+  // full data export); `/account/paranoid/*` is session-only, resolved earlier.
+  // account:security is first-party-only for OAuth: a third-party
+  // app can neither hold it nor, if it ever did, use it here — see the
+  // first-party-only scope check in `enforceApiKeyScope`. Personal API keys keep
+  // this reach unchanged; whether they should is an open owner decision.
   {
     prefix: '/account',
     kind: 'scope',
@@ -805,14 +811,15 @@ function resolveAuthPolicy(
   // it, so only this exact POST is widened; every other method on the path, and
   // any sibling under `/auth/fresh-start-notice/`, stays session-only.
   //
-  // Trade-off: the scope gate admits EVERY bearer holding `account:security` —
-  // the first-party phone, a personal API key, AND a third-party OAuth grant
-  // (any registered app may request that scope). Only the phone ever shows
-  // this notice, so a third-party integration that acknowledges it silently
-  // spends the one-time "your old paranoid data was retired" notice for the
-  // owner. Accepted: it is not an escalation (that scope already admits vault
-  // and passkey deletion), and `firstPartyOnly` would also drop personal keys
-  // and break parity with first-run completion above.
+  // Trade-off: the scope gate admits every bearer holding `account:security` —
+  // the first-party phone and a personal API key. A third-party OAuth app
+  // cannot hold that scope (first-party-only for OAuth: refused at registration,
+  // clamped out of every third-party ceiling and refused here
+  // in `enforceApiKeyScope`). Only the phone ever shows this notice, so a
+  // personal key that acknowledges it spends the owner's one-time notice; that
+  // key is the owner's own credential, and `firstPartyOnly` would also drop
+  // personal keys and break parity with first-run completion above. Whether
+  // personal keys keep account:security reach is an open owner decision.
   if (path === '/auth/fresh-start-notice/acknowledge' && requestMethod.toUpperCase() === 'POST') {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
@@ -1178,7 +1185,17 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       );
       return;
     }
-    if (policy.firstPartyOnly && !req.apiKey.firstParty) {
+    // `account:security` and `vault:sync` are first-party-only for
+    // OAuth. A third-party app can neither register for nor be granted them,
+    // and its effective scope is clamped to exclude them on every request, so a
+    // third-party token normally fails the scope check above. This is the route
+    // layer behind that ceiling: a third-party principal that still HOLDS one
+    // (a resolver regression) is refused here, on every route the scope opens —
+    // `DELETE /account` and `/account/export*` included. Personal API keys are
+    // not OAuth principals and keep their reach (an open owner decision).
+    const thirdPartyOAuthOnFirstPartyScope =
+      req.apiKey.kind === 'oauth' && !req.apiKey.firstParty && isOAuthFirstPartyOnlyScope(required);
+    if ((policy.firstPartyOnly && !req.apiKey.firstParty) || thirdPartyOAuthOnFirstPartyScope) {
       // Scope is deliberately checked first: a first-party client missing the
       // contractually required scope gets actionable INSUFFICIENT_SCOPE. Once a
       // token does hold it, this trust-boundary refusal says only that the route

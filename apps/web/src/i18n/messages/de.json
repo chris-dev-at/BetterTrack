@@ -345,7 +345,7 @@
         "notifications:write": "Deine Benachrichtigungen als gelesen markieren und deine Benachrichtigungseinstellungen ändern",
         "chat:read": "Deine Nachrichten lesen",
         "chat:write": "Nachrichten in deinem Namen senden",
-        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung, App-PIN, Passkeys und verbundene Apps – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen",
+        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung, App-PIN, Passkeys und verbundene Apps – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen, einen Tresor endgültig löschen, alle deine Daten exportieren sowie dein Konto endgültig löschen",
         "alerts:read": "Deine Preisalarme ansehen",
         "alerts:write": "Deine Preisalarme erstellen, bearbeiten, neu aktivieren und löschen",
         "cash:read": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends ansehen",
@@ -399,7 +399,7 @@
         },
         "accountSecurity": {
           "label": "Kontosicherheit",
-          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort, App-PIN, Passkeys und verbundene Apps verwalten – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen."
+          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort, App-PIN, Passkeys und verbundene Apps verwalten – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen, einen Tresor endgültig löschen, alle deine Daten exportieren sowie dein Konto endgültig löschen."
         },
         "feedback": {
           "label": "Feedback",

@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 
-import { OAUTH_SCOPE_CAPABILITY_CLAIMS, OAUTH_SCOPE_LABELS } from '@bettertrack/contracts';
+import {
+  OAUTH_FIRST_PARTY_ONLY_SCOPES,
+  OAUTH_SCOPE_CAPABILITY_CLAIMS,
+  OAUTH_SCOPE_LABELS,
+} from '@bettertrack/contracts';
 
 import {
   MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
@@ -12,6 +16,7 @@ import {
   VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
 } from '../http/middleware/bearerAuth';
+import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
 
 /**
  * #1860 — the consent screen is the only place a user is told what they are
@@ -31,6 +36,12 @@ import {
  * So adding a destructive route to an allowlist fails here until its scope's
  * copy names it. Nothing in this file changes enforcement; the middleware's
  * allowlists remain the only thing that decides access.
+ *
+ * The two first-party-only scopes ({@link OAUTH_FIRST_PARTY_ONLY_SCOPES}) get a
+ * wider walk: account deletion and the full data export reach
+ * `account:security` through the `/account` MODULE-PREFIX row, which no
+ * allowlist lists. For those two scopes the walk covers every mounted route
+ * whose live policy resolves to them, however the policy table gets there.
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -95,6 +106,32 @@ const ROUTINE_BEARER_WRITES: Readonly<Record<string, string>> = {
   'PATCH /settings/account': 'Profile/visibility preferences — the social module copy.',
   'PATCH /settings/home': 'Home layout — a per-account UI preference under the social module.',
   'PATCH /settings/widget-layout': 'Widget placement — a per-account UI preference.',
+  // The account-security prefixes under `/auth`, reached through
+  // prefix rules rather than an allowlist. Each is one of the management areas
+  // the account:security copy lists by name.
+  'DELETE /auth/sessions/{id}': 'Covered by "sign-in sessions".',
+  'POST /auth/sessions/revoke-others': 'Covered by "sign-in sessions".',
+  'DELETE /auth/remembered-devices/{handle}': 'Remembered sign-in devices — "sign-in sessions".',
+  'DELETE /auth/remembered-devices': 'Remembered sign-in devices — "sign-in sessions".',
+  'POST /auth/change-password': 'Covered by "password change".',
+  'POST /auth/pin/verify': 'Covered by "app PIN".',
+  'PUT /auth/pin': 'Covered by "app PIN".',
+  'DELETE /auth/pin': 'Covered by "app PIN".',
+  'PUT /auth/pin/idle-timeout': 'Covered by "app PIN".',
+  'POST /auth/pin/quick-auth': 'Covered by "app PIN".',
+  'POST /auth/2fa/enroll': 'Covered by "two-factor".',
+  'DELETE /auth/2fa/enroll': 'Covered by "two-factor".',
+  'POST /auth/2fa/confirm': 'Covered by "two-factor".',
+  'POST /auth/2fa/disable': 'Covered by "two-factor".',
+  'POST /auth/2fa/email/enroll': 'Covered by "two-factor".',
+  'POST /auth/2fa/email/confirm': 'Covered by "two-factor".',
+  'POST /auth/2fa/email/disable': 'Covered by "two-factor".',
+  'POST /auth/2fa/recovery-codes': 'Covered by "two-factor".',
+  'POST /auth/google/link/start': 'Google sign-in link — sign-in management under the same copy.',
+  'POST /auth/google/unlink': 'Google sign-in unlink — sign-in management under the same copy.',
+  'POST /auth/first-run/complete': "A set-once onboarding flag on the caller's own account.",
+  'POST /auth/fresh-start-notice/acknowledge':
+    "A set-once notice receipt on the caller's own account (§16 2026-10-29).",
 };
 
 function routeKey(route: { method: string; path: string }): string {
@@ -126,7 +163,29 @@ function auditedWriteRoutes(): { source: string; route: AuditedRoute }[] {
       route: { method: CENSUS_PROBE_METHOD, path: row.subPath },
     });
   }
+  collected.push(...mountedFirstPartyOnlyScopeWrites());
   return collected;
+}
+
+/**
+ * Every mounted non-safe route whose LIVE bearer policy resolves to a
+ * first-party-only scope — module-prefix rows and `/auth` prefix
+ * rules included, not just the allowlists. An `all-methods` route is probed as
+ * a write and keeps its synthetic method, so it can never be acknowledged and
+ * fails closed.
+ */
+function mountedFirstPartyOnlyScopeWrites(): { source: string; route: AuditedRoute }[] {
+  const firstPartyOnly = new Set<string>(OAUTH_FIRST_PARTY_ONLY_SCOPES);
+  return buildRouteTable().flatMap((surface) => {
+    if (surface.kind === 'opaque-mount' || !surface.path.startsWith('/api/v1/')) return [];
+    const method = surface.kind === 'route' ? surface.method.toUpperCase() : '<all-methods>';
+    if (SAFE_METHODS.has(method)) return [];
+    const route = { method, path: surface.path.slice('/api/v1'.length) };
+    const probeMethod = surface.kind === 'route' ? method : 'POST';
+    const policy = resolveBearerPolicyClassification(concretePath(route), probeMethod);
+    if (policy.kind !== 'scope' || !firstPartyOnly.has(policy.write)) return [];
+    return [{ source: 'mounted routes (first-party-only scopes)', route }];
+  });
 }
 
 const CLAIM_BY_ROUTE = new Map(
@@ -175,6 +234,41 @@ describe('#1860 consent copy is bound to the routes each scope really opens', ()
     const live = new Set(auditedWriteRoutes().map(({ route }) => routeKey(route)));
     for (const key of Object.keys(ROUTINE_BEARER_WRITES)) {
       expect(live, key).toContain(key);
+    }
+  });
+
+  test('the mounted walk reaches the /account module-prefix row', () => {
+    // The walk must be live, not vacuous: an empty first-party-only set or a
+    // broken route table would otherwise pass the unaccounted check above.
+    const walked = new Set(mountedFirstPartyOnlyScopeWrites().map(({ route }) => routeKey(route)));
+    for (const key of [
+      'DELETE /account',
+      'POST /account/export',
+      'POST /account/export/download',
+      'POST /auth/2fa/recovery-codes',
+      'PUT /vaults/{vaultId}/docs/{docId}',
+    ]) {
+      expect(walked, key).toContain(key);
+    }
+    // ...and stays inside the two scopes: an ordinary module write is not walked.
+    expect(walked).not.toContain('POST /portfolios');
+  });
+
+  test('the account:security copy names the full data export and account deletion', () => {
+    // Pinned literally: these are the two capabilities the module-prefix row
+    // hid from the consent copy.
+    const label = OAUTH_SCOPE_LABELS['account:security'].toLowerCase();
+    expect(label).toContain('export');
+    expect(label).toContain('all your data');
+    expect(label).toContain('deleting your account');
+    for (const [method, path] of [
+      ['DELETE', '/account'],
+      ['POST', '/account/export'],
+      ['POST', '/account/export/download'],
+    ] as const) {
+      expect(CLAIM_BY_ROUTE.get(`${method} ${path}`)?.scope, `${method} ${path}`).toBe(
+        'account:security',
+      );
     }
   });
 
