@@ -535,10 +535,10 @@ export const MODULE_POLICIES = [
   },
   // Account lifecycle: `DELETE /account` (deletion) and `/account/export*` (the
   // full data export); `/account/paranoid/*` is session-only, resolved earlier.
-  // account:security is first-party-only for OAuth (OpSec R-05): a third-party
+  // account:security is first-party-only for OAuth: a third-party
   // app can neither hold it nor, if it ever did, use it here — see the
   // first-party-only scope check in `enforceApiKeyScope`. Personal API keys keep
-  // this reach unchanged; whether they should is an open owner decision (R-05).
+  // this reach unchanged; whether they should is an open owner decision.
   {
     prefix: '/account',
     kind: 'scope',
@@ -811,14 +811,14 @@ function resolveAuthPolicy(
   // any sibling under `/auth/fresh-start-notice/`, stays session-only.
   //
   // Trade-off: the scope gate admits every bearer holding `account:security` —
-  // the first-party phone and a personal API key. A third-party OAuth app can
-  // no longer hold that scope (OpSec R-05: first-party-only for OAuth, refused
-  // at registration, clamped out of every third-party ceiling and refused here
+  // the first-party phone and a personal API key. A third-party OAuth app
+  // cannot hold that scope (first-party-only for OAuth: refused at registration,
+  // clamped out of every third-party ceiling and refused here
   // in `enforceApiKeyScope`). Only the phone ever shows this notice, so a
   // personal key that acknowledges it spends the owner's one-time notice; that
   // key is the owner's own credential, and `firstPartyOnly` would also drop
   // personal keys and break parity with first-run completion above. Whether
-  // personal keys keep account:security reach is an open owner decision (R-05).
+  // personal keys keep account:security reach is an open owner decision.
   if (path === '/auth/fresh-start-notice/acknowledge' && requestMethod.toUpperCase() === 'POST') {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
@@ -1184,14 +1184,14 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       );
       return;
     }
-    // OpSec R-05: `account:security` and `vault:sync` are first-party-only for
+    // `account:security` and `vault:sync` are first-party-only for
     // OAuth. A third-party app can neither register for nor be granted them,
     // and its effective scope is clamped to exclude them on every request, so a
     // third-party token normally fails the scope check above. This is the route
     // layer behind that ceiling: a third-party principal that still HOLDS one
     // (a resolver regression) is refused here, on every route the scope opens —
     // `DELETE /account` and `/account/export*` included. Personal API keys are
-    // not OAuth principals and keep their reach (open owner decision, R-05).
+    // not OAuth principals and keep their reach (an open owner decision).
     const thirdPartyOAuthOnFirstPartyScope =
       req.apiKey.kind === 'oauth' && !req.apiKey.firstParty && isOAuthFirstPartyOnlyScope(required);
     if ((policy.firstPartyOnly && !req.apiKey.firstParty) || thirdPartyOAuthOnFirstPartyScope) {

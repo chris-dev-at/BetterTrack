@@ -166,7 +166,7 @@ export interface ScopePickerProps {
   /**
    * Scopes this picker must never offer. A module whose every scope is listed
    * is dropped entirely — e.g. the first-party-only scopes on third-party OAuth
-   * app registration (OpSec R-05), which the API refuses anyway.
+   * app registration, which the API refuses anyway.
    */
   excludeScopes?: readonly ApiKeyScope[];
 }

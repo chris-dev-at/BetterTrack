@@ -890,7 +890,7 @@ interface EndpointDef {
  */
 const EXPENSE_AREA_RETIRED_CODE = 'EXPENSE_AREA_RETIRED';
 
-/** Who may reach the account-lifecycle routes with a bearer (OpSec R-05). */
+/** Who may reach the account-lifecycle routes with a bearer. */
 const ACCOUNT_LIFECYCLE_BEARER_NOTE =
   'Bearer access needs account:security, which personal API keys and official first-party apps can hold; third-party OAuth apps never can and are refused.';
 

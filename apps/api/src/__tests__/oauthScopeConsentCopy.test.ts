@@ -37,12 +37,11 @@ import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
  * copy names it. Nothing in this file changes enforcement; the middleware's
  * allowlists remain the only thing that decides access.
  *
- * OpSec R-05 widened the walk for the two first-party-only scopes
- * ({@link OAUTH_FIRST_PARTY_ONLY_SCOPES}): account deletion and the full data
- * export reached `account:security` through the `/account` MODULE-PREFIX row,
- * which no allowlist lists, so the copy never had to name them. For those two
- * scopes the walk now covers every mounted route whose live policy resolves to
- * them, however the policy table gets there.
+ * The two first-party-only scopes ({@link OAUTH_FIRST_PARTY_ONLY_SCOPES}) get a
+ * wider walk: account deletion and the full data export reach
+ * `account:security` through the `/account` MODULE-PREFIX row, which no
+ * allowlist lists. For those two scopes the walk covers every mounted route
+ * whose live policy resolves to them, however the policy table gets there.
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -107,7 +106,7 @@ const ROUTINE_BEARER_WRITES: Readonly<Record<string, string>> = {
   'PATCH /settings/account': 'Profile/visibility preferences — the social module copy.',
   'PATCH /settings/home': 'Home layout — a per-account UI preference under the social module.',
   'PATCH /settings/widget-layout': 'Widget placement — a per-account UI preference.',
-  // OpSec R-05 — the account-security prefixes under `/auth`, reached through
+  // The account-security prefixes under `/auth`, reached through
   // prefix rules rather than an allowlist. Each is one of the management areas
   // the account:security copy lists by name.
   'DELETE /auth/sessions/{id}': 'Covered by "sign-in sessions".',
@@ -170,7 +169,7 @@ function auditedWriteRoutes(): { source: string; route: AuditedRoute }[] {
 
 /**
  * Every mounted non-safe route whose LIVE bearer policy resolves to a
- * first-party-only scope (OpSec R-05) — module-prefix rows and `/auth` prefix
+ * first-party-only scope — module-prefix rows and `/auth` prefix
  * rules included, not just the allowlists. An `all-methods` route is probed as
  * a write and keeps its synthetic method, so it can never be acknowledged and
  * fails closed.
@@ -238,7 +237,7 @@ describe('#1860 consent copy is bound to the routes each scope really opens', ()
     }
   });
 
-  test('the mounted walk reaches the /account module-prefix row (OpSec R-05)', () => {
+  test('the mounted walk reaches the /account module-prefix row', () => {
     // The walk must be live, not vacuous: an empty first-party-only set or a
     // broken route table would otherwise pass the unaccounted check above.
     const walked = new Set(mountedFirstPartyOnlyScopeWrites().map(({ route }) => routeKey(route)));
@@ -255,7 +254,7 @@ describe('#1860 consent copy is bound to the routes each scope really opens', ()
     expect(walked).not.toContain('POST /portfolios');
   });
 
-  test('the account:security copy names the full data export and account deletion (OpSec R-05)', () => {
+  test('the account:security copy names the full data export and account deletion', () => {
     // Pinned literally: these are the two capabilities the module-prefix row
     // hid from the consent copy.
     const label = OAUTH_SCOPE_LABELS['account:security'].toLowerCase();

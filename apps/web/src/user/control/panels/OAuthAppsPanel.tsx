@@ -265,7 +265,7 @@ function RegisterOAuthClientForm({
           `paranoid` drops the module this account can never grant, so a client
           cannot be registered with a scope that would only show up struck
           through in its own row. `excludeScopes` drops the first-party-only
-          modules a user-registered app can never hold (OpSec R-05). */}
+          modules a user-registered app can never hold. */}
       <div className="flex flex-col gap-1.5">
         <PanelNote>{t('settings.api.oauth.scopesHint')}</PanelNote>
         <ScopePicker

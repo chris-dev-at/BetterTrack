@@ -293,7 +293,7 @@ function toClientSummary(row: OAuthClientRow | OAuthClientListRow): OAuthClientS
     clientId: row.clientId,
     name: row.name,
     redirectUris: row.redirectUris,
-    // The ceiling the app can actually exercise (OpSec R-05), not the stored row.
+    // The ceiling the app can actually exercise, not the stored row.
     scopes: exercisableCeiling(row) as ApiKeyScope[],
     public: row.isPublic,
     firstParty: row.isFirstParty,
@@ -316,7 +316,7 @@ function logoPathFor(row: OAuthClientLogoState): string | null {
 type OAuthCeilingSource = Pick<OAuthClientRow, 'scopes' | 'isFirstParty'>;
 
 /**
- * The scope ceiling an app can actually EXERCISE (OpSec R-05): its stored
+ * The scope ceiling an app can actually EXERCISE: its stored
  * `scopes`, minus the first-party-only scopes (`account:security`,
  * `vault:sync`) unless it is an official first-party app. Every ceiling test in
  * this service reads the row through here — authorize, both token exchanges,
@@ -1027,7 +1027,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   return {
     async registerClient({ userId, name, redirectUris, scopes, public: isPublic, logoUrl, ip }) {
       // A user-registered app is third-party by construction, so it may never
-      // list a first-party-only scope (OpSec R-05). The HTTP contract already
+      // list a first-party-only scope. The HTTP contract already
       // refuses them; re-check so a caller that skipped validation cannot store one.
       const firstPartyOnly = scopes.find(isOAuthFirstPartyOnlyScope);
       if (firstPartyOnly) {

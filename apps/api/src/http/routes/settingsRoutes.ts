@@ -501,7 +501,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
 
   // POST /settings/oauth-clients — register an app; client_secret returned once
   // (null for public/PKCE clients). A user-registered app is THIRD-party, so the
-  // first-party-only scopes are refused here and again in the service (OpSec R-05).
+  // first-party-only scopes are refused here and again in the service.
   router.post(
     '/oauth-clients',
     validateBody(createThirdPartyOAuthClientRequestSchema),

@@ -107,7 +107,7 @@ async function mintPersonalKey(
 
 /**
  * A grant on a client the USER registered themselves — genuinely third-party.
- * Such an app can no longer hold `account:security` (OpSec R-05), so asking for
+ * Such an app can no longer hold `account:security`, so asking for
  * it builds the only state that still could: an app and grant stored before the
  * rule plus a simulated ceiling regression for this one grant — the input the
  * grant routes' own first-party-only rail has to refuse on its own.

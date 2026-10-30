@@ -64,7 +64,7 @@ describe('OAuthAppsPanel', () => {
     expect(listOAuthClients).toHaveBeenCalledTimes(2);
   });
 
-  test('never offers the first-party-only scopes for a user-registered app (OpSec R-05)', async () => {
+  test('never offers the first-party-only scopes for a user-registered app', async () => {
     renderPanel();
     await screen.findByLabelText('App name');
     const registerForm = screen.getByRole('button', { name: 'Register app' }).closest('form')!;

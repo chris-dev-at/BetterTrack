@@ -142,7 +142,7 @@ function purgeSignature(
 
 /**
  * A delegated OAuth token holding account:security. Only the official
- * first-party app can hold that scope (OpSec R-05), and it is the stronger
+ * first-party app can hold that scope, and it is the stronger
  * case here: even the trusted app stays out of the vault transitions.
  */
 async function mintDelegatedSecurityToken(): Promise<string> {

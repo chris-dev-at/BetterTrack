@@ -74,7 +74,7 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   // #1860 — the scope also carries the §15 vault control plane, existing-passkey
   // management and first-party grant revocation, all of them destructive and a
   // vault deletion irreversibly so (§6.16: seed phrase only, no escrow).
-  // OpSec R-05 — and, through the `/account` module row, the full data export
+  // And, through the `/account` module row, the full data export
   // and account deletion. First-party-only for OAuth apps (see below).
   'account:security':
     "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault, permanently deleting a vault, exporting all your data and permanently deleting your account",
@@ -99,7 +99,7 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'feedback:read': 'View your feedback submissions and their status',
 };
 
-// ── First-party-only scopes (OpSec R-05) ────────────────────────────────────
+// ── First-party-only scopes ─────────────────────────────────────────────────
 /**
  * Scopes only an official FIRST-party OAuth app (admin-registered, e.g.
  * BetterTrackMobile) can hold. `account:security` reaches every sign-in factor,
@@ -111,7 +111,7 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
  * simply stops conferring them (no data migration).
  *
  * Personal API keys are deliberately not covered: whether they keep this reach
- * is an open owner decision (OpSec R-05), so their behaviour is unchanged.
+ * is an open owner decision, so their behaviour is unchanged.
  */
 export const OAUTH_FIRST_PARTY_ONLY_SCOPES = [
   'account:security',
@@ -238,8 +238,7 @@ export const OAUTH_SCOPE_CAPABILITY_CLAIMS = [
       { method: 'POST', path: '/account/export/download' },
     ],
     enPhrase: 'exporting all your data',
-    reason:
-      'The export archive holds every portfolio, transaction and account record (OpSec R-05).',
+    reason: 'The export archive holds every portfolio, transaction and account record.',
   },
   {
     id: 'account-security.delete-account',
@@ -347,7 +346,7 @@ export const thirdPartyOAuthScopeSchema = apiKeyScopeSchema.exclude(OAUTH_FIRST_
 /**
  * `POST /settings/oauth-clients` — a user registering a THIRD-party app. The
  * same shape as {@link createOAuthClientRequestSchema}, which stays the admin
- * first-party form, minus {@link OAUTH_FIRST_PARTY_ONLY_SCOPES} (OpSec R-05).
+ * first-party form, minus {@link OAUTH_FIRST_PARTY_ONLY_SCOPES}.
  */
 export const createThirdPartyOAuthClientRequestSchema = createOAuthClientRequestSchema.extend({
   scopes: z.array(thirdPartyOAuthScopeSchema).min(1).max(thirdPartyOAuthScopeSchema.options.length),

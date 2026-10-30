@@ -8,7 +8,7 @@ import type { OAuthService } from '../services/oauth/oauthService';
 import type { TestHarness } from '../testing/createTestApp';
 
 /**
- * OpSec R-05 test seam. A THIRD-party OAuth app can no longer register for, be
+ * Test seam for the first-party-only scopes. A THIRD-party OAuth app can no longer register for, be
  * granted or use the first-party-only scopes (`account:security`,
  * `vault:sync`): registration refuses them and the service clamps them out of
  * every third-party ceiling. The route rails BEHIND that ceiling still have to

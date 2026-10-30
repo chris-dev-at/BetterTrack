@@ -150,7 +150,7 @@ function pkce(): { verifier: string; challenge: string } {
  * Seed a fresh user and mint a delegated token: by default through a public
  * PKCE client the user registers (a THIRD-party app), or with `firstParty`
  * through the seeded official mobile app. Only the latter can carry the
- * first-party-only scopes `account:security` / `vault:sync` (OpSec R-05).
+ * first-party-only scopes `account:security` / `vault:sync`.
  */
 async function mintOAuthToken(
   scopes: string[],
@@ -691,7 +691,7 @@ describe('[PARANOID-E2] bearer scope authorization precedes vault membership', (
 
 describe('#1324 account:security parity for native account state', () => {
   // The OAuth arm is the official first-party app: account:security is
-  // first-party-only for OAuth (OpSec R-05), so no third-party app can hold it.
+  // first-party-only for OAuth, so no third-party app can hold it.
   it.each(['personal', 'oauth'] as const)(
     'serves all seven widened routes to a scoped %s bearer',
     async (kind) => {
@@ -2166,7 +2166,7 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
   );
 
   // Minted through the official first-party app: a third-party app can no
-  // longer hold either scope (OpSec R-05), and the trusted app is the stronger
+  // longer hold either scope, and the trusted app is the stronger
   // case — even it stays out of the owning-browser-session transitions.
   it.each(SESSION_ONLY)(
     'a delegated OAuth token holding account:security gets 403 API_KEY_FORBIDDEN: $name',

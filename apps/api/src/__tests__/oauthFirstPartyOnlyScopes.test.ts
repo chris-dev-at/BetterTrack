@@ -14,6 +14,8 @@ import {
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
+import { resolveBearerPolicyClassification } from '../http/middleware/bearerAuth';
+import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import {
@@ -22,8 +24,7 @@ import {
 } from './thirdPartyCeilingRegression';
 
 /**
- * OpSec R-05 / PR-5b — a THIRD-party OAuth app can never hold `account:security`
- * or `vault:sync`.
+ * A THIRD-party OAuth app can never hold `account:security` or `vault:sync`.
  *
  * `account:security` reaches the account-lifecycle routes (full data export and
  * account deletion) and every sign-in factor; `vault:sync` reaches the
@@ -196,6 +197,47 @@ async function exportJobCount(userId: string): Promise<number> {
     .from(schema.exportJobs)
     .where(eq(schema.exportJobs.userId, userId));
   return rows.length;
+}
+
+/** The access-token row an issued grant holds (one per issuance here). */
+async function accessTokenRow(grantId: string) {
+  const [row] = await harness.db
+    .select()
+    .from(schema.oauthAccessTokens)
+    .where(eq(schema.oauthAccessTokens.grantId, grantId));
+  expect(row).toBeDefined();
+  return row!;
+}
+
+/** Any live id: the route matchers accept a UUID, a small integer or a year. */
+const PATH_FILLS = ['0190a6f4-1b2c-7d3e-8f40-123456789abc', '1', '2025'];
+
+/**
+ * Every mounted (method, concrete path) whose LIVE bearer policy requires a
+ * first-party-only scope: module-prefix rows and `/auth` prefix rules included,
+ * not just the allowlists.
+ */
+function firstPartyOnlyRoutes(): { method: string; template: string; path: string }[] {
+  const required = new Set<string>(FIRST_PARTY_ONLY);
+  const out: { method: string; template: string; path: string }[] = [];
+  for (const surface of buildRouteTable()) {
+    if (surface.kind === 'opaque-mount' || !surface.path.startsWith('/api/v1/')) continue;
+    const template = surface.path.slice('/api/v1'.length);
+    const methods = surface.kind === 'route' ? [surface.method.toUpperCase()] : ['GET', 'POST'];
+    for (const method of methods) {
+      if (method === 'OPTIONS' || method === 'HEAD') continue;
+      for (const fill of PATH_FILLS) {
+        const path = template.replace(/\{[^}]+\}/g, fill);
+        const policy = resolveBearerPolicyClassification(path, method);
+        if (policy.kind !== 'scope') continue;
+        if (required.has(method === 'GET' ? policy.read : policy.write)) {
+          out.push({ method, template, path });
+          break;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 describe('registration: a user-registered app cannot list a first-party-only scope', () => {
@@ -412,6 +454,63 @@ describe('effective ceiling: an app registered before the rule loses both scopes
     expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(400);
     expect(refreshed.body.error.code).toBe('INVALID_SCOPE');
   });
+
+  it('its live token is refused on every mounted route a first-party-only scope opens', async () => {
+    const { user, agent } = await signedIn();
+    const legacy = await legacyThirdPartyApp(user, agent);
+    const auth = bearer(legacy.accessToken);
+    // Positive control: the token is live and its ordinary scope works.
+    const ok = await harness.request().get('/api/v1/portfolios').set(auth);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+
+    const routes = firstPartyOnlyRoutes();
+    const keys = new Set(routes.map((route) => `${route.method} ${route.template}`));
+    // Non-vacuity: the walk reaches the lifecycle, factor and vault-sync surfaces.
+    for (const key of [
+      'DELETE /account',
+      'POST /account/export',
+      'GET /account/export',
+      'POST /account/export/download',
+      'POST /auth/2fa/recovery-codes',
+      'GET /vaults',
+    ]) {
+      expect(keys, key).toContain(key);
+    }
+    expect(routes.length).toBeGreaterThanOrEqual(30);
+
+    const admitted: string[] = [];
+    for (const route of routes) {
+      const verb = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete';
+      const pending = harness.request()[verb](`/api/v1${route.path}`).set(auth);
+      const res = route.method === 'GET' ? await pending : await pending.send({});
+      const code = res.body?.error?.code;
+      if (!(res.status === 403 && ['INSUFFICIENT_SCOPE', 'API_KEY_FORBIDDEN'].includes(code))) {
+        admitted.push(`${route.method} ${route.path} -> ${res.status} ${code ?? ''}`);
+      }
+    }
+    expect(admitted, `walked ${routes.length} routes`).toEqual([]);
+    expect(await accountStillExists(user.id)).toBe(true);
+    expect(await exportJobCount(user.id)).toBe(0);
+  });
+
+  it('a realtime revalidation narrows its live token to the ceiling as well', async () => {
+    const { user, agent } = await signedIn();
+    const legacy = await legacyThirdPartyApp(user, agent);
+    const access = await accessTokenRow(legacy.grantId);
+    // Precondition: the stored row still carries both scopes.
+    expect([...access.scopes].sort()).toEqual([...LEGACY_THIRD_PARTY_SCOPES].sort());
+
+    const principal = await harness.ctx.oauth.revalidatePrincipal({
+      userId: user.id,
+      grantId: legacy.grantId,
+      accessTokenId: access.id,
+      expiresAt: access.expiresAt,
+      scopes: LEGACY_THIRD_PARTY_SCOPES,
+    });
+    expect(principal).not.toBeNull();
+    expect(principal!.firstParty).toBe(false);
+    expect(principal!.scopes).toEqual(['portfolio:read']);
+  });
 });
 
 /**
@@ -496,6 +595,34 @@ describe('route layer: a third-party principal that still holds the scope is ref
 });
 
 describe('negative space: first-party and personal-key reach is unchanged', () => {
+  it('a realtime revalidation of the mobile app keeps both scopes', async () => {
+    const { user, agent } = await signedIn();
+    await issueToken({
+      agent,
+      clientId: MOBILE.clientId,
+      redirectUri: MOBILE.redirectUris[0]!,
+      scopes: MOBILE.scopeCeiling,
+    });
+    const [grant] = await harness.db
+      .select({ id: schema.oauthGrants.id })
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.userId, user.id));
+    const access = await accessTokenRow(grant!.id);
+
+    const principal = await harness.ctx.oauth.revalidatePrincipal({
+      userId: user.id,
+      grantId: grant!.id,
+      accessTokenId: access.id,
+      expiresAt: access.expiresAt,
+      scopes: access.scopes as ApiKeyScope[],
+    });
+    expect(principal).not.toBeNull();
+    expect(principal!.firstParty).toBe(true);
+    for (const required of FIRST_PARTY_ONLY) {
+      expect(principal!.scopes).toContain(required);
+    }
+  });
+
   it('the mobile app is still granted both scopes and keeps every route it uses', async () => {
     const { user, agent } = await signedIn();
     const issued = await issueToken({

@@ -166,7 +166,7 @@ async function mintFirstPartyToken(
 
 /**
  * A grant on an app the user registered — genuinely third-party. A third-party
- * app can no longer hold `account:security` (OpSec R-05), so a request for it
+ * app can no longer hold `account:security`, so a request for it
  * builds the only state that still could: an app and grant stored before the
  * rule, plus a simulated regression of the ceiling for this one grant. That
  * keeps the grant routes' own first-party-only rail pinned BEHIND the ceiling.

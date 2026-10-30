@@ -19,7 +19,7 @@ const registration = (scopes: readonly string[]) => ({
   scopes,
 });
 
-describe('OAuth first-party-only scopes (OpSec R-05)', () => {
+describe('OAuth first-party-only scopes', () => {
   test('the set is exactly account:security and vault:sync', () => {
     expect([...OAUTH_FIRST_PARTY_ONLY_SCOPES]).toEqual(PINNED_FIRST_PARTY_ONLY);
   });
