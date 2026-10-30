@@ -450,6 +450,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           kind: 'oauth',
           firstParty: oauthPrincipal.firstParty,
           familyId: oauthPrincipal.familyId,
+          accessTokenId: oauthPrincipal.accessTokenId,
           securityGeneration: oauthPrincipal.user.securityGeneration,
         };
         next();

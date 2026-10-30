@@ -1,5 +1,3 @@
-import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
-
 import type { AuditRepository } from '../../data/repositories/auditRepository';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
@@ -74,9 +72,10 @@ export interface DataRetentionCleanupJobDeps {
    */
   digestQueue: Pick<NotificationDigestRepository, 'deleteDeliveredOlderThan'>;
   /**
-   * Re-servable OAuth successor pairs past the refresh grace window. Their
-   * lifetime is otherwise enforced on read, when the successor rotates and
-   * after every successful rotation on the instance (best-effort); this pass is
+   * Re-servable OAuth successor pairs past their re-serve window (60 s
+   * third-party, 24 h first-party). Their lifetime is otherwise enforced on
+   * read, when the successor rotates and after every successful rotation on
+   * the instance (best-effort); this pass is
    * the backstop for an instance with no refresh traffic at all, so an
    * unservable sealed pair is never kept longer than one daily run past its
    * window. It only nulls the envelope — the token rows (and the reuse
@@ -178,10 +177,12 @@ export function createDataRetentionCleanupJob(
         maxRowsPerRun,
       );
       // Idempotent by construction: each batch clears envelopes that then no
-      // longer match, so a re-run (or a run racing a refresh) converges.
+      // longer match, so a re-run (or a run racing a refresh) converges. The
+      // repository applies each row's own window to the run time (60 s for a
+      // third-party app, 24 h for an official first-party one — §16 2026-10-29).
       const oauthGraceEnvelopes = await deleteInBatches(
         deps.oauthGraceEnvelopes.clearExpiredSuccessorEnvelopes.bind(deps.oauthGraceEnvelopes),
-        new Date(runAt - OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000),
+        new Date(runAt),
         batchSize,
         maxRowsPerRun,
       );

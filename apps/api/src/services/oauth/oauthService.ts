@@ -12,10 +12,11 @@ import {
   OAUTH_CLIENT_SECRET_PREFIX,
   OAUTH_REFRESH_TOKEN_GRACE_SECONDS,
   OAUTH_REFRESH_TOKEN_PREFIX,
-  OAUTH_REFRESH_TOKEN_TTL_SECONDS,
   OAUTH_SCOPE_LABELS,
   isOAuthFirstPartyOnlyScope,
   isValidRedirectUri,
+  oauthRefreshReplayWindowSeconds,
+  oauthRefreshTokenTtlSeconds,
   scopeSatisfies,
   withImpliedReadScopes,
   withoutOAuthFirstPartyOnlyScopes,
@@ -164,6 +165,35 @@ export interface OAuthService {
   revokeToken(input: { body: OAuthRevokeRequest; ip?: string | null }): Promise<void>;
   /** Administrative suspension: revoke grants and invalidate pending auth codes. */
   revokeAllForUser(userId: string): Promise<void>;
+  /**
+   * Credential event (§16 2026-10-29): a password change or reset ends EVERY
+   * OAuth grant of the user; "sign out everywhere" ends every FIRST-PARTY grant
+   * except the caller's own (`exceptGrantId`). Pending auth codes for the same
+   * client set are consumed. Each revoked grant is invalidated in realtime and
+   * audited `oauth.grant_revoked` with `meta.reason`. Resolves to how many
+   * grants it revoked; a replay revokes (and audits) nothing. An admin-driven
+   * event (the temp-password reset) passes `actorId` (the admin, recorded as
+   * the audit actor) and `source: 'admin'` (recorded in the meta).
+   *
+   * `siblingFamilies` — sign-out-everywhere from an official app's bearer: the
+   * kept grant is shared by every install of that app, so every OTHER install
+   * on it ends as well — including one sharing the caller's 0119-backfilled
+   * family and any no-family chain; the caller's own chain is moved into a
+   * fresh family first when needed (reason `sign_out_everywhere`, each revoked
+   * family invalidated and audited `oauth.token_family_revoked`). Only the
+   * install presenting `callerAccessTokenId` stays signed in. Not counted in
+   * the resolved number.
+   */
+  revokeGrantsForCredentialEvent(input: {
+    userId: string;
+    reason: OAuthCredentialRevocationReason;
+    firstPartyOnly: boolean;
+    exceptGrantId: string | null;
+    siblingFamilies?: { callerAccessTokenId: string };
+    ip?: string | null;
+    actorId?: string;
+    source?: 'admin';
+  }): Promise<number>;
   /** Consent-screen data: validates the authorize request, plain-language scopes. */
   getAuthorizationDetails(
     query: OAuthAuthorizationDetailsQuery,
@@ -212,6 +242,38 @@ export interface OAuthService {
   }): Promise<void>;
 }
 
+/** `meta.reason` of an `oauth.grant_revoked` row written by a credential event. */
+export type OAuthCredentialRevocationReason =
+  | 'password_change'
+  | 'password_reset'
+  | 'sign_out_everywhere';
+
+/**
+ * `meta.evidence` of a refresh-reuse death (`reason: refresh_reuse`) — written on
+ * the `oauth.token_family_revoked` row, or on the `oauth.grant_revoked` row
+ * (`legacyFamily: true`) for a pre-family token — naming which check of the
+ * re-serve rule the re-presented refresh token failed:
+ *  - `window_passed`         — consumed longer ago than the client's window
+ *                              (60 s third-party; 24 h first-party);
+ *  - `legacy_envelope`       — first-party, past the strict window, but the pair
+ *                              was sealed before first-use tracking existed
+ *                              (envelope v1, or already dropped by that code
+ *                              after its 60 s), so "never used" cannot be proven;
+ *  - `successor_rotated`     — its successor has itself been rotated: the token
+ *                              is a grandparent (or older) in the chain;
+ *  - `no_successor`          — consumed with no successor recorded (rotated
+ *                              before the grace rule existed);
+ *  - `successor_access_used` — first-party, past the strict window: the
+ *                              successor ACCESS token has already authenticated
+ *                              a request, so somebody holds and uses that pair.
+ */
+export type OAuthRefreshReuseEvidence =
+  | 'window_passed'
+  | 'legacy_envelope'
+  | 'successor_rotated'
+  | 'no_successor'
+  | 'successor_access_used';
+
 const VALID_SCOPES = new Set<string>(API_KEY_SCOPES);
 const LAST_USED_THROTTLE_SEC = 60;
 
@@ -248,7 +310,11 @@ export const POST_ROTATION_ENVELOPE_SWEEP_BATCH = 100;
  */
 const refreshGraceEnvelopeSchema = z
   .object({
-    v: z.literal(1),
+    // 1 = sealed by the 60 s grace code (#2065; no first-use tracking yet): only ever
+    // honoured inside the strict 60 s window. 2 = sealed by code that stamps
+    // `oauth_access_tokens.first_used_at` on every authentication, so its
+    // "never used" signal is trustworthy for the first-party 24 h extension.
+    v: z.union([z.literal(1), z.literal(2)]),
     tokenId: z.string().min(1),
     successorId: z.string().min(1),
     accessTokenId: z.string().min(1),
@@ -261,17 +327,21 @@ type RefreshGraceEnvelope = z.infer<typeof refreshGraceEnvelopeSchema>;
 
 /**
  * What the grace rule decided for a consumed refresh token.
- *  - `served`      — the identical successor tokens, `expires_in` + `scope` recomputed.
- *  - `reuse`       — evidence of reuse: the window has passed, the successor has
- *                    itself been rotated (an older token in the chain), or no
- *                    successor was ever recorded (rotated before this rule).
+ *  - `served`      — the identical successor tokens, `expires_in` + `scope`
+ *                    recomputed. `extended` marks a first-party re-serve made
+ *                    past the strict 60 s window (the 24 h unused-successor rule).
+ *  - `reuse`       — evidence of reuse ({@link OAuthRefreshReuseEvidence}): the
+ *                    window has passed, the successor has itself been rotated
+ *                    (an older token in the chain), no successor was ever
+ *                    recorded (rotated before this rule), or — first-party, past
+ *                    the strict window — the successor access token was used.
  *  - `unavailable` — no evidence of reuse, but the server cannot re-serve the
  *                    pair (envelope gone or unreadable, access row gone, grant or
  *                    user no longer active). Refused WITHOUT revoking.
  */
 type RefreshGraceOutcome =
-  | { kind: 'served'; response: OAuthTokenResponse }
-  | { kind: 'reuse' }
+  | { kind: 'served'; response: OAuthTokenResponse; extended: boolean }
+  | { kind: 'reuse'; evidence: OAuthRefreshReuseEvidence }
   | { kind: 'unavailable' };
 
 function mint(prefix: string): { token: string; tokenHash: string } {
@@ -456,10 +526,21 @@ function emptyEffectiveScope(): ApiError {
  * JUST rotated — a lost response, or the losing side of two concurrent
  * refreshes — returns the identical successor pair (with `expires_in` and
  * `scope` recomputed), as long as that successor has not itself been rotated and the
- * same client authenticates. Any other reuse — past the window, or of an older
- * token in the chain — is treated as theft and revokes the token's FAMILY (RFC
- * 9700 §4.14.2), not the grant. A concurrent loser never revokes: it either
- * receives the winner's pair or a plain INVALID_GRANT.
+ * same client authenticates. For an official first-party app (§16 2026-10-29)
+ * the re-serve extends to `OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS`
+ * (24 h) as long as the successor pair was never used — successor refresh
+ * unconsumed AND successor access token never authenticated (`first_used_at`,
+ * migration 0121, stamped by {@link OAuthService.authenticateToken}) — so a
+ * lost answer retried hours later (a killed process, a dead network) never
+ * signs the phone out. Any other reuse — past the window, of an older token in
+ * the chain, or of a token whose successor somebody already used — is treated
+ * as theft and revokes the token's FAMILY (RFC 9700 §4.14.2), not the grant:
+ * audited `oauth.token_family_revoked` with reason `refresh_reuse` and the
+ * failed check as `evidence` ({@link OAuthRefreshReuseEvidence}). A revoked
+ * family or grant is refused before any re-serve is considered, so it is never
+ * handed a pair. A concurrent loser never revokes: it either receives the
+ * winner's pair or a plain INVALID_GRANT. Refresh expiry slides on every
+ * rotation: 90 days first-party, 30 days third-party.
  *
  * Token families (§16 2026-10-29, migration 0119). One grant per client+user
  * serves every install of the app, so the grant is too coarse a unit for
@@ -472,6 +553,13 @@ function emptyEffectiveScope(): ApiError {
  * pre-family code during the rollout) belongs to the legacy family that IS the
  * grant: it is live while the grant is, and revoking it is grant-wide — the
  * exact pre-family semantics, so both code versions coexist during a deploy.
+ *
+ * Credential events (§16 2026-10-29). A password change or reset ends EVERY
+ * grant of the user (and so every family on them). "Sign out everywhere" ends
+ * every first-party grant except the caller's own; called from an official
+ * app's bearer it also ends every OTHER install on that caller grant (reason
+ * `sign_out_everywhere`) — moving the caller's chain into a fresh family first
+ * when it shares one — so exactly the calling install stays signed in.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   const { repo, audit, redis, userRepo, events, logger, recordEncryption } = deps;
@@ -623,6 +711,8 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     grantId: string;
     familyIds: readonly string[];
     reason: OAuthTokenFamilyRevokeReason;
+    /** `refresh_reuse` only: which check of the re-serve rule failed. */
+    evidence?: OAuthRefreshReuseEvidence;
     clientId: string | null;
     ip: string | null;
   }): Promise<void> {
@@ -645,6 +735,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
             ...(input.clientId ? { clientId: input.clientId } : {}),
             familyId,
             reason: input.reason,
+            ...(input.evidence ? { evidence: input.evidence } : {}),
           },
         },
         { userId: input.userId, grantId: input.grantId, familyId },
@@ -664,6 +755,8 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     grantId: string;
     familyId: string | null;
     reason: OAuthTokenFamilyRevokeReason;
+    /** `refresh_reuse` only: recorded as `meta.evidence` on either audit row. */
+    evidence?: OAuthRefreshReuseEvidence;
     clientId: string | null;
     ip: string | null;
   }): Promise<void> {
@@ -686,6 +779,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           meta: {
             ...(input.clientId ? { clientId: input.clientId } : {}),
             reason: input.reason,
+            ...(input.evidence ? { evidence: input.evidence } : {}),
             legacyFamily: true,
           },
         },
@@ -706,6 +800,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       grantId: input.grantId,
       familyIds: [revoked.id],
       reason: input.reason,
+      evidence: input.evidence,
       clientId: input.clientId,
       ip: input.ip,
     });
@@ -746,12 +841,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     return { client, scopes };
   }
 
-  function prepareTokenPair(scopes: ApiKeyScope[]): PreparedTokenPair {
+  /**
+   * Mint a fresh pair. The refresh expiry SLIDES: every pair — the code
+   * exchange and every rotation — gets a full fresh idle lifetime from now,
+   * 90 days for an official first-party app and 30 days for a third-party one
+   * ({@link oauthRefreshTokenTtlSeconds}, §16 2026-10-29).
+   */
+  function prepareTokenPair(scopes: ApiKeyScope[], firstParty: boolean): PreparedTokenPair {
     const issued = now();
     const access = mint(OAUTH_ACCESS_TOKEN_PREFIX);
     const refresh = mint(OAUTH_REFRESH_TOKEN_PREFIX);
     const accessExpires = new Date(issued.getTime() + OAUTH_ACCESS_TOKEN_TTL_SECONDS * 1000);
-    const refreshExpires = new Date(issued.getTime() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000);
+    const refreshExpires = new Date(
+      issued.getTime() + oauthRefreshTokenTtlSeconds(firstParty) * 1000,
+    );
     return {
       issuedAt: issued,
       accessToken: {
@@ -776,7 +879,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   /** Seal a rotation's successor response for the grace window (secretBox v2). */
   function sealRefreshGrace(pair: PreparedTokenPair, ids: OAuthRefreshRotationIds): string {
     const envelope: RefreshGraceEnvelope = {
-      v: 1,
+      v: 2,
       tokenId: ids.tokenId,
       successorId: ids.successorId,
       accessTokenId: ids.accessTokenId,
@@ -804,12 +907,23 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
    * already authenticated `client` and matched it to the grant; this re-checks
    * the grant and user from `lookup` (fresh for a concurrent loser) and serves
    * the identical successor pair only if ALL hold:
-   *   - the token was consumed at most OAUTH_REFRESH_TOKEN_GRACE_SECONDS ago;
+   *   - the token was consumed at most the client's window ago —
+   *     OAUTH_REFRESH_TOKEN_GRACE_SECONDS (60 s) for everyone, extended to
+   *     OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS (24 h) for an official
+   *     first-party app ({@link oauthRefreshReplayWindowSeconds});
    *   - its recorded successor exists and is unconsumed (it is the immediately
    *     previous token — never a grandparent);
    *   - the envelope opens under the keyring and names exactly this row, this
    *     successor and the successor's stored hash;
-   *   - the successor's access row still exists on this grant and is unexpired.
+   *   - the successor's access row still exists on this grant;
+   *   - inside the strict 60 s window: that access token is unexpired (#2065's
+   *     rule, unchanged — a race or a lost answer is never punished, even if
+   *     the winner already used its access token);
+   *   - past the strict window (first-party only): the pair was NEVER USED —
+   *     the successor access token has never authenticated a request
+   *     (`first_used_at IS NULL`) and the envelope was sealed by code that
+   *     records that (v2). Its access token may have lapsed by then; the answer
+   *     then says `expires_in: 0` next to the live successor refresh token.
    * The answer is the identical tokens with `expires_in` and `scope` recomputed
    * for this instant. Nothing here writes; the caller decides what a
    * non-`served` outcome costs.
@@ -824,12 +938,23 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return { kind: 'unavailable' };
     }
     if (!token.consumedAt) return { kind: 'unavailable' };
-    if (at.getTime() - token.consumedAt.getTime() > REFRESH_GRACE_MS) return { kind: 'reuse' };
+    const elapsedMs = at.getTime() - token.consumedAt.getTime();
+    // `client` IS the grant's client here (checked above), so its flag is the
+    // token's own client's flag — the same one the repository's read path and
+    // sweeps key the envelope's lifetime on.
+    const windowMs = oauthRefreshReplayWindowSeconds(client.isFirstParty) * 1000;
+    if (elapsedMs > windowMs) return { kind: 'reuse', evidence: 'window_passed' };
     if (!token.successorId || !successor || successor.id !== token.successorId) {
-      return { kind: 'reuse' };
+      return { kind: 'reuse', evidence: 'no_successor' };
     }
-    if (successor.consumedAt) return { kind: 'reuse' };
-    if (!token.successorEnvelope) return { kind: 'unavailable' };
+    if (successor.consumedAt) return { kind: 'reuse', evidence: 'successor_rotated' };
+    // Past the strict window only a pair the pre-0121 code sealed (and dropped
+    // after 60 s) can lack its envelope here: "never used" is unprovable — reuse.
+    if (!token.successorEnvelope) {
+      return elapsedMs > REFRESH_GRACE_MS
+        ? { kind: 'reuse', evidence: 'legacy_envelope' }
+        : { kind: 'unavailable' };
+    }
 
     const sealed = openRefreshGrace(token.successorEnvelope);
     if (!sealed) {
@@ -848,6 +973,10 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     ) {
       return { kind: 'unavailable' };
     }
+    // Past the strict window only the first-party unused-successor rule can
+    // serve, and only for a pair whose first use would have been recorded.
+    const extended = elapsedMs > REFRESH_GRACE_MS;
+    if (extended && sealed.v !== 2) return { kind: 'reuse', evidence: 'legacy_envelope' };
     // Joins through the grant (revoked ⇒ absent) and the user, so this is also
     // the freshest grant/user check before anything leaves the server.
     const access = await repo.findAccessTokenByHash(hashToken(sealed.accessToken));
@@ -859,8 +988,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     ) {
       return { kind: 'unavailable' };
     }
-    const expiresIn = Math.floor((access.token.expiresAt.getTime() - at.getTime()) / 1000);
-    if (expiresIn <= 0) return { kind: 'unavailable' };
+    if (extended && access.token.firstUsedAt !== null) {
+      return { kind: 'reuse', evidence: 'successor_access_used' };
+    }
+    const remaining = Math.floor((access.token.expiresAt.getTime() - at.getTime()) / 1000);
+    if (!extended && remaining <= 0) return { kind: 'unavailable' };
+    const expiresIn = Math.max(0, remaining);
     // The TOKENS are re-served verbatim, but what they are advertised to carry
     // is recomputed exactly like `expires_in`: the sealed scope intersected with
     // what a fresh refresh would mint NOW (the grant clamped to the app's current
@@ -877,6 +1010,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     if (advertised.length === 0) return { kind: 'unavailable' };
     return {
       kind: 'served',
+      extended,
       response: {
         access_token: sealed.accessToken,
         token_type: 'Bearer',
@@ -890,13 +1024,15 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   /**
    * Audit a grace re-serve. `via` separates a re-presented token (`replay` —
    * usually a lost answer, but also what a thief inside the window looks like)
-   * from the losing side of a concurrent refresh (`concurrent`).
+   * from the losing side of a concurrent refresh (`concurrent`). A first-party
+   * re-serve past the strict window adds `window: 'first_party_24h'`.
    */
   function recordGraceReplay(
     lookup: OAuthRefreshTokenLookup,
     client: OAuthClientLookupRow,
     ip: string | null,
     via: 'replay' | 'concurrent',
+    extended: boolean,
   ): Promise<void> {
     return audit.record({
       actorId: lookup.grant.userId,
@@ -904,7 +1040,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       targetType: 'oauth_grant',
       targetId: lookup.grant.id,
       ip,
-      meta: { clientId: client.clientId, via },
+      meta: extended
+        ? { clientId: client.clientId, via, window: 'first_party_24h' }
+        : { clientId: client.clientId, via },
     });
   }
 
@@ -913,8 +1051,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     grantId: string,
     familyId: string,
     scopes: ApiKeyScope[],
+    firstParty: boolean,
   ): Promise<OAuthTokenResponse> {
-    const pair = prepareTokenPair(scopes);
+    const pair = prepareTokenPair(scopes, firstParty);
     return Promise.all([
       store.createAccessToken({
         grantId,
@@ -1254,6 +1393,104 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       });
     },
 
+    async revokeGrantsForCredentialEvent({
+      userId,
+      reason,
+      firstPartyOnly,
+      exceptGrantId,
+      siblingFamilies,
+      ip,
+      actorId,
+      source,
+    }) {
+      // IDEMPOTENCY KEY: the grant id (`revoked_at IS NULL` in the repository),
+      // and the family id for sibling families, so each grant and family is
+      // invalidated and audited exactly once however often the event replays.
+      // Failures propagate: the caller's credential change must not answer 200
+      // while a grant or install it promised to end is still live.
+      const {
+        grants: revoked,
+        families,
+        keptClientId,
+        keptFamilyId,
+        orphansSwept,
+      } = await repo.revokeGrantsForCredentialEvent({
+        userId,
+        firstPartyOnly,
+        exceptGrantId,
+        siblingFamilies,
+        revokedAt: now(),
+      });
+      if (siblingFamilies && keptClientId && keptFamilyId === null) {
+        // Fail-safe branch of the repository: the caller's chain could not be
+        // told apart from its siblings, so it was signed out with them.
+        logger?.warn(
+          { userId, grantId: exceptGrantId },
+          'oauth sign-out-everywhere could not isolate the calling install; it was signed out too',
+        );
+      }
+      // The caller grant's other installs: per family, its sockets drop and an
+      // `oauth.token_family_revoked` row is written (log-and-continue, like the
+      // grant rows below — the revoke is already committed).
+      if (exceptGrantId && orphansSwept) {
+        // Sockets of no-family chains carry no family, so a family-narrowed
+        // event never matches them: drop every socket of the kept grant now
+        // (the caller's simply reconnects with its live token) instead of
+        // waiting for the 30 s revalidation sweep.
+        await publishInvalidation({
+          userId,
+          kind: 'oauth',
+          credentialId: exceptGrantId,
+          exceptCredentialId: null,
+        });
+      }
+      if (exceptGrantId && families.length > 0) {
+        await announceFamilyRevocations({
+          userId,
+          grantId: exceptGrantId,
+          familyIds: families.map((family) => family.id),
+          reason: 'sign_out_everywhere',
+          clientId: keptClientId,
+          ip: ip ?? null,
+        });
+      }
+      // Every socket first (each publish is already best-effort), then the
+      // audit trail — one row per grant, naming the app and the event.
+      await Promise.all(
+        revoked.map(({ grantId }) =>
+          publishInvalidation({
+            userId,
+            kind: 'oauth',
+            credentialId: grantId,
+            exceptCredentialId: null,
+          }),
+        ),
+      );
+      // The revoke above is fail-closed (it propagates). The audit trail
+      // after it is not: the grants are already revoked, so a failed row is
+      // logged loudly and the loop continues — a 500 here would lose the
+      // remaining rows for good (a retry revokes nothing more) and skip the
+      // caller's own password audit and the admin temp-password e-mail.
+      for (const { grantId, clientId } of revoked) {
+        try {
+          await audit.record({
+            actorId: actorId ?? userId,
+            action: AuditAction.OAuthGrantRevoked,
+            targetType: 'oauth_grant',
+            targetId: grantId,
+            ip: ip ?? null,
+            meta: source ? { clientId, reason, source } : { clientId, reason },
+          });
+        } catch (err) {
+          logger?.warn(
+            { err, userId, grantId, reason },
+            'oauth credential-event grant revocation AUDIT GAP: grant revoked but audit write failed',
+          );
+        }
+      }
+      return revoked.length;
+    },
+
     async getAuthorizationDetails(query) {
       const { client, scopes } = await validateAuthorize({
         clientId: query.client_id,
@@ -1358,6 +1595,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       // while a suspension cleanup is retrying.
       if (!found || found.user.status !== 'active') return null;
       if (found.token.expiresAt.getTime() <= now().getTime()) return null;
+
+      // ── first_used_at (§16 2026-10-29, migration 0121) ──────────────────────
+      // The ONE writer: this is the choke point for both the HTTP bearer
+      // middleware and the realtime handshake. Once per token, never per
+      // request — the row we just read already says whether it was stamped, so
+      // only the first authentication pays the write (and a concurrent second
+      // one is a no-op UPDATE under the `first_used_at IS NULL` guard). Fail
+      // closed: if the stamp cannot be written the request is rejected, because
+      // an unrecorded use would let the first-party re-serve hand the same pair
+      // to a second holder.
+      if (found.token.firstUsedAt === null) {
+        await repo.markAccessTokenFirstUsed(found.token.id, now());
+      }
+      // ─────────────────────────────────────────────────────────────────────────
 
       // Throttle the grant lastUsedAt write, mirroring the personal-key path.
       const throttleKey = `oauth:touched:${found.grant.id}`;
@@ -1537,7 +1788,10 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         return {
           // The code's token carries THIS consent's scopes; a later refresh
           // mints from the (union) grant, capped by the app's current ceiling.
-          tokens: await issueTokenPair(exchange, grantId, family.id, scopes),
+          // The first-party flag rides on the family-minted pair: it selects
+          // the 90-day sliding refresh lifetime and the v2 (first-use-tracked)
+          // grace envelope its rotations will seal (§16 2026-10-29).
+          tokens: await issueTokenPair(exchange, grantId, family.id, scopes, client.isFirstParty),
           grantId,
           familyId: family.id,
           retiredFamilyIds: retired.map((row) => row.id),
@@ -1597,29 +1851,35 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     if (found.token.consumedAt) {
       // An emptied ceiling retires the grant BEFORE anything is re-served (#1985):
       // a grace replay must never hand out a pair the exchange itself would now
-      // refuse. Applied only inside the window — outside it this is plain reuse,
-      // which keeps its INVALID_GRANT answer below (and revokes the grant too).
-      const inWindow = now().getTime() - found.token.consumedAt.getTime() <= REFRESH_GRACE_MS;
+      // refuse. Applied only inside the client's window (24 h first-party, 60 s
+      // otherwise) — outside it this is plain reuse, which keeps its
+      // INVALID_GRANT answer below (and revokes the grant too).
+      const inWindow =
+        now().getTime() - found.token.consumedAt.getTime() <=
+        oauthRefreshReplayWindowSeconds(client.isFirstParty) * 1000;
       if (inWindow && scopes.length === 0) {
         await retireEmptyScopeGrant({ grant: found.grant, client, ip });
         throw emptyEffectiveScope();
       }
       const grace = await replayWithinGrace(found, client);
       if (grace.kind === 'served') {
-        await recordGraceReplay(found, client, ip, 'replay');
+        await recordGraceReplay(found, client, ip, 'replay', grace.extended);
         return grace.response;
       }
       if (grace.kind === 'reuse') {
-        // Reuse past the window, or of an older token in the chain, is treated
+        // Reuse past the window, of an older token in the chain, or (first-party,
+        // past 60 s) of a token whose successor somebody already used, is treated
         // as a compromise (RFC 6819 §5.2.2.3) — of THIS install's chain: revoke
         // its token family, not the grant (RFC 9700 §4.14.2), so every other
         // install keeps working. A legacy NULL-family chain still revokes the
-        // grant, which is what its family is.
+        // grant, which is what its family is. Either audit row carries the
+        // failed check as `meta.evidence`.
         await revokeTokenFamily({
           userId: found.grant.userId,
           grantId: found.grant.id,
           familyId: found.token.familyId,
           reason: 'refresh_reuse',
+          evidence: grace.evidence,
           clientId: client.clientId,
           ip,
         });
@@ -1645,7 +1905,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       await retireEmptyScopeGrant({ grant: found.grant, client, ip });
       throw emptyEffectiveScope();
     }
-    const pair = prepareTokenPair(scopes);
+    const pair = prepareTokenPair(scopes, client.isFirstParty);
     const rotation = await repo.rotateRefreshToken({
       tokenId: found.token.id,
       grantId: found.grant.id,
@@ -1673,7 +1933,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         ? await replayWithinGrace(rotation.current, client)
         : ({ kind: 'unavailable' } as const);
       if (grace.kind === 'served' && rotation.current) {
-        await recordGraceReplay(rotation.current, client, ip, 'concurrent');
+        await recordGraceReplay(rotation.current, client, ip, 'concurrent', grace.extended);
         return grace.response;
       }
       throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
@@ -1693,19 +1953,19 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   /**
    * Best-effort, AFTER the rotation committed: null up to
    * {@link POST_ROTATION_ENVELOPE_SWEEP_BATCH} envelopes anywhere on the
-   * instance whose window has passed. A sealed pair on a row nobody re-reads
-   * and whose successor never rotates (a phone that got its answer and went
-   * idle) would otherwise sit at rest until the daily sweep — and the nightly
-   * dump runs before that. Any refresh traffic now bounds that to minutes.
-   * Served by the partial live-envelope index; idempotent; a failure here is
-   * logged and never fails the refresh that already succeeded.
+   * instance whose window has passed at `rotatedAt` — each row's OWN window
+   * (60 s third-party, 24 h first-party; the repository applies it per row, so
+   * a first-party pair that may still be re-served is never taken). A sealed
+   * pair on a row nobody re-reads and whose successor never rotates (a phone
+   * that got its answer and went idle) would otherwise sit at rest until the
+   * daily sweep — and the nightly dump runs before that. Any refresh traffic
+   * now bounds that to minutes past its window. Served by the partial
+   * live-envelope index; idempotent; a failure here is logged and never fails
+   * the refresh that already succeeded.
    */
   async function sweepExpiredGraceEnvelopes(rotatedAt: Date): Promise<void> {
     try {
-      await repo.clearExpiredSuccessorEnvelopes(
-        new Date(rotatedAt.getTime() - REFRESH_GRACE_MS),
-        POST_ROTATION_ENVELOPE_SWEEP_BATCH,
-      );
+      await repo.clearExpiredSuccessorEnvelopes(rotatedAt, POST_ROTATION_ENVELOPE_SWEEP_BATCH);
     } catch (err) {
       logger?.warn({ err }, 'oauth post-rotation grace-envelope sweep failed');
     }

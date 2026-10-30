@@ -439,7 +439,10 @@ export function parseBearerScopeDenialReason(
  *  - `logout`          — the install's own bearer `POST /auth/logout`;
  *  - `revoke_endpoint` — RFC 7009 `POST /oauth/revoke` with one of its tokens;
  *  - `relogin`         — a new code exchange carried the same `instance_id` on
- *                        the same grant, retiring that install's previous family.
+ *                        the same grant, retiring that install's previous family;
+ *  - `sign_out_everywhere` — `POST /auth/sessions/revoke-others` from an official
+ *                        app's bearer: every OTHER family on the caller's own
+ *                        grant (migration 0121 widened the CHECK).
  * The concurrent-refresh loser never revokes (PR #2065), so it has no reason.
  */
 export const OAUTH_TOKEN_FAMILY_REVOKE_REASONS = [
@@ -447,6 +450,7 @@ export const OAUTH_TOKEN_FAMILY_REVOKE_REASONS = [
   'logout',
   'revoke_endpoint',
   'relogin',
+  'sign_out_everywhere',
 ] as const;
 export type OAuthTokenFamilyRevokeReason = (typeof OAUTH_TOKEN_FAMILY_REVOKE_REASONS)[number];
 
