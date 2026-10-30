@@ -36,7 +36,8 @@ export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
  * concurrent refreshes) returns the IDENTICAL successor pair it was rotated
  * into — `expires_in` and `scope` recomputed — provided that successor has not itself
  * been rotated yet. Reuse past the window, or of any older token in the chain,
- * is still treated as theft and revokes the grant. The re-servable pair is never
+ * is still treated as theft and revokes that install's token family (the grant
+ * and its other installs stay signed in, §16 2026-10-29). The re-servable pair is never
  * SERVED past this window. At rest it is encrypted and is nulled when the
  * successor rotates, on any read past the window, after the next successful
  * rotation anywhere on the instance, and by the daily retention sweep — so on
@@ -444,6 +445,14 @@ export const oauthDenyResponseSchema = z.object({ redirectTo: z.string() }).stri
 export type OAuthDenyResponse = z.infer<typeof oauthDenyResponseSchema>;
 
 // ── Token endpoint (public, machine-to-machine) ─────────────────────────────
+/**
+ * Shape of the optional `instance_id` an install sends on its code exchange
+ * (§16 2026-10-29): 16–64 RFC 3986 unreserved characters — a random install id
+ * the app generates once and keeps (e.g. a base64url-encoded 16-byte value).
+ * Not a secret and never a device fingerprint; the server only compares it.
+ */
+export const OAUTH_INSTANCE_ID_PATTERN = /^[A-Za-z0-9._~-]{16,64}$/;
+
 export const oauthTokenRequestSchema = z.discriminatedUnion('grant_type', [
   z
     .object({
@@ -453,6 +462,14 @@ export const oauthTokenRequestSchema = z.discriminatedUnion('grant_type', [
       client_id: z.string().trim().min(1),
       client_secret: z.string().trim().min(1).optional(),
       code_verifier: z.string().trim().min(43).max(128).optional(),
+      /**
+       * Optional per-install id. Every code exchange starts a NEW token family
+       * (one install's revocation unit); with an `instance_id`, a re-login on
+       * the same grant also retires that install's previous family, so a
+       * reinstall or forgot-PIN never leaves an orphan behind. Without one the
+       * old family simply expires with its refresh token.
+       */
+      instance_id: z.string().regex(OAUTH_INSTANCE_ID_PATTERN).optional(),
     })
     .strict(),
   z
@@ -465,6 +482,24 @@ export const oauthTokenRequestSchema = z.discriminatedUnion('grant_type', [
     .strict(),
 ]);
 export type OAuthTokenRequest = z.infer<typeof oauthTokenRequestSchema>;
+
+/**
+ * `POST /oauth/revoke` — RFC 7009 token revocation, client-authenticated exactly
+ * like `/oauth/token`. DEVIATION from RFC 7009 §2.1: the body is JSON, the same
+ * as this server's token endpoint, not `application/x-www-form-urlencoded`.
+ * `token_type_hint` is only a hint — the server classifies the token by its
+ * `bto_` / `btr_` prefix. Revokes the presented token's per-install family; an
+ * unknown, foreign-client or already-dead token answers 200 all the same.
+ */
+export const oauthRevokeRequestSchema = z
+  .object({
+    token: z.string().trim().min(1).max(512),
+    token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
+    client_id: z.string().trim().min(1),
+    client_secret: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type OAuthRevokeRequest = z.infer<typeof oauthRevokeRequestSchema>;
 
 export const oauthTokenResponseSchema = z
   .object({

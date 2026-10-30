@@ -2,6 +2,7 @@ import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
+import type { OAuthTokenFamilyRevokeReason } from '../../services/audit/auditService';
 import type { Database } from '../db';
 import {
   oauthAccessTokens,
@@ -9,12 +10,14 @@ import {
   oauthClients,
   oauthGrants,
   oauthRefreshTokens,
+  oauthTokenFamilies,
   users,
   type OAuthAccessTokenRow,
   type OAuthAuthCodeRow,
   type OAuthClientRow,
   type OAuthGrantRow,
   type OAuthRefreshTokenRow,
+  type OAuthTokenFamilyRow,
   type UserRow,
 } from '../schema';
 
@@ -29,7 +32,9 @@ import {
  * are consumed with an atomic `UPDATE … WHERE consumed_at IS NULL RETURNING`, so
  * a concurrent double-exchange can only ever win once. Every token lookup joins
  * through the owning grant and rejects a revoked one — that is what makes a grant
- * revocation cut off access and refresh tokens instantly.
+ * revocation cut off access and refresh tokens instantly. Tokens also hang off a
+ * per-install TOKEN FAMILY (migration 0119): revoking a family cuts off only that
+ * install's tokens; a legacy NULL-family row's family is the grant itself.
  */
 export interface CreateOAuthClientInput {
   /** Null for an admin-managed first-party app (owned by the system, not a user). */
@@ -138,6 +143,15 @@ export interface OAuthAuthorizationCodeExchange {
   code: OAuthAuthCodeRow;
   user: UserRow;
   consumeCode(): Promise<OAuthAuthCodeRow | undefined>;
+  /**
+   * The user's active grant for this client, taken `FOR UPDATE`: the exchange
+   * read-modify-writes its scopes (the re-login UNION, §16 2026-10-29), so a
+   * concurrent first-party reconcile — which locks the same grant rows — must
+   * not interleave and lose its scope additions. Lock order code → user →
+   * grant → family → token rows (the grant → family → token-rows order every
+   * OAuth writer shares, see `rotateRefreshToken`), never the client row, so
+   * it cannot cycle with the reconcile's client → grants order.
+   */
   findActiveGrant(clientId: string): Promise<OAuthGrantRow | undefined>;
   createGrant(input: {
     clientId: string;
@@ -145,22 +159,53 @@ export interface OAuthAuthorizationCodeExchange {
     scopes: string[];
   }): Promise<OAuthGrantRow>;
   updateGrantScopes(grantId: string, scopes: string[]): Promise<void>;
+  /** Start a NEW per-install token family on `grantId` (every code exchange does). */
+  createFamily(input: { grantId: string; instanceId: string | null }): Promise<OAuthTokenFamilyRow>;
+  /**
+   * Retire every LIVE family on `grantId` carrying `instanceId` (reason
+   * `relogin`) and drop their sealed grace envelopes; resolves to the retired
+   * rows. Runs under the grant lock before {@link createFamily}, so the live
+   * `(grant_id, instance_id)` partial unique index can never be violated by a
+   * re-login. IDEMPOTENCY KEY: `revoked_at IS NULL` — a family retires once.
+   */
+  retireInstanceFamilies(input: {
+    grantId: string;
+    instanceId: string;
+    at: Date;
+  }): Promise<OAuthTokenFamilyRow[]>;
   createAccessToken(input: {
     grantId: string;
+    familyId: string;
     tokenHash: string;
     scopes: string[];
     expiresAt: Date;
   }): Promise<OAuthAccessTokenRow>;
   createRefreshToken(input: {
     grantId: string;
+    familyId: string;
     tokenHash: string;
     expiresAt: Date;
   }): Promise<OAuthRefreshTokenRow>;
 }
 
+/**
+ * One token row resolved for RFC 7009 revocation: the ids a revoke needs,
+ * nothing secret. `familyId` null = a legacy row (the family is the grant).
+ */
+export interface OAuthRevocableToken {
+  grantId: string;
+  userId: string;
+  familyId: string | null;
+}
+
 export interface RotateOAuthRefreshTokenInput {
   tokenId: string;
   grantId: string;
+  /**
+   * The consumed token's family, inherited by both successor rows (null = a
+   * legacy chain, which stays legacy until the install signs in again).
+   */
+  familyId: string | null;
   rotatedAt: Date;
   accessToken: {
     tokenHash: string;
@@ -203,6 +248,8 @@ export interface OAuthRefreshTokenLookup {
   user: UserRow;
   /** The row `token.successorId` points at, while it still exists. */
   successor: OAuthRefreshSuccessorRow | null;
+  /** The token's family (any state); null for a legacy row (the family is the grant). */
+  family: OAuthTokenFamilyRow | null;
 }
 
 /**
@@ -212,10 +259,13 @@ export interface OAuthRefreshTokenLookup {
  * empty — under READ COMMITTED that consume waited on the winner's row lock, so
  * the winner's successor link and envelope are already visible. `undefined`
  * only when the row itself is gone (its grant was deleted meanwhile).
+ * `revoked`: the grant or the token's family was revoked between the caller's
+ * lookup and this transaction's lock on it; nothing was consumed or written.
  */
 export type OAuthRefreshTokenRotation =
   | { outcome: 'rotated' }
-  | { outcome: 'replayed'; current: OAuthRefreshTokenLookup | undefined };
+  | { outcome: 'replayed'; current: OAuthRefreshTokenLookup | undefined }
+  | { outcome: 'revoked' };
 
 const REFRESH_GRACE_MS = OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000;
 
@@ -246,11 +296,15 @@ async function readRefreshToken(
         consumedAt: successorTokens.consumedAt,
         expiresAt: successorTokens.expiresAt,
       },
+      // ── token families (§16 2026-10-29) ──
+      family: oauthTokenFamilies,
     })
     .from(oauthRefreshTokens)
     .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
     .innerJoin(users, eq(oauthGrants.userId, users.id))
     .leftJoin(successorTokens, eq(successorTokens.id, oauthRefreshTokens.successorId))
+    // LEFT: a legacy NULL-family row still resolves (the family is the grant).
+    .leftJoin(oauthTokenFamilies, eq(oauthTokenFamilies.id, oauthRefreshTokens.familyId))
     .where(where)
     .limit(1);
   if (!row) return undefined;
@@ -270,7 +324,48 @@ async function readRefreshToken(
     token = { ...token, successorEnvelope: null };
   }
   const successor = row.successor?.id ? row.successor : null;
-  return { token, grant: row.grant, user: row.user, successor };
+  return { token, grant: row.grant, user: row.user, successor, family: row.family ?? null };
+}
+
+/**
+ * Revoke one token family and drop the sealed grace envelopes of its refresh
+ * rows (a dead family's successor pairs must not sit at rest). Shared by the
+ * user-scoped {@link OAuthRepository.revokeFamily} and the code exchange's
+ * `relogin` retirement. IDEMPOTENCY KEY: the family id under
+ * `revoked_at IS NULL` — a family is revoked at most once, so concurrent
+ * revokers produce one row (one audit, one fan-out).
+ *
+ * LOCK ORDER: the family row, THEN its token rows — the tail of the one
+ * grant → family → token-rows order every OAuth writer follows (see
+ * `rotateRefreshToken`). A caller that also locks the grant (the code
+ * exchange) must already hold it when it gets here.
+ */
+async function revokeFamilies(
+  executor: Pick<Database, 'update'>,
+  where: SQL,
+  reason: OAuthTokenFamilyRevokeReason,
+  at: Date,
+): Promise<OAuthTokenFamilyRow[]> {
+  const revoked = await executor
+    .update(oauthTokenFamilies)
+    .set({ revokedAt: at, revokedReason: reason })
+    .where(and(where, isNull(oauthTokenFamilies.revokedAt)))
+    .returning();
+  if (revoked.length > 0) {
+    await executor
+      .update(oauthRefreshTokens)
+      .set({ successorEnvelope: null })
+      .where(
+        and(
+          inArray(
+            oauthRefreshTokens.familyId,
+            revoked.map((family) => family.id),
+          ),
+          isNotNull(oauthRefreshTokens.successorEnvelope),
+        ),
+      );
+  }
+  return revoked;
 }
 
 function createAuthorizationCodeExchange(
@@ -302,7 +397,8 @@ function createAuthorizationCodeExchange(
             isNull(oauthGrants.revokedAt),
           ),
         )
-        .limit(1);
+        .limit(1)
+        .for('update');
       return row;
     },
 
@@ -314,6 +410,27 @@ function createAuthorizationCodeExchange(
 
     async updateGrantScopes(grantId: string, scopes: string[]): Promise<void> {
       await executor.update(oauthGrants).set({ scopes }).where(eq(oauthGrants.id, grantId));
+    },
+
+    async createFamily(input): Promise<OAuthTokenFamilyRow> {
+      const [row] = await executor
+        .insert(oauthTokenFamilies)
+        .values({ grantId: input.grantId, instanceId: input.instanceId })
+        .returning();
+      if (!row) throw new Error('Failed to insert OAuth token family');
+      return row;
+    },
+
+    retireInstanceFamilies(input): Promise<OAuthTokenFamilyRow[]> {
+      return revokeFamilies(
+        executor,
+        and(
+          eq(oauthTokenFamilies.grantId, input.grantId),
+          eq(oauthTokenFamilies.instanceId, input.instanceId),
+        )!,
+        'relogin',
+        input.at,
+      );
     },
 
     async createAccessToken(input): Promise<OAuthAccessTokenRow> {
@@ -611,6 +728,115 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
+    // ── Token families (§16 2026-10-29, migration 0119) ──────────────────────
+    /**
+     * Revoke ONE per-install token family on a grant the caller owns, leaving
+     * the grant and its other families untouched. Ownership is enforced here,
+     * not by the caller: the family must sit on `grantId` AND that grant must
+     * belong to `userId` and still be active. Resolves to the revoked row, or
+     * undefined when the family is foreign, unknown or already revoked — the
+     * idempotency key is the family id under `revoked_at IS NULL`, so two
+     * concurrent revokes of one family yield exactly one row.
+     */
+    async revokeFamily(input: {
+      userId: string;
+      grantId: string;
+      familyId: string;
+      reason: OAuthTokenFamilyRevokeReason;
+      at: Date;
+    }): Promise<OAuthTokenFamilyRow | undefined> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const ownedGrant = executor
+          .select({ id: oauthGrants.id })
+          .from(oauthGrants)
+          .where(
+            and(
+              eq(oauthGrants.id, input.grantId),
+              eq(oauthGrants.userId, input.userId),
+              isNull(oauthGrants.revokedAt),
+            ),
+          );
+        const [revoked] = await revokeFamilies(
+          executor,
+          and(
+            eq(oauthTokenFamilies.id, input.familyId),
+            eq(oauthTokenFamilies.grantId, input.grantId),
+            inArray(oauthTokenFamilies.grantId, ownedGrant),
+          )!,
+          input.reason,
+          input.at,
+        );
+        return revoked;
+      });
+    },
+
+    /**
+     * RFC 7009 lookup: resolve an access (`kind: 'access'`) or refresh token by
+     * hash to the ids a revocation needs — in ANY state (expired, consumed,
+     * revoked: RFC 7009 answers them all alike) — but only when it was issued to
+     * `clientRowId`. A token of another client resolves to undefined, so the
+     * endpoint can never revoke (or reveal) another app's credentials.
+     */
+    async findTokenForRevocation(input: {
+      kind: 'access' | 'refresh';
+      tokenHash: string;
+      clientRowId: string;
+    }): Promise<OAuthRevocableToken | undefined> {
+      const ownedByClient = eq(oauthGrants.clientId, input.clientRowId);
+      if (input.kind === 'access') {
+        const [row] = await db
+          .select({
+            grantId: oauthGrants.id,
+            userId: oauthGrants.userId,
+            familyId: oauthAccessTokens.familyId,
+          })
+          .from(oauthAccessTokens)
+          .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))
+          .where(and(eq(oauthAccessTokens.tokenHash, input.tokenHash), ownedByClient))
+          .limit(1);
+        return row;
+      }
+      const [row] = await db
+        .select({
+          grantId: oauthGrants.id,
+          userId: oauthGrants.userId,
+          familyId: oauthRefreshTokens.familyId,
+        })
+        .from(oauthRefreshTokens)
+        .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
+        .where(and(eq(oauthRefreshTokens.tokenHash, input.tokenHash), ownedByClient))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * Fail-closed realtime revalidation input: the access-token row's grant and
+     * whether its family is still live. Undefined when the row is gone. A
+     * legacy NULL-family row reports `familyRevoked: false` — its liveness is
+     * the grant's, which the caller checks separately.
+     */
+    async findAccessTokenFamilyState(
+      accessTokenId: string,
+    ): Promise<{ grantId: string; familyId: string | null; familyRevoked: boolean } | undefined> {
+      const [row] = await db
+        .select({
+          grantId: oauthAccessTokens.grantId,
+          familyId: oauthAccessTokens.familyId,
+          familyRevokedAt: oauthTokenFamilies.revokedAt,
+        })
+        .from(oauthAccessTokens)
+        .leftJoin(oauthTokenFamilies, eq(oauthTokenFamilies.id, oauthAccessTokens.familyId))
+        .where(eq(oauthAccessTokens.id, accessTokenId))
+        .limit(1);
+      if (!row) return undefined;
+      return {
+        grantId: row.grantId,
+        familyId: row.familyId,
+        familyRevoked: row.familyRevokedAt !== null,
+      };
+    },
+
     /**
      * Administrative account suspension invalidates every OAuth credential the
      * user could otherwise resume with: live grants kill access/refresh tokens,
@@ -719,7 +945,17 @@ export function createOAuthRepository(db: Database) {
         .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))
         .innerJoin(users, eq(oauthGrants.userId, users.id))
         .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
-        .where(and(eq(oauthAccessTokens.tokenHash, tokenHash), isNull(oauthGrants.revokedAt)))
+        // ── token families (§16 2026-10-29): a revoked family rejects its
+        // access tokens like a revoked grant does. LEFT so a legacy NULL-family
+        // row (the family is the grant) still resolves while the grant is live.
+        .leftJoin(oauthTokenFamilies, eq(oauthTokenFamilies.id, oauthAccessTokens.familyId))
+        .where(
+          and(
+            eq(oauthAccessTokens.tokenHash, tokenHash),
+            isNull(oauthGrants.revokedAt),
+            isNull(oauthTokenFamilies.revokedAt),
+          ),
+        )
         .limit(1);
       return row;
     },
@@ -763,6 +999,42 @@ export function createOAuthRepository(db: Database) {
     ): Promise<OAuthRefreshTokenRotation> {
       return db.transaction(async (tx) => {
         const executor = tx as unknown as Database;
+        // ── LOCK ORDER: grant → family → token rows (§16 2026-10-29) ─────────
+        // Every OAuth writer that touches more than one of these takes them in
+        // this order: the code exchange (`findActiveGrant FOR UPDATE` → its
+        // `relogin` retire → token inserts), every family revoke (family row →
+        // that family's token rows, `revokeFamilies`) and this rotation. A
+        // rotation that took the family LAST — after locking the consumed row
+        // and its predecessor — deadlocked against a concurrent revoke, which
+        // holds the family and then wants exactly those token rows (and a
+        // deadlock victim on the revoke side is a logout that answered 500
+        // and left the family live). So both rows are locked up front, and the
+        // same two statements refuse a grant or family revoked meanwhile: no
+        // pair is ever minted into a dead grant or family.
+        const [liveGrant] = await executor
+          .update(oauthGrants)
+          .set({ lastUsedAt: input.rotatedAt })
+          .where(and(eq(oauthGrants.id, input.grantId), isNull(oauthGrants.revokedAt)))
+          .returning({ id: oauthGrants.id });
+        if (!liveGrant) return { outcome: 'revoked' };
+        if (input.familyId) {
+          // An UPDATE, not a bare read: it takes the family's row lock (the same
+          // lock a revoke takes) and re-checks `revoked_at` on the newest row
+          // version once a concurrent revoke commits.
+          const [liveFamily] = await executor
+            .update(oauthTokenFamilies)
+            .set({ lastUsedAt: input.rotatedAt })
+            .where(
+              and(
+                eq(oauthTokenFamilies.id, input.familyId),
+                eq(oauthTokenFamilies.grantId, input.grantId),
+                isNull(oauthTokenFamilies.revokedAt),
+              ),
+            )
+            .returning({ id: oauthTokenFamilies.id });
+          if (!liveFamily) return { outcome: 'revoked' };
+        }
+
         const [consumed] = await executor
           .update(oauthRefreshTokens)
           .set({ consumedAt: input.rotatedAt })
@@ -787,15 +1059,16 @@ export function createOAuthRepository(db: Database) {
           return { outcome: 'replayed', current };
         }
 
+        // Both successor rows inherit the consumed token's family (§16 2026-10-29).
         const [accessToken] = await executor
           .insert(oauthAccessTokens)
-          .values({ grantId: input.grantId, ...input.accessToken })
+          .values({ grantId: input.grantId, familyId: input.familyId, ...input.accessToken })
           .returning({ id: oauthAccessTokens.id });
         if (!accessToken) throw new Error('Failed to insert OAuth access token');
 
         const [refreshToken] = await executor
           .insert(oauthRefreshTokens)
-          .values({ grantId: input.grantId, ...input.refreshToken })
+          .values({ grantId: input.grantId, familyId: input.familyId, ...input.refreshToken })
           .returning({ id: oauthRefreshTokens.id });
         if (!refreshToken) throw new Error('Failed to insert OAuth refresh token');
 
@@ -825,10 +1098,7 @@ export function createOAuthRepository(db: Database) {
             ),
           );
 
-        await executor
-          .update(oauthGrants)
-          .set({ lastUsedAt: input.rotatedAt })
-          .where(eq(oauthGrants.id, input.grantId));
+        // (grant + family `last_used_at` were stamped by the lock statements above.)
         return { outcome: 'rotated' };
       });
     },

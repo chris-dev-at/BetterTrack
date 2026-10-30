@@ -1484,7 +1484,7 @@ describe('#361 self-revocation on logout', () => {
     expect(row!.revokedAt).not.toBeNull();
   });
 
-  it('a delegated OAuth token revokes its OWN grant via POST /auth/logout', async () => {
+  it('a delegated OAuth token revokes its OWN install (token family) via POST /auth/logout', async () => {
     // `grantId` is scoped to (this test's user × this test's client) inside
     // {@link mintOAuthToken} — it can never resolve to a different test's grant,
     // which was the #514 order/timing failure mode. The assertions below are on
@@ -1498,7 +1498,9 @@ describe('#361 self-revocation on logout', () => {
     const out = await request(harness.app).post('/api/v1/auth/logout').set(bearer(token));
     expect(out.status).toBe(200);
 
-    // Revoking the grant instantly kills the access token it minted.
+    // Revoking the install's token family instantly kills the access token it
+    // minted (§16 2026-10-29) — the grant itself stays, for the user's other
+    // installs of the same app.
     const after = await request(harness.app).get('/api/v1/portfolios').set(bearer(token));
     expect(after.status).toBe(401);
     expect(after.body.error.code).toBe('API_KEY_INVALID');
@@ -1510,7 +1512,70 @@ describe('#361 self-revocation on logout', () => {
     const grant = grantRows[0]!;
     expect(grant.userId).toBe(userId);
     expect(grant.clientId).toBe(clientRowId);
-    expect(grant.revokedAt).not.toBeNull();
+    expect(grant.revokedAt).toBeNull();
+    const families = await harness.db
+      .select()
+      .from(schema.oauthTokenFamilies)
+      .where(eq(schema.oauthTokenFamilies.grantId, grantId));
+    expect(families).toHaveLength(1);
+    expect(families[0]!.revokedReason).toBe('logout');
+  });
+
+  it('two installs of one app: one logs out, the other keeps calling and refreshing', async () => {
+    const first = await mintOAuthToken(['portfolio:read']);
+    // A second install of the SAME app for the SAME user: one more code
+    // exchange through the user's own session, on the reused grant.
+    const agent = await loginAgent(harness.app, first.email, first.password);
+    const [clientRow] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.id, first.clientRowId));
+    const { verifier, challenge } = pkce();
+    const approve = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({
+        client_id: clientRow!.clientId,
+        redirect_uri: REDIRECT,
+        scope: 'portfolio:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      });
+    expect(approve.status).toBe(200);
+    const code = new URL(approve.body.redirectTo as string).searchParams.get('code');
+    const second = oauthTokenResponseSchema.parse(
+      (
+        await request(harness.app).post('/api/v1/oauth/token').send({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: REDIRECT,
+          client_id: clientRow!.clientId,
+          code_verifier: verifier,
+        })
+      ).body,
+    );
+
+    // Install 1 logs out.
+    expect(
+      (await request(harness.app).post('/api/v1/auth/logout').set(bearer(first.token))).status,
+    ).toBe(200);
+    expect(
+      (await request(harness.app).get('/api/v1/portfolios').set(bearer(first.token))).status,
+    ).toBe(401);
+
+    // Install 2 keeps calling, refreshes, and keeps calling with the new token.
+    await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set(bearer(second.access_token))
+      .expect(200);
+    const refreshed = await request(harness.app).post('/api/v1/oauth/token').send({
+      grant_type: 'refresh_token',
+      refresh_token: second.refresh_token,
+      client_id: clientRow!.clientId,
+    });
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    const next = oauthTokenResponseSchema.parse(refreshed.body);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(next.access_token)).expect(200);
   });
 });
 

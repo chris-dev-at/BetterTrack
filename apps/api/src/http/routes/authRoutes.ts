@@ -269,15 +269,22 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Logout is the unified sign-out for both clients (§6.1, §6.13, #361). A cookie
   // session is destroyed and its cookie cleared. A **bearer** principal instead
   // self-revokes the credential it presented — the personal API key, or (for a
-  // delegated OAuth token) its whole grant, which instantly kills that grant's
-  // access + refresh tokens (server-side revocation, not just a local wipe). No
+  // delegated OAuth token) its OWN per-install token family, which instantly
+  // kills that install's access + refresh tokens while every other install on
+  // the same grant stays signed in (§16 2026-10-29; a legacy NULL-family token
+  // still revokes its grant). Server-side revocation, not just a local wipe. No
   // scope is required beyond a valid token: you may always revoke yourself.
   router.post('/logout', async (req, res) => {
     if (req.apiKey) {
       const userId = req.authUser!.id;
       const ip = req.ip ?? null;
       if (req.apiKey.kind === 'oauth') {
-        await ctx.oauth.revokeGrant({ userId, id: req.apiKey.id, ip });
+        await ctx.oauth.revokeOwnFamily({
+          userId,
+          grantId: req.apiKey.id,
+          familyId: req.apiKey.familyId ?? null,
+          ip,
+        });
       } else {
         await ctx.apiKeys.revoke({ userId, id: req.apiKey.id, ip });
       }

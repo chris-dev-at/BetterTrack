@@ -5,11 +5,13 @@ import {
   oauthAuthorizationDetailsQuerySchema,
   oauthClientLogoParamsSchema,
   oauthDenyRequestSchema,
+  oauthRevokeRequestSchema,
   oauthTokenRequestSchema,
   type OAuthApproveRequest,
   type OAuthAuthorizationDetailsQuery,
   type OAuthClientLogoParams,
   type OAuthDenyRequest,
+  type OAuthRevokeRequest,
   type OAuthTokenRequest,
 } from '@bettertrack/contracts';
 
@@ -62,6 +64,18 @@ export function createOAuthPublicRouter(ctx: AppContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Pragma', 'no-cache');
     res.json(tokens);
+  });
+
+  // POST /oauth/revoke — RFC 7009 token revocation (JSON body, like /token).
+  // Client-authenticated; revokes the presented token's per-install family and
+  // answers 200 for unknown / foreign / already-dead tokens alike. Same public
+  // pre-CSRF rail and general limiter as /token (mounted together in app.ts).
+  router.post('/revoke', validateBody(oauthRevokeRequestSchema), async (req, res) => {
+    const body = req.valid?.body as OAuthRevokeRequest;
+    await ctx.oauth.revokeToken({ body, ip: req.ip ?? null });
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    res.json({ ok: true });
   });
 
   return router;
