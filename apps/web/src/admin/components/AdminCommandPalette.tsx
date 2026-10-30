@@ -243,7 +243,7 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
     const announcementRows = (announcements.data?.announcements ?? [])
       .filter((announcement) =>
         [announcement.titleEn, announcement.titleDe].some((title) =>
-          title.toLowerCase().includes(needle),
+          (title ?? '').toLowerCase().includes(needle),
         ),
       )
       .slice(0, ANNOUNCEMENT_LIMIT)
@@ -252,8 +252,11 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
         to: '/admin/announcements',
         // The operator's own locale decides which title is shown; the match ran
         // over both.
-        label: locale === 'de' ? announcement.titleDe : announcement.titleEn,
-        meta: locale === 'de' ? announcement.titleEn : announcement.titleDe,
+        // DE is optional since §6.19 (English is shown when it is missing).
+        label:
+          locale === 'de' ? (announcement.titleDe ?? announcement.titleEn) : announcement.titleEn,
+        meta:
+          locale === 'de' ? announcement.titleEn : (announcement.titleDe ?? announcement.titleEn),
         verb: t(`announcements.severity.${announcement.severity}`),
       }));
     built.push({

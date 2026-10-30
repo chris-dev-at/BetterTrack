@@ -86,6 +86,19 @@ function run(
   return job.handler({ data } as Job<JobPayload<'announcements.publishDue'>>, ctx());
 }
 
+/**
+ * Create a draft and publish it (§6.19.4: `active` is gone — a create is always
+ * a draft and Publish is its own transition).
+ */
+async function live(
+  service: AnnouncementService,
+  body: Parameters<AnnouncementService['create']>[0],
+  actor: { id: string },
+) {
+  const draft = await service.create(body, actor);
+  return service.publish(draft.id, actor);
+}
+
 interface Built {
   service: AnnouncementService;
   job: ReturnType<typeof createAnnouncementPublishJob>;
@@ -223,8 +236,9 @@ describe('announcements.publishDue — the window is the schedule', () => {
 
     let now = new Date('2026-02-01T08:00:00.000Z');
     const built = build(() => now);
-    const created = await built.service.create(
-      { ...BODY, active: true, startsAt: '2026-02-03T09:00:00.000Z' },
+    const created = await live(
+      built.service,
+      { ...BODY, startsAt: '2026-02-03T09:00:00.000Z' },
       { id: admin.id },
     );
     const key = announcementEventKey(created.id);
@@ -258,17 +272,20 @@ describe('announcements.publishDue — the window is the schedule', () => {
     const admin = await harness.seedAdmin();
     const alice = await harness.seedUser({ email: 'stale@bt.test', username: 'staleuser' });
 
-    const now = () => new Date('2026-05-01T00:00:00.000Z');
-    const built = build(now);
-    const created = await built.service.create(
+    // Published while its window still lay ahead (publish refuses a past end),
+    // then the clock moves past `endsAt` before any sweep ran.
+    let clock = new Date('2025-12-15T00:00:00.000Z');
+    const built = build(() => clock);
+    const created = await live(
+      built.service,
       {
         ...BODY,
-        active: true,
         startsAt: '2026-01-01T00:00:00.000Z',
         endsAt: '2026-01-31T00:00:00.000Z',
       },
       { id: admin.id },
     );
+    clock = new Date('2026-05-01T00:00:00.000Z');
 
     expect(await run(built.job)).toMatchObject({ due: 0, published: 0 });
     // …and addressed directly, the way a queued job from before the window
@@ -285,8 +302,8 @@ describe('announcements.publishDue — the window is the schedule', () => {
 
     const now = () => new Date('2026-02-01T00:00:00.000Z');
     const built = build(now);
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
-    await built.service.update(created.id, { active: false }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
+    await built.service.archive(created.id, { id: admin.id });
 
     expect(await run(built.job, { announcementId: created.id })).toMatchObject({ due: 0 });
     expect(built.inserts).toHaveLength(0);
@@ -301,7 +318,7 @@ describe('announcements.publishDue — idempotency (§9)', () => {
 
     const now = () => new Date('2026-02-10T00:00:00.000Z');
     const built = build(now);
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
     const key = announcementEventKey(created.id);
 
     await run(built.job);
@@ -345,7 +362,7 @@ describe('announcements.publishDue — idempotency (§9)', () => {
       },
     });
 
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
     const key = announcementEventKey(created.id);
 
     const [first, second] = await Promise.all([
@@ -387,7 +404,7 @@ describe('announcements.publishDue — idempotency (§9)', () => {
       },
     };
     const crashing = build(now, { users: dying, fanOutPageSize: 1 });
-    const created = await crashing.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(crashing.service, { ...BODY }, { id: admin.id });
     const key = announcementEventKey(created.id);
 
     await expect(run(crashing.job)).rejects.toThrow('worker died mid-walk');
@@ -444,7 +461,7 @@ describe('announcements.publishDue — partial failure stops being a permanent r
       },
     });
 
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
     const key = announcementEventKey(created.id);
 
     const recipients = await recipientCount();
@@ -502,7 +519,6 @@ describe('announcements.publishDue — partial failure stops being a permanent r
     // this issue removes. The sweep finds nothing due either.
     const insertsAfterRetry = built.inserts.length;
     await built.service.update(created.id, { titleEn: 'Edited copy' }, { id: admin.id });
-    await built.service.update(created.id, { active: true }, { id: admin.id });
     expect(await run(built.job)).toMatchObject({ due: 0, inserted: 0 });
     expect(built.inserts).toHaveLength(insertsAfterRetry);
   });
@@ -535,18 +551,16 @@ describe('announcements.publishDue — a cancelled announcement is not published
         const id = await real.insert(input);
         if (!cancelled && second) {
           cancelled = true;
-          await sideChannel.update(second, { active: false });
+          await sideChannel.archive(second, admin.id, now());
         }
         return id;
       },
     });
 
-    const first = await built.service.create(
-      { ...BODY, titleEn: 'First', active: true },
-      { id: admin.id },
-    );
-    const cancelledRow = await built.service.create(
-      { ...BODY, titleEn: 'Second', active: true },
+    const first = await live(built.service, { ...BODY, titleEn: 'First' }, { id: admin.id });
+    const cancelledRow = await live(
+      built.service,
+      { ...BODY, titleEn: 'Second' },
       { id: admin.id },
     );
     second = cancelledRow.id;
@@ -567,11 +581,10 @@ describe('announcements.publishDue — a cancelled announcement is not published
     expect(row.deliveredCount).toBeNull();
     expect(await publishAudits(built, cancelledRow.id)).toHaveLength(0);
 
-    // And switching it back on still publishes it — a refused claim must leave
-    // the announcement re-publishable, not quietly spent.
-    await built.service.update(cancelledRow.id, { active: true }, { id: admin.id });
-    expect(await run(built.job)).toMatchObject({ due: 1, published: 1 });
-    expect(await noticeCount(alice.id, announcementEventKey(cancelledRow.id))).toBe(1);
+    // And an archived announcement is never picked up again (§6.19.4: archive
+    // is terminal) — the refused claim recorded nothing to undo.
+    expect(await run(built.job)).toMatchObject({ due: 0, published: 0 });
+    expect(await noticeCount(alice.id, announcementEventKey(cancelledRow.id))).toBe(0);
   });
 
   it('refuses the claim for an announcement switched off DURING the walk', async () => {
@@ -594,10 +607,10 @@ describe('announcements.publishDue — a cancelled announcement is not published
       },
     });
 
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
     const key = announcementEventKey(created.id);
     deactivate = async () => {
-      await built.repo.update(created.id, { active: false });
+      await built.repo.archive(created.id, admin.id, now());
     };
 
     const outcome = await built.service.publishAnnouncement(created.id);
@@ -633,15 +646,16 @@ describe('announcements.publishDue — a cancelled announcement is not published
       },
     });
 
-    const first = await built.service.create(
-      { ...BODY, titleEn: 'Opens the batch', active: true },
+    const first = await live(
+      built.service,
+      { ...BODY, titleEn: 'Opens the batch' },
       { id: admin.id },
     );
-    const straddler = await built.service.create(
+    const straddler = await live(
+      built.service,
       {
         ...BODY,
         titleEn: 'Window closes mid-batch',
-        active: true,
         endsAt: '2026-03-01T10:00:00.000Z',
       },
       { id: admin.id },
@@ -736,7 +750,7 @@ describe('announcements.publishDue — the targeted enqueue is deduped by job id
     const built = build(() => new Date(at), {
       enqueuePublish: createAnnouncementPublishEnqueuer(queues, () => at),
     });
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
 
     await built.service.update(created.id, { titleEn: 'Typo fixed' }, { id: admin.id });
     await built.service.update(created.id, { titleEn: 'Typo fixed again' }, { id: admin.id });
@@ -782,7 +796,7 @@ describe('announcements.publishDue — an operator redelivers the recipients it 
       },
     });
 
-    const created = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const created = await live(built.service, { ...BODY }, { id: admin.id });
     const key = announcementEventKey(created.id);
     const recipients = await recipientCount();
 
@@ -880,7 +894,7 @@ describe('announcements.publishDue — an operator redelivers the recipients it 
     const built = build(now);
 
     // Clean publication: nothing failed, so there is nothing to retry.
-    const clean = await built.service.create({ ...BODY, active: true }, { id: admin.id });
+    const clean = await live(built.service, { ...BODY }, { id: admin.id });
     await run(built.job);
     expect((await built.repo.findById(clean.id))!.failedCount).toBe(0);
     await expect(built.service.redeliver(clean.id, { id: admin.id })).rejects.toMatchObject({
@@ -889,7 +903,7 @@ describe('announcements.publishDue — an operator redelivers the recipients it 
     });
 
     // Never published: the sweep still owes it a first pass.
-    const draft = await built.service.create({ ...BODY, active: false }, { id: admin.id });
+    const draft = await built.service.create({ ...BODY }, { id: admin.id });
     await expect(built.service.redeliver(draft.id, { id: admin.id })).rejects.toMatchObject({
       statusCode: 409,
     });

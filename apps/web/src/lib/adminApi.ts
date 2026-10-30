@@ -974,25 +974,35 @@ export async function listAnnouncements(signal?: AbortSignal): Promise<Announcem
 }
 
 /**
- * Create an announcement. EN + DE title/body are required (§13.4 binding).
- * Creating with `active: true` publishes immediately (fans one inbox row out
- * per user, idempotent per user via the shared eventKey).
+ * Create an announcement — always a draft since §6.19 (the `active` request
+ * field is gone); publish it with {@link publishAnnouncement}.
  */
 export async function createAnnouncement(body: CreateAnnouncementRequest): Promise<Announcement> {
   const data = await apiRequest<unknown>('/admin/announcements', { method: 'POST', body });
   return announcementSchema.parse(data);
 }
 
-/**
- * Update an announcement. Flipping `active` off → on publishes; a re-publish
- * (already-published row toggled off → on again) is a per-user no-op via the
- * shared eventKey.
- */
+/** Edit an announcement; fields lock per kind once published (§6.19.4). */
 export async function updateAnnouncement(
   id: string,
   body: UpdateAnnouncementRequest,
 ): Promise<Announcement> {
   const data = await apiRequest<unknown>(`/admin/announcements/${id}`, { method: 'PATCH', body });
+  return announcementSchema.parse(data);
+}
+
+/**
+ * A lifecycle transition (§6.19.4, contract §7.2): `publish` (draft →
+ * published), `unpublish` (published → draft, before the window opens) or
+ * `archive` (published → archived). Each answers the Announcement.
+ */
+export async function transitionAnnouncement(
+  id: string,
+  transition: 'publish' | 'unpublish' | 'archive',
+): Promise<Announcement> {
+  const data = await apiRequest<unknown>(`/admin/announcements/${id}/${transition}`, {
+    method: 'POST',
+  });
   return announcementSchema.parse(data);
 }
 

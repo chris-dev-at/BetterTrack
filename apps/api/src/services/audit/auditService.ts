@@ -169,6 +169,20 @@ export const AuditAction = {
   OAuthClientRegistered: 'oauth.client_registered',
   OAuthClientUpdated: 'oauth.client_updated',
   OAuthClientDeleted: 'oauth.client_deleted',
+  // Announcements (§13.4 V4-P5b; vocabulary §6.19.11). `announcement.publish`
+  // is ONE delivery pass (the job, or an operator's redelivery) since #1909;
+  // the operator's Publish transition is `announcement.release`.
+  AnnouncementCreated: 'announcement.create',
+  AnnouncementUpdated: 'announcement.update',
+  AnnouncementDeleted: 'announcement.delete',
+  AnnouncementReleased: 'announcement.release',
+  AnnouncementUnpublished: 'announcement.unpublish',
+  AnnouncementArchived: 'announcement.archive',
+  AnnouncementPublished: 'announcement.publish',
+  AnnouncementRedelivered: 'announcement.redeliver',
+  AnnouncementReceiptsExported: 'announcement.receipts_export',
+  /** Actor = the user; no IP, via or locale (CEO ruling 2026-10-30). */
+  AnnouncementAcknowledged: 'announcement.acknowledge',
   OAuthGrantAuthorized: 'oauth.grant_authorized',
   OAuthGrantRevoked: 'oauth.grant_revoked',
   OAuthTokenIssued: 'oauth.token_issued',
@@ -283,6 +297,14 @@ export const AUDIT_PRESET_ACTIONS = {
     AuditAction.OAuthClientRegistered,
     AuditAction.OAuthClientUpdated,
     AuditAction.OAuthClientDeleted,
+    AuditAction.AnnouncementCreated,
+    AuditAction.AnnouncementUpdated,
+    AuditAction.AnnouncementDeleted,
+    AuditAction.AnnouncementReleased,
+    AuditAction.AnnouncementUnpublished,
+    AuditAction.AnnouncementArchived,
+    AuditAction.AnnouncementRedelivered,
+    AuditAction.AnnouncementReceiptsExported,
   ],
 } as const satisfies Record<string, readonly string[]>;
 

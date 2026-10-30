@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import * as schema from '../data/schema';
 import { newId } from '../data/ids';
-import { createAnnouncementReceiptRepository } from '../data/repositories/announcementReceiptRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createReceiptPseudonymizer } from '../services/crypto/receiptPseudonym';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -325,10 +324,13 @@ describe('receipts on the existing banner routes (0122 rename)', () => {
         bodyEn: 'World',
         titleDe: 'Hallo',
         bodyDe: 'Welt',
-        active: true,
       });
     expect(created.status).toBe(201);
     const id = created.body.id as string;
+    await adminAgent
+      .post(`/api/v1/admin/announcements/${id}/publish`)
+      .set(...XRW)
+      .expect(200);
 
     const user = await harness.seedUser({ email: 'dismisser@bt.test', username: 'dismisser' });
     const agent = request.agent(harness.app);
@@ -358,73 +360,5 @@ describe('receipts on the existing banner routes (0122 rename)', () => {
 
     const list = await agent.get('/api/v1/notifications/announcements');
     expect(list.body.announcements).toEqual([]);
-  });
-
-  it('the composer `active` toggle keeps lifecycle in lockstep; deleting drops plain receipts', async () => {
-    const admin = await harness.seedAdmin();
-    const adminAgent = await harness.loginAdmin(admin);
-    const created = await adminAgent
-      .post('/api/v1/admin/announcements')
-      .set(...XRW)
-      .send({
-        severity: 'info',
-        titleEn: 'Toggle',
-        bodyEn: 'Body',
-        titleDe: 'Umschalten',
-        bodyDe: 'Text',
-        active: false,
-      });
-    const id = created.body.id as string;
-    const row = async () =>
-      (
-        await harness.db.select().from(schema.announcements).where(eq(schema.announcements.id, id))
-      )[0]!;
-
-    expect(await row()).toMatchObject({
-      active: false,
-      lifecycle: 'draft',
-      releasedAt: null,
-      bodyFormat: 'plain',
-    });
-
-    await adminAgent
-      .patch(`/api/v1/admin/announcements/${id}`)
-      .set(...XRW)
-      .send({ active: true })
-      .expect(200);
-    const live = await row();
-    expect(live).toMatchObject({ active: true, lifecycle: 'published', archivedAt: null });
-    expect(live.releasedAt).toBeInstanceOf(Date);
-    expect(live.audienceCutoffAt).toBeInstanceOf(Date);
-
-    // Someone dismisses it; switching it off now archives (it was seen).
-    const user = await harness.seedUser({ email: 'seer@bt.test', username: 'seer' });
-    await createAnnouncementReceiptRepository(harness.db).markDismissed(user.id, id, new Date());
-    await adminAgent
-      .patch(`/api/v1/admin/announcements/${id}`)
-      .set(...XRW)
-      .send({ active: false })
-      .expect(200);
-    const off = await row();
-    expect(off).toMatchObject({ active: false, lifecycle: 'archived' });
-    expect(off.releasedAt!.getTime()).toBe(live.releasedAt!.getTime());
-    expect(off.audienceCutoffAt!.getTime()).toBe(live.audienceCutoffAt!.getTime());
-
-    // Back on: published again, the frozen instants unmoved.
-    await adminAgent
-      .patch(`/api/v1/admin/announcements/${id}`)
-      .set(...XRW)
-      .send({ active: true })
-      .expect(200);
-    const again = await row();
-    expect(again).toMatchObject({ active: true, lifecycle: 'published', archivedAt: null });
-    expect(again.audienceCutoffAt!.getTime()).toBe(live.audienceCutoffAt!.getTime());
-
-    // The legacy composer's delete still works: the dismissal goes with it.
-    await adminAgent
-      .delete(`/api/v1/admin/announcements/${id}`)
-      .set(...XRW)
-      .expect(204);
-    expect(await receiptsOf([id])).toEqual([]);
   });
 });

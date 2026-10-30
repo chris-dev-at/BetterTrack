@@ -1,9 +1,11 @@
-import { and, asc, desc, eq, gt, isNotNull, isNull, lte, gte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
+import { audienceMemberCondition } from './announcementReceiptRepository';
 import {
   announcementReceipts,
   announcements,
+  users,
   type AnnouncementRow,
   type NewAnnouncementRow,
 } from '../schema';
@@ -14,15 +16,14 @@ import {
  * `announcement_receipts` rows (`announcement_dismissals` before 0122) a
  * caller stamps to hide the banner.
  *
- * ── The `active` ⇄ `lifecycle` lockstep (0122, one release) ─────────────────
- * The composer still speaks `active` until the §6.19 lifecycle API replaces
- * it; this repository is the one place both columns are written, and it keeps
- * them in the same lockstep the migration's backfill established:
- *   active = true  → `published`, `released_at` / `audience_cutoff_at` stamped
- *                    once (COALESCE — never moved again), `archived_at` NULL;
- *   active = false → `archived` when the row was ever delivered or holds
- *                    receipts, else `draft` (nothing released).
- * New rows are written `plain`: the current composer's bodies are plain text.
+ * ── Lifecycle (§6.19.4) ─────────────────────────────────────────────────────
+ * `draft → published → archived`, with `published → draft` only while the
+ * window has not opened. Every transition is ONE conditional UPDATE whose
+ * WHERE clause is the transition's precondition, so two concurrent operators
+ * cannot both win and a stale read cannot push a row through a transition its
+ * current state forbids. `active` is written in lockstep for one release
+ * (`active = (lifecycle = 'published')`) so a rollback reads consistent rows.
+ *
  * Fan-out of the inbox notification itself
  * rides the existing {@link import('./notificationRepository').NotificationRepository}
  * via the shared `account.notice` type and per-user eventKey — no announcement
@@ -30,14 +31,17 @@ import {
  */
 
 export interface CreateAnnouncementInput {
+  kind: 'notice' | 'once' | 'ack_required';
+  audience: 'everyone' | 'existing_at_publish';
   severity: 'info' | 'warning' | 'critical';
   titleEn: string;
   bodyEn: string;
-  titleDe: string;
-  bodyDe: string;
+  titleDe: string | null;
+  bodyDe: string | null;
   startsAt: Date | null;
   endsAt: Date | null;
-  active: boolean;
+  notifyByEmail: boolean;
+  notifyByEmailAfterDays: number;
   createdBy: string | null;
 }
 
@@ -62,42 +66,26 @@ export interface AnnouncementDeliveryCounts {
 }
 
 export interface UpdateAnnouncementInput {
+  kind?: 'notice' | 'once' | 'ack_required';
+  audience?: 'everyone' | 'existing_at_publish';
   severity?: 'info' | 'warning' | 'critical';
   titleEn?: string;
   bodyEn?: string;
-  titleDe?: string;
-  bodyDe?: string;
+  titleDe?: string | null;
+  bodyDe?: string | null;
   startsAt?: Date | null;
   endsAt?: Date | null;
-  active?: boolean;
+  notifyByEmail?: boolean;
+  notifyByEmailAfterDays?: number;
   publishedAt?: Date | null;
 }
 
-/**
- * The lifecycle columns that go with an `active` write (see the file header).
- * SQL, not values: whether the row was ever delivered (or holds receipts) and
- * whether it was already released are facts of the stored row, read in the
- * same UPDATE that changes it.
- */
-function lifecycleLockstep(active: boolean): Record<string, unknown> {
-  if (active) {
-    return {
-      lifecycle: sql`'published'::announcement_lifecycle`,
-      releasedAt: sql`COALESCE(${announcements.releasedAt}, now())`,
-      audienceCutoffAt: sql`COALESCE(${announcements.audienceCutoffAt}, GREATEST(now(), COALESCE(${announcements.startsAt}, now())))`,
-      archivedAt: null,
-      archivedBy: null,
-    };
-  }
-  const keep = sql`(${announcements.publishedAt} IS NOT NULL OR EXISTS (SELECT 1 FROM ${announcementReceipts} WHERE ${announcementReceipts.announcementId} = ${announcements.id}))`;
-  return {
-    lifecycle: sql`CASE WHEN ${keep} THEN 'archived'::announcement_lifecycle ELSE 'draft'::announcement_lifecycle END`,
-    releasedAt: sql`CASE WHEN ${keep} THEN COALESCE(${announcements.releasedAt}, now()) ELSE NULL END`,
-    releasedBy: sql`CASE WHEN ${keep} THEN ${announcements.releasedBy} ELSE NULL END`,
-    audienceCutoffAt: sql`CASE WHEN ${keep} THEN COALESCE(${announcements.audienceCutoffAt}, GREATEST(now(), COALESCE(${announcements.startsAt}, now()))) ELSE NULL END`,
-    archivedAt: sql`CASE WHEN ${keep} THEN COALESCE(${announcements.archivedAt}, now()) ELSE NULL END`,
-  };
-}
+/** What an archive did: the archived row, and whether this call archived it. */
+export type ArchiveOutcome =
+  | { status: 'archived'; row: AnnouncementRow; pendingAtArchive: number | null }
+  | { status: 'already-archived'; row: AnnouncementRow }
+  | { status: 'not-published' }
+  | { status: 'not-found' };
 
 export function createAnnouncementRepository(db: Database) {
   return {
@@ -111,11 +99,14 @@ export function createAnnouncementRepository(db: Database) {
       return row;
     },
 
+    /** Always a draft (§6.19.4): nothing is released, delivered or visible. */
     async create(input: CreateAnnouncementInput): Promise<AnnouncementRow> {
-      const now = new Date();
-      const released =
-        input.startsAt && input.startsAt.getTime() > now.getTime() ? input.startsAt : now;
       const values: NewAnnouncementRow = {
+        kind: input.kind,
+        audience: input.audience,
+        lifecycle: 'draft',
+        active: false,
+        bodyFormat: 'markdown',
         severity: input.severity,
         titleEn: input.titleEn,
         bodyEn: input.bodyEn,
@@ -123,18 +114,9 @@ export function createAnnouncementRepository(db: Database) {
         bodyDe: input.bodyDe,
         startsAt: input.startsAt,
         endsAt: input.endsAt,
-        active: input.active,
-        // `published_at` is stamped on first publish by the service, not here.
+        notifyByEmail: input.notifyByEmail,
+        notifyByEmailAfterDays: input.notifyByEmailAfterDays,
         createdBy: input.createdBy,
-        bodyFormat: 'plain',
-        ...(input.active
-          ? {
-              lifecycle: 'published' as const,
-              releasedAt: now,
-              releasedBy: input.createdBy,
-              audienceCutoffAt: released,
-            }
-          : {}),
       };
       const [row] = await db.insert(announcements).values(values).returning();
       if (!row) throw new Error('Failed to insert announcement');
@@ -145,18 +127,22 @@ export function createAnnouncementRepository(db: Database) {
       // Reject empty patches at the service layer — Drizzle rejects an empty
       // `.set({})` at query time otherwise.
       const set: Record<string, unknown> = { updatedAt: new Date() };
-      if (patch.severity !== undefined) set.severity = patch.severity;
-      if (patch.titleEn !== undefined) set.titleEn = patch.titleEn;
-      if (patch.bodyEn !== undefined) set.bodyEn = patch.bodyEn;
-      if (patch.titleDe !== undefined) set.titleDe = patch.titleDe;
-      if (patch.bodyDe !== undefined) set.bodyDe = patch.bodyDe;
-      if (patch.startsAt !== undefined) set.startsAt = patch.startsAt;
-      if (patch.endsAt !== undefined) set.endsAt = patch.endsAt;
-      if (patch.active !== undefined) {
-        set.active = patch.active;
-        Object.assign(set, lifecycleLockstep(patch.active));
+      for (const key of [
+        'kind',
+        'audience',
+        'severity',
+        'titleEn',
+        'bodyEn',
+        'titleDe',
+        'bodyDe',
+        'startsAt',
+        'endsAt',
+        'notifyByEmail',
+        'notifyByEmailAfterDays',
+        'publishedAt',
+      ] as const) {
+        if (patch[key] !== undefined) set[key] = patch[key];
       }
-      if (patch.publishedAt !== undefined) set.publishedAt = patch.publishedAt;
       const [row] = await db
         .update(announcements)
         .set(set)
@@ -166,14 +152,23 @@ export function createAnnouncementRepository(db: Database) {
     },
 
     /**
-     * Delete one announcement and its receipts. Neither receipt foreign key
-     * cascades (§6.19.5), so the receipts go first, in the same transaction —
-     * and only the ones WITHOUT an acknowledgement: should a row ever hold
-     * one, the RESTRICT key refuses the whole delete rather than erase it.
+     * Delete a DRAFT and its receipts (§6.19.4: a published announcement is
+     * never deleted — it may hold acknowledgement evidence). The precondition
+     * is in the DELETE itself. A draft can still hold legacy dismissals (the
+     * pre-0122 route accepted any id) and never an acknowledgement; the
+     * receipts go first because neither receipt key cascades, and only the
+     * un-acknowledged ones — should one ever hold an acknowledgement, the
+     * RESTRICT key refuses the whole delete rather than erase it.
      */
-    async remove(id: string): Promise<boolean> {
+    async removeDraft(id: string): Promise<boolean> {
       return db.transaction(async (txRaw) => {
         const tx = txRaw as unknown as Database;
+        const [draft] = await tx
+          .select({ id: announcements.id })
+          .from(announcements)
+          .where(and(eq(announcements.id, id), eq(announcements.lifecycle, 'draft')))
+          .for('update');
+        if (!draft) return false;
         await tx
           .delete(announcementReceipts)
           .where(
@@ -184,84 +179,107 @@ export function createAnnouncementRepository(db: Database) {
           );
         const rows = await tx
           .delete(announcements)
-          .where(eq(announcements.id, id))
+          .where(and(eq(announcements.id, id), eq(announcements.lifecycle, 'draft')))
           .returning({ id: announcements.id });
         return rows.length > 0;
       });
     },
 
     /**
-     * Every currently-active announcement (flagged on AND inside its window at
-     * `at`) that the user has NOT dismissed. Newest-first, so the banner render
-     * order matches the composer's list.
+     * draft → published. Stamps `released_at` / `released_by` and FREEZES
+     * `audience_cutoff_at = GREATEST(at, starts_at)` — the instant it first
+     * becomes visible (Chief ruling 2026-10-29); it never moves afterwards.
+     * Precondition `lifecycle = 'draft'` in the UPDATE.
      */
-    async listActiveForUser(userId: string, at: Date): Promise<AnnouncementRow[]> {
-      // Left-join the dismissals for the caller so a WHERE nullness check
-      // filters dismissed rows out in a single round trip.
-      const rows = await db
-        .select({
-          row: announcements,
-          dismissedAt: announcementReceipts.dismissedAt,
+    async publish(id: string, actorId: string, at: Date): Promise<AnnouncementRow | undefined> {
+      const [row] = await db
+        .update(announcements)
+        .set({
+          lifecycle: 'published',
+          active: true,
+          releasedAt: at,
+          releasedBy: actorId,
+          audienceCutoffAt: sql`GREATEST(${at}::timestamptz, COALESCE(${announcements.startsAt}, ${at}::timestamptz))`,
+          updatedAt: at,
         })
-        .from(announcements)
-        .leftJoin(
-          announcementReceipts,
-          and(
-            eq(announcementReceipts.announcementId, announcements.id),
-            eq(announcementReceipts.userId, userId),
-          ),
-        )
-        .where(
-          and(
-            eq(announcements.active, true),
-            or(isNull(announcements.startsAt), lte(announcements.startsAt, at)),
-            or(isNull(announcements.endsAt), gte(announcements.endsAt, at)),
-            isNull(announcementReceipts.dismissedAt),
-          ),
-        )
-        .orderBy(desc(announcements.createdAt));
-      return rows.map((r) => r.row);
+        .where(and(eq(announcements.id, id), eq(announcements.lifecycle, 'draft')))
+        .returning();
+      return row;
     },
 
     /**
-     * Idempotent per-user dismissal — first write wins.
-     *
-     * Idempotency key: `(user_id, announcement_id)`, the receipts' unique
-     * constraint. The upsert COALESCEs `dismissed_at` (and `seen_at`, which a
-     * dismissal implies), so a repeat never moves either instant and never
-     * touches the rest of the receipt; `updated_at` moves only on the write
-     * that actually stamped the dismissal. The service checks the announcement
-     * exists first for the 404 shape.
+     * published → draft, only while the window has not opened (nobody can have
+     * seen it, nothing was delivered). Precondition in the UPDATE.
      */
-    async dismissForUser(userId: string, announcementId: string): Promise<void> {
-      const now = new Date();
-      await db
-        .insert(announcementReceipts)
-        .values({ userId, announcementId, dismissedAt: now, seenAt: now })
-        .onConflictDoUpdate({
-          target: [announcementReceipts.userId, announcementReceipts.announcementId],
-          set: {
-            dismissedAt: sql`COALESCE(${announcementReceipts.dismissedAt}, excluded.dismissed_at)`,
-            seenAt: sql`COALESCE(${announcementReceipts.seenAt}, excluded.seen_at)`,
-            updatedAt: sql`CASE WHEN ${announcementReceipts.dismissedAt} IS NULL THEN excluded.updated_at ELSE ${announcementReceipts.updatedAt} END`,
-          },
-        });
-    },
-
-    /** For tests: whether the caller has dismissed the given announcement. */
-    async hasDismissed(userId: string, announcementId: string): Promise<boolean> {
+    async unpublish(id: string, at: Date): Promise<AnnouncementRow | undefined> {
       const [row] = await db
-        .select({ dismissedAt: announcementReceipts.dismissedAt })
-        .from(announcementReceipts)
+        .update(announcements)
+        .set({
+          lifecycle: 'draft',
+          active: false,
+          releasedAt: null,
+          releasedBy: null,
+          audienceCutoffAt: null,
+          updatedAt: at,
+        })
         .where(
           and(
-            eq(announcementReceipts.userId, userId),
-            eq(announcementReceipts.announcementId, announcementId),
-            isNotNull(announcementReceipts.dismissedAt),
+            eq(announcements.id, id),
+            eq(announcements.lifecycle, 'published'),
+            isNull(announcements.publishedAt),
+            gt(announcements.startsAt, at),
           ),
         )
-        .limit(1);
-      return row !== undefined;
+        .returning();
+      return row;
+    },
+
+    /**
+     * published → archived; idempotent on an archived row. Takes the row
+     * `FOR UPDATE` — an acknowledgement holds it `FOR SHARE` — so an archive and
+     * an acknowledgement serialize and can never both win (§6.19.5). For
+     * `ack_required` it counts who was still pending at that instant (the
+     * `announcement.archive` audit meta).
+     */
+    async archive(id: string, actorId: string, at: Date): Promise<ArchiveOutcome> {
+      return db.transaction(async (txRaw) => {
+        const tx = txRaw as unknown as Database;
+        const [current] = await tx
+          .select()
+          .from(announcements)
+          .where(eq(announcements.id, id))
+          .for('update');
+        if (!current) return { status: 'not-found' };
+        if (current.lifecycle === 'archived') return { status: 'already-archived', row: current };
+        if (current.lifecycle !== 'published') return { status: 'not-published' };
+        let pendingAtArchive: number | null = null;
+        if (current.kind === 'ack_required') {
+          const [counted] = await tx
+            .select({ n: sql<number>`count(*)::int` })
+            .from(users)
+            .where(
+              and(
+                audienceMemberCondition(current.audience, current.audienceCutoffAt),
+                sql`NOT EXISTS (SELECT 1 FROM ${announcementReceipts} r
+                      WHERE r.announcement_id = ${id} AND r.user_id = ${users.id}
+                        AND (r.acknowledged_at IS NOT NULL OR r.lapsed_at IS NOT NULL))`,
+              ),
+            );
+          pendingAtArchive = counted?.n ?? 0;
+        }
+        const [row] = await tx
+          .update(announcements)
+          .set({
+            lifecycle: 'archived',
+            active: false,
+            archivedAt: at,
+            archivedBy: actorId,
+            updatedAt: at,
+          })
+          .where(and(eq(announcements.id, id), eq(announcements.lifecycle, 'published')))
+          .returning();
+        return { status: 'archived', row: row!, pendingAtArchive };
+      });
     },
 
     /**
@@ -284,7 +302,7 @@ export function createAnnouncementRepository(db: Database) {
         .from(announcements)
         .where(
           and(
-            eq(announcements.active, true),
+            eq(announcements.lifecycle, 'published'),
             isNull(announcements.publishedAt),
             or(isNull(announcements.startsAt), lte(announcements.startsAt, at)),
             or(isNull(announcements.endsAt), gt(announcements.endsAt, at)),
@@ -334,7 +352,7 @@ export function createAnnouncementRepository(db: Database) {
           and(
             eq(announcements.id, id),
             isNull(announcements.publishedAt),
-            eq(announcements.active, true),
+            eq(announcements.lifecycle, 'published'),
           ),
         )
         .returning({ id: announcements.id });

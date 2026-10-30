@@ -581,6 +581,8 @@ const componentSchemas = {
 
   // Announcements (§13.4 V4-P5b)
   Announcement: contracts.announcementSchema,
+  AnnouncementStatsResponse: contracts.announcementStatsResponseSchema,
+  AnnouncementReceiptsResponse: contracts.announcementReceiptsResponseSchema,
   AnnouncementListResponse: contracts.announcementListResponseSchema,
   CreateAnnouncementRequest: contracts.createAnnouncementRequestSchema,
   UpdateAnnouncementRequest: contracts.updateAnnouncementRequestSchema,
@@ -1807,6 +1809,8 @@ const endpoints: EndpointDef[] = [
     path: '/admin/announcements',
     tag: 'Admin',
     summary: 'List every composed announcement (newest first).',
+    description:
+      '`bearerAckGate` (`off` | `first_party`) is the read-only state of `BT_ANNOUNCEMENT_ACK_GATE_BEARER`, read from the environment at request time and never writable through the API (Chief ruling 2026-10-30): it ships `off`, and only the owner flips it on the production host.',
     status: 200,
     response: R.AnnouncementListResponse,
   },
@@ -1815,29 +1819,140 @@ const endpoints: EndpointDef[] = [
     path: '/admin/announcements',
     tag: 'Admin',
     summary:
-      'Create an announcement. Requires EN + DE title/body. The request persists and returns — it never fans out; the `announcements.publishDue` job delivers one inbox row per user once the display window has opened, so a future startsAt defers the inbox entry as well as the banner.',
+      'Create an announcement — always a DRAFT (§6.19.4). Publish it with POST …/{id}/publish.',
+    description:
+      'The `active` request field is removed (dated 2026-10-29). `kind` defaults to notice, `audience` to everyone; DE is optional (required at publish for ack_required); `notifyByEmail` / `notifyByEmailAfterDays` are accepted for ack_required only (400 VALIDATION_ERROR naming the field). Every save applies the text rules: a forbidden control or bidirectional character → 400 ANNOUNCEMENT_TEXT_INVALID; a refused link target or an exceeded limit → 400 ANNOUNCEMENT_BODY_INVALID with details.issues (field, line, column). Never fans out.',
     body: R.CreateAnnouncementRequest,
     status: 201,
     response: R.Announcement,
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.textInvalid,
+      contracts.ANNOUNCEMENT_ERROR_CODES.bodyInvalid,
+      contracts.ANNOUNCEMENT_ERROR_CODES.invalidWindow,
+    ],
   },
   {
     method: 'patch',
     path: '/admin/announcements/{id}',
     tag: 'Admin',
     summary:
-      'Update an announcement. Saving never fans out on the request path; the publish job picks the row up once its window is open, and delivery is idempotent per user via the shared eventKey.',
+      'Edit an announcement. A draft takes any change; after publishing the fields lock per kind (contract §7.3).',
+    description:
+      'After publishing, kind, audience, startsAt, notifyByEmail and notifyByEmailAfterDays are locked for every kind; notice/once still take content and endsAt; ack_required takes only endsAt (a future instant or null). A CHANGE to a locked field → 409 ANNOUNCEMENT_FIELD_LOCKED with details.fields (re-sending the current value is not a change). Once endsAt has passed, or after an archive → 409 ANNOUNCEMENT_ENDED. Text rules as on create. Never fans out.',
     params: contracts.idParamSchema,
     body: R.UpdateAnnouncementRequest,
     status: 200,
     response: R.Announcement,
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.fieldLocked,
+      contracts.ANNOUNCEMENT_ERROR_CODES.ended,
+      contracts.ANNOUNCEMENT_ERROR_CODES.textInvalid,
+      contracts.ANNOUNCEMENT_ERROR_CODES.bodyInvalid,
+      contracts.ANNOUNCEMENT_ERROR_CODES.invalidWindow,
+    ],
   },
   {
     method: 'delete',
     path: '/admin/announcements/{id}',
     tag: 'Admin',
-    summary: 'Delete an announcement (cascades its per-user dismissals away).',
+    summary: 'Delete a DRAFT (and its plain receipts). Anything published is archived instead.',
     params: contracts.idParamSchema,
     status: 204,
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notDraft,
+    ],
+  },
+  {
+    method: 'post',
+    path: '/admin/announcements/{id}/publish',
+    tag: 'Admin',
+    summary:
+      'draft → published: stamps releasedAt and freezes audienceCutoffAt = the later of now and startsAt (never moved afterwards).',
+    description:
+      'Refusals: 409 ANNOUNCEMENT_NOT_DRAFT; 400 ANNOUNCEMENT_INCOMPLETE with details.missing (EN title and body always, DE too for ack_required); 400 INVALID_ANNOUNCEMENT_WINDOW (an endsAt at or before now, or before startsAt); the text rules. Hands an already-open window to the publish job; delivers nothing on the request path. Audited as announcement.release.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.Announcement,
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notDraft,
+      contracts.ANNOUNCEMENT_ERROR_CODES.incomplete,
+      contracts.ANNOUNCEMENT_ERROR_CODES.invalidWindow,
+      contracts.ANNOUNCEMENT_ERROR_CODES.textInvalid,
+      contracts.ANNOUNCEMENT_ERROR_CODES.bodyInvalid,
+    ],
+  },
+  {
+    method: 'post',
+    path: '/admin/announcements/{id}/unpublish',
+    tag: 'Admin',
+    summary: 'published → draft, only while the window has not opened (nobody has seen it).',
+    description:
+      '409 ANNOUNCEMENT_ALREADY_LIVE once the window opened — archive instead; 409 ANNOUNCEMENT_NOT_PUBLISHED for anything not published.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.Announcement,
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.alreadyLive,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notPublished,
+    ],
+  },
+  {
+    method: 'post',
+    path: '/admin/announcements/{id}/archive',
+    tag: 'Admin',
+    summary:
+      'published → archived (for ack_required, the manual lapse; effective on the next request). Idempotent on an archived one.',
+    description:
+      '409 ANNOUNCEMENT_NOT_PUBLISHED for a draft (delete it). Audited as announcement.archive with the number of accounts still pending at that instant.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.Announcement,
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notPublished,
+    ],
+  },
+  {
+    method: 'get',
+    path: '/admin/announcements/{id}/stats',
+    tag: 'Admin',
+    summary:
+      'Acknowledgement-log counts: audience (a draft: as if published now), seen, dismissed, acknowledged, acknowledgedByDeletedAccounts, lapsed, pending (ack_required only).',
+    description:
+      'Pseudonymised acknowledgements of since-deleted accounts count only in acknowledgedByDeletedAccounts — never in audience, acknowledged or pending (contract §7.5).',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AnnouncementStatsResponse,
+    errorCodes: [contracts.ANNOUNCEMENT_ERROR_CODES.notFound],
+  },
+  {
+    method: 'get',
+    path: '/admin/announcements/{id}/receipts',
+    tag: 'Admin',
+    summary:
+      'Keyset-paged acknowledgement log: audience accounts by account id, then the pseudonymised rows of deleted accounts by subjectToken.',
+    description:
+      'state: pending | acknowledged | lapsed | seen | dismissed | unseen | all (default all); deleted-account rows appear under acknowledged and all only, after the live accounts, as accountStatus "deleted". limit 1–200 (default 50); cursor is opaque. No e-mail or IP column.',
+    params: contracts.idParamSchema,
+    query: contracts.announcementReceiptsQuerySchema,
+    status: 200,
+    response: R.AnnouncementReceiptsResponse,
+    errorCodes: [contracts.ANNOUNCEMENT_ERROR_CODES.notFound],
+  },
+  {
+    method: 'get',
+    path: '/admin/announcements/{id}/receipts.csv',
+    tag: 'Admin',
+    summary:
+      'The acknowledgement log as a text/csv attachment: the receipt columns in order under a snake_case header; every download is audited (announcement.receipts_export).',
+    params: contracts.idParamSchema,
+    query: contracts.announcementReceiptsCsvQuerySchema,
+    status: 200,
+    errorCodes: [contracts.ANNOUNCEMENT_ERROR_CODES.notFound],
   },
   {
     method: 'post',

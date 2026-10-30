@@ -6097,11 +6097,13 @@
         "publishing": "Publishing",
         "published": "Published",
         "expired": "Expired",
+        "archived": "Archived",
         "draftDetail": "Not active — nobody sees it.",
         "scheduledDetail": "Will publish on {{date}}.",
         "publishingDetail": "Due now — the publish job is delivering it.",
         "publishedDetail": "Published {{date}}.",
-        "expiredDetail": "Window closed {{date}} — it will not be published."
+        "expiredDetail": "Window closed {{date}} — it will not be published.",
+        "archivedDetail": "Withdrawn {{date}} — nobody sees it any more."
       }
     }
   },
