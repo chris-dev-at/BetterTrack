@@ -1154,6 +1154,17 @@ describe('refresh-token rotation', () => {
     return grant!;
   }
 
+  /** The token family a refresh token belongs to (§16 2026-10-29). */
+  async function familyFor(refreshToken: string) {
+    const familyId = (await refreshRow(refreshToken)).familyId;
+    expect(familyId).toEqual(expect.any(String));
+    const [family] = await harness.db
+      .select()
+      .from(schema.oauthTokenFamilies)
+      .where(eq(schema.oauthTokenFamilies.id, familyId!));
+    return family!;
+  }
+
   async function graceAudits() {
     return harness.db
       .select({ meta: schema.auditLog.meta })
@@ -1218,7 +1229,7 @@ describe('refresh-token rotation', () => {
     expect(oauthTokenResponseSchema.parse(replay.body).refresh_token).toBe(next.refresh_token);
   });
 
-  it('treats a replay 61 s after rotation as theft: INVALID_GRANT, grant revoked, successor pair dead', async () => {
+  it('treats a replay 61 s after rotation as theft: INVALID_GRANT, token FAMILY revoked, successor pair dead', async () => {
     const { clientId, clientSecret, first } = await issueFirstPair();
     const next = await rotate(clientId, clientSecret, first.refresh_token);
 
@@ -1228,13 +1239,13 @@ describe('refresh-token rotation', () => {
     expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
     expect(replay.body.access_token).toBeUndefined();
 
-    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    // RFC 9700 §4.14.2 (§16 2026-10-29): this install's family, not the grant.
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect((await familyFor(first.refresh_token)).revokedReason).toBe('refresh_reuse');
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expect((await refreshWith(clientId, clientSecret, next.refresh_token)).status).toBe(400);
     expect(await graceAudits()).toHaveLength(0);
-    expect(await revocationAudits((await grantFor(first.refresh_token)).id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'window_passed');
   });
 
   it('treats a GRANDPARENT replay as theft even inside the window', async () => {
@@ -1249,12 +1260,11 @@ describe('refresh-token rotation', () => {
     const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
     expect(replay.status).toBe(400);
     expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
-    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect((await familyFor(first.refresh_token)).revokedReason).toBe('refresh_reuse');
     expect(await harness.ctx.oauth.authenticateToken(third.access_token)).toBeNull();
     expect(await graceAudits()).toHaveLength(0);
-    expect(await revocationAudits((await grantFor(first.refresh_token)).id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'successor_rotated' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'successor_rotated');
   });
 
   it('serves nothing to another client, or to the right client with a wrong secret, and revokes nothing', async () => {
@@ -1359,12 +1369,11 @@ describe('refresh-token rotation', () => {
     const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
     expect(replay.status).toBe(400);
     expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
-    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect((await familyFor(first.refresh_token)).revokedReason).toBe('refresh_reuse');
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expect(await graceAudits()).toHaveLength(0);
-    expect(await revocationAudits((await grantFor(first.refresh_token)).id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'no_successor' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'no_successor');
   });
 
   it('advertises the CURRENT scope on a replay after the app was partly narrowed inside the window', async () => {
@@ -1626,6 +1635,38 @@ describe('refresh-token rotation', () => {
     return rows.map((row) => row.meta);
   }
 
+  /** The `oauth.token_family_revoked` rows of one grant, meta only (§16 2026-10-29). */
+  async function familyRevocationAudits(grantId: string) {
+    const rows = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.action, AuditAction.OAuthTokenFamilyRevoked),
+          eq(schema.auditLog.targetId, grantId),
+        ),
+      );
+    return rows.map((row) => row.meta);
+  }
+
+  /**
+   * Refresh-reuse theft of a family-minted chain (RFC 9700 §4.14.2): THIS
+   * install's family is revoked — never the grant — and audited exactly once
+   * on `oauth.token_family_revoked` with the failed re-serve check as
+   * `evidence`; no `oauth.grant_revoked` row is written.
+   */
+  async function expectFamilyTheft(refreshToken: string, clientId: string, evidence: string) {
+    const grant = await grantFor(refreshToken);
+    const family = await familyFor(refreshToken);
+    expect(grant.revokedAt).toBeNull();
+    expect(family.revokedAt).toBeInstanceOf(Date);
+    expect(family.revokedReason).toBe('refresh_reuse');
+    expect(await revocationAudits(grant.id)).toEqual([]);
+    expect(await familyRevocationAudits(grant.id)).toEqual([
+      { clientId, familyId: family.id, reason: 'refresh_reuse', evidence },
+    ]);
+  }
+
   /** Use an access token for a real request — the act that stamps `first_used_at`. */
   async function useAccessToken(accessToken: string): Promise<void> {
     const res = await request(harness.app)
@@ -1680,18 +1721,14 @@ describe('refresh-token rotation', () => {
     expect(fresh.refresh_token).not.toBe(next.refresh_token);
   });
 
-  it('first-party: a replay 25 h after rotation is theft — revoked, audited window_passed', async () => {
+  it('first-party: a replay 25 h after rotation is theft — family revoked, audited window_passed', async () => {
     const { clientId, first } = await issueFirstPartyPair();
     const next = await rotatePublic(clientId, first.refresh_token);
 
     advance(25 * 3600);
     expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
 
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'window_passed');
     expectInvalidGrant(await refreshPublic(clientId, next.refresh_token));
     expect(await graceAudits()).toHaveLength(0);
   });
@@ -1705,12 +1742,8 @@ describe('refresh-token rotation', () => {
     advance(10 * 60);
     expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
 
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'successor_access_used' },
-    ]);
-    // The pair somebody was using dies with the grant.
+    await expectFamilyTheft(first.refresh_token, clientId, 'successor_access_used');
+    // The pair somebody was using dies with its family.
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expectInvalidGrant(await refreshPublic(clientId, next.refresh_token));
     expect(await graceAudits()).toHaveLength(0);
@@ -1735,11 +1768,7 @@ describe('refresh-token rotation', () => {
     // pair: theft detection, never the 24 h re-serve.
     advance(10 * 60);
     expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'successor_access_used' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'successor_access_used');
   });
 
   // Review S3: a revoked grant's sealed pair can never be served again, so it
@@ -1801,11 +1830,7 @@ describe('refresh-token rotation', () => {
     advance(5 * 60);
     expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
 
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'successor_rotated' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'successor_rotated');
     expect(await harness.ctx.oauth.authenticateToken(third.access_token)).toBeNull();
   });
 
@@ -1823,11 +1848,7 @@ describe('refresh-token rotation', () => {
 
     // The grandparent is not the current device.
     expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'successor_rotated' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'successor_rotated');
   });
 
   it('first-party: inside the strict 60 s window a race is never punished, even after the winner used its access token', async () => {
@@ -1854,11 +1875,7 @@ describe('refresh-token rotation', () => {
     advance(10 * 60);
     expectInvalidGrant(await refreshWith(clientId, clientSecret, first.refresh_token));
 
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'window_passed');
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     // The successor was never used — for a third-party app that buys nothing.
     expect((await accessRow(next.access_token)).firstUsedAt).toBeNull();
@@ -1881,11 +1898,7 @@ describe('refresh-token rotation', () => {
 
     advance(10 * 60);
     expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
-    const grant = await grantFor(first.refresh_token);
-    expect(grant.revokedAt).toBeInstanceOf(Date);
-    expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'legacy_envelope' },
-    ]);
+    await expectFamilyTheft(first.refresh_token, clientId, 'legacy_envelope');
   });
 
   it('first-party refresh tokens slide to a fresh 90 days on every rotation; third-party ones to 30 days', async () => {

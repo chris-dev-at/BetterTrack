@@ -108,6 +108,10 @@ export default defineConfig({
       // runs the two transactions one after the other, so only here is the
       // lock wait real — observed in pg_stat_activity, not inferred.
       'src/__tests__/oauthRefreshGraceRace.test.ts',
+      // §16 2026-10-29: the 0119 token-family backfill (DISTINCT ON attach, the
+      // DO-block integrity check, ADD COLUMN IF NOT EXISTS re-runs) replayed on
+      // a throwaway real Postgres 17 database, not only on PGlite.
+      'src/__tests__/oauthTokenFamiliesMigration.test.ts',
     ],
     // Every test file gets the harness reapers: the #1936 `afterAll` that
     // releases any `createTestApp()` harness the file did not dispose itself,

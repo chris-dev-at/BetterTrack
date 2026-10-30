@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 
 import {
+  authorizeReturnTarget,
+  continuationFromSearch,
   registerPathForAuthorize,
   safeAuthorizeContinuation,
   wantsRegisterScreen,
@@ -164,4 +166,60 @@ describe('registerPathForAuthorize', () => {
     expect(registerPathForAuthorize('/settings')).toBe('/register');
     expect(registerPathForAuthorize(null)).toBe('/register');
   });
+});
+
+describe('authorizeReturnTarget (the Google round-trip target)', () => {
+  test('a safe continuation, minus the screen hint', () => {
+    // No hint: byte-identical.
+    expect(authorizeReturnTarget(AUTHORIZE)).toBe(AUTHORIZE);
+    // With the hint: the query is re-serialized without it — every OAuth
+    // parameter survives with the same value, and the result still passes the guard.
+    const target = authorizeReturnTarget(`${AUTHORIZE}&screen=register`)!;
+    expect(target).not.toContain('screen=');
+    expect(safeAuthorizeContinuation(target)).toBe(target);
+    const query = (url: string) =>
+      Object.fromEntries(new URLSearchParams(url.slice(url.indexOf('?') + 1)));
+    expect(query(target)).toEqual(query(AUTHORIZE));
+  });
+
+  test.each([
+    'https://evil',
+    '//evil',
+    '/oauth/authorize/../x',
+    '/\\evil',
+    '/settings/security',
+    '',
+    null,
+  ])('refuses %j', (hostile) => {
+    expect(authorizeReturnTarget(hostile)).toBeNull();
+  });
+});
+
+describe('continuationFromSearch (a page URL’s ?returnTo=)', () => {
+  const q = (value: string) => `returnTo=${encodeURIComponent(value)}`;
+
+  test('one safe returnTo is honoured, from a string or URLSearchParams', () => {
+    expect(continuationFromSearch(`?${q(AUTHORIZE)}`)).toBe(AUTHORIZE);
+    expect(continuationFromSearch(new URLSearchParams(q(AUTHORIZE)))).toBe(AUTHORIZE);
+  });
+
+  test('absent returnTo is null', () => {
+    expect(continuationFromSearch('?error=google_failed')).toBeNull();
+    expect(continuationFromSearch('')).toBeNull();
+  });
+
+  test.each([
+    ['a safe one first, a hostile one second', [AUTHORIZE, '//evil']],
+    ['a hostile one first, a safe one second', ['https://evil', AUTHORIZE]],
+    ['the same safe value twice', [AUTHORIZE, AUTHORIZE]],
+  ])('a repeated returnTo is refused outright: %s', (_label, values) => {
+    expect(continuationFromSearch(`?${values.map(q).join('&')}`)).toBeNull();
+  });
+
+  test.each(['https://evil', '//evil', '/oauth/authorize/../x'])(
+    'a single unsafe returnTo %j is refused',
+    (hostile) => {
+      expect(continuationFromSearch(`?${q(hostile)}`)).toBeNull();
+    },
+  );
 });

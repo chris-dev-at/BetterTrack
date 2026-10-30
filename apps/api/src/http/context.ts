@@ -2075,6 +2075,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return {
         kind: 'oauth' as const,
         grantId: tokenPrincipal.grantId,
+        familyId: tokenPrincipal.familyId,
         accessTokenId: tokenPrincipal.accessTokenId,
         expiresAt: tokenPrincipal.expiresAt.toISOString(),
         scopes: tokenPrincipal.scopes,
@@ -2115,6 +2116,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return {
         kind: 'oauth' as const,
         grantId: principal.grantId,
+        familyId: principal.familyId,
         accessTokenId: principal.accessTokenId,
         expiresAt: principal.expiresAt.toISOString(),
         scopes: principal.scopes,

@@ -475,6 +475,14 @@ export interface RealtimePrincipalInvalidatedEvent {
   credentialId: string | null;
   /** Keep one credential alive when revoking every other session. */
   exceptCredentialId: string | null;
+  /**
+   * `kind: 'oauth'` only: narrows the invalidation to ONE per-install token
+   * family under the grant named by `credentialId` (§16 2026-10-29). Absent or
+   * null keeps the grant-wide meaning. A process still running pre-family code
+   * ignores the field and drops every socket of the grant — a transient
+   * over-disconnect during a rollout, never an under-disconnect.
+   */
+  familyId?: string | null;
   occurredAt: string;
 }
 

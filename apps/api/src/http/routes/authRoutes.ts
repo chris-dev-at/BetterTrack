@@ -56,6 +56,7 @@ import {
 
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
 import type { SignOutEverywhereCredential } from '../../services/auth/authService';
+import { authorizeReturnTo } from '../../services/auth/authorizeReturnTo';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -269,15 +270,22 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Logout is the unified sign-out for both clients (§6.1, §6.13, #361). A cookie
   // session is destroyed and its cookie cleared. A **bearer** principal instead
   // self-revokes the credential it presented — the personal API key, or (for a
-  // delegated OAuth token) its whole grant, which instantly kills that grant's
-  // access + refresh tokens (server-side revocation, not just a local wipe). No
+  // delegated OAuth token) its OWN per-install token family, which instantly
+  // kills that install's access + refresh tokens while every other install on
+  // the same grant stays signed in (§16 2026-10-29; a legacy NULL-family token
+  // still revokes its grant). Server-side revocation, not just a local wipe. No
   // scope is required beyond a valid token: you may always revoke yourself.
   router.post('/logout', async (req, res) => {
     if (req.apiKey) {
       const userId = req.authUser!.id;
       const ip = req.ip ?? null;
       if (req.apiKey.kind === 'oauth') {
-        await ctx.oauth.revokeGrant({ userId, id: req.apiKey.id, ip });
+        await ctx.oauth.revokeOwnFamily({
+          userId,
+          grantId: req.apiKey.id,
+          familyId: req.apiKey.familyId ?? null,
+          ip,
+        });
       } else {
         await ctx.apiKeys.revoke({ userId, id: req.apiKey.id, ip });
       }
@@ -881,12 +889,33 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Kick off the flow: bind a single-use `state` and redirect to Google. A live
   // cookie session turns this into a "link Google to my account" flow (from
   // Settings); anonymous is a sign-in/registration. A brand-new identity lands
-  // back on the connected register form, where any invite token is entered — so
-  // nothing rides through `start` beyond the flow's CSRF state.
+  // back on the connected register form, where any invite token is entered.
+  //
+  // `?returnTo=` (owner directive 2026-10-29): the pending `/oauth/authorize?…`
+  // request of the app's Custom-Tab sign-in, so the callback lands back INTO it.
+  // It is attacker-controlled, so it is validated with the SPA's own rule
+  // (same-origin path, exactly `/oauth/authorize`, no `//`, `\`, `#` or control
+  // characters — {@link authorizeReturnTo}) and an unsafe one REFUSES the flow:
+  // no state is minted, no cookie set, Google is never contacted, and the
+  // browser lands on the login page's generic Google error. A safe one is bound
+  // to the single-use server-side `state` (never echoed through Google), so the
+  // callback only ever redirects to a value THIS browser started the flow with.
+  // A link flow keeps its fixed Settings landing; `returnTo` is dropped there.
   router.get('/google/start', async (req, res) => {
     if (!ctx.google.isEnabled()) throw notFound();
+    let returnTo: string | null = null;
+    if (req.query.returnTo !== undefined) {
+      returnTo = authorizeReturnTo(req.query.returnTo);
+      if (returnTo === null) {
+        res.redirect(`${ctx.config.appOrigin}/login?error=google_return_invalid`);
+        return;
+      }
+    }
     const linkUserId = req.authUser && !req.apiKey ? req.authUser.id : null;
-    const { url, state } = await ctx.google.buildAuthorizeUrl({ linkUserId });
+    const { url, state } = await ctx.google.buildAuthorizeUrl({
+      linkUserId,
+      returnTo: linkUserId ? null : returnTo,
+    });
     // Bind the state to this browser: the callback requires the same value back
     // from this signed cookie (login-CSRF defence, §13.4 V4-P4b).
     setGoogleOAuthStateCookie(res, ctx.config, state);
@@ -897,24 +926,35 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // in / links / registers. Always ends in a redirect to the SPA — a success sets
   // the session cookie exactly like password login; every failure carries a
   // friendly `?error=` the SPA renders (no JSON error page for a browser flow).
+  //
+  // A sign-in started inside the app's OAuth authorize flow carries `returnTo`
+  // back from the service — read from the server-side `state` record, validated
+  // again there — and every outcome lands INSIDE that pending authorize request
+  // (owner directive 2026-10-29): success → the authorize URL itself (consent →
+  // the app's PKCE redirect), a brand-new identity → the connected register
+  // form carrying it, a failure → the login page carrying it. Only ever
+  // appended to the configured web origin.
   router.get('/google/callback', async (req, res) => {
     if (!ctx.google.isEnabled()) throw notFound();
     const web = ctx.config.appOrigin;
     // The state cookie is single-use — always clear it, whatever the outcome.
     const cookieState = req.signedCookies?.[GOOGLE_OAUTH_STATE_COOKIE] as string | undefined;
     clearGoogleOAuthStateCookie(res, ctx.config);
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
     // The user denied consent (or Google errored) before we ever got a code.
+    // The `state` is still spent (single-use), and a sign-in started inside the
+    // authorize flow still returns into it.
     if (typeof req.query.error === 'string' && req.query.error.length > 0) {
-      res.redirect(`${web}/login?error=google_failed`);
+      const { returnTo } = await ctx.google.abandonCallback({ state, cookieState });
+      res.redirect(`${web}/login?error=google_failed${returnToQuery(returnTo)}`);
       return;
     }
-    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
     const code = typeof req.query.code === 'string' ? req.query.code : undefined;
     const result = await ctx.google.handleCallback({ state, cookieState, code, ip: req.ip });
     switch (result.status) {
       case 'authenticated':
         await applySessionCookie(res, result.sessionId, result.persistent);
-        res.redirect(`${web}/?google=signed_in`);
+        res.redirect(result.returnTo ? `${web}${result.returnTo}` : `${web}/?google=signed_in`);
         return;
       case 'linked':
         res.redirect(`${web}/settings/connections?google=linked`);
@@ -924,11 +964,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         // on the connected register form — no account exists yet (owner order
         // 2026-07-16). The account is created only on explicit submit.
         setGoogleRegisterTicketCookie(res, ctx.config, result.ticket);
-        res.redirect(`${web}/register?google=connected`);
+        res.redirect(`${web}/register?google=connected${returnToQuery(result.returnTo)}`);
         return;
       case 'error': {
         const base = result.intent === 'link' ? '/settings/connections' : '/login';
-        res.redirect(`${web}${base}?error=${googleErrorParam(result.code)}`);
+        res.redirect(
+          `${web}${base}?error=${googleErrorParam(result.code)}${returnToQuery(result.returnTo)}`,
+        );
         return;
       }
     }
@@ -1084,6 +1126,16 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   );
 
   return router;
+}
+
+/**
+ * The `&returnTo=…` suffix that carries a pending OAuth authorize request onto
+ * an SPA landing (login / register), or `''`. The value has already passed
+ * `authorizeReturnTo` in the Google service; it is percent-encoded here so it
+ * stays ONE query parameter, and the SPA re-validates it before using it.
+ */
+function returnToQuery(returnTo: string | null | undefined): string {
+  return returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : '';
 }
 
 /**

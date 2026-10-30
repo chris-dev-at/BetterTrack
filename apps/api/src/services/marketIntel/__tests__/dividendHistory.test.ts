@@ -2,6 +2,7 @@ import type { AssetRef, DividendEvent, DividendEvents } from '@bettertrack/contr
 import { describe, expect, it } from 'vitest';
 
 import type { AssetRepository } from '../../../data/repositories/assetRepository';
+import { mapDividendEvents } from '../../../providers/yahooMapping';
 import { cachedIntel, createStubMarketData } from '../../../testing/marketDataStubs';
 import { createMarketIntelService, DIVIDEND_HISTORY_MAX_EVENTS } from '../marketIntelService';
 
@@ -90,5 +91,178 @@ describe('marketIntel.dividends — payout history normalisation (#1790)', () =>
     ];
     const res = await serviceWith(history).dividends('u1', ASSET_ID);
     expect(res).toMatchObject({ available: true, history });
+  });
+});
+
+/**
+ * `upcoming` is a forward calendar: an event that has fully happened does not
+ * belong in it (mobile board ask 2026-10-29 A3 — an exDate of 2026-08-10 was
+ * still served weeks later). The rule is the shared display-day one (web
+ * `apps/web/src/lib/dividendDates.ts`, calendar `eventSortKey`): an event stays
+ * upcoming while ANY of its dates is today or later in Europe/Vienna; once all
+ * of them are behind us it is dropped. It is NOT folded into `history`: the
+ * provider's own history already carries the payout (the Yahoo probe below).
+ */
+describe('marketIntel.dividends — past events leave the forward calendar (A3)', () => {
+  function event(exDate: string | null, payDate: string | null, amount = 0.5): DividendEvent {
+    return { exDate, payDate, amount, currency: 'USD' };
+  }
+
+  function serviceAt(nowIso: string, upcoming: DividendEvent[], history: DividendEvent[] = []) {
+    const events: DividendEvents = {
+      currency: 'USD',
+      history,
+      upcoming,
+      forwardYield: null,
+      trailingAmount: null,
+      trailingAmountBasis: null,
+    };
+    return createMarketIntelService({
+      marketData: createStubMarketData({ dividends: (_ref: AssetRef) => cachedIntel(events) }),
+      assetRepo,
+      intelRepo,
+      enabled: true,
+      now: () => Date.parse(nowIso),
+    });
+  }
+
+  it('drops a fully past event, keeps the future one, and leaves history as sent', async () => {
+    const past = event('2026-08-10T00:00:00.000Z', '2026-08-20T00:00:00.000Z');
+    const future = event('2026-11-10T00:00:00.000Z', '2026-11-20T00:00:00.000Z');
+    const older = payout('2026-05-09T00:00:00.000Z', 0.25);
+
+    const res = await serviceAt('2026-10-30T10:00:00.000Z', [past, future], [older]).dividends(
+      'u1',
+      ASSET_ID,
+    );
+
+    expect(res.upcoming).toEqual([future]);
+    expect(res.history).toEqual([older]);
+  });
+
+  it('Yahoo AAPL: the past calendar event leaves upcoming without a second history row', async () => {
+    // Live shape (review of #2086): Yahoo stamps the SAME payout differently in
+    // its two sources — `calendarEvents.exDividendDate` at midnight UTC, the
+    // chart's dividend event at the 13:30 UTC open — with the same 0.27. A fold
+    // keyed on the ISO stamp listed 10.08.2026 twice (#1790).
+    const events = mapDividendEvents(
+      {
+        meta: { currency: 'USD' },
+        dividends: [
+          { date: new Date('2026-05-11T13:30:00.000Z'), amount: 0.26 },
+          { date: new Date('2026-08-10T13:30:00.000Z'), amount: 0.27 },
+        ],
+        splits: [],
+      },
+      {
+        calendarEvents: {
+          exDividendDate: new Date('2026-08-10T00:00:00.000Z'),
+          dividendDate: new Date('2026-08-13T00:00:00.000Z'),
+        },
+      },
+    );
+    // Precondition: the mapper really produced the two differently stamped rows.
+    expect(events.upcoming).toEqual([
+      event('2026-08-10T00:00:00.000Z', '2026-08-13T00:00:00.000Z', 0.27),
+    ]);
+    expect(events.history.map((row) => row.exDate)).toContain('2026-08-10T13:30:00.000Z');
+
+    const res = await serviceAt(
+      '2026-10-30T10:00:00.000Z',
+      events.upcoming,
+      events.history,
+    ).dividends('u1', ASSET_ID);
+
+    expect(res.upcoming).toEqual([]);
+    const onTheTenth = res.history.filter((row) => row.exDate?.startsWith('2026-08-10'));
+    expect(onTheTenth).toEqual([event('2026-08-10T13:30:00.000Z', null, 0.27)]);
+    expect(res.history).toHaveLength(2);
+  });
+
+  it('keeps an event dated today, and an ex-but-unpaid one until its pay date passes', async () => {
+    const today = event('2026-10-30T00:00:00.000Z', null);
+    // 23:30 UTC on the 29th is 00:30 on the 30th in Vienna — the day it renders on.
+    const lateUtcToday = event('2026-10-29T23:30:00.000Z', null);
+    const exButUnpaid = event('2026-10-01T00:00:00.000Z', '2026-11-05T00:00:00.000Z');
+    const paidYesterday = event('2026-10-01T00:00:00.000Z', '2026-10-29T00:00:00.000Z');
+
+    const res = await serviceAt('2026-10-30T10:00:00.000Z', [
+      today,
+      lateUtcToday,
+      exButUnpaid,
+      paidYesterday,
+    ]).dividends('u1', ASSET_ID);
+
+    expect(res.upcoming).toEqual([today, lateUtcToday, exButUnpaid]);
+    expect(res.history).toEqual([]);
+  });
+
+  it('keeps an undated event — it is not demonstrably past', async () => {
+    const undated = event(null, null);
+    const res = await serviceAt('2026-10-30T10:00:00.000Z', [undated]).dividends('u1', ASSET_ID);
+    expect(res.upcoming).toEqual([undated]);
+    expect(res.history).toEqual([]);
+  });
+
+  it('measures the boundary on the Vienna day across the spring DST switch (2026-03-29)', async () => {
+    const onThe28th = event('2026-03-28T12:00:00.000Z', null);
+    const onThe29th = event('2026-03-29T00:00:00.000Z', null); // 01:00 CET on the 29th
+    const onThe30th = event('2026-03-29T22:00:00.000Z', null); // 00:00 CEST on the 30th
+
+    // 00:30 CET on the 29th (UTC is still the 28th).
+    const early = await serviceAt('2026-03-28T23:30:00.000Z', [
+      onThe28th,
+      onThe29th,
+      onThe30th,
+    ]).dividends('u1', ASSET_ID);
+    expect(early.upcoming).toEqual([onThe29th, onThe30th]);
+    expect(early.history).toEqual([]);
+
+    // 23:59 CEST on the 29th — the switch shortened the day, not the boundary.
+    const late = await serviceAt('2026-03-29T21:59:00.000Z', [onThe29th, onThe30th]).dividends(
+      'u1',
+      ASSET_ID,
+    );
+    expect(late.upcoming).toEqual([onThe29th, onThe30th]);
+    expect(late.history).toEqual([]);
+
+    // 00:00 CEST on the 30th (UTC is still the 29th): the 29th is now past.
+    const next = await serviceAt('2026-03-29T22:00:00.000Z', [onThe29th, onThe30th]).dividends(
+      'u1',
+      ASSET_ID,
+    );
+    expect(next.upcoming).toEqual([onThe30th]);
+    expect(next.history).toEqual([]);
+  });
+
+  it('measures the boundary on the Vienna day across the autumn DST switch (2026-10-25)', async () => {
+    const lastOfThe24th = event('2026-10-24T21:59:00.000Z', null); // 23:59 CEST on the 24th
+    const firstOfThe25th = event('2026-10-24T22:00:00.000Z', null); // 00:00 CEST on the 25th
+    const onThe26th = event('2026-10-25T23:00:00.000Z', null); // 00:00 CET on the 26th
+
+    // 00:00 CEST on the 25th (UTC is still the 24th).
+    const early = await serviceAt('2026-10-24T22:00:00.000Z', [
+      lastOfThe24th,
+      firstOfThe25th,
+      onThe26th,
+    ]).dividends('u1', ASSET_ID);
+    expect(early.upcoming).toEqual([firstOfThe25th, onThe26th]);
+    expect(early.history).toEqual([]);
+
+    // 23:59 CET on the 25th — the repeated hour lengthened the day, not the boundary.
+    const late = await serviceAt('2026-10-25T22:59:00.000Z', [firstOfThe25th, onThe26th]).dividends(
+      'u1',
+      ASSET_ID,
+    );
+    expect(late.upcoming).toEqual([firstOfThe25th, onThe26th]);
+    expect(late.history).toEqual([]);
+
+    // 00:00 CET on the 26th: the 25th is now past.
+    const next = await serviceAt('2026-10-25T23:00:00.000Z', [firstOfThe25th, onThe26th]).dividends(
+      'u1',
+      ASSET_ID,
+    );
+    expect(next.upcoming).toEqual([onThe26th]);
+    expect(next.history).toEqual([]);
   });
 });

@@ -17,7 +17,7 @@ import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
-import { formatMoney, formatQuantity, formatSignedMoney } from '../../lib/format';
+import { displayZoneDay, formatMoney, formatQuantity, formatSignedMoney } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
@@ -225,10 +225,15 @@ function FieldLabel({ children }: { children: ReactNode }) {
   );
 }
 
-/** Local UTC-day so the default date matches the value-series day key (§6.9). */
+/**
+ * Today in the display zone (#1792), not the UTC day: between 00:00 and ~02:00
+ * Vienna the UTC day is still yesterday, so a pre-fill from it defaulted every
+ * entry made then to the wrong date (#2082 B2). The wire is unchanged — the
+ * picked day is still sent as its UTC-midnight day key (§6.9).
+ */
 function isoToday(today?: string): string {
   if (today) return today;
-  return new Date().toISOString().slice(0, 10);
+  return displayZoneDay();
 }
 
 function numToInput(value: number | undefined): string {

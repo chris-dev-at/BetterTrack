@@ -26,6 +26,15 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * portfolio are collected, never aborting the sweep, and a run with any
  * failure throws at the end so BullMQ retries and — on exhausted attempts —
  * dead-letters it (§9).
+ *
+ * A DEGRADED portfolio (issue #1729: FX unavailable, or a recomputed run that
+ * would have dropped a still-held asset — so the run persisted nothing and any
+ * dirty marker stayed) is deliberately not a failure — nothing threw, reads
+ * stay correct, and retrying the sweep would not help while the provider is
+ * down. It is logged at `warn` instead, so a sustained FX outage is visible
+ * rather than inferable from row staleness. Refusing is what keeps the heal
+ * window honest: a persisted degraded run rewrites [run−35, run−1] without the
+ * asset, and its oldest day is never rewritten again.
  */
 
 /** Stable scheduler id + cron for the nightly snapshot roll (§9-style, in code). */
@@ -98,8 +107,17 @@ export function createSnapshotsBackfillJob(
     },
     async handler(_job, ctx) {
       const healFrom = isoDaysAgo(now, SNAPSHOT_HEAL_WINDOW_DAYS);
-      const { total, failures } = await deps.snapshots.recomputeAll({ healFrom });
-      ctx.logger.info({ total, failed: failures.length }, 'snapshots.backfill complete');
+      const { total, failures, degraded } = await deps.snapshots.recomputeAll({ healFrom });
+      if (degraded.length > 0) {
+        ctx.logger.warn(
+          { total, degraded: degraded.length, firstDegraded: degraded[0] },
+          'snapshots.backfill: portfolios left unpersisted by unavailable FX or a vanished holding',
+        );
+      }
+      ctx.logger.info(
+        { total, failed: failures.length, degraded: degraded.length },
+        'snapshots.backfill complete',
+      );
       if (failures.length > 0) {
         throw new Error(
           `snapshots.backfill: ${failures.length}/${total} portfolios failed (first: ${failures[0]})`,

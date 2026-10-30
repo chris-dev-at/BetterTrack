@@ -258,6 +258,37 @@ describe('#1325 first-party OAuth grant management', () => {
     expect(stored?.revokedAt).toBeInstanceOf(Date);
   });
 
+  it('keeps DELETE /settings/oauth-grants/:id GRANT-WIDE across installs (unlike bearer logout)', async () => {
+    // Two installs of the first-party app for one user: two token families on
+    // the one reused grant (§16 2026-10-29).
+    const first = await mintFirstPartyToken(['account:security']);
+    const second = await mintFirstPartyToken(['account:security'], {
+      user: first.user,
+      agent: first.agent,
+    });
+    expect(second.grantId).toBe(first.grantId);
+    const families = await harness.db
+      .select()
+      .from(schema.oauthTokenFamilies)
+      .where(eq(schema.oauthTokenFamilies.grantId, first.grantId));
+    expect(families).toHaveLength(2);
+
+    // Install 2 revokes the APP from its settings screen: every install goes.
+    await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${first.grantId}`)
+      .set(bearer(second.token))
+      .expect(204);
+    for (const token of [first.token, second.token]) {
+      const after = await request(harness.app).get('/api/v1/auth/me').set(bearer(token));
+      expect(after.status).toBe(401);
+    }
+    const [stored] = await harness.db
+      .select({ revokedAt: schema.oauthGrants.revokedAt })
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.id, first.grantId));
+    expect(stored?.revokedAt).toBeInstanceOf(Date);
+  });
+
   it('marks every grant non-current for a cookie caller and keeps browser revocation enabled', async () => {
     const { token, grantId, agent } = await mintFirstPartyToken(['account:security']);
 

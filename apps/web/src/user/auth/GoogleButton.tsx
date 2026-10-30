@@ -33,15 +33,20 @@ function GoogleGlyph() {
  * brand-new identity lands back on the connected register form, where any invite
  * token is entered — so nothing rides through `start`.
  *
+ * Inside the app's OAuth authorize flow the caller passes `returnTo` — the
+ * pending authorize request, already validated as a safe continuation — so the
+ * round trip comes back INTO that request instead of the webapp home (owner
+ * directive 2026-10-29). The API re-validates it and binds it to the `state`.
+ *
  * Styled as a neutral Origin control carrying Google's full-colour "G" — the
  * dark-surface variant of Google's sign-in button. A white slab would be the
  * loudest thing on a graphite auth card, and the colour mark alone is what
  * carries the brand.
  */
-export function GoogleButton() {
+export function GoogleButton({ returnTo = null }: { returnTo?: string | null } = {}) {
   const t = useT();
   return (
-    <a href={googleStartUrl()} className="bt-btn w-full">
+    <a href={googleStartUrl(returnTo)} className="bt-btn w-full" data-sign-in-method="google">
       <GoogleGlyph />
       {t('auth.google.button')}
     </a>

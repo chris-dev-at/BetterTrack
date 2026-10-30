@@ -270,7 +270,13 @@ async function mintOAuthToken(
   userId: string,
   scopes: ApiKeyScope[],
   authorizedUser: Agent = clientOwner,
-): Promise<{ accessToken: string; grantId: string; clientRowId: string }> {
+): Promise<{
+  accessToken: string;
+  grantId: string;
+  clientRowId: string;
+  clientId: string;
+  clientSecret: string;
+}> {
   const redirectUri = 'https://realtime.test/callback';
   const clientRes = await clientOwner
     .post('/api/v1/settings/oauth-clients')
@@ -309,7 +315,37 @@ async function mintOAuthToken(
     accessToken: tokenRes.body.access_token as string,
     grantId: grants[0]!.id,
     clientRowId: client.id,
+    clientId: client.clientId,
+    clientSecret,
   };
+}
+
+/**
+ * A SECOND install of an already-registered confidential app for the same user:
+ * one more consent + code exchange, i.e. a new token family on the reused grant
+ * (§16 2026-10-29).
+ */
+async function mintSecondInstallToken(
+  authorizedUser: Agent,
+  client: { clientId: string; clientSecret: string },
+  scopes: ApiKeyScope[],
+): Promise<string> {
+  const redirectUri = 'https://realtime.test/callback';
+  const approveRes = await authorizedUser
+    .post('/api/v1/oauth/authorize')
+    .set(...XRW)
+    .send({ client_id: client.clientId, redirect_uri: redirectUri, scope: scopes.join(' ') });
+  expect(approveRes.status).toBe(200);
+  const code = new URL(approveRes.body.redirectTo as string).searchParams.get('code');
+  const tokenRes = await request(harness.app).post('/api/v1/oauth/token').send({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+    client_id: client.clientId,
+    client_secret: client.clientSecret,
+  });
+  expect(tokenRes.status).toBe(200);
+  return tokenRes.body.access_token as string;
 }
 
 /** Mint a delegated token for an admin-managed first-party client. */
@@ -1979,6 +2015,34 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const disconnected = waitForSocketDisconnect(socket);
     await harness.ctx.oauth.revokeGrant({ userId: user.id, id: grantId });
     await disconnected;
+  });
+
+  it("drops ONLY the revoked install's sockets; the grant's other install stays connected", async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const first = await mintOAuthToken(loginState.agent, user.id, ['chat:read']);
+    const secondToken = await mintSecondInstallToken(loginState.agent, first, ['chat:read']);
+    const socketA = await connectWith({ auth: { token: first.accessToken } });
+    const socketB = await connectWith({ auth: { token: secondToken } });
+
+    const aDisconnected = waitForSocketDisconnect(socketA);
+    // RFC 7009 revoke of install A's access token → family-scoped invalidation.
+    await harness.ctx.oauth.revokeToken({
+      body: {
+        token: first.accessToken,
+        client_id: first.clientId,
+        client_secret: first.clientSecret,
+      },
+    });
+    await aDisconnected;
+    // The same invalidation sweep evaluated socket B and kept it.
+    expect(socketB.connected).toBe(true);
+
+    // A grant-wide revoke still reaches every install's socket.
+    const bDisconnected = waitForSocketDisconnect(socketB);
+    await harness.ctx.oauth.revokeGrant({ userId: user.id, id: first.grantId });
+    await bDisconnected;
   });
 
   it('disconnects an OAuth socket when its user-owned client is deleted', async () => {

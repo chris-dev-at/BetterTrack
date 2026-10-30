@@ -3038,6 +3038,57 @@ export const oauthGrants = pgTable(
   ],
 );
 
+/**
+ * Per-install OAuth TOKEN FAMILIES (RFC 9700 §4.14.2; §16 2026-10-29, migration
+ * 0119). A family is one `authorization_code` exchange and every token rotated
+ * from it — in practice one install of the app. Refresh reuse beyond the grace
+ * window, a bearer `POST /auth/logout` and RFC 7009 `POST /oauth/revoke` revoke
+ * only the presenting family; the grant stays the revocation unit for Settings
+ * revoke, client deletion, suspension and the emptied scope ceiling.
+ *
+ * `instance_id` is the optional client-chosen install id from the code exchange:
+ * a re-login with the same id on the same grant retires that install's previous
+ * live family (reason `relogin`), so at most ONE live family per instance exists
+ * (partial unique index). Token rows reference their family through a NULLABLE
+ * `family_id` during the rollout — NULL means "the legacy family is the grant"
+ * (pre-family, grant-wide semantics) — and a follow-up migration tightens it.
+ */
+export const oauthTokenFamilies = pgTable(
+  'oauth_token_families',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    instanceId: text('instance_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // Stamped by every rotation in this family.
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    // Revoking the family rejects its access and refresh tokens at lookup.
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    // OAUTH_TOKEN_FAMILY_REVOKE_REASONS (auditService.ts); set iff revoked_at is.
+    revokedReason: text('revoked_reason'),
+  },
+  (t) => [
+    index('oauth_token_families_grant_id_idx').on(t.grantId),
+    uniqueIndex('oauth_token_families_live_instance_unique')
+      .on(t.grantId, t.instanceId)
+      .where(sql`${t.instanceId} IS NOT NULL AND ${t.revokedAt} IS NULL`),
+    check(
+      'oauth_token_families_instance_id_shape',
+      sql`${t.instanceId} IS NULL OR ${t.instanceId} ~ '^[A-Za-z0-9._~-]{16,64}$'`,
+    ),
+    check(
+      'oauth_token_families_revoked_reason_known',
+      sql`${t.revokedReason} IS NULL OR ${t.revokedReason} IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin')`,
+    ),
+    check(
+      'oauth_token_families_revocation_complete',
+      sql`(${t.revokedAt} IS NULL) = (${t.revokedReason} IS NULL)`,
+    ),
+  ],
+);
+
 export const oauthAuthCodes = pgTable(
   'oauth_auth_codes',
   {
@@ -3075,6 +3126,9 @@ export const oauthAccessTokens = pgTable(
     grantId: uuid('grant_id')
       .notNull()
       .references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    // The install-level revocation unit (migration 0119). NULL = legacy: the
+    // family is the grant (a row minted by pre-family code).
+    familyId: uuid('family_id').references(() => oauthTokenFamilies.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull(),
     scopes: text('scopes')
       .array()
@@ -3093,6 +3147,7 @@ export const oauthAccessTokens = pgTable(
   (t) => [
     uniqueIndex('oauth_access_tokens_token_hash_unique').on(t.tokenHash),
     index('oauth_access_tokens_grant_id_idx').on(t.grantId),
+    index('oauth_access_tokens_family_id_idx').on(t.familyId),
   ],
 );
 
@@ -3103,6 +3158,9 @@ export const oauthRefreshTokens = pgTable(
     grantId: uuid('grant_id')
       .notNull()
       .references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    // The install-level revocation unit (migration 0119); every rotation's
+    // successor inherits it. NULL = legacy: the family is the grant.
+    familyId: uuid('family_id').references(() => oauthTokenFamilies.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     // Rotation: stamped when this token is exchanged for a fresh pair.
@@ -3123,6 +3181,7 @@ export const oauthRefreshTokens = pgTable(
   (t) => [
     uniqueIndex('oauth_refresh_tokens_token_hash_unique').on(t.tokenHash),
     index('oauth_refresh_tokens_grant_id_idx').on(t.grantId),
+    index('oauth_refresh_tokens_family_id_idx').on(t.familyId),
     // Covers the FK below and the "null my predecessor's envelope" write that
     // runs on every rotation (`WHERE successor_id = <rotated token>`).
     index('oauth_refresh_tokens_successor_id_idx').on(t.successorId),
@@ -3254,6 +3313,7 @@ export type ApiKeyRequestLogRow = typeof apiKeyRequestLog.$inferSelect;
 export type NewApiKeyRequestLogRow = typeof apiKeyRequestLog.$inferInsert;
 export type OAuthClientRow = typeof oauthClients.$inferSelect;
 export type OAuthGrantRow = typeof oauthGrants.$inferSelect;
+export type OAuthTokenFamilyRow = typeof oauthTokenFamilies.$inferSelect;
 export type OAuthAuthCodeRow = typeof oauthAuthCodes.$inferSelect;
 export type OAuthAccessTokenRow = typeof oauthAccessTokens.$inferSelect;
 export type OAuthRefreshTokenRow = typeof oauthRefreshTokens.$inferSelect;
@@ -5134,6 +5194,7 @@ export const schema = {
   apiKeyRequestLog,
   oauthClients,
   oauthGrants,
+  oauthTokenFamilies,
   oauthAuthCodes,
   oauthAccessTokens,
   oauthRefreshTokens,
