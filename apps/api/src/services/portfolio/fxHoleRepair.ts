@@ -480,6 +480,10 @@ export async function runFxHoleRepair(deps: FxHoleRepairDeps): Promise<FxHoleRep
     try {
       outcome = await repairOne(hit);
     } catch (err) {
+      // Not retried: a read error while VERIFYING counts `failed`. If that
+      // recompute had persisted a hole the guard cannot see (the shape-2 case
+      // above, during a spurious 404), nothing re-marks it; only a re-run of
+      // the job (a run-id bump) would find it. Needs both rare events at once.
       logger.warn(
         { err, event: 'repair.verify_failed', runId, portfolioId: hit.portfolioId },
         'fx hole repair: could not verify a portfolio',
@@ -497,8 +501,11 @@ export async function runFxHoleRepair(deps: FxHoleRepairDeps): Promise<FxHoleRep
         event: 'repair.portfolio',
         runId,
         portfolioId: hit.portfolioId,
-        from: hit.hole.day,
-        vanished: hit.hole.vanished.slice(0, 5),
+        // `skipped` = the owner went paranoid (or the portfolio into a vault)
+        // after the scan: log nothing read from data that is now off-server.
+        ...(outcome === 'skipped'
+          ? {}
+          : { from: hit.hole.day, vanished: hit.hole.vanished.slice(0, 5) }),
         outcome,
         progress: `${done}/${hits.length}`,
       },

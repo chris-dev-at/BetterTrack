@@ -815,6 +815,42 @@ describe('snapshots.repairFxHoles', () => {
     expect(completed?.meta).toMatchObject({ repaired: 1, skippedVaulted: 1, skippedParanoid: 1 });
   });
 
+  it('logs nothing from a portfolio whose owner turned paranoid between the scan and its repair', async () => {
+    const db = await makeDb();
+    const { assets, holed } = await seedHoledEstate(db);
+    const holedBefore = await rowsOf(db, holed);
+    const { log, lines } = capturingLogger();
+    // The scan asks once per portfolio and sees a normal owner; every later
+    // question (the repair's own re-check) sees a paranoid one.
+    const asked = new Map<string, number>();
+    const isParanoidPortfolio = async (portfolioId: string) => {
+      const n = (asked.get(portfolioId) ?? 0) + 1;
+      asked.set(portfolioId, n);
+      return portfolioId === holed && n > 1;
+    };
+
+    await createSnapshotsFxHoleRepairJob(
+      repairDeps(db, snapshotService(db, 'ok', log), { isParanoidPortfolio }),
+    ).handler(makeJob(), makeCtx(log));
+
+    const [, completed] = await repairAudit(db);
+    expect(completed?.meta).toMatchObject({
+      portfoliosWithHoles: 1,
+      repaired: 0,
+      skippedParanoid: 1,
+    });
+    expect(await rowsOf(db, holed)).toEqual(holedBefore);
+    const line = lines.find(
+      (l) => l.fields.event === 'repair.portfolio' && l.fields.portfolioId === holed,
+    );
+    expect(line?.fields).toMatchObject({ outcome: 'skipped' });
+    // Neither the asset ids nor the hole day, both read from data the owner has
+    // since taken off the server.
+    expect(line?.fields).not.toHaveProperty('vanished');
+    expect(line?.fields).not.toHaveProperty('from');
+    expect(JSON.stringify(line?.fields)).not.toContain(assets.usdId);
+  });
+
   it('does nothing but record why when the fix is absent from the running build', async () => {
     const db = await makeDb();
     const { holed } = await seedHoledEstate(db);
