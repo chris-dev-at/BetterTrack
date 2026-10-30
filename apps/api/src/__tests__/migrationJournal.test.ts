@@ -105,3 +105,32 @@ describe('drizzle migration journal', () => {
     );
   });
 });
+
+// 0121 runs while the old API still serves (review round 2, S1): it must bound
+// its wait for ACCESS EXCLUSIVE on the hot token tables, and take them in the
+// app's own lock order (families before access tokens, as every rotation and
+// code exchange does) so an in-flight token transaction cannot deadlock with it.
+describe('0121_oauth_access_first_used on a live database', () => {
+  const statements = readFileSync(path.join(drizzleDir, '0121_oauth_access_first_used.sql'), 'utf8')
+    .split('--> statement-breakpoint')
+    .map((chunk) =>
+      chunk
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('--'))
+        .join(' ')
+        .trim(),
+    )
+    .filter((chunk) => chunk.length > 0);
+
+  it('bounds its lock wait first, then locks oauth_token_families before oauth_access_tokens', () => {
+    expect(statements[0]).toBe("SET LOCAL lock_timeout = '10s';");
+    const first = (table: string) => statements.findIndex((sql) => sql.includes(`"${table}"`));
+    expect(first('oauth_token_families')).toBe(1);
+    expect(first('oauth_access_tokens')).toBeGreaterThan(first('oauth_token_families'));
+    const lastFamilies = statements.reduce(
+      (last, sql, i) => (sql.includes('"oauth_token_families"') ? i : last),
+      -1,
+    );
+    expect(lastFamilies).toBeLessThan(first('oauth_access_tokens'));
+  });
+});

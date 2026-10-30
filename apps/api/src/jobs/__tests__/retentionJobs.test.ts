@@ -1,4 +1,7 @@
-import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
+import {
+  OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS,
+  OAUTH_REFRESH_TOKEN_GRACE_SECONDS,
+} from '@bettertrack/contracts';
 import { eq } from 'drizzle-orm';
 import { pino } from 'pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -688,8 +691,30 @@ describe('data.retentionCleanup — OAuth refresh grace envelopes', () => {
       .insert(schema.oauthGrants)
       .values({ clientId: client!.id, userId: user.id, scopes: ['portfolio:read'] })
       .returning();
-    const row = (name: string, consumedSecondsAgo: number | null, envelope: string | null) => ({
-      grantId: grant!.id,
+    // An official first-party app (§16 2026-10-29): its sealed pair may be
+    // re-served for 24 h, so the sweep must keep it that long.
+    const [official] = await harness.db
+      .insert(schema.oauthClients)
+      .values({
+        userId: null,
+        clientId: 'btc_grace_sweep_official',
+        name: 'Official app',
+        redirectUris: ['bettertrack://oauth/callback'],
+        isPublic: true,
+        isFirstParty: true,
+      })
+      .returning();
+    const [officialGrant] = await harness.db
+      .insert(schema.oauthGrants)
+      .values({ clientId: official!.id, userId: user.id, scopes: ['portfolio:read'] })
+      .returning();
+    const row = (
+      name: string,
+      consumedSecondsAgo: number | null,
+      envelope: string | null,
+      grantId: string = grant!.id,
+    ) => ({
+      grantId,
       tokenHash: `hash-${name}`,
       expiresAt: new Date(NOW.getTime() + DAY_MS),
       consumedAt:
@@ -704,6 +729,19 @@ describe('data.retentionCleanup — OAuth refresh grace envelopes', () => {
         row('boundary', OAUTH_REFRESH_TOKEN_GRACE_SECONDS, 'sealed-boundary'),
         row('live', OAUTH_REFRESH_TOKEN_GRACE_SECONDS - 1, 'sealed-live'),
         row('current', null, null),
+        row('fp-live', 2 * 3600, 'sealed-fp-live', officialGrant!.id),
+        row(
+          'fp-boundary',
+          OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS,
+          'sealed-fp-boundary',
+          officialGrant!.id,
+        ),
+        row(
+          'fp-stale',
+          OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS + 1,
+          'sealed-fp-stale',
+          officialGrant!.id,
+        ),
       ]);
 
     const job = createDataRetentionCleanupJob({
@@ -726,7 +764,7 @@ describe('data.retentionCleanup — OAuth refresh grace envelopes', () => {
     });
 
     expect(await job.handler({} as never, ctx())).toMatchObject({
-      oauthGraceEnvelopesCleared: 2,
+      oauthGraceEnvelopesCleared: 3,
       deferredToNextRun: 0,
     });
     const rows = await harness.db
@@ -734,8 +772,7 @@ describe('data.retentionCleanup — OAuth refresh grace envelopes', () => {
         tokenHash: schema.oauthRefreshTokens.tokenHash,
         successorEnvelope: schema.oauthRefreshTokens.successorEnvelope,
       })
-      .from(schema.oauthRefreshTokens)
-      .where(eq(schema.oauthRefreshTokens.grantId, grant!.id));
+      .from(schema.oauthRefreshTokens);
     expect(Object.fromEntries(rows.map((r) => [r.tokenHash, r.successorEnvelope]))).toEqual({
       'hash-stale': null,
       'hash-ancient': null,
@@ -743,6 +780,10 @@ describe('data.retentionCleanup — OAuth refresh grace envelopes', () => {
       'hash-boundary': 'sealed-boundary',
       'hash-live': 'sealed-live',
       'hash-current': null,
+      // First-party rows keep their pair for 24 h (inclusive), then lose it.
+      'hash-fp-live': 'sealed-fp-live',
+      'hash-fp-boundary': 'sealed-fp-boundary',
+      'hash-fp-stale': null,
     });
 
     expect(await job.handler({} as never, ctx())).toMatchObject({ oauthGraceEnvelopesCleared: 0 });

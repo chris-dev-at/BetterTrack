@@ -92,8 +92,11 @@ export interface AdminServiceDeps {
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
   /** Suspension cleanup for non-session bearer credentials. */
   apiKeys: Pick<ApiKeyService, 'revokeAllForUser'>;
-  /** Suspension cleanup for delegated OAuth credentials. */
-  oauth: Pick<OAuthService, 'revokeAllForUser'>;
+  /**
+   * Suspension cleanup for delegated OAuth credentials, and the admin
+   * temp-password reset's grant revocation (§16 2026-10-29, ruling (d)).
+   */
+  oauth: Pick<OAuthService, 'revokeAllForUser' | 'revokeGrantsForCredentialEvent'>;
   sessions: SessionService;
   /** Best-effort lifecycle fan-out to terminate any connected principal. */
   events?: Pick<EventBus, 'publish'>;
@@ -1010,6 +1013,21 @@ export function createAdminService(deps: AdminServiceDeps) {
       if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
       await destroySessionsBestEffort(target.id);
       await invalidateAllRealtimePrincipals(target.id);
+      // A reset ends every OAuth grant too (§16 2026-10-29, ruling (d)): the
+      // admin reset is the same "the old credential may be in other hands"
+      // moment as the self-service one, so no installed app keeps the old
+      // authority. Audited per grant as `password_reset` with `source: admin`,
+      // the admin as actor. Failures propagate — the reset must not answer 200
+      // while a grant it promised to end is still live.
+      await oauth.revokeGrantsForCredentialEvent({
+        userId: target.id,
+        reason: 'password_reset',
+        firstPartyOnly: false,
+        exceptGrantId: null,
+        ip: actor.ip,
+        actorId: actor.id,
+        source: 'admin',
+      });
       // Clear lockout so the user can sign in with the new temp password now.
       await clearLoginThrottle(redis, target.id);
       await audit.record({

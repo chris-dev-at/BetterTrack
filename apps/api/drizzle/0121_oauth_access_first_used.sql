@@ -1,0 +1,54 @@
+-- First-party refresh persistence (§16 2026-10-29, Chief ruling under the
+-- owner's indefinite-persistence directive).
+--
+-- For an official first-party client, a consumed refresh token is re-served its
+-- identical successor pair for up to 24 h — but only while that pair has NEVER
+-- BEEN USED. "Unused" has two halves: the successor refresh token is unconsumed
+-- (already visible as `oauth_refresh_tokens.consumed_at`) and the successor
+-- ACCESS token has never authenticated a request, which nothing recorded until
+-- now. This column is that record.
+--
+--   first_used_at — stamped ONCE, by the first successful bearer authentication
+--                   of the token (HTTP middleware or realtime handshake), with
+--                   `UPDATE … SET first_used_at = $now WHERE id = $id AND
+--                   first_used_at IS NULL`. Never rewritten. NULL = never used.
+--
+-- NULLABLE, no default, NO backfill: every access token issued before this
+-- migration reads as "never used", even if it was used. That is harmless by
+-- construction, not by timing: the 24 h re-serve also requires the sealed pair
+-- to carry envelope version 2, which only the code shipping with this column
+-- writes. A pair sealed before it (version 1) is served only inside the strict
+-- 60 s window, where first use is never consulted; past it, it is reuse.
+--
+-- No index: the column is only ever read off a row already fetched by its
+-- unique token hash, and written by primary key.
+--
+-- Additive and reversible: dropping the column restores the previous table
+-- exactly; no existing value is read or rewritten.
+--
+-- Second change, same ruling: "sign out everywhere" called from an official
+-- app's bearer revokes every OTHER token family on the caller's own grant
+-- (0119's per-install unit), so exactly the calling install stays signed in.
+-- Those family rows record `revoked_reason = 'sign_out_everywhere'`, which
+-- 0119's closed vocabulary CHECK does not admit yet. The constraint is
+-- re-created under its own name with that one value added — WIDENING ONLY:
+-- every row that satisfied the old list satisfies the new one, so validation
+-- cannot fail on existing data. `oauth_token_families` holds one row per
+-- install login, so the validation scan under the ADD's ACCESS EXCLUSIVE lock
+-- is short. RE-RUNNABLE: DROP … IF EXISTS, then ADD. Rollback: re-create the
+-- 0119 list after the `sign_out_everywhere` rows are gone (or rewritten).
+--
+-- CONCURRENCY (same reasoning as 0119's header). Both changes take ACCESS
+-- EXCLUSIVE on a hot token table, and the updater migrates while the old API
+-- still serves. `lock_timeout` bounds the WAIT for those locks — e.g. behind a
+-- nightly pg_dump's ACCESS SHARE, while every bearer read and refresh would
+-- queue behind the migration: past 10 s it fails cleanly, the whole batch rolls
+-- back, and the updater retries next tick. `SET LOCAL` lasts for the rest of
+-- the one batch transaction drizzle runs. The statements follow the app's own
+-- lock order — `oauth_token_families` BEFORE `oauth_access_tokens`, as every
+-- rotation and code exchange takes them — so an in-flight old-code token
+-- transaction cannot deadlock with the migration.
+SET LOCAL lock_timeout = '10s';--> statement-breakpoint
+ALTER TABLE "oauth_token_families" DROP CONSTRAINT IF EXISTS "oauth_token_families_revoked_reason_known";--> statement-breakpoint
+ALTER TABLE "oauth_token_families" ADD CONSTRAINT "oauth_token_families_revoked_reason_known" CHECK ("revoked_reason" IS NULL OR "revoked_reason" IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin', 'sign_out_everywhere'));--> statement-breakpoint
+ALTER TABLE "oauth_access_tokens" ADD COLUMN IF NOT EXISTS "first_used_at" timestamp with time zone;
