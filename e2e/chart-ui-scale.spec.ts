@@ -80,24 +80,53 @@ test('portfolio chart: at 130 % the scrubbed point is the one under the cursor',
 
   // Playwright's mouse and boundingBox() are both in rendered px. The right
   // price axis (the last ~10 %) is never reached.
+  await chart.scrollIntoViewIfNeeded();
   const box = (await chart.boundingBox())!;
-  for (const fraction of [0.2, 0.45, 0.7]) {
-    const cursorX = box.x + box.width * fraction;
-    await page.mouse.move(cursorX, box.y + box.height / 2);
-    await expect(tooltip, `tooltip at ${fraction * 100} % across`).toBeVisible();
+
+  /**
+   * How far the crosshair is from `cursorX`, in rendered px. The tooltip is
+   * anchored at the crosshair's pointer x (lightweight-charts' `param.point.x`,
+   * the very `localX` it snaps the inspected point from) in the chart's LAYOUT
+   * px; the zoom draws it at box.x + left × scale.
+   */
+  async function crosshairOffset(cursorX: number, where: string): Promise<number> {
+    await expect(tooltip, `tooltip ${where}`).toBeVisible();
     // Let React commit the reading the crosshair callback just produced.
     await page.evaluate(
       () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
     );
-    // The tooltip is anchored at the crosshair's pointer x (lightweight-charts'
-    // `param.point.x`, the very `localX` it snaps the inspected point from), in
-    // the chart's LAYOUT px; the zoom draws it at box.x + left × scale. Before
-    // the fix it sat `0.3 × (cursor − box.x)` to the right — 70 px and more
-    // here — or the crosshair left the plot altogether.
     const left = await tooltip.evaluate((el) => parseFloat((el as HTMLElement).style.left));
+    return Math.abs(box.x + left * SCALE - cursorX);
+  }
+
+  // Hover. Before the fix the crosshair sat `0.3 × (cursor − box.x)` to the
+  // right — 70 px and more here — or left the plot altogether.
+  for (const fraction of [0.2, 0.45, 0.7]) {
+    const cursorX = box.x + box.width * fraction;
+    await page.mouse.move(cursorX, box.y + box.height / 2);
     expect(
-      Math.abs(box.x + left * SCALE - cursorX),
+      await crosshairOffset(cursorX, `at ${fraction * 100} % across`),
       `at ${fraction * 100} % across, the crosshair is under the cursor`,
     ).toBeLessThan(1.5);
   }
+
+  // Press-and-slide that LEAVES the chart (review of #2075): the library follows
+  // the press on the document and clamps the crosshair into the plot, so the
+  // reading must stay under the cursor off the chart and after the release.
+  const viewport = page.viewportSize()!;
+  const outY = box.y > 60 ? box.y - 30 : box.y + box.height + 30;
+  expect(outY > 0 && outY < viewport.height, 'room to slide off the chart').toBe(true);
+  const outX = box.x + box.width * 0.6;
+  await page.mouse.move(box.x + box.width * 0.3, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(outX, outY, { steps: 8 });
+  expect(
+    await crosshairOffset(outX, 'while sliding off the chart'),
+    'a press slid off the chart still reads the point under the cursor',
+  ).toBeLessThan(1.5);
+  await page.mouse.up();
+  expect(
+    await crosshairOffset(outX, 'after releasing off the chart'),
+    'the reading left on screen after an outside release is the right one',
+  ).toBeLessThan(1.5);
 });

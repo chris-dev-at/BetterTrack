@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { layoutPointerEvents } from './layoutPointerEvents';
 
@@ -170,6 +170,97 @@ describe('layoutPointerEvents — press-and-slide', () => {
     // Measured against the stale pane instead, this would read −120.
     expect(x).toBeCloseTo(30, 9);
   });
+
+  /**
+   * The review-of-record repro (#2075): press inside, slide ABOVE or BELOW the
+   * chart. Those events target whatever is under the pointer — never the
+   * container — yet the library's `documentElement` listeners still read them
+   * against the pressed canvas, and clamp the crosshair into the plot.
+   */
+  test.each([
+    ['below', 520],
+    ['above', -60],
+  ])('a slide that leaves the chart %s it is still measured against the pressed canvas', (_, y) => {
+    scale = 1.25;
+    const { pane } = setup();
+    const outside = document.createElement('div');
+    document.body.appendChild(outside);
+    // Where the library listens during a press: documentElement, bubble phase.
+    const seen: number[] = [];
+    const onRoot = (e: MouseEvent) => seen.push(libraryLocal(e, pane).x);
+    document.documentElement.addEventListener('mousemove', onRoot);
+    document.documentElement.addEventListener('mouseup', onRoot);
+
+    pane.dispatchEvent(
+      new MouseEvent('mousedown', { ...at(40, 100, 100, 10), buttons: 1, bubbles: true }),
+    );
+    outside.dispatchEvent(
+      new MouseEvent('mousemove', { ...at(40, 100, 400, y), buttons: 1, bubbles: true }),
+    );
+    outside.dispatchEvent(
+      new MouseEvent('mouseup', { ...at(40, 100, 410, y), buttons: 0, bubbles: true }),
+    );
+    // After the release the page is the page again: nothing is rewritten.
+    const later = new MouseEvent('mousemove', { ...at(40, 100, 420, y), bubbles: true });
+    outside.dispatchEvent(later);
+    document.documentElement.removeEventListener('mousemove', onRoot);
+    document.documentElement.removeEventListener('mouseup', onRoot);
+
+    // Uncorrected, these read 500 / 512.5 — the clamped wrong day on screen.
+    expect(seen[0]).toBeCloseTo(400, 9);
+    expect(seen[1]).toBeCloseTo(410, 9);
+    expect(Object.getOwnPropertyDescriptor(later, 'clientX')).toBeUndefined();
+  });
+
+  test('only a left-button press follows the pointer off the chart', () => {
+    scale = 1.25;
+    const { pane } = setup();
+    const outside = document.createElement('div');
+    document.body.appendChild(outside);
+    pane.dispatchEvent(
+      new MouseEvent('mousedown', {
+        ...at(40, 100, 100, 10),
+        button: 2,
+        buttons: 2,
+        bubbles: true,
+      }),
+    );
+    const move = new MouseEvent('mousemove', {
+      ...at(40, 100, 400, 520),
+      buttons: 2,
+      bubbles: true,
+    });
+    outside.dispatchEvent(move);
+    // The library ignores a non-left press, so the page keeps its own event.
+    expect(Object.getOwnPropertyDescriptor(move, 'clientX')).toBeUndefined();
+  });
+
+  test('the disposer, mid-press, also drops the document listener', () => {
+    scale = 1.25;
+    const { pane } = setup();
+    const outside = document.createElement('div');
+    document.body.appendChild(outside);
+    pane.dispatchEvent(
+      new MouseEvent('mousedown', { ...at(40, 100, 100, 10), buttons: 1, bubbles: true }),
+    );
+    for (const r of release) r();
+    release = [];
+    const move = new MouseEvent('mousemove', {
+      ...at(40, 100, 400, 520),
+      buttons: 1,
+      bubbles: true,
+    });
+    outside.dispatchEvent(move);
+    expect(Object.getOwnPropertyDescriptor(move, 'clientX')).toBeUndefined();
+  });
+
+  test('at scale 1 a press installs nothing on the document', () => {
+    const { pane } = setup();
+    const added = vi.spyOn(document, 'addEventListener');
+    pane.dispatchEvent(new MouseEvent('mousedown', { clientX: 50, clientY: 50, bubbles: true }));
+    expect(added).not.toHaveBeenCalled();
+    added.mockRestore();
+  });
 });
 
 describe('layoutPointerEvents — touch', () => {
@@ -197,6 +288,22 @@ describe('layoutPointerEvents — touch', () => {
     expect(seen[0]).toBeCloseTo(250, 9);
   });
 
+  test('a finger slid off the chart is still corrected: its target stays the canvas', () => {
+    // Why touch needs no document listener: the event is dispatched to the
+    // canvas the touch started on, so it crosses the container wherever the
+    // finger is.
+    scale = 1.25;
+    const { pane } = setup();
+    const touch = { identifier: 1, target: pane, ...at(40, 100, 300, 600) };
+    let x = NaN;
+    document.documentElement.addEventListener('touchmove', function onRoot(e) {
+      x = libraryLocal((e as unknown as TouchEvent).changedTouches[0]!, pane).x;
+      document.documentElement.removeEventListener('touchmove', onRoot);
+    });
+    pane.dispatchEvent(touchEvent('touchmove', touch));
+    expect(x).toBeCloseTo(300, 9);
+  });
+
   test('a touch that belongs to another part of the page is left alone', () => {
     scale = 1.4;
     const { pane } = setup();
@@ -219,6 +326,12 @@ describe('layoutPointerEvents — touch', () => {
  * `clientX - getBoundingClientRect().left` WITHOUT dividing by a scale. If an
  * upgrade starts doing that itself, every hover would be corrected twice — so
  * the installed build's formula is pinned here, in both bundles it ships.
+ *
+ * This is a source pin on ONE expression: it goes red if the compat event
+ * itself divides (review of #2075: 2 failed | 11 passed under that mutation),
+ * but a division added further downstream — in the pane widget, say — leaves
+ * it green (13 passed). The guard for that kind of upgrade is the nightly
+ * `e2e/chart-ui-scale.spec.ts`, which runs the real library under real zoom.
  */
 describe('lightweight-charts still reads pointers as clientX − rect.left', () => {
   const pkg = createRequire(import.meta.url).resolve('lightweight-charts/package.json');

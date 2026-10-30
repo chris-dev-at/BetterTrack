@@ -43,8 +43,11 @@ export interface RenderScale {
  * `offsetWidth`/`offsetHeight` are whole px, so a fractional layout box differs
  * from its rendered box by up to one px with no scale at all. Below that, the
  * ratio is rounding noise and is reported as exactly 1 — which is what keeps
- * the unscaled page byte-identical. (The smallest interface step is 1.1, so a
- * real scale clears this on anything wider than ~15 px.)
+ * the unscaled page byte-identical. The smallest scale in play is 1.05 —
+ * `auto` floors to 0.05 steps (`clampToWindow` in `user/uiScale.ts`), e.g.
+ * 1.05 at a 1320 px window — and even then a real scale clears this threshold
+ * on anything 30 px or more along that axis (0.05 × 30 = 1.5 px, past the half
+ * px `offsetWidth` may round away). A chart canvas is hundreds of px.
  */
 function axisScale(rendered: number, layout: number): number {
   if (!(layout > 0) || !(rendered > 0)) return 1;
@@ -56,7 +59,10 @@ function axisScale(rendered: number, layout: number): number {
  * Rendered ÷ layout size of an HTML element, measured — so it covers `zoom`,
  * `transform: scale()` and both together without knowing which is in play.
  */
-export function renderScale(element: Element, rect = element.getBoundingClientRect()): RenderScale {
+export function renderScale(
+  element: Element,
+  rect: DOMRectReadOnly = element.getBoundingClientRect(),
+): RenderScale {
   const html = element as HTMLElement;
   return {
     x: axisScale(rect.width, html.offsetWidth),
@@ -68,6 +74,12 @@ function isSvgGraphics(element: Element): element is SVGGraphicsElement {
   return typeof (element as SVGGraphicsElement).getScreenCTM === 'function';
 }
 
+/** An HTML element's box and {@link renderScale}, when the caller already measured them. */
+export interface MeasuredBox {
+  rect: DOMRectReadOnly;
+  scale: RenderScale;
+}
+
 /**
  * Map a pointer into the element's own, untransformed coordinate space.
  *
@@ -77,8 +89,14 @@ function isSvgGraphics(element: Element): element is SVGGraphicsElement {
  *    does not ship.
  *  - HTML (including `<canvas>`): `(client − rect.left) ÷ (rect.width ÷
  *    offsetWidth)` per axis — layout px from the element's top-left corner.
+ *    Pass `measured` to reuse a box read moments ago instead of reading it
+ *    again (one layout read per event on a hot mousemove path).
  */
-export function pointerToLocal(pointer: ClientPoint, element: Element): LocalPoint {
+export function pointerToLocal(
+  pointer: ClientPoint,
+  element: Element,
+  measured?: MeasuredBox,
+): LocalPoint {
   if (isSvgGraphics(element)) {
     const m = element.getScreenCTM();
     const det = m ? m.a * m.d - m.b * m.c : 0;
@@ -91,8 +109,8 @@ export function pointerToLocal(pointer: ClientPoint, element: Element): LocalPoi
     const rect = element.getBoundingClientRect();
     return { x: pointer.clientX - rect.left, y: pointer.clientY - rect.top };
   }
-  const rect = element.getBoundingClientRect();
-  const scale = renderScale(element, rect);
+  const rect = measured?.rect ?? element.getBoundingClientRect();
+  const scale = measured?.scale ?? renderScale(element, rect);
   return {
     x: (pointer.clientX - rect.left) / scale.x,
     y: (pointer.clientY - rect.top) / scale.y,
