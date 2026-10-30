@@ -1,5 +1,19 @@
-import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from 'drizzle-orm';
+import { oauthRefreshReplayWindowSeconds } from '@bettertrack/contracts';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { OAuthTokenFamilyRevokeReason } from '../../services/audit/auditService';
@@ -25,9 +39,11 @@ import {
  * OAuth 2.0 provider persistence (PROJECTPLAN.md §6.13, §14, V2-P12). Only
  * token/secret *hashes* are stored — the one exception is a rotated refresh
  * token's `successor_envelope`, an AES-256-GCM envelope (sealed by the service)
- * of the pair it was rotated into, served only inside the refresh grace window
- * and nulled once it has passed (on read, on the successor's rotation, after
- * the next rotation anywhere, and by the daily sweep).
+ * of the pair it was rotated into, served only inside the re-serve window of
+ * the token's own client (60 s third-party, 24 h first-party — see
+ * `oauthRefreshReplayWindowSeconds`) and nulled once it has passed (on read, on
+ * the successor's rotation, after the next rotation anywhere, and by the daily
+ * sweep).
  * Single-use codes and rotating refresh tokens
  * are consumed with an atomic `UPDATE … WHERE consumed_at IS NULL RETURNING`, so
  * a concurrent double-exchange can only ever win once. Every token lookup joins
@@ -267,18 +283,298 @@ export type OAuthRefreshTokenRotation =
   | { outcome: 'replayed'; current: OAuthRefreshTokenLookup | undefined }
   | { outcome: 'revoked' };
 
-const REFRESH_GRACE_MS = OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000;
+/**
+ * What a credential event ({@link createOAuthRepository}'s
+ * `revokeGrantsForCredentialEvent`) revoked: the grant id (the realtime
+ * invalidation credential + the audit target) and the client's public
+ * `btc_…` id (the audit meta). Never a token or a hash.
+ */
+export interface OAuthCredentialEventRevocation {
+  grantId: string;
+  clientId: string;
+}
+
+/**
+ * Everything one credential event revoked, in one transaction: whole grants,
+ * plus — sign-out-everywhere from an official app's bearer only — every OTHER
+ * install on the caller's own (kept) grant.
+ */
+export interface OAuthCredentialEventResult {
+  grants: OAuthCredentialEventRevocation[];
+  /** Families revoked on `exceptGrantId` (reason `sign_out_everywhere`). */
+  families: OAuthTokenFamilyRow[];
+  /** The kept grant's public `btc_…` client id (audit meta); null when nothing was kept. */
+  keptClientId: string | null;
+  /**
+   * The family the calling install holds afterwards — its own, or the fresh
+   * one its chain was moved into. Null when the caller's chain could not be
+   * isolated, in which case the caller was signed out with the rest.
+   */
+  keptFamilyId: string | null;
+  /**
+   * No-family chains were swept and revoked. Their sockets carry no family,
+   * so only a grant-wide realtime invalidation reaches them.
+   */
+  orphansSwept: boolean;
+}
+
+/** Upper bound on one chain walk (successor links never cycle; this is belt and braces). */
+const CHAIN_WALK_MAX_DEPTH = 100_000;
+
+/** `db.execute` hands back `{ rows }` on node-postgres/PGlite; narrow it once here. */
+function rowsOf<T>(result: unknown): T[] {
+  return (result as { rows?: T[] }).rows ?? (result as T[]);
+}
+
+/**
+ * Sign-out-everywhere from an official app's bearer, applied to the caller's
+ * OWN grant (§16 2026-10-29): every install on that grant except the calling
+ * one ends, and the calling one stays signed in.
+ *
+ * An install is a refresh chain, and a family is not always one install:
+ *  - 0119 backfilled ONE legacy family per pre-existing grant, so every
+ *    pre-PR-B install of the app shares it (possibly with the caller);
+ *  - the pre-family code minted `family_id IS NULL` rows during PR-B's
+ *    rollout, and rotation inherits that, so those chains have no family row.
+ * So when the caller's family holds another live chain, or the caller itself
+ * is a NULL-family chain, the caller's chain is MOVED into a fresh family
+ * first: its refresh rows (walked both ways along `successor_id`, so its 60 s
+ * grace replay and its later reuse detection travel with it) and the access
+ * rows minted with them (same grant, family and `created_at` — one
+ * transaction inserts each pair; compared in SQL so no precision is lost).
+ * Every remaining NULL-family row of the grant is put into a sweep family.
+ * Then every family of the grant except the caller's is revoked, reason
+ * `sign_out_everywhere`, envelopes dropped ({@link revokeFamilies}).
+ *
+ * Fail-safe: when the presenting access row does not pair with exactly one
+ * refresh row, the caller cannot be told apart from its siblings, so nothing
+ * is kept and the caller is signed out with them (`keptFamilyId: null`).
+ *
+ * Ownership is enforced here: the grant must belong to `userId`, be live, and
+ * (`clientFilter`) be a first-party client's. LOCK ORDER is the rotation's:
+ * the grant row (`FOR UPDATE`), then every live family of it in id order,
+ * then token rows — so a concurrent rotation, logout or code exchange on this
+ * grant waits instead of deadlocking.
+ *
+ * IDEMPOTENCY KEY: the family id under `revoked_at IS NULL`; a replay finds
+ * the caller alone in its family and revokes nothing.
+ */
+async function endSiblingInstalls(
+  executor: Database,
+  input: {
+    userId: string;
+    grantId: string;
+    callerAccessTokenId: string;
+    clientFilter: SQL | undefined;
+    at: Date;
+  },
+): Promise<Omit<OAuthCredentialEventResult, 'grants'>> {
+  const [kept] = await executor
+    .select({ id: oauthGrants.id, clientId: oauthClients.clientId })
+    .from(oauthGrants)
+    .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientId))
+    .where(
+      and(
+        eq(oauthGrants.id, input.grantId),
+        eq(oauthGrants.userId, input.userId),
+        isNull(oauthGrants.revokedAt),
+        input.clientFilter,
+      ),
+    )
+    .limit(1)
+    .for('update', { of: oauthGrants });
+  if (!kept) return { families: [], keptClientId: null, keptFamilyId: null, orphansSwept: false };
+
+  await executor
+    .select({ id: oauthTokenFamilies.id })
+    .from(oauthTokenFamilies)
+    .where(and(eq(oauthTokenFamilies.grantId, kept.id), isNull(oauthTokenFamilies.revokedAt)))
+    .orderBy(asc(oauthTokenFamilies.id))
+    .for('update');
+
+  const [caller] = await executor
+    .select({ id: oauthAccessTokens.id, familyId: oauthAccessTokens.familyId })
+    .from(oauthAccessTokens)
+    .where(
+      and(
+        eq(oauthAccessTokens.id, input.callerAccessTokenId),
+        eq(oauthAccessTokens.grantId, kept.id),
+      ),
+    )
+    .limit(1);
+
+  // The caller's refresh chain, seeded by the refresh row minted with its access row.
+  let chain: string[] = [];
+  if (caller) {
+    const seed = rowsOf<{ id: string }>(
+      await executor.execute(sql`
+        SELECT r."id" FROM "oauth_refresh_tokens" r, "oauth_access_tokens" a
+        WHERE a."id" = ${caller.id}
+          AND r."grant_id" = a."grant_id"
+          AND r."family_id" IS NOT DISTINCT FROM a."family_id"
+          AND r."created_at" = a."created_at"
+        LIMIT 2`),
+    );
+    if (seed.length === 1) {
+      const seedId = seed[0]!.id;
+      const family = caller.familyId;
+      chain = rowsOf<{ id: string }>(
+        await executor.execute(sql`
+          WITH RECURSIVE
+            fwd ("id", "successor_id", "depth") AS (
+              SELECT r."id", r."successor_id", 0
+              FROM "oauth_refresh_tokens" r WHERE r."id" = ${seedId}
+              UNION ALL
+              SELECT r."id", r."successor_id", f."depth" + 1
+              FROM "oauth_refresh_tokens" r JOIN fwd f ON r."id" = f."successor_id"
+              WHERE r."grant_id" = ${kept.id}
+                AND r."family_id" IS NOT DISTINCT FROM ${family}::uuid
+                AND f."depth" < ${CHAIN_WALK_MAX_DEPTH}
+            ),
+            bwd ("id", "depth") AS (
+              SELECT ${seedId}::uuid, 0
+              UNION ALL
+              SELECT r."id", b."depth" + 1
+              FROM "oauth_refresh_tokens" r JOIN bwd b ON r."successor_id" = b."id"
+              WHERE r."grant_id" = ${kept.id}
+                AND r."family_id" IS NOT DISTINCT FROM ${family}::uuid
+                AND b."depth" < ${CHAIN_WALK_MAX_DEPTH}
+            )
+          SELECT "id" FROM fwd UNION SELECT "id" FROM bwd`),
+      ).map((row) => row.id);
+    }
+  }
+
+  // Keep the caller's own family only while nobody else's live chain is in it.
+  // A NULL-family caller always moves: the grant's NULL rows are swept below.
+  let keep: string | null = null;
+  if (caller?.familyId && chain.length > 0) {
+    const [other] = await executor
+      .select({ id: oauthRefreshTokens.id })
+      .from(oauthRefreshTokens)
+      .where(
+        and(
+          eq(oauthRefreshTokens.familyId, caller.familyId),
+          isNull(oauthRefreshTokens.consumedAt),
+          gt(oauthRefreshTokens.expiresAt, input.at),
+          sql`${oauthRefreshTokens.id} NOT IN ${chain}`,
+        ),
+      )
+      .limit(1);
+    if (!other) keep = caller.familyId;
+  }
+  if (keep === null && caller && chain.length > 0) {
+    // Move ONLY the caller's chain into a fresh family of its own.
+    const [fresh] = await executor
+      .insert(oauthTokenFamilies)
+      .values({ grantId: kept.id, instanceId: null, lastUsedAt: input.at })
+      .returning();
+    if (!fresh) throw new Error('Failed to insert OAuth token family');
+    await executor
+      .update(oauthAccessTokens)
+      .set({ familyId: fresh.id })
+      .where(
+        and(
+          eq(oauthAccessTokens.grantId, kept.id),
+          caller.familyId
+            ? eq(oauthAccessTokens.familyId, caller.familyId)
+            : isNull(oauthAccessTokens.familyId),
+          inArray(
+            oauthAccessTokens.createdAt,
+            executor
+              .select({ createdAt: oauthRefreshTokens.createdAt })
+              .from(oauthRefreshTokens)
+              .where(inArray(oauthRefreshTokens.id, chain)),
+          ),
+        ),
+      );
+    await executor
+      .update(oauthRefreshTokens)
+      .set({ familyId: fresh.id })
+      .where(inArray(oauthRefreshTokens.id, chain));
+    keep = fresh.id;
+  }
+
+  // Every chain still without a family (minted by the pre-family code) goes
+  // into one sweep family, so it is revoked — and audited — like the rest.
+  const [orphanRefresh] = await executor
+    .select({ id: oauthRefreshTokens.id })
+    .from(oauthRefreshTokens)
+    .where(and(eq(oauthRefreshTokens.grantId, kept.id), isNull(oauthRefreshTokens.familyId)))
+    .limit(1);
+  const [orphanAccess] = await executor
+    .select({ id: oauthAccessTokens.id })
+    .from(oauthAccessTokens)
+    .where(and(eq(oauthAccessTokens.grantId, kept.id), isNull(oauthAccessTokens.familyId)))
+    .limit(1);
+  const orphansSwept = Boolean(orphanRefresh || orphanAccess);
+  if (orphansSwept) {
+    const [sweep] = await executor
+      .insert(oauthTokenFamilies)
+      .values({ grantId: kept.id, instanceId: null })
+      .returning();
+    if (!sweep) throw new Error('Failed to insert OAuth token family');
+    await executor
+      .update(oauthRefreshTokens)
+      .set({ familyId: sweep.id })
+      .where(and(eq(oauthRefreshTokens.grantId, kept.id), isNull(oauthRefreshTokens.familyId)));
+    await executor
+      .update(oauthAccessTokens)
+      .set({ familyId: sweep.id })
+      .where(and(eq(oauthAccessTokens.grantId, kept.id), isNull(oauthAccessTokens.familyId)));
+  }
+
+  const families = await revokeFamilies(
+    executor,
+    and(
+      eq(oauthTokenFamilies.grantId, kept.id),
+      keep ? ne(oauthTokenFamilies.id, keep) : undefined,
+    )!,
+    'sign_out_everywhere',
+    input.at,
+  );
+  return { families, keptClientId: kept.clientId, keptFamilyId: keep, orphansSwept };
+}
 
 /** The successor side of the refresh-token self-join. */
 const successorTokens = alias(oauthRefreshTokens, 'successor_tokens');
 
 /**
+ * Null every sealed successor pair under the given grants — one statement, run
+ * in the revoking transaction by every revoke path. A revoked grant's pair can
+ * never be served again (the re-serve and every token lookup require an active
+ * grant), so keeping it at rest — and in the nightly dump — for the rest of its
+ * window (up to 24 h for a first-party app) is pure residue. Idempotent: the
+ * `successor_envelope IS NOT NULL` guard makes a replay a no-op.
+ */
+async function clearGrantEnvelopes(
+  executor: Pick<Database, 'update'>,
+  grantIds: string[] | SQL,
+): Promise<void> {
+  if (Array.isArray(grantIds) && grantIds.length === 0) return;
+  await executor
+    .update(oauthRefreshTokens)
+    .set({ successorEnvelope: null })
+    .where(
+      and(
+        Array.isArray(grantIds)
+          ? inArray(oauthRefreshTokens.grantId, grantIds)
+          : sql`${oauthRefreshTokens.grantId} IN ${grantIds}`,
+        isNotNull(oauthRefreshTokens.successorEnvelope),
+      ),
+    );
+}
+
+/**
  * Read one refresh token with its grant, user and successor, enforcing the
- * envelope-lifetime rule on the way: a row whose grace window has passed loses
- * its `successor_envelope` on this very read (and the caller never sees it), so
- * a read past the window can never be the one that serves it. Rows nobody
- * reads again are left to the post-rotation and daily sweeps. Every
- * refresh-token read goes through here.
+ * envelope-lifetime rule on the way: a row whose re-serve window has passed
+ * loses its `successor_envelope` on this very read (and the caller never sees
+ * it), so a read past the window can never be the one that serves it. The
+ * window follows the token's OWN client (joined through the grant):
+ * {@link oauthRefreshReplayWindowSeconds} — 60 s for a third-party app, 24 h for
+ * an official first-party app (§16 2026-10-29). Rows nobody reads again are
+ * left to the post-rotation and daily sweeps. Every refresh-token read goes
+ * through here.
  */
 async function readRefreshToken(
   executor: Pick<Database, 'select' | 'update'>,
@@ -290,6 +586,7 @@ async function readRefreshToken(
       token: oauthRefreshTokens,
       grant: oauthGrants,
       user: users,
+      clientIsFirstParty: oauthClients.isFirstParty,
       successor: {
         id: successorTokens.id,
         tokenHash: successorTokens.tokenHash,
@@ -302,6 +599,7 @@ async function readRefreshToken(
     .from(oauthRefreshTokens)
     .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
     .innerJoin(users, eq(oauthGrants.userId, users.id))
+    .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
     .leftJoin(successorTokens, eq(successorTokens.id, oauthRefreshTokens.successorId))
     // LEFT: a legacy NULL-family row still resolves (the family is the grant).
     .leftJoin(oauthTokenFamilies, eq(oauthTokenFamilies.id, oauthRefreshTokens.familyId))
@@ -310,10 +608,11 @@ async function readRefreshToken(
   if (!row) return undefined;
 
   let token = row.token;
+  const windowMs = oauthRefreshReplayWindowSeconds(row.clientIsFirstParty) * 1000;
   if (
     token.successorEnvelope !== null &&
     token.consumedAt !== null &&
-    now.getTime() - token.consumedAt.getTime() > REFRESH_GRACE_MS
+    now.getTime() - token.consumedAt.getTime() > windowMs
   ) {
     await executor
       .update(oauthRefreshTokens)
@@ -714,18 +1013,23 @@ export function createOAuthRepository(db: Database) {
      * every token lookup requires the grant to be active.
      */
     async revokeGrant(userId: string, id: string): Promise<OAuthGrantRow | undefined> {
-      const [row] = await db
-        .update(oauthGrants)
-        .set({ revokedAt: new Date() })
-        .where(
-          and(
-            eq(oauthGrants.id, id),
-            eq(oauthGrants.userId, userId),
-            isNull(oauthGrants.revokedAt),
-          ),
-        )
-        .returning();
-      return row;
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [row] = await executor
+          .update(oauthGrants)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(oauthGrants.id, id),
+              eq(oauthGrants.userId, userId),
+              isNull(oauthGrants.revokedAt),
+            ),
+          )
+          .returning();
+        // Its sealed pairs go with it (review S3, §16 2026-10-29).
+        if (row) await clearGrantEnvelopes(executor, [row.id]);
+        return row;
+      });
     },
 
     // ── Token families (§16 2026-10-29, migration 0119) ──────────────────────
@@ -852,10 +1156,146 @@ export function createOAuthRepository(db: Database) {
         .update(oauthAuthCodes)
         .set({ consumedAt: invalidatedAt })
         .where(and(eq(oauthAuthCodes.userId, userId), isNull(oauthAuthCodes.consumedAt)));
+      // Every grant of the user is revoked now, so every sealed pair under
+      // them goes (review S3). Runs after the revoke, so a retry converges.
+      await clearGrantEnvelopes(
+        db,
+        sql`(SELECT ${oauthGrants.id} FROM ${oauthGrants} WHERE ${oauthGrants.userId} = ${userId} AND ${oauthGrants.revokedAt} IS NOT NULL)`,
+      );
+    },
+
+    /**
+     * Credential-event revocation (§16 2026-10-29): a password change, a
+     * password reset, or "sign out everywhere" ends the user's OAuth grants —
+     * every grant, or (`firstPartyOnly`) only those of official first-party
+     * apps — except `exceptGrantId` (the caller's own grant on "sign out
+     * everywhere", which promises to keep the caller signed in). Pending
+     * authorization codes for the same client set are consumed permanently.
+     *
+     * `siblingFamilies` (sign-out-everywhere from an official app's bearer):
+     * the kept grant serves EVERY install of that app, so keeping it whole
+     * would keep every other phone signed in. With it, every install on
+     * `exceptGrantId` except the one presenting `callerAccessTokenId` ends too
+     * ({@link endSiblingInstalls}: shared legacy families and NULL-family
+     * chains included). Ownership is enforced there: the kept grant must
+     * belong to `userId`, be live, and (`firstPartyOnly`) be a first-party
+     * client's. It runs after the code consumption, so a code exchange that
+     * was in flight has committed its new family by then and it is revoked
+     * too; lock order stays codes → grants → families → token rows.
+     *
+     * Ordering is the race guard, and it is deliberately lock-free. Codes are
+     * consumed FIRST: an exchange in flight holds its code row `FOR UPDATE`, so
+     * that statement waits for it to commit (and then skips the code it
+     * consumed); the grant UPDATE that follows is a fresh READ COMMITTED
+     * snapshot, so it sees — and revokes — the grant that exchange created or
+     * reused. An exchange that starts after the first statement finds its code
+     * consumed and is refused. Locks are taken codes → grants, the same order
+     * an exchange takes code → (user) → grant, so the two cannot deadlock.
+     *
+     * IDEMPOTENCY KEY: the grant id, guarded by `revoked_at IS NULL`. A replay
+     * (or a concurrent revoke of the same grant) returns nothing for that
+     * grant, so the service audits and invalidates each grant exactly once.
+     */
+    async revokeGrantsForCredentialEvent(input: {
+      userId: string;
+      firstPartyOnly: boolean;
+      exceptGrantId: string | null;
+      siblingFamilies?: { callerAccessTokenId: string };
+      revokedAt: Date;
+    }): Promise<OAuthCredentialEventResult> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const clientFilter = input.firstPartyOnly
+          ? executor
+              .select({ id: oauthClients.id })
+              .from(oauthClients)
+              .where(eq(oauthClients.isFirstParty, true))
+          : undefined;
+
+        await executor
+          .update(oauthAuthCodes)
+          .set({ consumedAt: input.revokedAt })
+          .where(
+            and(
+              eq(oauthAuthCodes.userId, input.userId),
+              isNull(oauthAuthCodes.consumedAt),
+              clientFilter ? inArray(oauthAuthCodes.clientId, clientFilter) : undefined,
+            ),
+          );
+
+        const revoked = await executor
+          .update(oauthGrants)
+          .set({ revokedAt: input.revokedAt })
+          .where(
+            and(
+              eq(oauthGrants.userId, input.userId),
+              isNull(oauthGrants.revokedAt),
+              clientFilter ? inArray(oauthGrants.clientId, clientFilter) : undefined,
+              input.exceptGrantId ? ne(oauthGrants.id, input.exceptGrantId) : undefined,
+            ),
+          )
+          .returning({ id: oauthGrants.id, clientRowId: oauthGrants.clientId });
+
+        // The caller grant's OTHER installs (sign-out-everywhere from an app).
+        let siblings: Omit<OAuthCredentialEventResult, 'grants'> = {
+          families: [],
+          keptClientId: null,
+          keptFamilyId: null,
+          orphansSwept: false,
+        };
+        if (input.siblingFamilies && input.exceptGrantId) {
+          siblings = await endSiblingInstalls(executor, {
+            userId: input.userId,
+            grantId: input.exceptGrantId,
+            callerAccessTokenId: input.siblingFamilies.callerAccessTokenId,
+            clientFilter: clientFilter ? inArray(oauthGrants.clientId, clientFilter) : undefined,
+            at: input.revokedAt,
+          });
+        }
+        if (revoked.length === 0) return { grants: [], ...siblings };
+        // Their sealed pairs go in the same transaction (review S3).
+        await clearGrantEnvelopes(
+          executor,
+          revoked.map((grant) => grant.id),
+        );
+
+        const clients = await executor
+          .select({ id: oauthClients.id, clientId: oauthClients.clientId })
+          .from(oauthClients)
+          .where(
+            inArray(
+              oauthClients.id,
+              revoked.map((grant) => grant.clientRowId),
+            ),
+          );
+        const publicId = new Map(clients.map((client) => [client.id, client.clientId]));
+        const grants = revoked
+          .map((grant) => ({
+            grantId: grant.id,
+            clientId: publicId.get(grant.clientRowId) ?? grant.clientRowId,
+          }))
+          .sort((a, b) => a.grantId.localeCompare(b.grantId));
+        return { grants, ...siblings };
+      });
     },
 
     async touchGrantLastUsed(grantId: string, at: Date): Promise<void> {
       await db.update(oauthGrants).set({ lastUsedAt: at }).where(eq(oauthGrants.id, grantId));
+    },
+
+    /**
+     * Stamp an access token's FIRST successful authentication (§16 2026-10-29,
+     * migration 0121). Written once, by primary key, and never rewritten:
+     * IDEMPOTENCY KEY the access-token id, guarded by `first_used_at IS NULL`,
+     * so a concurrent second request (or a replay) changes nothing. The
+     * first-party re-serve reads this to tell an unused successor pair from
+     * one somebody has already acted on.
+     */
+    async markAccessTokenFirstUsed(id: string, at: Date): Promise<void> {
+      await db
+        .update(oauthAccessTokens)
+        .set({ firstUsedAt: at })
+        .where(and(eq(oauthAccessTokens.id, id), isNull(oauthAccessTokens.firstUsedAt)));
     },
 
     // ── Authorization codes ──────────────────────────────────────────────────
@@ -1104,21 +1544,36 @@ export function createOAuthRepository(db: Database) {
     },
 
     /**
-     * Retention sweep step (`data.retentionCleanup`): null at most `limit`
-     * envelopes on rows consumed before `cutoff` (the caller passes "run time
-     * minus the grace window"). Envelope lifetime is otherwise enforced on read
-     * and on the successor's rotation; this catches the rows nobody touches
-     * again. Served by the partial `oauth_refresh_tokens_live_envelope_idx`.
-     * Resolves to how many envelopes were cleared; idempotent.
+     * Sweep step (`data.retentionCleanup`, and best-effort after every
+     * successful rotation): null at most `limit` envelopes whose re-serve
+     * window has passed at `now`. The window follows each row's OWN client,
+     * exactly like the read path ({@link oauthRefreshReplayWindowSeconds}):
+     * a third-party row goes once it was consumed more than 60 s before `now`,
+     * an official first-party row only once it was consumed more than 24 h
+     * before `now` — inside that, its sealed pair may still be re-served
+     * (§16 2026-10-29). Envelope lifetime is otherwise enforced on read and on
+     * the successor's rotation; this catches the rows nobody touches again.
+     * Walks the partial `oauth_refresh_tokens_live_envelope_idx`. Resolves to
+     * how many envelopes were cleared; idempotent.
      */
-    async clearExpiredSuccessorEnvelopes(cutoff: Date, limit: number): Promise<number> {
+    async clearExpiredSuccessorEnvelopes(now: Date, limit: number): Promise<number> {
+      const strictCutoff = new Date(now.getTime() - oauthRefreshReplayWindowSeconds(false) * 1000);
+      const firstPartyCutoff = new Date(
+        now.getTime() - oauthRefreshReplayWindowSeconds(true) * 1000,
+      );
       const candidates = db
         .select({ id: oauthRefreshTokens.id })
         .from(oauthRefreshTokens)
+        .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
+        .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
         .where(
           and(
             isNotNull(oauthRefreshTokens.successorEnvelope),
-            lt(oauthRefreshTokens.consumedAt, cutoff),
+            lt(oauthRefreshTokens.consumedAt, strictCutoff),
+            or(
+              eq(oauthClients.isFirstParty, false),
+              lt(oauthRefreshTokens.consumedAt, firstPartyCutoff),
+            ),
           ),
         )
         .orderBy(asc(oauthRefreshTokens.consumedAt), asc(oauthRefreshTokens.id))

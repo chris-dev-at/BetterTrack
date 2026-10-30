@@ -35,6 +35,7 @@ import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { generateToken, hashToken, sha256Base64Url } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
+import type { OAuthService } from '../oauth/oauthService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
@@ -89,7 +90,36 @@ export interface AuthServiceDeps {
   appSettings: AppSettingsService;
   /** Login-challenge factor verification + recovery-code consumption (#273, §6.1). */
   twoFactor: TwoFactorService;
+  /**
+   * OAuth grant revocation on credential events (§16 2026-10-29). REQUIRED, so
+   * no construction can silently skip it: a password change or reset ends every
+   * OAuth grant of the account, and "sign out everywhere" ends every first-party
+   * grant except the caller's own. 2FA, PIN, passkey and email changes do NOT
+   * call it — they stay sessions-only.
+   */
+  oauthGrants: Pick<OAuthService, 'revokeGrantsForCredentialEvent'>;
 }
+
+/**
+ * Who issued "sign out everywhere" (`POST /auth/sessions/revoke-others`), as
+ * far as OAuth grants are concerned (§16 2026-10-29, review B1). Grant
+ * revocation is first-party-OAuth-only everywhere else on the bearer surface
+ * (`DELETE /settings/oauth-grants/{id}` refuses personal keys and third-party
+ * apps), so this route keeps the same boundary:
+ *  - `session`           — a browser: every first-party grant is revoked;
+ *  - `first_party_oauth` — an official app's bearer: every first-party grant
+ *                          EXCEPT its own (`grantId`) is revoked, and on that
+ *                          own grant every install EXCEPT the one presenting
+ *                          `accessTokenId` — shared legacy families and
+ *                          no-family chains included — so only the calling
+ *                          install stays signed in;
+ *  - `delegated_bearer`  — a personal API key or a third-party app holding
+ *                          `account:security`: sessions only, never a grant.
+ */
+export type SignOutEverywhereCredential =
+  | { kind: 'session' }
+  | { kind: 'first_party_oauth'; grantId: string; accessTokenId: string }
+  | { kind: 'delegated_bearer' };
 
 export interface LoginInput {
   identifier: string;
@@ -233,10 +263,11 @@ export interface AuthService {
   /**
    * Self-service password reset — step 2 (§6.1, §14). Validates and consumes the
    * token, sets the new password (enforcing the §6.1 policy) and kills all of the
-   * user's sessions. A no-2FA account is then signed straight in on a fresh
-   * session (no redundant prompt, #268); a 2FA-enabled account instead lands a
-   * pending challenge and NO session — a mailbox alone must not defeat the second
-   * factor. Rejects a used/expired/unknown token.
+   * user's sessions and OAuth grants (§16 2026-10-29). A no-2FA account is then
+   * signed straight in on a fresh session (no redundant prompt, #268); a
+   * 2FA-enabled account instead lands a pending challenge and NO session — a
+   * mailbox alone must not defeat the second factor. Rejects a
+   * used/expired/unknown token.
    */
   completePasswordReset(input: PasswordResetComplete, ip?: string | null): Promise<LoginResult>;
   /**
@@ -373,11 +404,21 @@ export interface AuthService {
     currentSessionId: string | null,
   ): Promise<{ revoked: boolean; wasCurrent: boolean }>;
   /**
-   * Revoke every session of the caller EXCEPT the current one (V3-P11a) —
-   * "log out all other devices". Returns how many were revoked. The caller stays
-   * logged in on `currentSessionId`.
+   * "Sign out everywhere" (V3-P11a; widened §16 2026-10-29): revoke every
+   * session of the caller EXCEPT the current one, AND — only for a browser
+   * session or an official first-party app's bearer — every OAuth grant of an
+   * official first-party app EXCEPT the caller's own, and on the caller's own
+   * grant every token family except the calling install's (see
+   * {@link SignOutEverywhereCredential}). Third-party grants are untouched; a
+   * personal key or third-party bearer revokes sessions only. Returns how many
+   * SESSIONS were revoked (the wire count is unchanged). The caller stays
+   * signed in either way.
    */
-  revokeOtherSessions(userId: string, currentSessionId: string | null): Promise<number>;
+  revokeOtherSessions(
+    userId: string,
+    currentSessionId: string | null,
+    caller: { credential: SignOutEverywhereCredential; ip?: string | null },
+  ): Promise<number>;
 }
 
 // Self-service reset links are short-lived (§6.1, §14): valid for one hour.
@@ -450,6 +491,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     email,
     appSettings,
     twoFactor,
+    oauthGrants,
   } = deps;
   // Per-account failed-login throttle (§6.1, §10): ~10 failures → a short
   // cooldown, escalating on repeat batches and decaying after a quiet period.
@@ -1174,6 +1216,16 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // the realtime invalidation carries no exception.
       await destroyAllSessionsBestEffort(user.id);
       await invalidateAllSessions(user.id);
+      // …and no OAuth grant either (§16 2026-10-29) — INCLUDING the caller's own
+      // when it is an OAuth bearer: a phone that changes the password signs
+      // itself out too and logs in again with the new one, like every browser.
+      await oauthGrants.revokeGrantsForCredentialEvent({
+        userId: user.id,
+        reason: 'password_change',
+        firstPartyOnly: false,
+        exceptGrantId: null,
+        ip,
+      });
 
       await audit.record({
         actorId: user.id,
@@ -1378,9 +1430,18 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Revoke every other outstanding token after the password transition.
       await passwordResetRepo.deleteForUser(user.id);
 
-      // A password change kills all sessions (§6.1).
+      // A password change kills all sessions (§6.1) and every OAuth grant
+      // (§16 2026-10-29): a reset is exactly the "someone else may hold my
+      // credential" moment, so no installed app keeps the old authority.
       await destroyAllSessionsBestEffort(user.id);
       await invalidateAllSessions(user.id);
+      await oauthGrants.revokeGrantsForCredentialEvent({
+        userId: user.id,
+        reason: 'password_reset',
+        firstPartyOnly: false,
+        exceptGrantId: null,
+        ip,
+      });
 
       await audit.record({
         actorId: user.id,
@@ -1994,9 +2055,36 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       return { revoked, wasCurrent };
     },
 
-    async revokeOtherSessions(userId, currentSessionId) {
+    async revokeOtherSessions(userId, currentSessionId, caller) {
       const revoked = await sessions.revokeOthersForUser(userId, currentSessionId);
       if (revoked > 0) await invalidateAllSessions(userId, currentSessionId);
+      // Sign-out-everywhere reaches the official apps too, keeping the caller's
+      // own grant (its "keep me signed in" promise) — but only when a browser
+      // or an official app asks. A personal key or a third-party app holding
+      // `account:security` signs SESSIONS out and never a grant: grant
+      // revocation is first-party-OAuth-only on the whole bearer surface
+      // (review B1). One grant serves every install of an app, so a call made
+      // FROM a phone also revokes every OTHER token family on the phone's own
+      // grant: exactly the calling install stays signed in (§16 2026-10-29).
+      const { credential } = caller;
+      if (credential.kind === 'session') {
+        await oauthGrants.revokeGrantsForCredentialEvent({
+          userId,
+          reason: 'sign_out_everywhere',
+          firstPartyOnly: true,
+          exceptGrantId: null,
+          ip: caller.ip ?? null,
+        });
+      } else if (credential.kind === 'first_party_oauth') {
+        await oauthGrants.revokeGrantsForCredentialEvent({
+          userId,
+          reason: 'sign_out_everywhere',
+          firstPartyOnly: true,
+          exceptGrantId: credential.grantId,
+          siblingFamilies: { callerAccessTokenId: credential.accessTokenId },
+          ip: caller.ip ?? null,
+        });
+      }
       return revoked;
     },
   };

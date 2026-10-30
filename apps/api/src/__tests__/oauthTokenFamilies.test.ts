@@ -313,8 +313,14 @@ describe('refresh reuse beyond the grace window revokes the FAMILY, not the gran
     const bNext = await refreshOk(app, b.refresh_token);
     expect(await portfoliosStatus(bNext.access_token)).toBe(200);
 
+    // The failed re-serve check rides along as `evidence` (PR-C, §16 2026-10-29).
     expect((await auditRows(AuditAction.OAuthTokenFamilyRevoked)).map((r) => r.meta)).toEqual([
-      { clientId: app.clientId, familyId: familyA, reason: 'refresh_reuse' },
+      {
+        clientId: app.clientId,
+        familyId: familyA,
+        reason: 'refresh_reuse',
+        evidence: 'window_passed',
+      },
     ]);
   });
 
@@ -388,6 +394,22 @@ describe('a rotation never mints into a grant or family revoked after its lookup
     const repo = createOAuthRepository(harness.db);
     expect(await repo.rotateRefreshToken(rotationOf(row))).toEqual({ outcome: 'revoked' });
     expect((await refreshRowOf(a.refresh_token)).consumedAt).toBeNull();
+    expect(await tokenCounts(grantId)).toEqual(before);
+  });
+
+  // Item f (PR-B ∘ PR-C): the family check runs AHEAD of the consume, so an
+  // ALREADY-ROTATED token on a revoked family is refused `revoked` — never
+  // `replayed` with a `current` lookup the grace path could re-serve from.
+  it('answers revoked — not replayed — for an already-consumed token on a revoked family', async () => {
+    const { app, a, grantId, familyA } = await twoInstalls();
+    await refreshOk(app, a.refresh_token);
+    const consumed = await refreshRowOf(a.refresh_token);
+    expect(consumed.consumedAt).toBeInstanceOf(Date);
+    await harness.ctx.oauth.revokeOwnFamily({ userId: app.userId, grantId, familyId: familyA });
+    const before = await tokenCounts(grantId);
+
+    const repo = createOAuthRepository(harness.db);
+    expect(await repo.rotateRefreshToken(rotationOf(consumed))).toEqual({ outcome: 'revoked' });
     expect(await tokenCounts(grantId)).toEqual(before);
   });
 
@@ -758,6 +780,16 @@ describe('legacy NULL-family tokens (minted by the pre-family code during the ro
     expect((await refreshRequest(app, a.refresh_token)).status).toBe(400);
     expect((await grantRow(grantId)).revokedAt).toBeInstanceOf(Date);
     expect(await portfoliosStatus(b.access_token)).toBe(401);
+    // Audited on the grant (the legacy family IS the grant), with the evidence.
+    expect((await auditRows(AuditAction.OAuthGrantRevoked)).map((r) => r.meta)).toEqual([
+      {
+        clientId: app.clientId,
+        reason: 'refresh_reuse',
+        evidence: 'window_passed',
+        legacyFamily: true,
+      },
+    ]);
+    expect(await auditRows(AuditAction.OAuthTokenFamilyRevoked)).toHaveLength(0);
   });
 });
 
