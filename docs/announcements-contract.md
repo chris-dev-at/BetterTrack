@@ -24,12 +24,14 @@ Conventions are the API's (§8): base `/api/v1`, JSON, camelCase, errors `{ "err
 
 **Deprecations — paste-ready for the mobile board.** None on the mobile wire. No user-facing operation, field or route key is deprecated or removed: `GET /notifications/announcements` and `POST /notifications/announcements/{id}/dismiss` keep their paths, envelopes and existing fields, and the `account.notice` inbox rows the app already renders keep their type, payload keys and deep-link. Every addition is optional to decode. Two behaviours narrow: dismiss now refuses an `ack_required` item (`409`) and an id the caller cannot see (`404`), and a window's end is now exclusive. The one removal is admin-console-only and dated 2026-10-29: the `active` request field of `POST /admin/announcements` and `PATCH /admin/announcements/{id}`, replaced by `POST /admin/announcements/{id}/publish`, `…/unpublish` and `…/archive`; the app never called those routes.
 
+**The web's own decoder** (CEO ruling 2026-10-30). The shipping web app parses the list with `activeAnnouncementSchema` and `activeAnnouncementListResponseSchema` (`packages/contracts/src/notifications.ts`), which are `.strict()` today — so "clients ignore unknown fields" is not yet true of the web. The lane that ships the new fields (T2-A) drops `.strict()` from both in the same PR. A browser tab already open on the previous web bundle fails to decode the new fields and loses the banner until it reloads; should an `ack_required` go live before it reloads, its refused calls show generic errors until then. The mobile app never called these routes and is unaffected.
+
 ## 2. Concepts
 
 - **Kind** (`kind`): `notice` — passive information shown while its window is open, dismissible per user. `once` — a card shown to each audience member until they close it once; closing it is the dismissal and it never returns. `ack_required` — a blocking acknowledgement: until the user acknowledges it, the gate (§5) refuses everything else. A client that meets an unknown `kind` renders the item like `notice` and never offers to acknowledge it.
 - **Severity** (`severity`, KEPT): `info` · `warning` · `critical`, styling only and orthogonal to the kind. Unknown value → render as `info`.
 - **Audience** (server-side only, never on the user wire): `everyone` — every user-kind account, including accounts created later; `existing_at_publish` — only accounts created strictly before the announcement's frozen cutoff: the instant it first became visible, i.e. the later of the publish instant and `startsAt` (confirmed by Chief ruling 2026-10-29). A caller outside the audience simply never sees the item; every per-id route answers `404` for it.
-- **Window** (`startsAt`, `endsAt`): half-open `[startsAt, endsAt)`; `null` start = from publication, `null` end = no end. For `ack_required`, `endsAt: null` means **binding until acknowledged**, and a non-null `endsAt` is the instant the obligation **lapses**: from then on it gates nobody, can no longer be acknowledged, and the server records the users who had not acknowledged as lapsed.
+- **Window** (`startsAt`, `endsAt`): half-open `[startsAt, endsAt)`; `null` start = from publication, `null` end = no end. For `ack_required`, `endsAt: null` means **binding until acknowledged**, and a non-null `endsAt` is the instant the obligation **lapses**: from then on it gates nobody, can no longer be acknowledged, and the server records the users who had not acknowledged as lapsed — only if the obligation actually went live; archiving one that was still scheduled records nothing.
 - **Status** (`status`): `active` (published, window open), `ended` (`endsAt` passed; for `ack_required` this is the lapse), `archived` (withdrawn by an operator; for `ack_required`, a manual lapse). Drafts and not-yet-open announcements are invisible to users. Unknown value → treat as `ended`.
 - **Pending acknowledgement**: an `ack_required` item that is `active`, in the caller's audience, and that the caller has not acknowledged. Only these feed `pendingAcknowledgements` and the gate. `notice` and `once` never block anything.
 
@@ -229,7 +231,7 @@ Cache-Control: no-store
 
 ### 5.3 Exempt operations (exact list)
 
-Thirty operations. Paths are relative to `/api/v1`. Matching is exact on method and path, case-sensitive, with no trailing slash and no prefix matching; `{id}` matches one canonical UUID segment and `{token}` one non-empty segment; `HEAD` is matched as `GET`. Anything not listed here is gated — including every route added in future.
+Thirty-six operations (CEO ruling 2026-10-30; `PROJECTPLAN.md` §6.19.7 restates the identical set). Paths are relative to `/api/v1`. Matching is exact on method and path, case-sensitive, with no trailing slash and no prefix matching; `{id}` matches one canonical UUID segment and `{token}` one non-empty segment; `HEAD` is matched as `GET`. Anything not listed here is gated — including every route added in future.
 
 | Method   | Path                                            | Why it stays reachable                                                         |
 | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -240,6 +242,12 @@ Thirty operations. Paths are relative to `/api/v1`. Matching is exact on method 
 | `POST`   | `/account/export`                               | Export my data, linked from the gate dialog: take your data and leave.         |
 | `GET`    | `/account/export`                               | Export my data (export status).                                                |
 | `POST`   | `/account/export/download`                      | Export my data (the download).                                                 |
+| `GET`    | `/vault/media`                                  | Export my data, vault owner: which medium holds the vault (read-only).         |
+| `GET`    | `/vault`                                        | Export my data, vault owner: the server-held ciphertext (read-only).           |
+| `GET`    | `/drive-connections`                            | Export my data, vault owner: whether the Drive copy is reachable (read-only).  |
+| `POST`   | `/auth/change-password`                         | A forced password change completes first (§5.5); then the gate applies.        |
+| `POST`   | `/auth/session/persist`                         | Credential entry: keeps "Stay signed in" for a sign-in that meets the gate.    |
+| `POST`   | `/auth/remembered-device`                       | Credential entry: keeps "Remember this device" (binding only; DELETE gated).   |
 | `GET`    | `/notifications/announcements`                  | The gate's own content.                                                        |
 | `GET`    | `/notifications/announcements/{id}`             | The gate's own content, per item and per locale.                               |
 | `POST`   | `/notifications/announcements/{id}/seen`        | Receipt of the shown item.                                                     |
@@ -266,7 +274,9 @@ Thirty operations. Paths are relative to `/api/v1`. Matching is exact on method 
 
 **A legal acknowledgement must not hold the user's data hostage** (Chief ruling 2026-10-29): someone who will not accept can always take their data and leave, which is why the deletion and data-egress rows exist and why the dialog links them (§5.7). `GET /auth/2fa/status` is exempt only so the Delete account form can tell a 2FA-enrolled account that an authenticator code is accepted; it returns the caller's own enrolment flags and nothing else.
 
-Deliberately **not** exempt: `POST /notifications/announcements/{id}/dismiss` (nothing else is usable until acknowledged), the OAuth consent routes `/oauth/authorize` and `/oauth/authorization-details` (a sign-in from the app through the browser meets the web gate first and acknowledges there), `POST /auth/first-run/complete` and the paranoid fresh-start acknowledgement (both come after the gate), `POST /auth/change-password`, and every settings route. Outside the chain and therefore unaffected: `/oauth/token` (token refresh keeps working), `/version`, the health probes, `/docs`, `/openapi.json`. Translations are compiled into the clients, so no route is needed for them. The realtime handshake is **refused**, not exempt (§5.6).
+**Vault owners can leave too** (CEO ruling 2026-10-30). The server export carries no vaulted cleartext, so for an account in the account-level vault the dialog's Export my data also offers the client-side cleartext export, which unlocks the vault in the browser (passphrase or recovery kit — no server call) and builds the archive from the decrypted copy. It needs exactly the three read-only operations above, `GET /vault/media`, `GET /vault` and `GET /drive-connections`; the Drive copy is read from Google Drive directly, not through this API. A gated caller may read vault data **only for that export**: those three rows are an exact allowlist, never a prefix match on `/vault` or `/vaults`. Every vault write stays gated (`PUT /vault`, `PATCH /vault/media`, the `/vault/media/*` transitions), and so does every other vault read (`/vault/history`, the `/vault/media/*` reads) and everything under `/vaults` and `/drive-connections` other than the rows above — **including any route added there later, which does not inherit the exemption** (Chief guard 2026-10-30). Per-portfolio vaults need none of this: their server-held ciphertext is already in the server export (`paranoid/vaults/<vaultId>/docs/`), and their Drive copies are in the owner's own Drive. The web has no per-portfolio cleartext export today; the PR that adds one adds its exact read operations to this table.
+
+Deliberately **not** exempt: `POST /notifications/announcements/{id}/dismiss` (nothing else is usable until acknowledged), the OAuth consent routes `/oauth/authorize` and `/oauth/authorization-details` (a sign-in from the app through the browser meets the web gate first and acknowledges there), `POST /auth/first-run/complete` and the paranoid fresh-start acknowledgement (both come after the gate), `DELETE /auth/remembered-device`, every vault write and every unlisted `/vault`, `/vaults` or `/drive-connections` route, and every settings route. Outside the chain and therefore unaffected: `/oauth/token` (token refresh keeps working), `/version`, the health probes, `/docs`, `/openapi.json`. Translations are compiled into the clients, so no route is needed for them. The realtime handshake is **refused**, not exempt (§5.6).
 
 ### 5.4 Bearer enforcement flag
 
@@ -281,19 +291,19 @@ No value gates a personal API key or a third-party (partner) OAuth token (Chief 
 
 ### 5.5 Precedence
 
-A request meets the checks in this order, and the first refusal wins: authentication `401` → rate limit `429` → CSRF `403` (cookie sessions) → `403 PASSWORD_CHANGE_REQUIRED` → bearer scope `403 INSUFFICIENT_SCOPE` or `API_KEY_FORBIDDEN` (bearer) → **`403 ACKNOWLEDGEMENT_REQUIRED`** → resource checks (vault, ownership, feature flags) → the route. So a forced password change is completed first, an under-scoped bearer learns about its scope first, and a gated request never reaches a resource lookup.
+A request meets the checks in this order, and the first refusal wins: authentication `401` → rate limit `429` → CSRF `403` (cookie sessions) → `403 PASSWORD_CHANGE_REQUIRED` → bearer scope `403 INSUFFICIENT_SCOPE` or `API_KEY_FORBIDDEN` (bearer) → **`403 ACKNOWLEDGEMENT_REQUIRED`** → resource checks (vault, ownership, feature flags) → the route. So a forced password change is completed first, an under-scoped bearer learns about its scope first, and a gated request never reaches a resource lookup. In particular a principal that must change its password cannot read or acknowledge an announcement yet: those calls answer `403 PASSWORD_CHANGE_REQUIRED`, while `POST /auth/change-password` passes both checks (it is exempt here). The sequence is therefore change password → gate: the very next request after the change meets `ACKNOWLEDGEMENT_REQUIRED` (CEO ruling 2026-10-30).
 
 ### 5.6 Realtime
 
 - **Connection error `ACKNOWLEDGEMENT_REQUIRED`** (NEW in the handshake vocabulary): a socket handshake from a gated principal with a pending acknowledgement is refused with it. The client does not retry in a loop: it shows the gate and reconnects after the last acknowledgement. Clients treat an unknown connection error like `UNAVAILABLE`.
 - **Server event `announcement.changed`** (NEW), payload `{ "announcementId": "<uuid>" }`: sent to every connected user-kind socket (session sockets; bearer sockets holding `notifications:read`) when an announcement goes live (its first delivery pass), is unpublished, archived, has its window edited, or lapses. No content travels on the socket. The client refetches `/auth/me` and `GET /notifications/announcements`; the 30-second poll stays the fallback.
-- Sockets already open when an acknowledgement becomes pending are not disconnected by the server: the event above makes the client close its own and raise the gate, and every HTTP request is refused in any case.
+- Sockets already open when an acknowledgement becomes pending are not disconnected by the server: the pending check runs in the handshake only, never in the server's periodic revalidation of open sockets (CEO ruling 2026-10-30). The event above makes the client close its own socket and raise the gate, and every HTTP request is refused in any case. Socket.IO does not reconnect by itself after a handshake refusal, so the client reconnects once the last acknowledgement is done.
 
 ### 5.7 Client obligations
 
 1. On launch, on resume, after sign-in and on `announcement.changed`: read `pendingAcknowledgements`; when it is non-empty, show the blocking dialog instead of the app.
 2. Treat `403 ACKNOWLEDGEMENT_REQUIRED` from any request the same way, taking the list from `details`; do not retry the refused request until the dialog has been completed.
-3. The dialog shows one item at a time in the given order, with the full body (`GET /notifications/announcements/{id}`), an unticked checkbox, a Confirm action enabled only once the box is ticked, and a prominent Sign out (`POST /auth/logout`). Below them a secondary row offers **Export my data** and **Delete account**, both exempt (§5.3), because a legal acknowledgement must not hold the user's data hostage (Chief ruling 2026-10-29); an app without a native flow for one of them opens the web app, whose dialog offers both. It cannot be dismissed any other way. When both locales exist, offer a language switch (re-fetch with `locale`) and acknowledge with the locale and hash of the text on screen.
+3. The dialog shows one item at a time in the given order, with the full body (`GET /notifications/announcements/{id}`), an unticked checkbox, a Confirm action enabled only once the box is ticked, and a prominent Sign out (`POST /auth/logout`). Below them a secondary row offers **Export my data** and **Delete account**, both exempt (§5.3), because a legal acknowledgement must not hold the user's data hostage (Chief ruling 2026-10-29); an app without a native flow for one of them opens the web app, whose dialog offers both (for a vault owner including the cleartext export, §5.3). It cannot be dismissed any other way. When both locales exist, offer a language switch (re-fetch with `locale`) and acknowledge with the locale and hash of the text on screen.
 4. On `409 ANNOUNCEMENT_NOT_PENDING`, refetch `/auth/me` and continue; on `409 ANNOUNCEMENT_CONTENT_CHANGED`, refetch the item and ask again.
 
 ## 6. Inbox rows (`account.notice`)
@@ -318,7 +328,7 @@ KEPT fields: `id`, `severity`, `titleEn`, `bodyEn`, `startsAt`, `endsAt`, `publi
 | `POST /admin/announcements/{id}/unpublish` | `published`, window not yet open | `draft`     | `409 ANNOUNCEMENT_ALREADY_LIVE` once the window has opened — archive instead                                                                                                                                                 |
 | `POST /admin/announcements/{id}/archive`   | `published`                      | `archived`  | `409 ANNOUNCEMENT_NOT_PUBLISHED` for a draft (delete it); idempotent on an archived one                                                                                                                                      |
 
-No body; each answers `200` with the `Announcement`. Publishing stamps `releasedAt` and freezes `audienceCutoffAt` as the later of the publish instant and `startsAt` (confirmed by Chief ruling 2026-10-29); the cutoff never moves afterwards.
+No body; each answers `200` with the `Announcement`. Each of them, and an `endsAt` edit (§7.3), bumps the gate-cache generation after its commit. If that bump fails, the call answers `503 ANNOUNCEMENT_PROPAGATION_UNCONFIRMED`: the write is kept and takes effect on every instance within 60 seconds at the latest, and the console says so instead of reporting a silent success (CEO ruling 2026-10-30, the `FEATURE_FLAG_PROPAGATION_UNCONFIRMED` pattern). Publishing stamps `releasedAt` and freezes `audienceCutoffAt` as the later of the publish instant and `startsAt` (confirmed by Chief ruling 2026-10-29); the cutoff never moves afterwards.
 
 ### 7.3 Create, edit, delete — CHANGED
 
@@ -373,29 +383,46 @@ No body; each answers `200` with the `Announcement`. Publishing stamps `released
 
 ### 7.5 Deleted accounts — acknowledgement evidence survives, pseudonymised — NEW
 
-Chief ruling 2026-10-29. Deleting an account (self-service `DELETE /account` or the admin console) deletes its receipts **except** those with an acknowledgement, which are pseudonymised in the same transaction and kept as evidence. Such a row keeps exactly the announcement, `acknowledgedAt` and `contentSha256`, and gains `subjectToken`: HMAC-SHA256 of the former user id under a server-held key, lowercase hex — irreversible, and identical across all of one former account's rows. The keyed HMAC, not a random token, is ruled (Chief ruling 2026-10-30): a dispute must be answerable by the key holder, who can confirm or deny an acknowledgement for a given former user id. Such rows are retained for as long as the announcement exists (Chief ruling 2026-10-30), and the Privacy page says so. Everything else that could point at the person is dropped: `userId`, `username`, `accountCreatedAt`, `acknowledgedVia`, `acknowledgedLocale`, the OAuth grant and every seen, dismissed and lapsed field are null. In the receipts list and CSV it reads `accountStatus: "deleted"` and `state: "acknowledged"`, appears under `acknowledged` and `all` only, after the live accounts, and counts in `acknowledgedByDeletedAccounts`, never in `audience`, `acknowledged` or `pending`.
+Chief ruling 2026-10-29. Deleting an account (self-service `DELETE /account` or the admin console) deletes its receipts **except** those with an acknowledgement, which are pseudonymised in the same transaction and kept as evidence. Such a row keeps exactly the announcement, `acknowledgedAt` and `contentSha256`, and gains `subjectToken`: HMAC-SHA256 of the former user id under a server-held key, lowercase hex — irreversible, and identical across all of one former account's rows. The keyed HMAC, not a random token, is ruled (Chief ruling 2026-10-30): a dispute must be answerable by the key holder, who can confirm or deny an acknowledgement for a given former user id. Such rows are retained for as long as the announcement exists (Chief ruling 2026-10-30), and the Privacy page says so.
+
+**The token derivation is pinned** (CEO ruling 2026-10-30) so that the server and any later verifier agree byte for byte:
+
+1. IKM is the 32-byte key of the stored-record encryption keyring entry in use — the key the record encryption itself uses, derived from `BT_DATA_ENCRYPTION_KEY`, never the raw environment string. `subject_key_id` is that entry's id.
+2. K = HKDF-SHA256(IKM, salt = the empty string, info = the UTF-8 bytes of `bt-announcement-receipt-pseudonym-v1`, length 32).
+3. `subjectToken` = lowercase hex of HMAC-SHA256(K, the UTF-8 bytes of the user id in canonical lowercase hyphenated form, 36 bytes).
+
+```text
+Test vector
+  IKM            000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+  user id        00000000-0000-4000-8000-000000000001
+  K              7c5ecb143644a467b966721d77062a4978bab1a3f2eb70373c117a2420e1f80f
+  subjectToken   6f48c96a684cc03b8a9367ab7e8d225a70a458cea430c9068c6971f3a9b3cbb3
+```
+
+The `announcement.acknowledge` audit row stores no IP, via or locale — only the user, the announcement and the instant (`PROJECTPLAN.md` §6.19.11). After a deletion, then, nothing outside the pseudonymised receipt ties an acknowledgement to an address or a device: the audit row's actor is nulled like every audit row's, and it carries nothing else. Everything else that could point at the person is dropped: `userId`, `username`, `accountCreatedAt`, `acknowledgedVia`, `acknowledgedLocale`, the OAuth grant and every seen, dismissed and lapsed field are null. In the receipts list and CSV it reads `accountStatus: "deleted"` and `state: "acknowledged"`, appears under `acknowledged` and `all` only, after the live accounts, and counts in `acknowledgedByDeletedAccounts`, never in `audience`, `acknowledged` or `pending`.
 
 ## 8. Error codes
 
-| Code                               | Status | Where                                                                                         |
-| ---------------------------------- | ------ | --------------------------------------------------------------------------------------------- |
-| `ACKNOWLEDGEMENT_REQUIRED`         | 403    | Any gated request while an acknowledgement is pending (§5); also a realtime connection error. |
-| `ANNOUNCEMENT_NOT_FOUND`           | 404    | Unknown, draft, not-yet-open or out-of-audience id (KEPT code, wider use).                    |
-| `ANNOUNCEMENT_NOT_DISMISSIBLE`     | 409    | Dismissing an `ack_required` item.                                                            |
-| `ANNOUNCEMENT_NOT_ACKNOWLEDGEABLE` | 409    | Acknowledging a `notice` or `once` item.                                                      |
-| `ANNOUNCEMENT_NOT_PENDING`         | 409    | Acknowledging an ended, archived or lapsed obligation.                                        |
-| `ANNOUNCEMENT_CONTENT_CHANGED`     | 409    | The echoed `contentSha256` no longer matches.                                                 |
-| `ANNOUNCEMENT_LOCALE_UNAVAILABLE`  | 400    | Acknowledging in a locale the announcement does not have.                                     |
-| `ANNOUNCEMENT_TEXT_INVALID`        | 400    | Admin save: a forbidden control or bidirectional character.                                   |
-| `ANNOUNCEMENT_BODY_INVALID`        | 400    | Admin save: a refused link target or an exceeded limit; `details.issues`.                     |
-| `ANNOUNCEMENT_INCOMPLETE`          | 400    | Admin publish: required content missing; `details.missing`.                                   |
-| `ANNOUNCEMENT_NOT_DRAFT`           | 409    | Admin publish or delete of a non-draft.                                                       |
-| `ANNOUNCEMENT_NOT_PUBLISHED`       | 409    | Admin archive of a draft.                                                                     |
-| `ANNOUNCEMENT_ALREADY_LIVE`        | 409    | Admin unpublish after the window opened.                                                      |
-| `ANNOUNCEMENT_FIELD_LOCKED`        | 409    | Admin edit of a field locked after publishing; `details.fields`.                              |
-| `ANNOUNCEMENT_ENDED`               | 409    | Admin edit of an ended announcement.                                                          |
-| `INVALID_ANNOUNCEMENT_WINDOW`      | 400    | Admin save or publish with an impossible window (KEPT code).                                  |
-| `API_KEY_FORBIDDEN`                | 403    | `acknowledge` with a personal API key or a third-party token (KEPT code).                     |
+| Code                                   | Status | Where                                                                                           |
+| -------------------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
+| `ACKNOWLEDGEMENT_REQUIRED`             | 403    | Any gated request while an acknowledgement is pending (§5); also a realtime connection error.   |
+| `ANNOUNCEMENT_NOT_FOUND`               | 404    | Unknown, draft, not-yet-open or out-of-audience id (KEPT code, wider use).                      |
+| `ANNOUNCEMENT_NOT_DISMISSIBLE`         | 409    | Dismissing an `ack_required` item.                                                              |
+| `ANNOUNCEMENT_NOT_ACKNOWLEDGEABLE`     | 409    | Acknowledging a `notice` or `once` item.                                                        |
+| `ANNOUNCEMENT_NOT_PENDING`             | 409    | Acknowledging an ended, archived or lapsed obligation.                                          |
+| `ANNOUNCEMENT_CONTENT_CHANGED`         | 409    | The echoed `contentSha256` no longer matches.                                                   |
+| `ANNOUNCEMENT_LOCALE_UNAVAILABLE`      | 400    | Acknowledging in a locale the announcement does not have.                                       |
+| `ANNOUNCEMENT_TEXT_INVALID`            | 400    | Admin save: a forbidden control or bidirectional character.                                     |
+| `ANNOUNCEMENT_BODY_INVALID`            | 400    | Admin save: a refused link target or an exceeded limit; `details.issues`.                       |
+| `ANNOUNCEMENT_INCOMPLETE`              | 400    | Admin publish: required content missing; `details.missing`.                                     |
+| `ANNOUNCEMENT_NOT_DRAFT`               | 409    | Admin publish or delete of a non-draft.                                                         |
+| `ANNOUNCEMENT_NOT_PUBLISHED`           | 409    | Admin archive of a draft.                                                                       |
+| `ANNOUNCEMENT_ALREADY_LIVE`            | 409    | Admin unpublish after the window opened.                                                        |
+| `ANNOUNCEMENT_FIELD_LOCKED`            | 409    | Admin edit of a field locked after publishing; `details.fields`.                                |
+| `ANNOUNCEMENT_ENDED`                   | 409    | Admin edit of an ended announcement.                                                            |
+| `ANNOUNCEMENT_PROPAGATION_UNCONFIRMED` | 503    | Admin transition or `endsAt` edit saved, but the gate-cache bump failed; effective within 60 s. |
+| `INVALID_ANNOUNCEMENT_WINDOW`          | 400    | Admin save or publish with an impossible window (KEPT code).                                    |
+| `API_KEY_FORBIDDEN`                    | 403    | `acknowledge` with a personal API key or a third-party token (KEPT code).                       |
 
 ## 9. Mobile rollout sequence
 
