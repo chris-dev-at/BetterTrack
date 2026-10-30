@@ -239,6 +239,14 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Set up authenticator app' }));
 
+    // R-05: nothing is enrolled before the owner proves a prior credential.
+    expect(enrollTwoFactor).not.toHaveBeenCalled();
+    await user.type(await screen.findByLabelText('Account confirmation'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() =>
+      expect(enrollTwoFactor).toHaveBeenCalledWith({ password: 'correct horse' }),
+    );
+
     // A scannable QR encodes the otpauth URI; the manual key is in the fallback.
     expect(await screen.findByLabelText('Two-factor setup QR code')).toBeInTheDocument();
     expect(screen.getByText('ABCDEFGHIJKLMNOP')).toBeInTheDocument();
@@ -246,7 +254,13 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     await user.type(screen.getByLabelText('Confirmation code'), '123456');
     await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
 
-    await waitFor(() => expect(confirmTwoFactor).toHaveBeenCalledWith({ code: '123456' }));
+    // The password is reused for the confirm; nothing is asked twice.
+    await waitFor(() =>
+      expect(confirmTwoFactor).toHaveBeenCalledWith({
+        code: '123456',
+        stepUp: { password: 'correct horse' },
+      }),
+    );
 
     expect(await screen.findByText('aaaa-bbbb-cccc-dddd')).toBeInTheDocument();
     expect(screen.getByText('eeee-ffff-gggg-hhhh')).toBeInTheDocument();
@@ -267,13 +281,58 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
-    await waitFor(() => expect(enrollEmailTwoFactor).toHaveBeenCalled());
+    expect(enrollEmailTwoFactor).not.toHaveBeenCalled();
+    await user.type(await screen.findByLabelText('Account confirmation'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() =>
+      expect(enrollEmailTwoFactor).toHaveBeenCalledWith({ password: 'correct horse' }),
+    );
 
     await user.type(await screen.findByLabelText('Email code'), '654321');
     await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
 
-    await waitFor(() => expect(confirmEmailTwoFactor).toHaveBeenCalledWith({ code: '654321' }));
+    await waitFor(() =>
+      expect(confirmEmailTwoFactor).toHaveBeenCalledWith({
+        code: '654321',
+        stepUp: { password: 'correct horse' },
+      }),
+    );
     expect(await screen.findByText('iiii-jjjj-kkkk-llll')).toBeInTheDocument();
+  });
+
+  test('a single-use code at the enroll step is never replayed: the confirm asks for a fresh one', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ emailEnabled: true, recoveryCodesRemaining: 4 }),
+    );
+    vi.mocked(enrollTwoFactor).mockResolvedValue({
+      otpauthUri: 'otpauth://totp/BetterTrack:ada%40example.com?secret=ABCDEFGHIJKLMNOP',
+      secret: 'ABCDEFGHIJKLMNOP',
+    });
+    vi.mocked(confirmTwoFactor).mockResolvedValue({ recoveryCodes: null });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up authenticator app' }));
+    await user.selectOptions(await screen.findByLabelText('Confirmation method'), 'recoveryCode');
+    await user.type(screen.getByLabelText('Account confirmation'), 'aaaa-bbbb-cccc-dddd');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() =>
+      expect(enrollTwoFactor).toHaveBeenCalledWith({ recoveryCode: 'aaaa-bbbb-cccc-dddd' }),
+    );
+
+    await user.type(await screen.findByLabelText('Confirmation code'), '123456');
+    // The spent recovery code is not resent; the confirm stays disabled until a fresh one.
+    expect(screen.getByRole('button', { name: 'Confirm & enable' })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText('Confirmation method'), 'recoveryCode');
+    await user.type(screen.getByLabelText('Account confirmation'), 'eeee-ffff-gggg-hhhh');
+    await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
+
+    await waitFor(() =>
+      expect(confirmTwoFactor).toHaveBeenCalledWith({
+        code: '123456',
+        stepUp: { recoveryCode: 'eeee-ffff-gggg-hhhh' },
+      }),
+    );
   });
 
   test('email enroll blocked (no SMTP) shows the lockout-guard message', async () => {
@@ -289,6 +348,8 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+    await user.type(await screen.findByLabelText('Account confirmation'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(await screen.findByText(/email delivery is not configured/i)).toBeInTheDocument();
     expect(confirmEmailTwoFactor).not.toHaveBeenCalled();
@@ -327,7 +388,7 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     expect(await screen.findByText(/authenticator app turned off/i)).toBeInTheDocument();
   });
 
-  test('disables the email method directly from the authenticated session', async () => {
+  test('disables the email method behind the step-up', async () => {
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ emailEnabled: true, recoveryCodesRemaining: 5 }),
     );
@@ -336,8 +397,13 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
 
     // Email is the only enabled method, so there is exactly one "Turn off".
     await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    expect(disableEmailTwoFactor).not.toHaveBeenCalled();
+    await user.type(await screen.findByLabelText('Account confirmation'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Turn off email codes' }));
 
-    await waitFor(() => expect(disableEmailTwoFactor).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(disableEmailTwoFactor).toHaveBeenCalledWith({ password: 'correct horse' }),
+    );
     expect(await screen.findByText(/email codes turned off/i)).toBeInTheDocument();
   });
 
@@ -352,8 +418,13 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Regenerate recovery codes' }));
+    expect(regenerateRecoveryCodes).not.toHaveBeenCalled();
+    await user.type(await screen.findByLabelText('Account confirmation'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Regenerate recovery codes' }));
 
-    await waitFor(() => expect(regenerateRecoveryCodes).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(regenerateRecoveryCodes).toHaveBeenCalledWith({ password: 'correct horse' }),
+    );
     expect(await screen.findByText('zzzz-yyyy-xxxx-wwww')).toBeInTheDocument();
   });
 });

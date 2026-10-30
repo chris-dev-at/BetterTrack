@@ -13,7 +13,7 @@ import { confirmTwoFactor, enrollTwoFactor, getTwoFactorStatus } from '../../../
 import { Badge } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { PinInput } from '../../components/PinInput';
-import { Alert, Button } from '../../components/ui';
+import { Alert, Button, TextField } from '../../components/ui';
 import type { FirstRunStepProps } from '../types';
 
 const ME_KEY = ['auth', 'me'] as const;
@@ -37,6 +37,7 @@ function totpErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 429) return t('firstrun.security.twoFactor.rateLimited');
     if (err.status >= 500) return t('common.genericError');
+    if (err.code === 'INVALID_CREDENTIALS') return t('firstrun.security.twoFactor.wrongPassword');
   }
   return t('firstrun.security.twoFactor.invalidCode');
 }
@@ -45,7 +46,9 @@ function totpErrorMessage(t: TranslateFn, err: unknown): string {
  * Step 3 — the second lock. Both offers are the REAL flows, not stand-ins:
  * the PIN writes through `PUT /auth/pin` (argon2id-hashed server-side exactly
  * like a password) and the authenticator through `POST /auth/2fa/enroll` +
- * `/confirm`, the same endpoints Settings → Security drives.
+ * `/confirm`, the same endpoints Settings → Security drives. Both 2FA calls
+ * carry the account password as their step-up (R-05): a brand-new account has
+ * no other factor yet, and the password is held only while this panel is open.
  *
  * Two deliberate choices:
  *
@@ -69,6 +72,7 @@ export function SecurityStep({ report }: FirstRunStepProps) {
   const [pin, setPinValue] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   // `setPin` returns the fresh `me`, but the AuthContext user is only refreshed
@@ -98,15 +102,21 @@ export function SecurityStep({ report }: FirstRunStepProps) {
   });
 
   const enroll = useMutation({
-    mutationFn: enrollTwoFactor,
-    onError: () => setError(t('firstrun.security.twoFactor.enrollError')),
+    mutationFn: () => enrollTwoFactor({ password }),
+    onError: (err) =>
+      setError(
+        err instanceof ApiError && err.code === 'INVALID_CREDENTIALS'
+          ? t('firstrun.security.twoFactor.wrongPassword')
+          : t('firstrun.security.twoFactor.enrollError'),
+      ),
   });
 
   const confirm = useMutation({
-    mutationFn: () => confirmTwoFactor({ code }),
+    mutationFn: () => confirmTwoFactor({ code, stepUp: { password } }),
     onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: TWO_FACTOR_KEY });
       setCode('');
+      setPassword('');
       // The one and only moment the recovery codes exist client-side.
       if (data.recoveryCodes && data.recoveryCodes.length > 0) {
         setRecoveryCodes(data.recoveryCodes);
@@ -118,7 +128,7 @@ export function SecurityStep({ report }: FirstRunStepProps) {
     onError: (err) => setError(totpErrorMessage(t, err)),
   });
 
-  const busy = savePin.isPending || confirm.isPending;
+  const busy = savePin.isPending || enroll.isPending || confirm.isPending;
 
   useEffect(() => {
     report({ status: pinOn || totpOn ? 'complete' : 'skipped', busy });
@@ -134,7 +144,13 @@ export function SecurityStep({ report }: FirstRunStepProps) {
   function openTotp() {
     setError(null);
     setCode('');
+    setPassword('');
+    enroll.reset();
     setPanel('totp');
+  }
+
+  function startTotp() {
+    setError(null);
     enroll.mutate();
   }
 
@@ -160,7 +176,14 @@ export function SecurityStep({ report }: FirstRunStepProps) {
   }
 
   const backToRows = (
-    <Button type="button" variant="ghost" onClick={() => setPanel('rows')}>
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={() => {
+        setPassword('');
+        setPanel('rows');
+      }}
+    >
       {t('common.back')}
     </Button>
   );
@@ -194,6 +217,36 @@ export function SecurityStep({ report }: FirstRunStepProps) {
             }
           >
             {savePin.isPending ? t('common.saving') : t('firstrun.security.pin.save')}
+          </Button>
+          {backToRows}
+        </div>
+      </div>
+    );
+  }
+
+  if (panel === 'totp' && !enroll.data) {
+    return (
+      <div className="flex flex-col gap-4" onKeyDown={runOnEnter(startTotp)}>
+        {error ? <Alert tone="error">{error}</Alert> : null}
+        <TextField
+          autoComplete="current-password"
+          autoFocus
+          disabled={enroll.isPending}
+          hint={t('firstrun.security.twoFactor.passwordHint')}
+          label={t('firstrun.security.twoFactor.passwordLabel')}
+          name="firstrun-2fa-password"
+          onChange={(e) => setPassword(e.target.value)}
+          type="password"
+          value={password}
+        />
+        <div className="flex flex-wrap gap-2.5">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={startTotp}
+            disabled={enroll.isPending || password.length === 0}
+          >
+            {enroll.isPending ? t('common.loading') : t('common.continue')}
           </Button>
           {backToRows}
         </div>

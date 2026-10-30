@@ -935,7 +935,8 @@
           "codeLabel": "Email code",
           "codeHint": "Enter the 6-digit code we just sent you.",
           "sendingCode": "Sending code…",
-          "setup": "Set up email codes"
+          "setup": "Set up email codes",
+          "turnOffFull": "Turn off email codes"
         },
         "recoveryCodes": {
           "saveNotice": "Save these recovery codes somewhere safe. Each one can be used once to sign in if you lose access to your authenticator or email — they won't be shown again.",
@@ -949,6 +950,10 @@
           "remainingOther": "{{count}} recovery codes remaining.",
           "regenerating": "Regenerating…",
           "regenerate": "Regenerate recovery codes"
+        },
+        "stepUp": {
+          "intro": "Confirm it’s you first: your account password, or a code from a second factor you already use.",
+          "freshCode": "Codes work only once. Enter a fresh authenticator code or another recovery code to finish."
         }
       },
       "google": {
@@ -7225,7 +7230,10 @@
         "invalidCode": "That code is incorrect or has expired.",
         "rateLimited": "Too many codes. Try again shortly.",
         "enrollError": "Setup could not be started.",
-        "enabled": "Two-factor authentication is on."
+        "enabled": "Two-factor authentication is on.",
+        "passwordLabel": "Your account password",
+        "passwordHint": "Turning on two-factor sign-in needs your password first.",
+        "wrongPassword": "That password is incorrect."
       },
       "recoveryCodes": {
         "description": "Keep these somewhere safe. Each one signs you in once if you lose your app.",
