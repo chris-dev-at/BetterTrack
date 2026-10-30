@@ -25,4 +25,18 @@
 --
 -- Additive and reversible: dropping the column restores the previous table
 -- exactly; no existing value is read or rewritten.
-ALTER TABLE "oauth_access_tokens" ADD COLUMN IF NOT EXISTS "first_used_at" timestamp with time zone;
+--
+-- Second change, same ruling: "sign out everywhere" called from an official
+-- app's bearer revokes every OTHER token family on the caller's own grant
+-- (0119's per-install unit), so exactly the calling install stays signed in.
+-- Those family rows record `revoked_reason = 'sign_out_everywhere'`, which
+-- 0119's closed vocabulary CHECK does not admit yet. The constraint is
+-- re-created under its own name with that one value added — WIDENING ONLY:
+-- every row that satisfied the old list satisfies the new one, so validation
+-- cannot fail on existing data. `oauth_token_families` holds one row per
+-- install login, so the validation scan under the ADD's ACCESS EXCLUSIVE lock
+-- is short. RE-RUNNABLE: DROP … IF EXISTS, then ADD. Rollback: re-create the
+-- 0119 list after the `sign_out_everywhere` rows are gone (or rewritten).
+ALTER TABLE "oauth_access_tokens" ADD COLUMN IF NOT EXISTS "first_used_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "oauth_token_families" DROP CONSTRAINT IF EXISTS "oauth_token_families_revoked_reason_known";--> statement-breakpoint
+ALTER TABLE "oauth_token_families" ADD CONSTRAINT "oauth_token_families_revoked_reason_known" CHECK ("revoked_reason" IS NULL OR "revoked_reason" IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin', 'sign_out_everywhere'));

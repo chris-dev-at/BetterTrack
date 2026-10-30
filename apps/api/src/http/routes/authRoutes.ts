@@ -355,8 +355,10 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
 
   // "Sign out everywhere": log out every other device — every other session,
   // and (§16 2026-10-29) every official first-party app grant — keeping the
-  // caller signed in on this session, or on its own grant when the caller is an
-  // official app's OAuth bearer (`req.apiKey.id` IS the grant id then). Grant
+  // caller signed in on this session, or — when the caller is an official app's
+  // OAuth bearer — on its own install: its grant (`req.apiKey.id` IS the grant
+  // id then) survives, but every OTHER token family on it is revoked, so the
+  // app's other installs are signed out too. Grant
   // revocation stays first-party-OAuth-only, as on `DELETE
   // /settings/oauth-grants/{id}`: a personal key or a third-party app holding
   // `account:security` revokes sessions only (review B1).
@@ -364,7 +366,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     const credential: SignOutEverywhereCredential = !req.apiKey
       ? { kind: 'session' }
       : req.apiKey.kind === 'oauth' && req.apiKey.firstParty
-        ? { kind: 'first_party_oauth', grantId: req.apiKey.id }
+        ? {
+            kind: 'first_party_oauth',
+            grantId: req.apiKey.id,
+            familyId: req.apiKey.familyId ?? null,
+          }
         : { kind: 'delegated_bearer' };
     const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null, {
       credential,

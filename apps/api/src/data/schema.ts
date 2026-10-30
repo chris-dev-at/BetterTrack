@@ -3080,7 +3080,8 @@ export const oauthTokenFamilies = pgTable(
     ),
     check(
       'oauth_token_families_revoked_reason_known',
-      sql`${t.revokedReason} IS NULL OR ${t.revokedReason} IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin')`,
+      // Widened by 0121 (sign-out-everywhere from an official app).
+      sql`${t.revokedReason} IS NULL OR ${t.revokedReason} IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin', 'sign_out_everywhere')`,
     ),
     check(
       'oauth_token_families_revocation_complete',

@@ -293,6 +293,17 @@ export interface OAuthCredentialEventRevocation {
   clientId: string;
 }
 
+/**
+ * Everything one credential event revoked, in one transaction: whole grants,
+ * plus — sign-out-everywhere from an official app's bearer only — the OTHER
+ * token families on the caller's own (kept) grant.
+ */
+export interface OAuthCredentialEventResult {
+  grants: OAuthCredentialEventRevocation[];
+  /** Sibling families revoked on `exceptGrantId` (reason `sign_out_everywhere`). */
+  families: OAuthTokenFamilyRow[];
+}
+
 /** The successor side of the refresh-token self-join. */
 const successorTokens = alias(oauthRefreshTokens, 'successor_tokens');
 
@@ -929,6 +940,19 @@ export function createOAuthRepository(db: Database) {
      * everywhere", which promises to keep the caller signed in). Pending
      * authorization codes for the same client set are consumed permanently.
      *
+     * `siblingFamilies` (sign-out-everywhere from an official app's bearer):
+     * the kept grant serves EVERY install of that app, so keeping it whole
+     * would keep every other phone signed in. With it, every live token family
+     * on `exceptGrantId` EXCEPT `keepFamilyId` (the caller's own) is revoked
+     * too, reason `sign_out_everywhere`, envelopes dropped with it
+     * ({@link revokeFamilies}). A legacy pre-family caller (`keepFamilyId:
+     * null`) keeps its chain — which is the grant itself — and every family on
+     * the grant goes. Ownership is enforced HERE: the kept grant must belong to
+     * `userId`, be live, and (`firstPartyOnly`) be a first-party client's.
+     * Families are claimed after the code consumption, so a code exchange that
+     * was in flight has committed its new family by then and it is revoked too;
+     * lock order stays codes → grants → families → token rows.
+     *
      * Ordering is the race guard, and it is deliberately lock-free. Codes are
      * consumed FIRST: an exchange in flight holds its code row `FOR UPDATE`, so
      * that statement waits for it to commit (and then skips the code it
@@ -946,8 +970,9 @@ export function createOAuthRepository(db: Database) {
       userId: string;
       firstPartyOnly: boolean;
       exceptGrantId: string | null;
+      siblingFamilies?: { keepFamilyId: string | null };
       revokedAt: Date;
-    }): Promise<OAuthCredentialEventRevocation[]> {
+    }): Promise<OAuthCredentialEventResult> {
       return db.transaction(async (tx) => {
         const executor = tx as unknown as Database;
         const clientFilter = input.firstPartyOnly
@@ -980,7 +1005,36 @@ export function createOAuthRepository(db: Database) {
             ),
           )
           .returning({ id: oauthGrants.id, clientRowId: oauthGrants.clientId });
-        if (revoked.length === 0) return [];
+
+        // The caller grant's OTHER installs (sign-out-everywhere from an app).
+        // IDEMPOTENCY KEY: the family id under `revoked_at IS NULL` — a replay
+        // claims nothing, so each family is announced and audited once.
+        let families: OAuthTokenFamilyRow[] = [];
+        if (input.siblingFamilies && input.exceptGrantId) {
+          const keptGrant = executor
+            .select({ id: oauthGrants.id })
+            .from(oauthGrants)
+            .where(
+              and(
+                eq(oauthGrants.id, input.exceptGrantId),
+                eq(oauthGrants.userId, input.userId),
+                isNull(oauthGrants.revokedAt),
+                clientFilter ? inArray(oauthGrants.clientId, clientFilter) : undefined,
+              ),
+            );
+          const keep = input.siblingFamilies.keepFamilyId;
+          families = await revokeFamilies(
+            executor,
+            and(
+              eq(oauthTokenFamilies.grantId, input.exceptGrantId),
+              inArray(oauthTokenFamilies.grantId, keptGrant),
+              keep ? ne(oauthTokenFamilies.id, keep) : undefined,
+            )!,
+            'sign_out_everywhere',
+            input.revokedAt,
+          );
+        }
+        if (revoked.length === 0) return { grants: [], families };
         // Their sealed pairs go in the same transaction (review S3).
         await clearGrantEnvelopes(
           executor,
@@ -997,12 +1051,13 @@ export function createOAuthRepository(db: Database) {
             ),
           );
         const publicId = new Map(clients.map((client) => [client.id, client.clientId]));
-        return revoked
+        const grants = revoked
           .map((grant) => ({
             grantId: grant.id,
             clientId: publicId.get(grant.clientRowId) ?? grant.clientRowId,
           }))
           .sort((a, b) => a.grantId.localeCompare(b.grantId));
+        return { grants, families };
       });
     },
 

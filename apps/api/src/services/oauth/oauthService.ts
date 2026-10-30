@@ -172,12 +172,19 @@ export interface OAuthService {
    * grants it revoked; a replay revokes (and audits) nothing. An admin-driven
    * event (the temp-password reset) passes `actorId` (the admin, recorded as
    * the audit actor) and `source: 'admin'` (recorded in the meta).
+   *
+   * `siblingFamilies` — sign-out-everywhere from an official app's bearer: the
+   * kept grant is shared by every install of that app, so every OTHER token
+   * family on it is revoked as well (reason `sign_out_everywhere`, each
+   * invalidated and audited `oauth.token_family_revoked`), keeping only
+   * `keepFamilyId` — the calling install. Not counted in the resolved number.
    */
   revokeGrantsForCredentialEvent(input: {
     userId: string;
     reason: OAuthCredentialRevocationReason;
     firstPartyOnly: boolean;
     exceptGrantId: string | null;
+    siblingFamilies?: { keepFamilyId: string | null };
     ip?: string | null;
     actorId?: string;
     source?: 'admin';
@@ -522,6 +529,12 @@ function emptyEffectiveScope(): ApiError {
  * pre-family code during the rollout) belongs to the legacy family that IS the
  * grant: it is live while the grant is, and revoking it is grant-wide — the
  * exact pre-family semantics, so both code versions coexist during a deploy.
+ *
+ * Credential events (§16 2026-10-29). A password change or reset ends EVERY
+ * grant of the user (and so every family on them). "Sign out everywhere" ends
+ * every first-party grant except the caller's own; called from an official
+ * app's bearer it also revokes every OTHER family on that caller grant (reason
+ * `sign_out_everywhere`), so exactly the calling install stays signed in.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   const { repo, audit, redis, userRepo, events, logger, recordEncryption } = deps;
@@ -1344,20 +1357,36 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       reason,
       firstPartyOnly,
       exceptGrantId,
+      siblingFamilies,
       ip,
       actorId,
       source,
     }) {
       // IDEMPOTENCY KEY: the grant id (`revoked_at IS NULL` in the repository),
-      // so each grant is invalidated and audited exactly once however often the
-      // event replays. Failures propagate: the caller's credential change must
-      // not answer 200 while a grant it promised to end is still live.
-      const revoked = await repo.revokeGrantsForCredentialEvent({
+      // and the family id for sibling families, so each grant and family is
+      // invalidated and audited exactly once however often the event replays.
+      // Failures propagate: the caller's credential change must not answer 200
+      // while a grant or install it promised to end is still live.
+      const { grants: revoked, families } = await repo.revokeGrantsForCredentialEvent({
         userId,
         firstPartyOnly,
         exceptGrantId,
+        siblingFamilies,
         revokedAt: now(),
       });
+      // The caller grant's other installs: per family, its sockets drop and an
+      // `oauth.token_family_revoked` row is written (log-and-continue, like the
+      // grant rows below — the revoke is already committed).
+      if (exceptGrantId && families.length > 0) {
+        await announceFamilyRevocations({
+          userId,
+          grantId: exceptGrantId,
+          familyIds: families.map((family) => family.id),
+          reason: 'sign_out_everywhere',
+          clientId: null,
+          ip: ip ?? null,
+        });
+      }
       // Every socket first (each publish is already best-effort), then the
       // audit trail — one row per grant, naming the app and the event.
       await Promise.all(

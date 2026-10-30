@@ -108,13 +108,17 @@ export interface AuthServiceDeps {
  * apps), so this route keeps the same boundary:
  *  - `session`           — a browser: every first-party grant is revoked;
  *  - `first_party_oauth` — an official app's bearer: every first-party grant
- *                          EXCEPT its own (`grantId`) is revoked;
+ *                          EXCEPT its own (`grantId`) is revoked, and on that
+ *                          own grant every token family EXCEPT its own
+ *                          (`familyId`; null for a legacy pre-family token,
+ *                          whose chain is the grant itself) — so only the
+ *                          calling install stays signed in;
  *  - `delegated_bearer`  — a personal API key or a third-party app holding
  *                          `account:security`: sessions only, never a grant.
  */
 export type SignOutEverywhereCredential =
   | { kind: 'session' }
-  | { kind: 'first_party_oauth'; grantId: string }
+  | { kind: 'first_party_oauth'; grantId: string; familyId: string | null }
   | { kind: 'delegated_bearer' };
 
 export interface LoginInput {
@@ -403,7 +407,8 @@ export interface AuthService {
    * "Sign out everywhere" (V3-P11a; widened §16 2026-10-29): revoke every
    * session of the caller EXCEPT the current one, AND — only for a browser
    * session or an official first-party app's bearer — every OAuth grant of an
-   * official first-party app EXCEPT the caller's own (see
+   * official first-party app EXCEPT the caller's own, and on the caller's own
+   * grant every token family except the calling install's (see
    * {@link SignOutEverywhereCredential}). Third-party grants are untouched; a
    * personal key or third-party bearer revokes sessions only. Returns how many
    * SESSIONS were revoked (the wire count is unchanged). The caller stays
@@ -2027,16 +2032,25 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // or an official app asks. A personal key or a third-party app holding
       // `account:security` signs SESSIONS out and never a grant: grant
       // revocation is first-party-OAuth-only on the whole bearer surface
-      // (review B1). Until per-install token families land, one grant serves
-      // every phone of the account, so a call made FROM a phone keeps every
-      // phone on that shared grant signed in.
+      // (review B1). One grant serves every install of an app, so a call made
+      // FROM a phone also revokes every OTHER token family on the phone's own
+      // grant: exactly the calling install stays signed in (§16 2026-10-29).
       const { credential } = caller;
-      if (credential.kind !== 'delegated_bearer') {
+      if (credential.kind === 'session') {
         await oauthGrants.revokeGrantsForCredentialEvent({
           userId,
           reason: 'sign_out_everywhere',
           firstPartyOnly: true,
-          exceptGrantId: credential.kind === 'first_party_oauth' ? credential.grantId : null,
+          exceptGrantId: null,
+          ip: caller.ip ?? null,
+        });
+      } else if (credential.kind === 'first_party_oauth') {
+        await oauthGrants.revokeGrantsForCredentialEvent({
+          userId,
+          reason: 'sign_out_everywhere',
+          firstPartyOnly: true,
+          exceptGrantId: credential.grantId,
+          siblingFamilies: { keepFamilyId: credential.familyId },
           ip: caller.ip ?? null,
         });
       }
