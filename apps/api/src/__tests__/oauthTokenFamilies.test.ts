@@ -435,7 +435,11 @@ describe('a rotation never mints into a grant or family revoked after its lookup
     const before = await tokenCounts(grantId);
     await expect(
       service.exchangeToken({
-        body: { grant_type: 'refresh_token', refresh_token: a.refresh_token, client_id: app.clientId },
+        body: {
+          grant_type: 'refresh_token',
+          refresh_token: a.refresh_token,
+          client_id: app.clientId,
+        },
       }),
     ).rejects.toMatchObject({ statusCode: 400, code: 'INVALID_GRANT' });
     expect(await tokenCounts(grantId)).toEqual(before);
