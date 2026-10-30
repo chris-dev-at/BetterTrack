@@ -175,6 +175,8 @@ export interface RealtimeOAuthResolution {
   kind: 'oauth';
   user: RealtimeResolvedUser;
   grantId: string;
+  /** The access token's per-install family; null = legacy (the family is the grant). */
+  familyId: string | null;
   accessTokenId: string;
   expiresAt: string;
   scopes: ApiKeyScope[];
@@ -213,6 +215,12 @@ export interface RealtimeOAuthPrincipal {
   /** Grant id: revoking the grant invalidates every access token under it. */
   credentialId: string;
   grantId: string;
+  /**
+   * Per-install token family (§16 2026-10-29): a family-scoped invalidation
+   * drops only the sockets whose family matches. Null = legacy token, which
+   * only a grant-wide invalidation reaches — exactly its pre-family semantics.
+   */
+  familyId: string | null;
   accessTokenId: string;
   userId: string;
   userStatus: 'active';
@@ -439,6 +447,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       kind: 'oauth',
       credentialId: resolved.grantId,
       grantId: resolved.grantId,
+      familyId: resolved.familyId,
       accessTokenId: resolved.accessTokenId,
       userId: resolved.user.id,
       userStatus: 'active',
@@ -1697,6 +1706,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       a.userId === b.userId &&
       a.userStatus === b.userStatus &&
       a.credentialId === b.credentialId &&
+      // An OAuth principal's family is part of its authorization identity.
+      (a.kind !== 'oauth' || b.kind !== 'oauth' || a.familyId === b.familyId) &&
       sameScopes(a.scopes, b.scopes)
     );
   }
@@ -1951,6 +1962,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     if (event.kind === 'all') return true;
     if (principal.kind !== event.kind) return false;
     if (event.exceptCredentialId === principal.credentialId) return false;
+    // A family-scoped OAuth invalidation (one install signed out) reaches only
+    // that family's sockets under that grant; the grant's other installs — and
+    // its legacy NULL-family sockets — stay connected (§16 2026-10-29).
+    if (event.kind === 'oauth' && event.familyId) {
+      return (
+        principal.kind === 'oauth' &&
+        principal.credentialId === event.credentialId &&
+        principal.familyId === event.familyId
+      );
+    }
     return event.credentialId === null || event.credentialId === principal.credentialId;
   }
 

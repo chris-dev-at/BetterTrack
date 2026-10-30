@@ -55,6 +55,12 @@ declare global {
         /** Official-client trust from the joined OAuth client row; personal keys are false. */
         firstParty: boolean;
         /**
+         * `kind: 'oauth'` only: the presenting access token's per-install token
+         * family (§16 2026-10-29) — what a bearer `POST /auth/logout` revokes.
+         * Null for a legacy token (the family is the grant); absent for keys.
+         */
+        familyId?: string | null;
+        /**
          * Exact durable account-security generation read while authenticating
          * this bearer. Security mutations use it as their compare-and-swap
          * fence; it is internal request state and never enters a response.

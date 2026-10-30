@@ -1151,6 +1151,17 @@ describe('refresh-token rotation', () => {
     return grant!;
   }
 
+  /** The token family a refresh token belongs to (§16 2026-10-29). */
+  async function familyFor(refreshToken: string) {
+    const familyId = (await refreshRow(refreshToken)).familyId;
+    expect(familyId).toEqual(expect.any(String));
+    const [family] = await harness.db
+      .select()
+      .from(schema.oauthTokenFamilies)
+      .where(eq(schema.oauthTokenFamilies.id, familyId!));
+    return family!;
+  }
+
   async function graceAudits() {
     return harness.db
       .select({ meta: schema.auditLog.meta })
@@ -1215,7 +1226,7 @@ describe('refresh-token rotation', () => {
     expect(oauthTokenResponseSchema.parse(replay.body).refresh_token).toBe(next.refresh_token);
   });
 
-  it('treats a replay 61 s after rotation as theft: INVALID_GRANT, grant revoked, successor pair dead', async () => {
+  it('treats a replay 61 s after rotation as theft: INVALID_GRANT, token FAMILY revoked, successor pair dead', async () => {
     const { clientId, clientSecret, first } = await issueFirstPair();
     const next = await rotate(clientId, clientSecret, first.refresh_token);
 
@@ -1225,7 +1236,9 @@ describe('refresh-token rotation', () => {
     expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
     expect(replay.body.access_token).toBeUndefined();
 
-    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    // RFC 9700 §4.14.2 (§16 2026-10-29): this install's family, not the grant.
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect((await familyFor(first.refresh_token)).revokedReason).toBe('refresh_reuse');
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expect((await refreshWith(clientId, clientSecret, next.refresh_token)).status).toBe(400);
     expect(await graceAudits()).toHaveLength(0);
@@ -1243,7 +1256,8 @@ describe('refresh-token rotation', () => {
     const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
     expect(replay.status).toBe(400);
     expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
-    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect((await familyFor(first.refresh_token)).revokedReason).toBe('refresh_reuse');
     expect(await harness.ctx.oauth.authenticateToken(third.access_token)).toBeNull();
     expect(await graceAudits()).toHaveLength(0);
   });
@@ -1350,7 +1364,8 @@ describe('refresh-token rotation', () => {
     const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
     expect(replay.status).toBe(400);
     expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
-    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect((await familyFor(first.refresh_token)).revokedReason).toBe('refresh_reuse');
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expect(await graceAudits()).toHaveLength(0);
   });
