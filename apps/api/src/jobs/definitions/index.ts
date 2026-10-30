@@ -137,11 +137,14 @@ export {
 export {
   createSnapshotsRecomputeJob,
   createSnapshotsBackfillJob,
+  createSnapshotsFxHoleRepairJob,
+  enqueueFxHoleRepair,
   SNAPSHOTS_BACKFILL_SCHEDULER_ID,
   SNAPSHOTS_BACKFILL_CRON,
   SNAPSHOTS_BACKFILL_TZ,
   SNAPSHOT_HEAL_WINDOW_DAYS,
   type SnapshotJobDeps,
+  type SnapshotFxHoleRepairJobDeps,
 } from './snapshotJobs';
 
 export {
