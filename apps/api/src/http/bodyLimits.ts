@@ -104,7 +104,7 @@ const FALLBACK_CODE_BY_STATUS: Readonly<Record<number, string>> = {
  * Every error code the global body parser can answer with (MALFORMED_BODY,
  * PAYLOAD_TOO_LARGE, UNSUPPORTED_MEDIA_TYPE), derived from the two maps above so
  * a new mapped type cannot drift out of the published OpenAPI vocabulary: the
- * document lists these on every operation that carries a request body (mobile
+ * document lists these on every operation that carries a JSON request body (mobile
  * board ask 2026-10-29 A5). The `BAD_REQUEST` catch-all is deliberately not
  * part of it — it is the generic envelope, not a body-parser contract.
  */

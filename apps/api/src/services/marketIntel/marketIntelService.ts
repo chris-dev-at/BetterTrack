@@ -221,27 +221,26 @@ function upcomingDividendDay(event: DividendEvent, todayStart: string): string |
 }
 
 /**
- * Split a provider's forward calendar on the display day (mobile board ask
- * 2026-10-29 A3): the keystone serves a cached dividend payload stale for up to
- * STALE_TTL_SECONDS behind an open breaker, and a provider may keep listing an
- * event after it happened, so `upcoming` reached the apps carrying an ex-date
- * weeks behind us. An event every one of whose known dates is before today has
- * happened — it is moved to `past`, where the caller folds it into the history.
- * An UNDATED event (no parseable date at all) is not demonstrably past, so it
- * stays where the provider put it; the bound below sorts it last.
+ * Drop the events of a provider's forward calendar that have already happened,
+ * on the display day (mobile board ask 2026-10-29 A3): the keystone serves a
+ * cached dividend payload stale for up to STALE_TTL_SECONDS behind an open
+ * breaker, and a provider may keep listing an event after it happened, so
+ * `upcoming` reached the apps carrying an ex-date weeks behind us. An event every
+ * one of whose known dates is before today is past and is dropped. An UNDATED
+ * event (no parseable date at all) is not demonstrably past, so it stays where
+ * the provider put it; the bound below sorts it last.
+ *
+ * A past event is deliberately NOT folded into `history`. The history is the
+ * provider's own payout record and already carries the payout — and for Yahoo
+ * under a DIFFERENT stamp (calendar `…T00:00:00Z` vs chart `…T13:30:00Z`), so a
+ * fold keyed on `(exDate, amount)` added a second copy of the same payout, the
+ * #1790 duplicate {@link normalizeDividendHistory} exists to stop.
  */
-function partitionUpcomingDividends(
-  upcoming: DividendEvent[],
-  todayStart: string,
-): { upcoming: DividendEvent[]; past: DividendEvent[] } {
-  const still: DividendEvent[] = [];
-  const past: DividendEvent[] = [];
-  for (const event of upcoming) {
+function stillUpcomingDividends(upcoming: DividendEvent[], todayStart: string): DividendEvent[] {
+  return upcoming.filter((event) => {
     const dated = marketIntelEventDay(event.exDate) ?? marketIntelEventDay(event.payDate);
-    if (dated !== null && upcomingDividendDay(event, todayStart) === null) past.push(event);
-    else still.push(event);
-  }
-  return { upcoming: still, past };
+    return dated === null || upcomingDividendDay(event, todayStart) !== null;
+  });
 }
 
 /** Digest groups newest-first by their most recent headline, symbol as tiebreak. */
@@ -497,19 +496,17 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         try {
           const cached = await marketData.getDividendEvents(ref);
           const todayStart = marketIntelDisplayDay(now());
-          const { upcoming, past } = partitionUpcomingDividends(cached.value.upcoming, todayStart);
           return {
             available: true,
             ...cached.value,
-            // A past "upcoming" event is a payout that happened: it joins the
-            // history, where the (exDate, amount) dedupe absorbs the copy a
-            // provider already lists there.
-            history: normalizeDividendHistory([...cached.value.history, ...past]),
-            // Ordered on the same key the calendar and the web render on — the
-            // earliest date not yet passed — so an ex-but-unpaid event sorts on
-            // its pay date rather than on the ex-date behind us.
+            history: normalizeDividendHistory(cached.value.history),
+            // A cut (more than DIVIDEND_UPCOMING_MAX_EVENTS) keeps the soonest on
+            // the key the calendar and the web order on — the earliest date not
+            // yet passed — so an ex-but-unpaid event ranks by its pay date rather
+            // than by the ex-date behind us. An uncut list keeps the provider's
+            // order, like every other bound in this file.
             upcoming: soonestN(
-              upcoming,
+              stillUpcomingDividends(cached.value.upcoming, todayStart),
               (event) => upcomingDividendDay(event, todayStart),
               DIVIDEND_UPCOMING_MAX_EVENTS,
             ),

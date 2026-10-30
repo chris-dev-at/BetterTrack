@@ -874,22 +874,31 @@ describe('OpenAPI x-error-codes — emitted codes are documented (A5)', () => {
     );
   });
 
-  it('lists the body-parser codes on EVERY operation that takes a request body', () => {
-    const bodied = operations().filter(
-      ({ method, op }) =>
-        method === 'post' || method === 'put' || method === 'patch' || op.requestBody !== undefined,
-    );
+  it('lists the body-parser codes, with a status for each, on EVERY JSON-bodied operation', () => {
+    const jsonBody = (op: JsonObject) =>
+      ((op.requestBody as JsonObject | undefined)?.content as JsonObject | undefined)?.[
+        'application/json'
+      ] !== undefined;
+    const bodied = operations().filter(({ op }) => jsonBody(op));
     expect(bodied.length).toBeGreaterThan(100);
     for (const { method, path, op } of bodied) {
-      expect(codesOf(op), `${method.toUpperCase()} ${path}`).toEqual(
-        expect.arrayContaining([...BODY_PARSER_ERROR_CODES]),
+      const name = `${method.toUpperCase()} ${path}`;
+      expect(codesOf(op), name).toEqual(expect.arrayContaining([...BODY_PARSER_ERROR_CODES]));
+      // 400 MALFORMED_BODY, 413 PAYLOAD_TOO_LARGE, 415 UNSUPPORTED_MEDIA_TYPE.
+      expect(Object.keys(op.responses as JsonObject), name).toEqual(
+        expect.arrayContaining(['400', '413', '415']),
       );
     }
-    // …and not on a plain GET, which the vocabulary would otherwise overstate.
-    const plainGet = operations().find(
-      ({ method, path }) => method === 'get' && path === '/auth/me',
-    );
-    expect(codesOf(plainGet!.op)).not.toContain('MALFORMED_BODY');
+    // …and on nothing without a JSON body: a plain GET, a bodyless POST, and
+    // the octet-stream vault write whose own parser answers VAULT_TOO_LARGE.
+    for (const [method, path] of [
+      ['get', '/auth/me'],
+      ['post', '/settings/telegram/link'],
+      ['put', '/vault'],
+    ] as const) {
+      const found = operations().find((o) => o.method === method && o.path === path)!;
+      expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).not.toContain('MALFORMED_BODY');
+    }
   });
 
   it('a malformed and an unsupported-charset body answer with codes POST /cash/rules lists', async () => {
@@ -956,13 +965,43 @@ describe('OpenAPI x-error-codes — emitted codes are documented (A5)', () => {
     expect(codesOf(notifications.op)).not.toContain('CHANNEL_DEACTIVATED');
   });
 
-  it('the two cash-rule writes list the duplicate-tag refusal cashTagService raises', () => {
+  it('PATCH /admin/account-defaults lists the 400 it answers for a deactivated channel', () => {
+    // `adminService` refuses a notification default for a kill-switched channel.
+    const found = operations().find(
+      (o) => o.method === 'patch' && o.path === '/admin/account-defaults',
+    )!;
+    expect(codesOf(found.op)).toContain('CHANNEL_DEACTIVATED');
+  });
+
+  it('does NOT list CASH_RULE_TAG_DUPLICATE on the cash-rule writes, which accept a repeated tag', async () => {
+    // The only raise is `cashTagService.restoreRuleTags`, behind the strict
+    // restore schema that refuses a repeated (rule, tag) pair first; the
+    // ordinary writes dedupe `tagIds` (review of #2086). Drive POST to prove it.
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = request.agent(h.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const tag = await agent
+      .post('/api/v1/cash/tags')
+      .set(...XRW)
+      .send({ name: 'Groceries' });
+    expect(tag.status).toBe(201);
+    const tagId = (tag.body as { tag: { id: string } }).tag.id;
+    const rule = await agent
+      .post('/api/v1/cash/rules')
+      .set(...XRW)
+      .send({ tagIds: [tagId, tagId], pattern: 'spar' });
+    expect(rule.status).toBe(201);
+
     for (const [method, path] of [
       ['post', '/cash/rules'],
       ['patch', '/cash/rules/{ruleId}'],
     ] as const) {
       const found = operations().find((o) => o.method === method && o.path === path)!;
-      expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).toContain(
+      expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).not.toContain(
         'CASH_RULE_TAG_DUPLICATE',
       );
     }

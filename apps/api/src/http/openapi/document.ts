@@ -1998,6 +1998,9 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAccountDefaultsRequest,
     status: 200,
     response: R.AccountDefaultsResponse,
+    // `adminService` refuses a notification default for a channel the
+    // deployment's kill-switch has turned off (400).
+    errorCodes: ['CHANNEL_DEACTIVATED'],
   },
   {
     method: 'get',
@@ -2527,7 +2530,7 @@ const endpoints: EndpointDef[] = [
     tag: 'Assets',
     summary: 'Dividend history, upcoming ex/pay dates and forward yield.',
     description:
-      '`upcoming` carries only events with at least one ex/pay date on or after today (the Europe/Vienna display day); an event whose dates are all behind us is served in `history` instead. An ex-but-unpaid event stays upcoming until its pay date has passed.',
+      '`upcoming` carries only events with at least one ex/pay date on or after today (the Europe/Vienna display day); an event whose dates are all behind us is dropped from it (`history` is the provider’s own payout record, which already carries that payout). An ex-but-unpaid event stays upcoming until its pay date has passed.',
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.DividendsResponse,
@@ -3449,8 +3452,6 @@ const endpoints: EndpointDef[] = [
     body: R.CreateCashRuleRequest,
     status: 201,
     response: R.CashRuleResponse,
-    // `cashTagService` refuses a tag listed twice in `tagIds` (#1963).
-    errorCodes: ['CASH_RULE_TAG_DUPLICATE'],
   },
   {
     method: 'patch',
@@ -3461,8 +3462,6 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateCashRuleRequest,
     status: 200,
     response: R.CashRuleResponse,
-    // `cashTagService` refuses a tag listed twice in `tagIds` (#1963).
-    errorCodes: ['CASH_RULE_TAG_DUPLICATE'],
   },
   {
     method: 'delete',
@@ -5488,13 +5487,19 @@ const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
 });
 
 /**
- * The methods whose request body the GLOBAL JSON parser reads and can refuse
- * (`bodyLimits.ts`) — the parser runs before every route, so these codes reach
- * an operation whether or not its own schema declares a body. A DELETE that
- * declares one (`DELETE /drive-connections/{connectionId}`) is covered by its
- * `body` below.
+ * True for an operation whose request body the GLOBAL JSON parser reads, and so
+ * can refuse with the `bodyLimits.ts` vocabulary: one that declares a JSON body
+ * (whatever its method — `DELETE /drive-connections/{connectionId}` has one). A
+ * bodyless operation has nothing for a client to malform, and the octet-stream
+ * and multipart uploads are read by their own route parsers, which answer with
+ * their own codes (VAULT_TOO_LARGE, IMPORT_FILE_INVALID).
  */
-const BODIED_METHODS: ReadonlySet<Method> = new Set<Method>(['post', 'put', 'patch']);
+function takesJsonBody(endpoint: EndpointDef): boolean {
+  return (
+    endpoint.body !== undefined &&
+    (endpoint.bodyContentType === undefined || endpoint.bodyContentType === 'application/json')
+  );
+}
 
 /**
  * Codes a route emits that its endpoint row cannot carry by itself because one
@@ -5515,7 +5520,7 @@ function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
     ...(pathRequiresAdminTwoFactorSetup(endpoint.path, endpoint.method)
       ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
       : []),
-    ...(BODIED_METHODS.has(endpoint.method) || endpoint.body ? BODY_PARSER_ERROR_CODES : []),
+    ...(takesJsonBody(endpoint) ? BODY_PARSER_ERROR_CODES : []),
     ...(pathIsKillSwitchedChannel(endpoint.path) ? [CHANNEL_DEACTIVATED_CODE] : []),
     ...(endpoint.errorCodes ?? []),
   ].filter((code, index, all) => all.indexOf(code) === index);
@@ -5593,6 +5598,19 @@ for (const ep of endpoints) {
     // No content member: RFC 9110 §15.4.5 forbids a 304 body, so the response
     // carries only the same validators the 200 would have sent.
     responses['304'] = { description: ep.notModified, ...successHeaders };
+  }
+  // The global body parser's refusals (`bodyLimits.ts`), so every code in
+  // BODY_PARSER_ERROR_CODES has a status to live under; 400 MALFORMED_BODY rides
+  // the 400 above. An endpoint's own `errorResponses` below still wins.
+  if (takesJsonBody(ep)) {
+    responses['413'] = errorResponse(
+      'The request body exceeds the size limit (PAYLOAD_TOO_LARGE).',
+      errorHeaders,
+    );
+    responses['415'] = errorResponse(
+      'The request body uses an unsupported charset or content encoding (UNSUPPORTED_MEDIA_TYPE).',
+      errorHeaders,
+    );
   }
   for (const [status, description] of Object.entries(ep.errorResponses ?? {})) {
     responses[status] = errorResponse(description, errorHeaders);
