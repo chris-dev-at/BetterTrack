@@ -760,6 +760,34 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       : {};
 
   /**
+   * Whether a change-password caller is a cookie session that signed in with a
+   * PASSWORD at the account's current security generation — the only caller a
+   * forced change exempts from re-entering the current password (§6.1).
+   *
+   * While `mustChangePassword` is set, the only password valid at the current
+   * generation is the temporary one: an admin reset writes it, re-arms the flag
+   * and bumps the generation in one statement (ending every older session), and
+   * an admin-created account starts there. So such a session already proved it.
+   * Bearer callers (no `sessionId`) and sessions minted by a PIN, Google, a
+   * passkey or a reset link did not, and legacy/malformed records fail closed.
+   * The record is re-read from the store rather than trusted from the request.
+   */
+  async function signedInWithTemporaryPassword(
+    user: UserRow,
+    security: SecurityMutationContext,
+  ): Promise<boolean> {
+    if (security.sessionId === undefined) return false;
+    if (security.securityGeneration !== user.securityGeneration) return false;
+    const data = await sessions.get(security.sessionId);
+    return (
+      data !== null &&
+      data.userId === user.id &&
+      data.securityGeneration === user.securityGeneration &&
+      authenticationMethodOf(data) === 'password'
+    );
+  }
+
+  /**
    * Mint a fresh EPHEMERAL session for an OAuth PIN quick re-auth (§399 §B). A
    * Custom-Tab browser must never silently retain a persistent web session, so —
    * exactly like a PIN-less OAuth login — the session is always ephemeral; the
@@ -1155,11 +1183,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
 
-      // A forced change after an admin reset: the session was just minted by
-      // logging in with the temp password, so it is itself proof of the current
-      // credential — don't ask for it again (#248 item 7). A voluntary change
-      // from Settings still re-verifies the current password.
-      if (!user.mustChangePassword) {
+      // A forced change after an admin reset needs no current password ONLY
+      // from a cookie session that itself signed in with the temporary password
+      // (#248 item 7) — see `signedInWithTemporaryPassword`. Every other caller
+      // (a personal API key, an OAuth bearer, a PIN / Google / passkey session)
+      // proves the current password, exactly like a voluntary change.
+      const proofWaived =
+        user.mustChangePassword && (await signedInWithTemporaryPassword(user, security));
+      if (!proofWaived) {
         const currentOk =
           input.currentPassword !== undefined &&
           (await passwordHasher.verify(user.passwordHash, input.currentPassword));

@@ -66,11 +66,13 @@ export const changePasswordRequestSchema = z
   .object({
     /**
      * The account's current password. Required for a voluntary change from
-     * Settings; omitted for a forced change after an admin reset, where the
-     * session just minted by logging in with the temp password is itself proof
-     * of the current credential — so it is never asked for twice (§6.1, #248
-     * items 6/7). The server enforces it for voluntary changes and ignores it
-     * for forced ones.
+     * Settings. A forced change after an admin reset may omit it ONLY from a
+     * cookie session that signed in with the temporary password — that sign-in
+     * is itself proof of the current credential, so it is never asked for twice
+     * (§6.1, #248 items 6/7). Every other caller (a personal API key, an OAuth
+     * bearer, a PIN / Google / passkey session) sends the current — during a
+     * forced change, the temporary — password; a missing or wrong one answers
+     * 401 `INVALID_CREDENTIALS`.
      */
     currentPassword: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
     newPassword: passwordSchema,
