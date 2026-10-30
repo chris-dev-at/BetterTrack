@@ -247,6 +247,11 @@ const ACCOUNT_SECURITY_WIDENED_ROUTES: readonly AccountSecurityRoute[] = [
   },
   { name: 'tax-year documentation', method: 'get', path: '/settings/taxes/years' },
   { name: 'first-run completion', method: 'post', path: '/auth/first-run/complete' },
+  {
+    name: 'fresh-start notice acknowledgement',
+    method: 'post',
+    path: '/auth/fresh-start-notice/acknowledge',
+  },
 ] as const;
 
 function callAccountSecurityRoute(token: string, row: AccountSecurityRoute) {
@@ -331,6 +336,16 @@ async function exerciseWidenedAccountSecuritySurface(input: {
   expect(completed.status, JSON.stringify(completed.body)).toBe(200);
   expect(meResponseSchema.parse(completed.body).firstRunCompletedAt).not.toBeNull();
   responses.push(completed);
+
+  // E9: an account the §17 wipe never touched owes no notice, so the
+  // acknowledgement is a truthful no-op — but it must be REACHABLE (the wiped
+  // case is driven end to end in paranoidFreshStartNotice.test.ts).
+  const acknowledged = await request(harness.app)
+    .post('/api/v1/auth/fresh-start-notice/acknowledge')
+    .set(bearer(input.token));
+  expect(acknowledged.status, JSON.stringify(acknowledged.body)).toBe(200);
+  expect(meResponseSchema.parse(acknowledged.body).paranoidFreshStartPending).toBe(false);
+  responses.push(acknowledged);
 
   // Bearer management never mints or refreshes a browser session.
   for (const response of responses) expect(response.headers['set-cookie']).toBeUndefined();
@@ -1163,6 +1178,101 @@ describe('#1328 bearer-started Google LINK policy', () => {
     expect(pathAcceptsBearer('/auth/google/start', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/auth/google/callback', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/auth/google/link/callback', 'GET')).toBe(false);
+  });
+});
+
+describe('E9 bearer fresh-start notice acknowledgement policy', () => {
+  const ACK = '/auth/fresh-start-notice/acknowledge';
+
+  it('widens exactly the POST, scope-gated on account:security, and nothing beside it', () => {
+    expect(resolveBearerPolicyClassification(ACK, 'POST')).toEqual({
+      kind: 'scope',
+      read: ACCOUNT_SECURITY_SCOPE,
+      write: ACCOUNT_SECURITY_SCOPE,
+    });
+    expect(pathAcceptsBearer(ACK, 'POST')).toBe(true);
+    // Express routes case-insensitively; the policy folds case the same way, so
+    // a variant spelling reaches the same handler under the same rule.
+    expect(pathAcceptsBearer('/Auth/Fresh-Start-Notice/Acknowledge', 'post')).toBe(true);
+
+    // Every other method on the exact path stays the module's session-only default.
+    for (const method of ['GET', 'HEAD', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+      expect(resolveBearerPolicyClassification(ACK, method), `${method} ${ACK}`).toEqual({
+        kind: 'session-only',
+      });
+    }
+    // …and so does every sibling: no prefix match was introduced.
+    for (const path of [
+      '/auth/fresh-start-notice',
+      '/auth/fresh-start-notice/',
+      '/auth/fresh-start-notice/status',
+      `${ACK}/`,
+      `${ACK}/extra`,
+      '/auth/fresh-start-notice/acknowledgement',
+    ]) {
+      expect(pathAcceptsBearer(path, 'POST'), `POST ${path}`).toBe(false);
+      expect(pathAcceptsBearer(path, 'GET'), `GET ${path}`).toBe(false);
+    }
+  });
+
+  it('refuses any other method with the unchanged session-only answer, unaudited', async () => {
+    const scoped = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    for (const call of [
+      request(harness.app).get(`/api/v1${ACK}`),
+      request(harness.app).put(`/api/v1${ACK}`),
+      request(harness.app).delete(`/api/v1${ACK}`),
+    ]) {
+      const res = await call.set(bearer(scoped.token));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+    // The other session-only /auth routes beside it are untouched by the carve-out.
+    for (const call of [
+      request(harness.app).get('/api/v1/auth/session'),
+      request(harness.app).post('/api/v1/auth/session/persist'),
+      request(harness.app).post('/api/v1/auth/reauth'),
+    ]) {
+      const res = await call.set(bearer(scoped.token));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+    // A session-only refusal is not a scope event: no `api_key.scope_denied` row.
+    const denials = await harness.db
+      .select({ id: schema.auditLog.id })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, scoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toEqual([]);
+  });
+
+  it('audits a missing-scope refusal on the shared rail with the existing vocabulary', async () => {
+    const unscoped = await mintKey(['market:read']);
+    const res = await request(harness.app).post(`/api/v1${ACK}`).set(bearer(unscoped.token));
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(res.body.error.message).toContain(ACCOUNT_SECURITY_SCOPE);
+
+    const denials = await harness.db
+      .select({ meta: schema.auditLog.meta, targetType: schema.auditLog.targetType })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, unscoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.targetType).toBe('api_key');
+    expect(denials[0]?.meta).toMatchObject({
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      reason: 'insufficient-scope',
+      method: 'POST',
+      path: ACK,
+    });
   });
 });
 
@@ -2235,7 +2345,7 @@ const AUTH_BEARER_ROUTE_CENSUS = [
   {
     method: 'POST',
     path: '/auth/fresh-start-notice/acknowledge',
-    policy: { kind: 'session-only' },
+    policy: SCOPE_ACCOUNT_SECURITY,
   },
   { method: 'GET', path: '/auth/google/callback', policy: { kind: 'session-only' } },
   { method: 'GET', path: '/auth/google/link-status', policy: SCOPE_ACCOUNT_SECURITY },
