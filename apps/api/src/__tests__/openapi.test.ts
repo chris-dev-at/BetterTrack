@@ -889,12 +889,10 @@ describe('OpenAPI x-error-codes — emitted codes are documented (A5)', () => {
         expect.arrayContaining(['400', '413', '415']),
       );
     }
-    // …and on nothing without a JSON body: a plain GET, a bodyless POST, and
-    // the octet-stream vault write whose own parser answers VAULT_TOO_LARGE.
+    // …and on nothing without a body: a plain GET and a bodyless POST.
     for (const [method, path] of [
       ['get', '/auth/me'],
       ['post', '/settings/telegram/link'],
-      ['put', '/vault'],
     ] as const) {
       const found = operations().find((o) => o.method === method && o.path === path)!;
       expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).not.toContain('MALFORMED_BODY');
@@ -963,6 +961,49 @@ describe('OpenAPI x-error-codes — emitted codes are documented (A5)', () => {
       ({ method, path }) => method === 'get' && path === '/settings/notifications',
     )!;
     expect(codesOf(notifications.op)).not.toContain('CHANNEL_DEACTIVATED');
+  });
+
+  it('the octet-stream writes list the raw parser codes they answer with, but not its 413', async () => {
+    // The vault's raw parser (`vaultRoutes.ts`) translates only an oversized
+    // body, to its own VAULT_TOO_LARGE; every other failure falls through to the
+    // shared normaliser (`bodyLimits.ts`) as 400 MALFORMED_BODY or 415
+    // UNSUPPORTED_MEDIA_TYPE. Drive the real route with an encoding the parser
+    // does not speak, then hold every octet-stream operation to that vocabulary.
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = request.agent(h.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const res = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set('Content-Type', 'application/octet-stream')
+      .set('Content-Encoding', 'x-bogus')
+      .set('If-None-Match', '*')
+      .send(Buffer.from('abcdef'));
+    expect(res.status).toBe(415);
+    expect(res.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+
+    const octet = operations().filter(
+      ({ op }) =>
+        ((op.requestBody as JsonObject | undefined)?.content as JsonObject | undefined)?.[
+          'application/octet-stream'
+        ] !== undefined,
+    );
+    expect(octet).toHaveLength(4);
+    expect(octet.map(({ path }) => path)).toContain('/vault');
+    for (const { method, path, op } of octet) {
+      const name = `${method.toUpperCase()} ${path}`;
+      expect(codesOf(op), name).toEqual(
+        expect.arrayContaining(['MALFORMED_BODY', 'UNSUPPORTED_MEDIA_TYPE']),
+      );
+      expect(codesOf(op), name).not.toContain('PAYLOAD_TOO_LARGE');
+      expect(Object.keys(op.responses as JsonObject), name).toEqual(
+        expect.arrayContaining(['400', '415']),
+      );
+    }
   });
 
   it('PATCH /admin/account-defaults lists the 400 it answers for a deactivated channel', () => {

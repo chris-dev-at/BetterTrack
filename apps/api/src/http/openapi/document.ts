@@ -5490,9 +5490,7 @@ const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
  * True for an operation whose request body the GLOBAL JSON parser reads, and so
  * can refuse with the `bodyLimits.ts` vocabulary: one that declares a JSON body
  * (whatever its method — `DELETE /drive-connections/{connectionId}` has one). A
- * bodyless operation has nothing for a client to malform, and the octet-stream
- * and multipart uploads are read by their own route parsers, which answer with
- * their own codes (VAULT_TOO_LARGE, IMPORT_FILE_INVALID).
+ * bodyless operation has nothing for a client to malform.
  */
 function takesJsonBody(endpoint: EndpointDef): boolean {
   return (
@@ -5500,6 +5498,21 @@ function takesJsonBody(endpoint: EndpointDef): boolean {
     (endpoint.bodyContentType === undefined || endpoint.bodyContentType === 'application/json')
   );
 }
+
+/**
+ * True for the octet-stream vault writes. Their raw parser (`vaultRoutes.ts`)
+ * translates only an oversized body, into their own VAULT_TOO_LARGE; every other
+ * parser failure (an unknown Content-Encoding, an aborted upload) falls through
+ * to the shared normaliser as 415 UNSUPPORTED_MEDIA_TYPE or 400 MALFORMED_BODY.
+ * So they carry the parser vocabulary minus PAYLOAD_TOO_LARGE, whose 413 their
+ * own code owns.
+ */
+function takesRawBody(endpoint: EndpointDef): boolean {
+  return endpoint.body !== undefined && endpoint.bodyContentType === 'application/octet-stream';
+}
+const RAW_BODY_PARSER_ERROR_CODES = BODY_PARSER_ERROR_CODES.filter(
+  (code) => code !== 'PAYLOAD_TOO_LARGE',
+);
 
 /**
  * Codes a route emits that its endpoint row cannot carry by itself because one
@@ -5521,6 +5534,7 @@ function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
       ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
       : []),
     ...(takesJsonBody(endpoint) ? BODY_PARSER_ERROR_CODES : []),
+    ...(takesRawBody(endpoint) ? RAW_BODY_PARSER_ERROR_CODES : []),
     ...(pathIsKillSwitchedChannel(endpoint.path) ? [CHANNEL_DEACTIVATED_CODE] : []),
     ...(endpoint.errorCodes ?? []),
   ].filter((code, index, all) => all.indexOf(code) === index);
@@ -5607,6 +5621,8 @@ for (const ep of endpoints) {
       'The request body exceeds the size limit (PAYLOAD_TOO_LARGE).',
       errorHeaders,
     );
+  }
+  if (takesJsonBody(ep) || takesRawBody(ep)) {
     responses['415'] = errorResponse(
       'The request body uses an unsupported charset or content encoding (UNSUPPORTED_MEDIA_TYPE).',
       errorHeaders,
