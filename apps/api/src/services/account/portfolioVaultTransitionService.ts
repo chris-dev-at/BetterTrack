@@ -40,6 +40,7 @@ import {
   readPendingPortfolioVaultMoveOutFinalization,
   readPortfolioImportBatchCapture,
   readPortfolioVaultLifecycle,
+  readPortfolioVaultMoveOutBodyAdmission,
   withPortfolioVaultTransitionTransaction,
 } from '../../data/repositories/portfolioVaultTransitionRepository';
 import {
@@ -271,6 +272,13 @@ export interface PortfolioVaultTransitionService {
     portfolioId: string,
     request: PortfolioVaultMoveOutChallengeRequest,
   ): Promise<PortfolioVaultMoveOutChallengeResponse>;
+  /**
+   * Authorize-before-parse for `POST /portfolios/:id/vault/move-out`
+   * (GHSA-mrhx-c7xc-m3w5): which body bound this caller may spend. Throws
+   * `NOT_FOUND` for a portfolio the caller does not own, so an unrelated
+   * account is refused before the body is read at all.
+   */
+  moveOutBodyAdmission(userId: string, portfolioId: string): Promise<'restore' | 'standard'>;
   moveIn(
     userId: string,
     portfolioId: string,
@@ -477,6 +485,12 @@ export function createPortfolioVaultTransitionService(
         );
       }
       return response.data;
+    },
+
+    async moveOutBodyAdmission(userId, portfolioId) {
+      const admission = await readPortfolioVaultMoveOutBodyAdmission(deps.db, userId, portfolioId);
+      if (admission === 'not_found') fail('NOT_FOUND', 'Portfolio not found.');
+      return admission;
     },
 
     async lifecycle(userId, portfolioId) {

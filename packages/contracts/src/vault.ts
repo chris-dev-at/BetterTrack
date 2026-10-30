@@ -1996,6 +1996,232 @@ export const vaultStrictDocumentV1Schema = z
   .superRefine(refineRestoredCashSets);
 export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
 
+// ── Bounded validation of the strict restore document (GHSA-mrhx-c7xc-m3w5) ─
+
+/**
+ * WHY THIS EXISTS. zod 3 (3.25.76 here; the fix ships only in zod ≥ 4.6.6, the
+ * migration parked behind #1031) parses EVERY element of an array even after a
+ * `.max()` has failed, and records one issue per failing element — one per
+ * missing FIELD, in fact: `{"kind":"importRow","data":{}}` is 30 bytes and 25
+ * issues. The strict restore document above is the one schema the API runs over
+ * a body far wider than the 100 KiB global bound — `POST /portfolios/:id/vault/
+ * move-out` and `POST /account/paranoid/disable` accept up to 8× the encrypted
+ * cap — so a single malformed document could make the server build an issue list
+ * proportional to its own size (measured on 3.25.76: 1 MiB of `{}` entities →
+ * 349,520 issues and +382 MiB of heap; about 10 MiB of them exceeds a 4 GiB
+ * heap). That is exactly what the invariant on `refineRestoredCashSets` forbids:
+ * "a malformed document must not be able to make the server build an issue
+ * list proportional to its own size".
+ *
+ * Two layers close it. The API runs both BEFORE the full schema, in this order:
+ *
+ * 1. {@link precheckVaultStrictDocumentShape} — no zod at all. It reads the raw
+ *    JSON once and refuses any collection the schema leaves unbounded, or bounds
+ *    only after parsing every element, when it is longer than the ceiling in
+ *    {@link VAULT_STRICT_DOCUMENT_COLLECTION_BOUNDS}. A refusal there performs no
+ *    element validation whatsoever.
+ * 2. {@link firstInvalidVaultStrictDocumentElement} — validates the elements of
+ *    the three top-level collections ONE AT A TIME and stops at the first
+ *    invalid one. Combined with layer 1's nested bounds, the issue list any
+ *    document can produce is one element's worth, never the document's length.
+ *
+ * Neither layer may refuse a document the full schema would accept. The
+ * byte-derived ceilings are sound by construction (see
+ * {@link VAULT_STRICT_ENTITY_MIN_JSON_BYTES}); every fixed ceiling sits at or
+ * above what a legitimate client can send — both web restore builders
+ * (`portfolioRestoreDocument.ts`, `paranoidDisable.ts`) strict-parse their own
+ * document through this schema before sending it, so a `.catch(null)` field
+ * past its schema `max` has already degraded to `null` on the wire.
+ */
+
+/**
+ * The smallest number of JSON bytes ANY valid strict entity can occupy, rounded
+ * down. Every strict entity must carry all six meta keys plus `data`: two uuids
+ * (36 characters each, fixed by the uuid format), the shortest kind literal
+ * (`cashTag`, 7), `rev` (≥ 1 digit), `editedAt` (zod's datetime accepts no fewer
+ * than 17 characters: `2026-01-01T00:00Z`), `deletedAt` (`null` at the least)
+ * and `data` (at least `{}` — every kind actually requires fields in it). The
+ * compact serialization of that envelope is 178 bytes; JSON whitespace and
+ * escapes only ever add bytes. So a body of B bytes cannot hold more than
+ * `B / 160` valid entities, and a longer `entities` array is malformed
+ * WITHOUT looking at a single element. A severed-fork provenance record (six
+ * required fields, five of them uuids) is larger still, so the same floor bounds
+ * `mirrorProvenance`. Pinned against the live schemas by the contracts test.
+ */
+export const VAULT_STRICT_ENTITY_MIN_JSON_BYTES = 160;
+
+/**
+ * The same floor for one `mergeLog` record: `mergedAt` (≥ 17), one parent, `into`
+ * and the `deviceId` uuid come to 105 compact bytes. A parse-time `max` on the
+ * merge log is forbidden by design (see {@link VAULT_MERGE_LOG_LIMIT}: writers
+ * trim, parsers tolerate), so only this byte-derived bound — which no valid log
+ * can exceed — applies to it.
+ */
+export const VAULT_MERGE_RECORD_MIN_JSON_BYTES = 96;
+
+/**
+ * A merge record's `parents` are the distinct heads it joined; the one writer
+ * (`apps/web/src/user/vault/merge.ts`) emits at most two. Each parent is a 1-byte
+ * integer at the least, so no byte-derived bound helps, and `[0,0,…]` would cost
+ * one issue per 2 bytes. 64 leaves wide room for any future n-way merge.
+ */
+export const VAULT_MERGE_RECORD_PARENTS_MAX = 64;
+
+/**
+ * `import_batches.understanding.mappings` / `.unmappedHeaders` partition one CSV
+ * header row and carry no schema `max`. They sit under a `.catch(null)`, which
+ * DISCARDS their issues but still has zod create every one of them first, so a
+ * single batch with a giant array is a transient heap spike all the same. No
+ * statement or broker export comes close to 10,000 columns.
+ */
+export const VAULT_IMPORT_UNDERSTANDING_COLUMNS_MAX = 10_000;
+
+/**
+ * Every collection reachable inside the strict restore document that the zod
+ * schema itself does not bound BEFORE parsing its elements, with the ceiling the
+ * pre-check enforces. `'bytes'` means the byte-derived ceiling. Collections under
+ * `vaultJsonSchema` (tax params, custom-asset meta, snapshot maps) are absent on
+ * purpose: that schema accepts every JSON value, so it can raise no issue. The
+ * contracts test walks the live schema and fails if a collection appears that is
+ * neither listed here nor inside `vaultJsonSchema`.
+ */
+export const VAULT_STRICT_DOCUMENT_COLLECTION_BOUNDS = {
+  entities: 'bytes',
+  mergeLog: 'bytes',
+  'mergeLog[].parents': VAULT_MERGE_RECORD_PARENTS_MAX,
+  mirrorProvenance: 'bytes',
+  'entities[importRow].data.candidates': IMPORT_ROW_CANDIDATE_LIMIT,
+  'entities[importRow].data.ruleTagIds': CASH_TAGS_PER_ITEM_MAX,
+  'entities[importBatch].data.understanding.mappings': VAULT_IMPORT_UNDERSTANDING_COLUMNS_MAX,
+  'entities[importBatch].data.understanding.unmappedHeaders':
+    VAULT_IMPORT_UNDERSTANDING_COLUMNS_MAX,
+} as const satisfies Record<string, number | 'bytes'>;
+
+/** The byte-derived ceiling on `entities` / `mirrorProvenance` for a body of `bodyBytes`. */
+export const vaultStrictDocumentEntitiesCeiling = (bodyBytes: number): number =>
+  Math.floor(Math.max(0, bodyBytes) / VAULT_STRICT_ENTITY_MIN_JSON_BYTES);
+
+/** The byte-derived ceiling on `mergeLog` for a body of `bodyBytes`. */
+export const vaultStrictDocumentMergeLogCeiling = (bodyBytes: number): number =>
+  Math.floor(Math.max(0, bodyBytes) / VAULT_MERGE_RECORD_MIN_JSON_BYTES);
+
+type JsonObject = Record<string, unknown>;
+
+const isJsonObject = (value: unknown): value is JsonObject =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const tooLongIssue = (path: (string | number)[], maximum: number): z.ZodIssue => ({
+  code: z.ZodIssueCode.too_big,
+  type: 'array',
+  maximum,
+  inclusive: true,
+  exact: false,
+  path,
+  message: `Array must contain at most ${maximum} element(s)`,
+});
+
+/**
+ * Layer 1: the raw-shape pre-check. `document` is the already-`JSON.parse`d
+ * value and `bodyBytes` the byte length of the request body it came from (an
+ * upper bound on the document's own bytes). Returns the FIRST over-long
+ * collection as one zod-shaped issue (path relative to the document), or `null`.
+ *
+ * Only lengths are read. Anything that is not the expected container — a
+ * non-object document, a non-array `entities` — is left to the schema, which
+ * reports it with a single issue at no amplification. The walk over `entities`
+ * touches each element's `kind` and at most four nested arrays, so it costs one
+ * linear pass with no allocation per element.
+ */
+export function precheckVaultStrictDocumentShape(
+  document: unknown,
+  options: { bodyBytes: number },
+): z.ZodIssue | null {
+  if (!isJsonObject(document)) return null;
+  const entitiesCeiling = vaultStrictDocumentEntitiesCeiling(options.bodyBytes);
+
+  const { entities, mergeLog, mirrorProvenance } = document;
+  if (Array.isArray(entities) && entities.length > entitiesCeiling) {
+    return tooLongIssue(['entities'], entitiesCeiling);
+  }
+  if (Array.isArray(mirrorProvenance) && mirrorProvenance.length > entitiesCeiling) {
+    return tooLongIssue(['mirrorProvenance'], entitiesCeiling);
+  }
+  if (Array.isArray(mergeLog)) {
+    const mergeLogCeiling = vaultStrictDocumentMergeLogCeiling(options.bodyBytes);
+    if (mergeLog.length > mergeLogCeiling) return tooLongIssue(['mergeLog'], mergeLogCeiling);
+    for (let index = 0; index < mergeLog.length; index += 1) {
+      const record = mergeLog[index];
+      if (
+        isJsonObject(record) &&
+        Array.isArray(record.parents) &&
+        record.parents.length > VAULT_MERGE_RECORD_PARENTS_MAX
+      ) {
+        return tooLongIssue(['mergeLog', index, 'parents'], VAULT_MERGE_RECORD_PARENTS_MAX);
+      }
+    }
+  }
+
+  if (!Array.isArray(entities)) return null;
+  for (let index = 0; index < entities.length; index += 1) {
+    const entity = entities[index];
+    if (!isJsonObject(entity) || !isJsonObject(entity.data)) continue;
+    const { data } = entity;
+    if (entity.kind === 'importRow') {
+      if (Array.isArray(data.candidates) && data.candidates.length > IMPORT_ROW_CANDIDATE_LIMIT) {
+        return tooLongIssue(['entities', index, 'data', 'candidates'], IMPORT_ROW_CANDIDATE_LIMIT);
+      }
+      if (Array.isArray(data.ruleTagIds) && data.ruleTagIds.length > CASH_TAGS_PER_ITEM_MAX) {
+        return tooLongIssue(['entities', index, 'data', 'ruleTagIds'], CASH_TAGS_PER_ITEM_MAX);
+      }
+    } else if (entity.kind === 'importBatch' && isJsonObject(data.understanding)) {
+      for (const key of ['mappings', 'unmappedHeaders'] as const) {
+        const columns = data.understanding[key];
+        if (Array.isArray(columns) && columns.length > VAULT_IMPORT_UNDERSTANDING_COLUMNS_MAX) {
+          return tooLongIssue(
+            ['entities', index, 'data', 'understanding', key],
+            VAULT_IMPORT_UNDERSTANDING_COLUMNS_MAX,
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Layer 2: element-at-a-time validation with early exit. Parses each element of
+ * `entities`, `mergeLog` and `mirrorProvenance` with the very schema the full
+ * document uses and returns the FIRST failing element's issues (paths relative
+ * to the document), or `null` when every element is valid — the full schema
+ * then still runs for the document-level shape, defaults and the cash-set
+ * refinement, and finds no element issue to accumulate.
+ *
+ * Run it only after {@link precheckVaultStrictDocumentShape} passed: that is what
+ * bounds the nested arrays inside one element, and so the issues returned here.
+ */
+export function firstInvalidVaultStrictDocumentElement(document: unknown): z.ZodIssue[] | null {
+  if (!isJsonObject(document)) return null;
+  const collections: ReadonlyArray<readonly [string, z.ZodTypeAny]> = [
+    ['entities', vaultStrictEntitySchema],
+    ['mergeLog', vaultMergeRecordSchema],
+    ['mirrorProvenance', vaultMirrorProvenanceSchema],
+  ];
+  for (const [key, schema] of collections) {
+    const elements = document[key];
+    if (!Array.isArray(elements)) continue;
+    for (let index = 0; index < elements.length; index += 1) {
+      const result = schema.safeParse(elements[index]);
+      if (!result.success) {
+        return result.error.issues.map((issue) => ({
+          ...issue,
+          path: [key, index, ...issue.path],
+        }));
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * The original decrypted vault document (`§2`). A per-kind map of sync-tracked
  * entities plus a bounded merge log. It remains readable so a client can

@@ -1,11 +1,21 @@
+import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
 import { count, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ApiKeyScope, VaultStrictDocumentV1 } from '@bettertrack/contracts';
+import {
+  VALIDATION_ERROR_ISSUES_MAX,
+  portfolioVaultMoveOutRequestSchema,
+  validationErrorDetailsSchema,
+  vaultStrictEntitySchema,
+  type ApiKeyScope,
+  type VaultStrictDocumentV1,
+} from '@bettertrack/contracts';
 
-import { portfolioVaultTransitionStates, portfolios } from '../data/schema';
-import { paranoidRestoreJsonLimitBytes } from '../http/bodyLimits';
+import { portfolioVaultTransitionStates, portfolios, vaults } from '../data/schema';
+import { GLOBAL_JSON_BODY_LIMIT, paranoidRestoreJsonLimitBytes } from '../http/bodyLimits';
 import { getOpenApiDocument } from '../http/openapi';
 import { buildRouteTable, checkCoverage } from '../scripts/checkOpenapiCoverage';
 import { PortfolioVaultTransitionError } from '../services/account/portfolioVaultTransitionService';
@@ -469,4 +479,322 @@ describe('E4 portfolio-vault HTTP boundary', () => {
     const moveOut = paths['/portfolios/{portfolioId}/vault/move-out']?.post;
     expect(moveOut?.responses).toHaveProperty('413');
   });
+});
+
+// ── GHSA-mrhx-c7xc-m3w5: authorize before parse, bounded restore validation ──
+//
+// zod 3 accumulates one issue per failing element (per missing field) and this
+// route reads up to 8× the encrypted cap, so before the mitigation ANY logged-in
+// account could make the API build a heap-sized issue list from one request.
+
+const HEAVY_ENTITY_COUNT = 100_000;
+
+/** A move-out body of ≥ 1 MiB whose document carries 100k garbage entities. */
+function garbageMoveOutJson(userId: string, portfolioId: string, password: string): string {
+  const base = moveOutBody(userId, portfolioId, password);
+  const entities = `[${new Array(HEAVY_ENTITY_COUNT).fill('{"g":"xx"}').join(',')}]`;
+  const json = JSON.stringify({
+    ...base,
+    document: { ...base.document, entities: '__ENTITIES__' },
+  }).replace('"__ENTITIES__"', entities);
+  expect(Buffer.byteLength(json)).toBeGreaterThanOrEqual(1024 * 1024);
+  return json;
+}
+
+/**
+ * ≈1 MiB of entities each padded past the byte floor, so the LENGTH pre-check
+ * admits them and only the element-at-a-time pass can stop the flood. Each is
+ * 26 issues on its own (25 missing importRow fields + the unknown `pad`).
+ */
+function paddedInvalidMoveOutJson(userId: string, portfolioId: string, password: string): string {
+  const base = moveOutBody(userId, portfolioId, password);
+  const entity = JSON.stringify({ kind: 'importRow', data: {}, pad: 'p'.repeat(170) });
+  const entities = `[${new Array(5_000).fill(entity).join(',')}]`;
+  return JSON.stringify({
+    ...base,
+    document: { ...base.document, entities: '__ENTITIES__' },
+  }).replace('"__ENTITIES__"', entities);
+}
+
+/** Puts the principal's portfolio into a (test-vector) vault, so move-out is legitimate. */
+async function vaultPortfolio(harness: TestHarness, principal: Principal): Promise<void> {
+  await harness.db.insert(vaults).values({
+    id: VAULT_ID,
+    userId: principal.user.id,
+    name: 'TEST VECTOR vault',
+    headerDocId: '018f0000-0000-7000-8000-00000000e404',
+    commonDocId: '018f0000-0000-7000-8000-00000000e405',
+    media: ['server'],
+    driveConnectionId: null,
+    retirementProofPublicKey: 'deterministic-test-vector-public-proof',
+    keyFingerprint: 'deterministic-test-vector-fingerprint',
+  });
+  await harness.db
+    .update(portfolios)
+    .set({ vaultId: VAULT_ID })
+    .where(eq(portfolios.id, principal.portfolioId));
+}
+
+/** Spies that prove what the server did NOT do with the body. */
+function parseProbes() {
+  const jsonParse = vi.spyOn(JSON, 'parse');
+  const requestParse = vi.spyOn(portfolioVaultMoveOutRequestSchema, 'safeParse');
+  const elementParse = vi.spyOn(vaultStrictEntitySchema, '_parse');
+  return {
+    parsedBody: () =>
+      jsonParse.mock.calls.some(([text]) => typeof text === 'string' && text.length > 500_000),
+    requestParse,
+    elementParse,
+    restore: () => {
+      jsonParse.mockRestore();
+      requestParse.mockRestore();
+      elementParse.mockRestore();
+    },
+  };
+}
+
+async function timedPost(send: () => Promise<request.Response>) {
+  const started = performance.now();
+  const response = await send();
+  return { response, elapsedMs: performance.now() - started };
+}
+
+interface RawResponse {
+  status: number;
+  body: { error?: { code?: string } };
+  headers: IncomingHttpHeaders;
+  elapsedMs: number;
+}
+
+/**
+ * POST over a raw socket. A refusal BEFORE the body is read answers while the
+ * upload is still in flight, and Node may then reset the connection under the
+ * remaining bytes — supertest surfaces that as `write ECONNRESET` instead of the
+ * response. That reset is the behaviour under test (the server never buffers
+ * the body), so a write error after the response arrived is not a failure.
+ */
+async function rawPost(
+  harness: TestHarness,
+  path: string,
+  headers: Record<string, string>,
+  body: string,
+): Promise<RawResponse> {
+  const server = createServer(harness.app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const started = performance.now();
+    return await new Promise<RawResponse>((resolve, reject) => {
+      let responded = false;
+      const req = httpRequest(
+        {
+          host: '127.0.0.1',
+          port,
+          path,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(body)),
+            [XRW[0]]: XRW[1],
+            ...headers,
+          },
+        },
+        (res) => {
+          responded = true;
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'),
+              headers: res.headers,
+              elapsedMs: performance.now() - started,
+            }),
+          );
+        },
+      );
+      req.on('error', (error) => {
+        if (!responded) reject(error);
+      });
+      req.end(body);
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+/** The session cookie a fresh login mints for `user`, as a `Cookie` header value. */
+async function sessionCookie(harness: TestHarness, user: SeededUser): Promise<string> {
+  const login = await request(harness.app)
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier: user.email, password: user.password });
+  expect(login.status).toBe(200);
+  const cookies = ([] as string[]).concat(login.headers['set-cookie'] ?? []);
+  return cookies.map((cookie) => cookie.split(';', 1)[0]).join('; ');
+}
+
+describe('E4 move-out: authorize before parse, bounded restore validation (GHSA-mrhx-c7xc-m3w5)', () => {
+  it(
+    'refuses anonymous and unrelated callers before the body is read',
+    { timeout: 60_000 },
+    async () => {
+      const harness = await createTestApp();
+      const owner = await seedPrincipal(harness, 'heavy-owner');
+      const stranger = await seedPrincipal(harness, 'heavy-stranger');
+      await vaultPortfolio(harness, owner);
+      const spies = stubTransitions(harness, owner.portfolioId);
+      const body = garbageMoveOutJson(owner.user.id, owner.portfolioId, owner.user.password);
+      const path = `/api/v1/portfolios/${owner.portfolioId}/vault/move-out`;
+      const strangerCookie = await sessionCookie(harness, stranger.user);
+      // Warm both paths once so first-request lazy init is not what gets timed.
+      await rawPost(harness, path, {}, '{}');
+      await rawPost(harness, path, { Cookie: strangerCookie }, '{}');
+
+      const probes = parseProbes();
+      try {
+        const anonymous = await rawPost(harness, path, {}, body);
+        expect(anonymous.status).toBe(401);
+        expect(anonymous.elapsedMs).toBeLessThan(100);
+
+        const unrelated = await rawPost(harness, path, { Cookie: strangerCookie }, body);
+        expect(unrelated.status, JSON.stringify(unrelated.body).slice(0, 300)).toBe(404);
+        expect(unrelated.body.error?.code).toBe('PORTFOLIO_VAULT_NOT_FOUND');
+        expect(unrelated.headers['cache-control']).toContain('no-store');
+        expect(unrelated.elapsedMs).toBeLessThan(100);
+
+        // Neither request was JSON-parsed, schema-parsed, or produced an issue.
+        expect(probes.parsedBody()).toBe(false);
+        expect(probes.requestParse).not.toHaveBeenCalled();
+        expect(probes.elementParse).not.toHaveBeenCalled();
+      } finally {
+        probes.restore();
+      }
+      expect(spies.moveOut).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'answers the vault owner’s garbage flood from the length pre-check, with no element validation',
+    { timeout: 60_000 },
+    async () => {
+      const harness = await createTestApp();
+      const owner = await seedPrincipal(harness, 'heavy-flood');
+      await vaultPortfolio(harness, owner);
+      const spies = stubTransitions(harness, owner.portfolioId);
+      const body = garbageMoveOutJson(owner.user.id, owner.portfolioId, owner.user.password);
+
+      const probes = parseProbes();
+      try {
+        const { response, elapsedMs } = await timedPost(() =>
+          owner.agent
+            .post(`/api/v1/portfolios/${owner.portfolioId}/vault/move-out`)
+            .set(...XRW)
+            .set('Content-Type', 'application/json')
+            .send(body),
+        );
+        expect(response.status, JSON.stringify(response.body).slice(0, 300)).toBe(400);
+        expect(response.body.error.code).toBe('VALIDATION_ERROR');
+        expect(response.headers['cache-control']).toContain('no-store');
+        const details = validationErrorDetailsSchema.parse(response.body.error.details);
+        expect(details.issueCount).toBe(1);
+        expect(details.fieldErrors.document).toHaveLength(1);
+        // The owner IS admitted to the wide parser — the body was read…
+        expect(probes.parsedBody()).toBe(true);
+        // …but no element was validated and the full schema never ran.
+        expect(probes.elementParse).not.toHaveBeenCalled();
+        expect(probes.requestParse).not.toHaveBeenCalled();
+        expect(elapsedMs).toBeLessThan(1_000);
+      } finally {
+        probes.restore();
+      }
+      expect(spies.moveOut).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'stops a padded flood at its first invalid entity and returns 20 issues plus the count',
+    { timeout: 60_000 },
+    async () => {
+      const harness = await createTestApp();
+      const owner = await seedPrincipal(harness, 'heavy-padded');
+      await vaultPortfolio(harness, owner);
+      const spies = stubTransitions(harness, owner.portfolioId);
+      const body = paddedInvalidMoveOutJson(owner.user.id, owner.portfolioId, owner.user.password);
+
+      const probes = parseProbes();
+      try {
+        const { response, elapsedMs } = await timedPost(() =>
+          owner.agent
+            .post(`/api/v1/portfolios/${owner.portfolioId}/vault/move-out`)
+            .set(...XRW)
+            .set('Content-Type', 'application/json')
+            .send(body),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body.error.code).toBe('VALIDATION_ERROR');
+        const details = validationErrorDetailsSchema.parse(response.body.error.details);
+        // ONE entity's issues (26), not 5,000 × 26 — and only 20 of them shipped.
+        expect(details.issueCount).toBe(26);
+        expect(details.fieldErrors.document).toHaveLength(VALIDATION_ERROR_ISSUES_MAX);
+        expect(probes.elementParse).toHaveBeenCalledTimes(1);
+        expect(probes.requestParse).not.toHaveBeenCalled();
+        expect(elapsedMs).toBeLessThan(1_000);
+      } finally {
+        probes.restore();
+      }
+      expect(spies.moveOut).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'spends the wide bound on a move-out receipt retry, the narrow one on a plain portfolio',
+    { timeout: 60_000 },
+    async () => {
+      const harness = await createTestApp();
+      const owner = await seedPrincipal(harness, 'heavy-bounds');
+      const spies = stubTransitions(harness, owner.portfolioId);
+      // A valid body just over the 100 KiB global bound (the padding is
+      // insignificant whitespace, so the document itself stays valid).
+      const base = JSON.stringify(
+        moveOutBody(owner.user.id, owner.portfolioId, owner.user.password),
+      );
+      const overGlobal = `${base}${' '.repeat(GLOBAL_JSON_BODY_LIMIT + 1 - Buffer.byteLength(base))}`;
+      const path = `/api/v1/portfolios/${owner.portfolioId}/vault/move-out`;
+      const post = () =>
+        owner.agent
+          .post(path)
+          .set(...XRW)
+          .set('Content-Type', 'application/json')
+          .send(overGlobal);
+
+      // Plain, never-vaulted portfolio: the owner gets the global bound only.
+      const plain = await post();
+      expect(plain.status).toBe(413);
+      expect(plain.body.error.code).toBe('PAYLOAD_TOO_LARGE');
+      expect(spies.moveOut).not.toHaveBeenCalled();
+
+      // The same portfolio after a committed move-out (no longer vaulted, receipt
+      // kept): an outcome-ambiguous retry re-sends the full document and must
+      // reach the commit's idempotent replay, not a 413.
+      await harness.db.insert(portfolioVaultTransitionStates).values({
+        portfolioId: owner.portfolioId,
+        userId: owner.user.id,
+        lifecycleGeneration: 1,
+        moveInVaultId: VAULT_ID,
+        moveInDocVersion: 7,
+        moveInCompletedAt: new Date(EDITED_AT),
+        moveOutVaultId: VAULT_ID,
+        moveOutId: MOVE_OUT_ID,
+        moveOutDocumentDigest: DOCUMENT_DIGEST,
+        moveOutDocumentSetHash: DOCUMENT_SET_HASH,
+        moveOutProofPublicKey: 'deterministic-test-vector-public-proof',
+        moveOutCompletedAt: new Date(EDITED_AT),
+      });
+      const retry = await post();
+      expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+      expect(spies.moveOut).toHaveBeenCalledOnce();
+    },
+  );
 });
