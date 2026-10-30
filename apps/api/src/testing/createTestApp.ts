@@ -400,6 +400,8 @@ export interface CreateTestAppOptions {
   aiFetch?: typeof fetch;
   /** Save-time OAuth client-logo fetcher; avoids network in logo-flow tests. */
   oauthLogoFetcher?: OAuthLogoFetcher;
+  /** Controlled OAuth clock (token/code TTLs, the refresh grace window). */
+  oauthNow?: () => Date;
   /**
    * Force `rateLimits.enabled` on (default: off under `NODE_ENV=test`). Set on
    * the specific tests that need to exercise the HTTP limiter end-to-end
@@ -461,6 +463,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     webhookUrlResolver: options.webhookUrlResolver ?? publicTestResolver,
     aiFetch: options.aiFetch,
     oauthLogoFetcher: options.oauthLogoFetcher,
+    oauthNow: options.oauthNow,
   });
 
   // Resources this harness opened, released in creation-inverse order (#1914).

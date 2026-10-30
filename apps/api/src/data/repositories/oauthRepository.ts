@@ -1,4 +1,6 @@
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
 import {
@@ -18,7 +20,12 @@ import {
 
 /**
  * OAuth 2.0 provider persistence (PROJECTPLAN.md §6.13, §14, V2-P12). Only
- * token/secret *hashes* are stored. Single-use codes and rotating refresh tokens
+ * token/secret *hashes* are stored — the one exception is a rotated refresh
+ * token's `successor_envelope`, an AES-256-GCM envelope (sealed by the service)
+ * of the pair it was rotated into, served only inside the refresh grace window
+ * and nulled once it has passed (on read, on the successor's rotation, after
+ * the next rotation anywhere, and by the daily sweep).
+ * Single-use codes and rotating refresh tokens
  * are consumed with an atomic `UPDATE … WHERE consumed_at IS NULL RETURNING`, so
  * a concurrent double-exchange can only ever win once. Every token lookup joins
  * through the owning grant and rejects a revoked one — that is what makes a grant
@@ -164,9 +171,107 @@ export interface RotateOAuthRefreshTokenInput {
     tokenHash: string;
     expiresAt: Date;
   };
+  /**
+   * Seal the successor token response for the refresh grace window. Called
+   * INSIDE the rotating transaction once both new rows exist; the returned
+   * envelope is stored on the consumed row. Encryption stays in the service —
+   * this layer only ever sees ciphertext. A throw rolls the rotation back.
+   */
+  sealSuccessor(ids: OAuthRefreshRotationIds): string;
 }
 
-export type OAuthRefreshTokenRotation = 'rotated' | 'replayed';
+/** The ids a rotation writes, handed to {@link RotateOAuthRefreshTokenInput.sealSuccessor}. */
+export interface OAuthRefreshRotationIds {
+  /** The refresh-token row being consumed — the envelope's idempotency key. */
+  tokenId: string;
+  /** The refresh-token row it is rotated into. */
+  successorId: string;
+  /** The access-token row issued alongside the successor. */
+  accessTokenId: string;
+}
+
+/** The successor columns the grace path compares against — never a secret. */
+export type OAuthRefreshSuccessorRow = Pick<
+  OAuthRefreshTokenRow,
+  'id' | 'tokenHash' | 'consumedAt' | 'expiresAt'
+>;
+
+/** A refresh-token row joined to its grant, owning user and (if any) successor. */
+export interface OAuthRefreshTokenLookup {
+  token: OAuthRefreshTokenRow;
+  grant: OAuthGrantRow;
+  user: UserRow;
+  /** The row `token.successorId` points at, while it still exists. */
+  successor: OAuthRefreshSuccessorRow | null;
+}
+
+/**
+ * `rotated`: this caller consumed the token and its pair is committed.
+ * `replayed`: a concurrent caller consumed it first. `current` is the row as
+ * re-read inside this caller's transaction AFTER the atomic consume came back
+ * empty — under READ COMMITTED that consume waited on the winner's row lock, so
+ * the winner's successor link and envelope are already visible. `undefined`
+ * only when the row itself is gone (its grant was deleted meanwhile).
+ */
+export type OAuthRefreshTokenRotation =
+  | { outcome: 'rotated' }
+  | { outcome: 'replayed'; current: OAuthRefreshTokenLookup | undefined };
+
+const REFRESH_GRACE_MS = OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000;
+
+/** The successor side of the refresh-token self-join. */
+const successorTokens = alias(oauthRefreshTokens, 'successor_tokens');
+
+/**
+ * Read one refresh token with its grant, user and successor, enforcing the
+ * envelope-lifetime rule on the way: a row whose grace window has passed loses
+ * its `successor_envelope` on this very read (and the caller never sees it), so
+ * a read past the window can never be the one that serves it. Rows nobody
+ * reads again are left to the post-rotation and daily sweeps. Every
+ * refresh-token read goes through here.
+ */
+async function readRefreshToken(
+  executor: Pick<Database, 'select' | 'update'>,
+  where: SQL,
+  now: Date,
+): Promise<OAuthRefreshTokenLookup | undefined> {
+  const [row] = await executor
+    .select({
+      token: oauthRefreshTokens,
+      grant: oauthGrants,
+      user: users,
+      successor: {
+        id: successorTokens.id,
+        tokenHash: successorTokens.tokenHash,
+        consumedAt: successorTokens.consumedAt,
+        expiresAt: successorTokens.expiresAt,
+      },
+    })
+    .from(oauthRefreshTokens)
+    .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
+    .innerJoin(users, eq(oauthGrants.userId, users.id))
+    .leftJoin(successorTokens, eq(successorTokens.id, oauthRefreshTokens.successorId))
+    .where(where)
+    .limit(1);
+  if (!row) return undefined;
+
+  let token = row.token;
+  if (
+    token.successorEnvelope !== null &&
+    token.consumedAt !== null &&
+    now.getTime() - token.consumedAt.getTime() > REFRESH_GRACE_MS
+  ) {
+    await executor
+      .update(oauthRefreshTokens)
+      .set({ successorEnvelope: null })
+      .where(
+        and(eq(oauthRefreshTokens.id, token.id), isNotNull(oauthRefreshTokens.successorEnvelope)),
+      );
+    token = { ...token, successorEnvelope: null };
+  }
+  const successor = row.successor?.id ? row.successor : null;
+  return { token, grant: row.grant, user: row.user, successor };
+}
 
 function createAuthorizationCodeExchange(
   executor: Pick<Database, 'select' | 'insert' | 'update'>,
@@ -630,25 +735,28 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    /** Resolve a refresh token by hash joined to its grant + owning user (any grant state). */
+    /**
+     * Resolve a refresh token by hash joined to its grant + owning user (any
+     * grant state) and its successor row. `now` is the caller's clock: a
+     * consumed row past the grace window has its envelope nulled by this read.
+     */
     async findRefreshTokenByHash(
       tokenHash: string,
-    ): Promise<{ token: OAuthRefreshTokenRow; grant: OAuthGrantRow; user: UserRow } | undefined> {
-      const [row] = await db
-        .select({ token: oauthRefreshTokens, grant: oauthGrants, user: users })
-        .from(oauthRefreshTokens)
-        .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
-        .innerJoin(users, eq(oauthGrants.userId, users.id))
-        .where(eq(oauthRefreshTokens.tokenHash, tokenHash))
-        .limit(1);
-      return row;
+      now: Date,
+    ): Promise<OAuthRefreshTokenLookup | undefined> {
+      return readRefreshToken(db, eq(oauthRefreshTokens.tokenHash, tokenHash), now);
     },
 
     /**
      * Consume one refresh token and insert its replacement pair in the same
-     * transaction. A concurrent caller that loses the atomic consume revokes
-     * the whole grant before returning, so the winner's just-issued pair is
-     * already unusable once both exchanges settle.
+     * transaction, recording the successor link and its sealed response on the
+     * consumed row (idempotency key: the consumed row id — the atomic
+     * `consumed_at IS NULL` claim lets exactly one transaction write them).
+     *
+     * A caller that loses the atomic consume to a concurrent rotation does NOT
+     * revoke anything: both callers presented the token while it was current,
+     * which is a race, not reuse. It re-reads the row instead and hands it back
+     * so the service can apply the grace rule to the winner's pair.
      */
     async rotateRefreshToken(
       input: RotateOAuthRefreshTokenInput,
@@ -668,11 +776,15 @@ export function createOAuthRepository(db: Database) {
           .returning({ id: oauthRefreshTokens.id });
 
         if (!consumed) {
-          await executor
-            .update(oauthGrants)
-            .set({ revokedAt: input.rotatedAt })
-            .where(and(eq(oauthGrants.id, input.grantId), isNull(oauthGrants.revokedAt)));
-          return 'replayed';
+          // A fresh statement, so a fresh READ COMMITTED snapshot: the UPDATE
+          // above blocked on the winner's row lock and re-evaluated after its
+          // commit, so the successor link + envelope it wrote are visible here.
+          const current = await readRefreshToken(
+            executor,
+            eq(oauthRefreshTokens.id, input.tokenId),
+            input.rotatedAt,
+          );
+          return { outcome: 'replayed', current };
         }
 
         const [accessToken] = await executor
@@ -688,11 +800,70 @@ export function createOAuthRepository(db: Database) {
         if (!refreshToken) throw new Error('Failed to insert OAuth refresh token');
 
         await executor
+          .update(oauthRefreshTokens)
+          .set({
+            successorId: refreshToken.id,
+            successorEnvelope: input.sealSuccessor({
+              tokenId: input.tokenId,
+              successorId: refreshToken.id,
+              accessTokenId: accessToken.id,
+            }),
+          })
+          .where(eq(oauthRefreshTokens.id, input.tokenId));
+
+        // The token consumed above was itself the successor of its predecessor,
+        // whose envelope re-serves THIS token's pair. That pair is no longer the
+        // current one, so the predecessor's grace ends here, in this transaction,
+        // rather than at the end of its window.
+        await executor
+          .update(oauthRefreshTokens)
+          .set({ successorEnvelope: null })
+          .where(
+            and(
+              eq(oauthRefreshTokens.successorId, input.tokenId),
+              isNotNull(oauthRefreshTokens.successorEnvelope),
+            ),
+          );
+
+        await executor
           .update(oauthGrants)
           .set({ lastUsedAt: input.rotatedAt })
           .where(eq(oauthGrants.id, input.grantId));
-        return 'rotated';
+        return { outcome: 'rotated' };
       });
+    },
+
+    /**
+     * Retention sweep step (`data.retentionCleanup`): null at most `limit`
+     * envelopes on rows consumed before `cutoff` (the caller passes "run time
+     * minus the grace window"). Envelope lifetime is otherwise enforced on read
+     * and on the successor's rotation; this catches the rows nobody touches
+     * again. Served by the partial `oauth_refresh_tokens_live_envelope_idx`.
+     * Resolves to how many envelopes were cleared; idempotent.
+     */
+    async clearExpiredSuccessorEnvelopes(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: oauthRefreshTokens.id })
+        .from(oauthRefreshTokens)
+        .where(
+          and(
+            isNotNull(oauthRefreshTokens.successorEnvelope),
+            lt(oauthRefreshTokens.consumedAt, cutoff),
+          ),
+        )
+        .orderBy(asc(oauthRefreshTokens.consumedAt), asc(oauthRefreshTokens.id))
+        .limit(limit);
+      const cleared = await db
+        .update(oauthRefreshTokens)
+        .set({ successorEnvelope: null })
+        .where(
+          and(
+            inArray(oauthRefreshTokens.id, candidates),
+            isNotNull(oauthRefreshTokens.successorEnvelope),
+          ),
+        )
+        .returning({ id: oauthRefreshTokens.id });
+      return cleared.length;
     },
   };
 }
