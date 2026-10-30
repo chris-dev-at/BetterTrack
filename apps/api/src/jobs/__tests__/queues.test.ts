@@ -1,4 +1,4 @@
-import type { JobsOptions } from 'bullmq';
+import { Backoffs, type JobsOptions } from 'bullmq';
 import RedisMock from 'ioredis-mock';
 import type { Redis } from 'ioredis';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import {
   JOB_REGISTRATION_DESCRIPTORS,
   type RegisteredJobDefinitions,
 } from '../definitions/registration';
+import { enqueueFxHoleRepair } from '../definitions/snapshotJobs';
 import {
   BACKOFF_BASE_MS,
   DEFAULT_JOB_OPTIONS,
@@ -100,6 +101,36 @@ describe('queue registry job options (§13.5 V5-P10)', () => {
     );
     const merged = await effectiveEnqueuedOptions(registry, QUEUE_NAMES.systemHeartbeat);
     expect(merged.attempts).toBe(DEFAULT_JOB_OPTIONS.attempts);
+  });
+
+  it('gives the one-off FX-hole repair a minutes-long retry ladder under its fixed id (#2097 S1)', async () => {
+    // A run that permanently fails uses up `fx-hole-repair-v1` for good: BullMQ
+    // keeps the failed job, and every later boot's add under that id is a
+    // duplicate no-op. The §9 default (3 attempts, ~1 s + 2 s apart) would let a
+    // few seconds of database or Redis trouble at boot end the repair until a
+    // code change bumps the id.
+    const registry = newRegistry();
+    const create = vi.fn(async (..._args: unknown[]) => ({ id: '1', opts: {} }));
+    Object.defineProperty(registry.get(QUEUE_NAMES.snapshotsRepairFxHoles), 'Job', {
+      value: { create },
+    });
+
+    await enqueueFxHoleRepair(registry);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    const merged = create.mock.calls[0]![3] as JobsOptions;
+    expect(merged.jobId).toBe('fx-hole-repair-v1');
+    expect(merged.attempts).toBe(5);
+    expect(merged.backoff).toEqual({ type: 'exponential', delay: 60_000 });
+    // BullMQ's own ladder for those options, after attempts 1-4 fail: 1, 2, 4
+    // and 8 minutes, so the last attempt starts ~15 minutes after the first.
+    const backoff = Backoffs.normalize(merged.backoff!)!;
+    const ladder = [1, 2, 3, 4].map((attemptsMade) =>
+      Backoffs.calculate(backoff, attemptsMade, new Error('probe'), {} as never),
+    );
+    expect(ladder).toEqual([60_000, 120_000, 240_000, 480_000]);
+    // Retention is the §9 default: the failed job (and so the id) is kept.
+    expect(merged.removeOnFail).toEqual(DEFAULT_JOB_OPTIONS.removeOnFail);
   });
 
   it('declares overrides only for real queues', () => {

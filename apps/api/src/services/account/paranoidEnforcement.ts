@@ -1130,6 +1130,14 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     capability: 'portfolioJobs',
     mode: 'serviceFiltered',
   }),
+  // Issue #1729's one-off FX hole repair: the scan query excludes vaulted
+  // portfolios, a paranoid owner's portfolio is skipped before its rows are
+  // read, and every write goes through the snapshot service, which re-checks
+  // both under the account's transition lock.
+  jobPolicy('snapshotJobs.ts', 'createSnapshotsFxHoleRepairJob', 'snapshots.repairFxHoles', {
+    capability: 'portfolioJobs',
+    mode: 'serviceFiltered',
+  }),
   jobPolicy('portfolioVaultJobs.ts', 'createPortfolioVaultFinalizeJob', 'portfolioVault.finalize', {
     capability: null,
     mode: 'kept',

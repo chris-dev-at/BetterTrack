@@ -361,7 +361,10 @@ function capturingLogger() {
  * 480 EUR), both bought 45 days back — far outside the 35-day heal window — and
  * priced from stored closes, so the ONLY thing a night varies is FX.
  */
-async function seedUsdPortfolio(db: Database, opts: { sellUsdOn?: number } = {}) {
+async function seedUsdPortfolio(
+  db: Database,
+  opts: { sellUsdOn?: number; usdBoughtOn?: number } = {},
+) {
   const userId = await seedUser(db);
   const pid = await seedPortfolio(db, userId, 'Main');
   const eurId = await seedAsset(db);
@@ -397,7 +400,7 @@ async function seedUsdPortfolio(db: Database, opts: { sellUsdOn?: number } = {})
     .insert(schema.transactions)
     .values([
       buyOf(eurId, '2', '100'),
-      buyOf(usdId, '3', '200'),
+      { ...buyOf(usdId, '3', '200'), executedAt: at(opts.usdBoughtOn ?? -45) },
       ...(opts.sellUsdOn === undefined
         ? []
         : [{ ...buyOf(usdId, '3', '200'), side: 'sell' as const, executedAt: at(opts.sellUsdOn) }]),
@@ -574,6 +577,44 @@ describe('snapshots.backfill — a run that lost a held currency is never persis
     expect(assetValuesOf(deposit)[usdId]).toBeCloseTo(480, 9);
     expect(Number(deposit.valueEur)).toBeCloseTo(680 + 500, 9);
     expect((await stateOf(db, pid))?.dirtyFrom ?? null).toBeNull();
+  });
+
+  it('refuses a night whose heal floor is exactly the first buy day of the only USD asset (shape 1: the stored floor row is a reference too)', async () => {
+    // USD is first bought on −36 = night −1's heal floor, so night −1's anchor
+    // (−37) carries no USD key at all. Only the row stored AT the floor (night
+    // −2 wrote it with USD) says the asset was valued there; without it, the
+    // replayed 404 would overwrite −36 without USD, and night 0's window starts
+    // at −35 — the day would freeze for good.
+    const db = await makeDb();
+    const { pid, usdId } = await seedUsdPortfolio(db, { usdBoughtOn: -36 });
+
+    await runNight(db, -2, 'ok');
+    const healthy = await allSnapshotRows(db, pid);
+    expect(
+      Object.hasOwn(assetValuesOf(healthy.find((r) => r.date === dayOffset(-37))!), usdId),
+    ).toBe(false);
+    expect(assetValuesOf(healthy.find((r) => r.date === dayOffset(-36))!)[usdId]).toBeCloseTo(
+      480,
+      9,
+    );
+
+    const degraded = await runNight(db, -1, 'not_found');
+    expect(await allSnapshotRows(db, pid)).toEqual(healthy);
+    expect(degraded.warns.find((w) => w.fields.guard === 'vanished_holding')?.fields).toMatchObject(
+      {
+        portfolioId: pid,
+        anchorDay: dayOffset(-37),
+        floorRowDay: dayOffset(-36),
+        vanished: [{ assetId: usdId, day: dayOffset(-36) }],
+      },
+    );
+
+    await runNight(db, 0, 'ok');
+    const healed = await allSnapshotRows(db, pid);
+    expect(assetValuesOf(healed.find((r) => r.date === dayOffset(-36))!)[usdId]).toBeCloseTo(
+      480,
+      9,
+    );
   });
 
   it('persists normally when the dropped asset was fully sold before every day it is missing from', async () => {

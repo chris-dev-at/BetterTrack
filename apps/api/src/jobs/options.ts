@@ -48,6 +48,12 @@ export const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
  */
 export const WEBHOOK_BACKOFF_JITTER = 0.5;
 
+/**
+ * Base delay of the one-off FX-hole repair's retry ladder (#1729, PR #2097).
+ * Exponential from here: the retries start 1, 2, 4 and 8 minutes apart.
+ */
+export const FX_HOLE_REPAIR_BACKOFF_BASE_MS = 60_000;
+
 export const QUEUE_JOB_OPTIONS = {
   // §13.5 V5-P10: an outbound delivery is retried five times before the
   // dispatcher calls it terminal and advances the auto-disable streak, so a
@@ -56,6 +62,15 @@ export const QUEUE_JOB_OPTIONS = {
   [QUEUE_NAMES.webhooksDeliver]: {
     attempts: 5,
     backoff: { type: 'exponential', delay: BACKOFF_BASE_MS, jitter: WEBHOOK_BACKOFF_JITTER },
+  },
+  // #1729 one-off repair: it runs under the FIXED job id `fx-hole-repair-v1`, and
+  // BullMQ keeps a permanently failed job, so every later boot's enqueue is a
+  // duplicate no-op and only a run-id bump plus a deploy runs it again. The §9
+  // ladder (3 attempts within ~3 s) would let a short database or Redis blip at
+  // boot end it for good; five attempts 1, 2, 4 and 8 minutes apart ride one out.
+  [QUEUE_NAMES.snapshotsRepairFxHoles]: {
+    attempts: 5,
+    backoff: { type: 'exponential', delay: FX_HOLE_REPAIR_BACKOFF_BASE_MS },
   },
 } as const satisfies Partial<Record<QueueName, JobsOptions>>;
 
