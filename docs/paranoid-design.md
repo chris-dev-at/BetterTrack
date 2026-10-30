@@ -152,9 +152,9 @@ a portfolio references the vault (`VAULT_REFERENCED_BY_PORTFOLIO`), while a
 retirement is pending (`VAULT_RETIREMENT_PENDING`), or while a portfolio's
 move-in has staged its document in the vault and the capture window is still
 open (`VAULT_MOVE_IN_PENDING`, `details.portfolioIds`; #1610). `DELETE
-/portfolios/:id` refuses a portfolio under such a live capture with the same
-409. An expired capture is inert and is dropped in the same commit by either
-delete (§9 step 2). Doc GET/PUT are ETag/`If-Match` CAS and answer 428
+/portfolios/:id` refuses a portfolio under such a live capture with the
+same 409. An expired capture is inert and is dropped in the same commit by
+either delete (§9 step 2). Doc GET/PUT are ETag/`If-Match` CAS and answer 428
 `VAULT_PRECONDITION_REQUIRED` with no precondition.
 
 **Deliberately NOT a server fact:** seed phrases, the endpoint keystore, the
