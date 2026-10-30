@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -69,6 +69,21 @@ export type OAuthGrantClientRow = Pick<
   'clientId' | 'name' | 'scopes' | 'isFirstParty'
 >;
 
+export interface ReconciledFirstPartyGrant {
+  grantId: string;
+  userId: string;
+  beforeScopes: string[];
+  afterScopes: string[];
+}
+
+export interface FirstPartyClientReconcileResult {
+  client: OAuthClientRow;
+  widenedGrants: ReconciledFirstPartyGrant[];
+}
+
+/** Maximum active-grant rows held `FOR UPDATE` by one reconcile transaction. */
+export const FIRST_PARTY_GRANT_RECONCILE_BATCH_SIZE = 100;
+
 const oauthClientListSelection = {
   id: oauthClients.id,
   clientId: oauthClients.clientId,
@@ -93,6 +108,7 @@ const oauthClientLookupSelection = {
   hasLogo: sql<boolean>`${oauthClients.logoBytes} IS NOT NULL`,
 } as const;
 
+// Deliberately duplicated in the service: data must not import services under the layering rule.
 function unionPreservingOrder(existing: readonly string[], additions: readonly string[]): string[] {
   const merged = [...existing];
   const seen = new Set(existing);
@@ -343,29 +359,30 @@ export function createOAuthRepository(db: Database) {
     /**
      * Boot-seed only (#395, #1393): converge a first-party client's allowed-scope
      * ceiling and redirect URIs to the caller-supplied sets, then union that
-     * ceiling into every active grant for the client in the same transaction.
+     * ceiling into every active grant for the client in fixed-size transactions.
      * The caller ({@link seedFirstPartyClients}) always passes the additive UNION
      * of the stored values with the code-defined definition, so neither the client
      * nor its live grants are narrowed. Revoked grants are deliberately immutable.
      * The first-party predicate keeps user-owned apps outside this product-owned
      * reconciliation boundary; `client_id`, secret, name and public flag are not
      * settable here. Returns the current row, or undefined when the id isn't a
-     * first-party app.
+     * first-party app, together with the exact before/after state of every grant
+     * actually rewritten so the service can audit the system mutation.
      *
      * IDEMPOTENCY KEY: `(oauth_clients.id, oauth_grants.id)` under a union that
      * is its own fixpoint — once a grant holds the ceiling the length guard
      * short-circuits it, so a replay (every boot runs this) performs zero writes
-     * and the stored scope arrays keep their existing order. Both the client row
-     * and the active grants are taken `FOR UPDATE` in a single transaction, with
-     * the grants locked in `id` order so two concurrent reconciles cannot
-     * deadlock; `revoked_at IS NULL` is re-asserted in the grant UPDATE so a
-     * grant revoked mid-transaction is never resurrected into a wider scope set.
+     * and the stored scope arrays keep their existing order. Active grants are
+     * visited in `id` order, at most {@link FIRST_PARTY_GRANT_RECONCILE_BATCH_SIZE}
+     * per transaction, and changed rows are written with one set-based UPDATE per
+     * batch. This bounds the lock set seen by bearer traffic; `revoked_at IS NULL`
+     * is re-asserted in the UPDATE so a revoked grant is never resurrected.
      */
     async reconcileFirstPartyClient(
       id: string,
       input: { scopes: string[]; redirectUris: string[] },
-    ): Promise<OAuthClientRow | undefined> {
-      return db.transaction(async (tx) => {
+    ): Promise<FirstPartyClientReconcileResult | undefined> {
+      const client = await db.transaction(async (tx) => {
         const executor = tx as unknown as Database;
         const [stored] = await executor
           .select()
@@ -389,23 +406,84 @@ export function createOAuthRepository(db: Database) {
           client = updated;
         }
 
-        const activeGrants = await executor
-          .select({ id: oauthGrants.id, scopes: oauthGrants.scopes })
-          .from(oauthGrants)
-          .where(and(eq(oauthGrants.clientId, stored.id), isNull(oauthGrants.revokedAt)))
-          .orderBy(oauthGrants.id)
-          .for('update');
-        for (const grant of activeGrants) {
-          const scopes = unionPreservingOrder(grant.scopes, input.scopes);
-          if (scopes.length === grant.scopes.length) continue;
-          await executor
-            .update(oauthGrants)
-            .set({ scopes })
-            .where(and(eq(oauthGrants.id, grant.id), isNull(oauthGrants.revokedAt)));
-        }
-
         return client;
       });
+      if (!client) return undefined;
+
+      const widenedGrants: ReconciledFirstPartyGrant[] = [];
+      let afterGrantId: string | undefined;
+      while (true) {
+        const batchResult = await db.transaction(async (tx) => {
+          const executor = tx as unknown as Database;
+          const activeGrants = await executor
+            .select({
+              id: oauthGrants.id,
+              userId: oauthGrants.userId,
+              scopes: oauthGrants.scopes,
+            })
+            .from(oauthGrants)
+            .where(
+              and(
+                eq(oauthGrants.clientId, client.id),
+                isNull(oauthGrants.revokedAt),
+                afterGrantId ? gt(oauthGrants.id, afterGrantId) : undefined,
+              ),
+            )
+            .orderBy(oauthGrants.id)
+            .limit(FIRST_PARTY_GRANT_RECONCILE_BATCH_SIZE)
+            .for('update');
+
+          const changes = activeGrants.flatMap((grant): ReconciledFirstPartyGrant[] => {
+            const afterScopes = unionPreservingOrder(grant.scopes, input.scopes);
+            if (arraysEqual(afterScopes, grant.scopes)) return [];
+            return [
+              {
+                grantId: grant.id,
+                userId: grant.userId,
+                beforeScopes: grant.scopes,
+                afterScopes,
+              },
+            ];
+          });
+
+          let updatedIds = new Set<string>();
+          if (changes.length > 0) {
+            const patches = changes.map((change) => {
+              const scopes = change.afterScopes.map((scope) => sql`${scope}::text`);
+              return sql`(
+                ${change.grantId}::uuid,
+                ARRAY[${sql.join(scopes, sql`, `)}]::text[]
+              )`;
+            });
+            const updated = await executor.execute(sql`
+              UPDATE "oauth_grants" AS target_grant
+              SET "scopes" = patch."scopes"
+              FROM (VALUES ${sql.join(patches, sql`, `)}) AS patch("id", "scopes")
+              WHERE target_grant."id" = patch."id"
+                AND target_grant."revoked_at" IS NULL
+              RETURNING target_grant."id"
+            `);
+            const rows =
+              (updated as { rows?: Array<{ id: string }> }).rows ??
+              (updated as unknown as Array<{ id: string }>);
+            updatedIds = new Set(rows.map((row) => row.id));
+          }
+
+          return {
+            read: activeGrants.length,
+            lastId: activeGrants.at(-1)?.id,
+            widened: changes.filter((change) => updatedIds.has(change.grantId)),
+          };
+        });
+
+        widenedGrants.push(...batchResult.widened);
+        if (!batchResult.lastId || batchResult.read < FIRST_PARTY_GRANT_RECONCILE_BATCH_SIZE) {
+          break;
+        }
+        afterGrantId = batchResult.lastId;
+      }
+
+      return { client, widenedGrants };
     },
 
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
