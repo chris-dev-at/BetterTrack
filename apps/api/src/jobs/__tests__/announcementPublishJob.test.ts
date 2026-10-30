@@ -558,7 +558,11 @@ describe('announcements.publishDue — a cancelled announcement is not published
     });
 
     const first = await live(built.service, { ...BODY, titleEn: 'First' }, { id: admin.id });
-    const cancelledRow = await live(built.service, { ...BODY, titleEn: 'Second' }, { id: admin.id });
+    const cancelledRow = await live(
+      built.service,
+      { ...BODY, titleEn: 'Second' },
+      { id: admin.id },
+    );
     second = cancelledRow.id;
 
     // Both are in the batch the sweep is about to take.
@@ -642,7 +646,11 @@ describe('announcements.publishDue — a cancelled announcement is not published
       },
     });
 
-    const first = await live(built.service, { ...BODY, titleEn: 'Opens the batch' }, { id: admin.id });
+    const first = await live(
+      built.service,
+      { ...BODY, titleEn: 'Opens the batch' },
+      { id: admin.id },
+    );
     const straddler = await live(
       built.service,
       {

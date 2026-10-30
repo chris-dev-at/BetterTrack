@@ -253,8 +253,10 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
         // The operator's own locale decides which title is shown; the match ran
         // over both.
         // DE is optional since §6.19 (English is shown when it is missing).
-        label: locale === 'de' ? (announcement.titleDe ?? announcement.titleEn) : announcement.titleEn,
-        meta: locale === 'de' ? announcement.titleEn : (announcement.titleDe ?? announcement.titleEn),
+        label:
+          locale === 'de' ? (announcement.titleDe ?? announcement.titleEn) : announcement.titleEn,
+        meta:
+          locale === 'de' ? announcement.titleEn : (announcement.titleDe ?? announcement.titleEn),
         verb: t(`announcements.severity.${announcement.severity}`),
       }));
     built.push({

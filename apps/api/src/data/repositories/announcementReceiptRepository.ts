@@ -1,4 +1,18 @@
-import { and, asc, count, eq, gt, isNotNull, isNull, lt, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -120,7 +134,9 @@ export interface ReceiptLogRow {
 }
 
 /** Keyset position: the live-account segment by user id, then deleted rows by token. */
-export type ReceiptCursor = { segment: 'live'; after: string } | { segment: 'deleted'; after: string };
+export type ReceiptCursor =
+  | { segment: 'live'; after: string }
+  | { segment: 'deleted'; after: string };
 
 export interface AnnouncementStatsRow {
   audience: number;
@@ -433,10 +449,7 @@ export function createAnnouncementReceiptRepository(db: Database) {
         .select({ n: count() })
         .from(announcementReceipts)
         .where(
-          and(
-            eq(announcementReceipts.announcementId, row.id),
-            isNull(announcementReceipts.userId),
-          ),
+          and(eq(announcementReceipts.announcementId, row.id), isNull(announcementReceipts.userId)),
         );
       return {
         audience: Number(audience?.n ?? 0),
@@ -468,7 +481,10 @@ export function createAnnouncementReceiptRepository(db: Database) {
         switch (filter) {
           case 'pending':
             return ack
-              ? and(isNull(announcementReceipts.acknowledgedAt), isNull(announcementReceipts.lapsedAt))
+              ? and(
+                  isNull(announcementReceipts.acknowledgedAt),
+                  isNull(announcementReceipts.lapsedAt),
+                )
               : isNull(announcementReceipts.dismissedAt);
           case 'acknowledged':
             return isNotNull(announcementReceipts.acknowledgedAt);

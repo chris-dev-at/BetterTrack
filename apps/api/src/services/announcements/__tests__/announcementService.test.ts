@@ -257,7 +257,8 @@ describe('AnnouncementService — a write never delivers (#1909)', () => {
 
     // Even addressed by id, which is what a stale queued job would do.
     const targeted = await service.publishAnnouncement(created.id);
-    expect(targeted).toEqual({ status: 'skipped', reason: 'expired' });
+    // It never left draft — publish refused it — so the pass stops at that.
+    expect(targeted).toEqual({ status: 'skipped', reason: 'inactive' });
   });
 });
 

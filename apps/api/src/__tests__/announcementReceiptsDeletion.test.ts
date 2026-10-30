@@ -327,7 +327,10 @@ describe('receipts on the existing banner routes (0122 rename)', () => {
       });
     expect(created.status).toBe(201);
     const id = created.body.id as string;
-    await adminAgent.post(`/api/v1/admin/announcements/${id}/publish`).set(...XRW).expect(200);
+    await adminAgent
+      .post(`/api/v1/admin/announcements/${id}/publish`)
+      .set(...XRW)
+      .expect(200);
 
     const user = await harness.seedUser({ email: 'dismisser@bt.test', username: 'dismisser' });
     const agent = request.agent(harness.app);

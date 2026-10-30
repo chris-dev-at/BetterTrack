@@ -98,7 +98,10 @@ export function assertWindow(
   requireFutureEnd: boolean,
 ): void {
   if (endsAt && startsAt && endsAt.getTime() < startsAt.getTime()) {
-    throw badRequest('endsAt must be at or after startsAt.', ANNOUNCEMENT_ERROR_CODES.invalidWindow);
+    throw badRequest(
+      'endsAt must be at or after startsAt.',
+      ANNOUNCEMENT_ERROR_CODES.invalidWindow,
+    );
   }
   if (requireFutureEnd && endsAt && endsAt.getTime() <= at.getTime()) {
     throw badRequest('endsAt must lie in the future.', ANNOUNCEMENT_ERROR_CODES.invalidWindow);
@@ -126,7 +129,10 @@ export type PatchableField =
  * locked in this row's state. Sending a locked field with its current value
  * is not a change.
  */
-export function assertNoLockedChange(row: AnnouncementRow, changed: readonly PatchableField[]): void {
+export function assertNoLockedChange(
+  row: AnnouncementRow,
+  changed: readonly PatchableField[],
+): void {
   if (row.lifecycle === 'draft') return;
   const locked = new Set<PatchableField>([
     ...LOCKED_AFTER_PUBLISH,

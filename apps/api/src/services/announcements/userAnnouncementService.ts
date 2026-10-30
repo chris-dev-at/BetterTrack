@@ -17,7 +17,7 @@ import type {
 } from '../../data/repositories/announcementReceiptRepository';
 import type { AnnouncementReceiptRow, AnnouncementRow } from '../../data/schema';
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
-import type { AuditService } from '../audit/auditService';
+import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   announcementContentSha256,
   availableLocales,
@@ -34,7 +34,7 @@ import {
  * acknowledgement's own transaction.
  */
 
-export const ANNOUNCEMENT_AUDIT_ACKNOWLEDGE = 'announcement.acknowledge';
+export const ANNOUNCEMENT_AUDIT_ACKNOWLEDGE = AuditAction.AnnouncementAcknowledged;
 
 /** Who is asking. Admin-kind principals never reach this service. */
 export interface UserAnnouncementCaller {

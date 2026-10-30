@@ -322,17 +322,19 @@ export function AnnouncementsPage() {
         }
         setSaved(t('admin.announcements.composer.updated'));
       } else {
-        const created = await api.createAnnouncement({
-          severity: composer.severity,
-          titleEn: composer.titleEn.trim(),
-          bodyEn: composer.bodyEn.trim(),
-          titleDe: composer.titleDe.trim(),
-          bodyDe: composer.bodyDe.trim(),
-          startsAt: startsAt ?? undefined,
-          endsAt: endsAt ?? undefined,
-        }).then((draft) =>
-          composer.active ? api.transitionAnnouncement(draft.id, 'publish') : draft,
-        );
+        const created = await api
+          .createAnnouncement({
+            severity: composer.severity,
+            titleEn: composer.titleEn.trim(),
+            bodyEn: composer.bodyEn.trim(),
+            titleDe: composer.titleDe.trim(),
+            bodyDe: composer.bodyDe.trim(),
+            startsAt: startsAt ?? undefined,
+            endsAt: endsAt ?? undefined,
+          })
+          .then((draft) =>
+            composer.active ? api.transitionAnnouncement(draft.id, 'publish') : draft,
+          );
         // The confirmation reports what the SERVER decided, not what the form
         // hoped: "created and published" was the old lie on a row nothing had
         // delivered yet.
@@ -728,7 +730,10 @@ export function AnnouncementsPage() {
                   ? 'admin.confirmations.redeliverAnnouncement.descriptionOne'
                   : 'admin.confirmations.redeliverAnnouncement.description',
                 {
-                  name: locale === 'de' ? (redelivering.titleDe ?? redelivering.titleEn) : redelivering.titleEn,
+                  name:
+                    locale === 'de'
+                      ? (redelivering.titleDe ?? redelivering.titleEn)
+                      : redelivering.titleEn,
                   failed: redelivering.failedCount ?? 0,
                 },
               )}

@@ -799,7 +799,9 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const query = req.valid?.query as AnnouncementReceiptsQuery;
-      res.json(announcementReceiptsResponseSchema.parse(await ctx.announcements.receipts(id, query)));
+      res.json(
+        announcementReceiptsResponseSchema.parse(await ctx.announcements.receipts(id, query)),
+      );
     },
   );
 

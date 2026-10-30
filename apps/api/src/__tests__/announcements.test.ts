@@ -96,9 +96,7 @@ async function createViaAdmin(agent: ReturnType<typeof request.agent>, body: Leg
   const published = await agent
     .post(`/api/v1/admin/announcements/${res.body.id as string}/publish`)
     .set(...XRW);
-  return published.status === 200
-    ? Object.assign(res, { body: published.body as unknown })
-    : res;
+  return published.status === 200 ? Object.assign(res, { body: published.body as unknown }) : res;
 }
 
 const BASE_BODY: LegacyCreate = {

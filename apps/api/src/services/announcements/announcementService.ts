@@ -33,7 +33,7 @@ import type {
 import type { AnnouncementRow } from '../../data/schema';
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
-import type { AuditService } from '../audit/auditService';
+import { AuditAction, type AuditService } from '../audit/auditService';
 import { fanOutAnnouncement } from '../notifications/announcementFanOut';
 import { announcementContentSha256, inboxCopy } from './announcementContent';
 import {
@@ -106,24 +106,24 @@ export function announcementEventKey(id: string): string {
 
 /** Audit action tags — the admin write log a change on every mutation. */
 const AUDIT = {
-  create: 'announcement.create',
-  update: 'announcement.update',
-  publish: 'announcement.publish',
-  unpublish: 'announcement.unpublish',
-  delete: 'announcement.delete',
+  create: AuditAction.AnnouncementCreated,
+  update: AuditAction.AnnouncementUpdated,
+  publish: AuditAction.AnnouncementPublished,
+  unpublish: AuditAction.AnnouncementUnpublished,
+  delete: AuditAction.AnnouncementDeleted,
   /**
    * An operator asked for the recipients a publication missed to be delivered
    * again (#1943). Unlike {@link AUDIT.publish} this is NOT the job speaking:
    * it names the admin who clicked, their IP, and the counts they acted on.
    */
-  redeliver: 'announcement.redeliver',
+  redeliver: AuditAction.AnnouncementRedelivered,
   /**
    * The operator's Publish (draft → published), §6.19.11. Named apart from
    * {@link AUDIT.publish}, which has meant one delivery pass since #1909.
    */
-  release: 'announcement.release',
-  archive: 'announcement.archive',
-  receiptsExport: 'announcement.receipts_export',
+  release: AuditAction.AnnouncementReleased,
+  archive: AuditAction.AnnouncementArchived,
+  receiptsExport: AuditAction.AnnouncementReceiptsExported,
 } as const;
 
 /** The announcement audit vocabulary, exported for the audit console's filters. */
@@ -449,9 +449,9 @@ function toReceiptRow(kind: AnnouncementRow['kind'], r: ReceiptLogRow): Announce
 }
 
 function encodeCursor(cursor: ReceiptCursor): string {
-  return Buffer.from(JSON.stringify([cursor.segment === 'live' ? 'l' : 'd', cursor.after])).toString(
-    'base64url',
-  );
+  return Buffer.from(
+    JSON.stringify([cursor.segment === 'live' ? 'l' : 'd', cursor.after]),
+  ).toString('base64url');
 }
 
 function decodeCursor(raw: string | undefined): ReceiptCursor | null {
@@ -771,11 +771,15 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       ) {
         // The route's schema refuses this first; the service holds the line
         // for any other caller (the DB CHECK is the last one).
-        throw badRequest('The e-mail fields are available for ack_required only.', 'VALIDATION_ERROR', {
-          fieldErrors: notifyByEmail
-            ? { notifyByEmail: ['ack_required only'] }
-            : { notifyByEmailAfterDays: ['ack_required only'] },
-        });
+        throw badRequest(
+          'The e-mail fields are available for ack_required only.',
+          'VALIDATION_ERROR',
+          {
+            fieldErrors: notifyByEmail
+              ? { notifyByEmail: ['ack_required only'] }
+              : { notifyByEmailAfterDays: ['ack_required only'] },
+          },
+        );
       }
       const startsAt = input.startsAt ? new Date(input.startsAt) : null;
       const endsAt = input.endsAt ? new Date(input.endsAt) : null;
@@ -834,7 +838,8 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       assertEditable(before, at);
 
       const toDate = (v: string | null | undefined) => (v ? new Date(v) : null);
-      const same = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
+      const same = (a: Date | null, b: Date | null) =>
+        (a?.getTime() ?? null) === (b?.getTime() ?? null);
       const changed: PatchableField[] = [];
       const patch: UpdateAnnouncementInput = {};
       const scalar = [
@@ -871,9 +876,13 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
         // contract's schema already refuses with 400 VALIDATION_ERROR).
         if ((patch.notifyByEmail ?? before.notifyByEmail) === true) {
           if (input.notifyByEmail === true) {
-            throw badRequest('notifyByEmail is available for ack_required announcements only.', 'VALIDATION_ERROR', {
-              fieldErrors: { notifyByEmail: ['ack_required only'] },
-            });
+            throw badRequest(
+              'notifyByEmail is available for ack_required announcements only.',
+              'VALIDATION_ERROR',
+              {
+                fieldErrors: { notifyByEmail: ['ack_required only'] },
+              },
+            );
           }
           patch.notifyByEmail = false;
         }
@@ -892,7 +901,12 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       const startsAt = patch.startsAt !== undefined ? patch.startsAt : before.startsAt;
       const endsAt = patch.endsAt !== undefined ? patch.endsAt : before.endsAt;
       // After publish a new end must lie in the future (or be null).
-      assertWindow(startsAt, endsAt, at, before.lifecycle !== 'draft' && changed.includes('endsAt'));
+      assertWindow(
+        startsAt,
+        endsAt,
+        at,
+        before.lifecycle !== 'draft' && changed.includes('endsAt'),
+      );
       const contentChanged = changed.some((f) =>
         ['kind', 'titleEn', 'bodyEn', 'titleDe', 'bodyDe'].includes(f),
       );
@@ -986,7 +1000,10 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       const before = await repo.findById(id);
       if (!before) throw announcementNotFound();
       if (before.lifecycle !== 'published') {
-        throw conflict('This announcement is not published.', ANNOUNCEMENT_ERROR_CODES.notPublished);
+        throw conflict(
+          'This announcement is not published.',
+          ANNOUNCEMENT_ERROR_CODES.notPublished,
+        );
       }
       const at = now();
       const row = await repo.unpublish(id, at);
