@@ -125,7 +125,16 @@ function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): strin
  * and the Developer hub both open this same dialog, so the user returns to the
  * context in which the report started.
  */
-export function FeedbackDialog({ onClose, screen }: { onClose: () => void; screen?: string }) {
+export function FeedbackDialog({
+  onClose,
+  onSubmitted,
+  screen,
+}: {
+  onClose: () => void;
+  /** Told once the server accepted the report, so a submissions list can refresh. */
+  onSubmitted?: () => void;
+  screen?: string;
+}) {
   const t = useT();
   const { locale } = useI18n();
   const location = useLocation();
@@ -194,6 +203,7 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
     try {
       await submitFeedback(body);
       setState('success');
+      onSubmitted?.();
     } catch (error) {
       setSubmissionError(feedbackErrorMessage(t, error));
       setState('error');
