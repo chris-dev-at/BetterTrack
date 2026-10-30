@@ -70,7 +70,11 @@ import {
   PortfolioVaultTransitionError,
 } from '../../services/account/portfolioVaultTransitionService';
 import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/tax/taxReportCsv';
-import { paranoidRestoreJsonLimitBytes } from '../bodyLimits';
+import {
+  GLOBAL_JSON_BODY_LIMIT,
+  paranoidRestoreJsonLimitBytes,
+  recordParsedJsonBodyBytes,
+} from '../bodyLimits';
 import {
   ACCOUNT_SECURITY_SCOPE,
   portfolioVaultAccountSecurityRouteAcceptsBearer,
@@ -78,6 +82,7 @@ import {
 } from '../middleware/bearerAuth';
 import { conditionalGet } from '../middleware/conditional';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
+import { boundStrictRestoreDocument } from '../middleware/restoreDocumentBounds';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
@@ -268,17 +273,43 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
     },
   );
 
-  const moveOutJson = json({
-    limit: paranoidRestoreJsonLimitBytes(ctx.config.vault.docMaxBytes.portfolio),
+  // AUTHORIZE BEFORE PARSE (GHSA-mrhx-c7xc-m3w5). `app.ts` defers the global
+  // parser for this one path, so this route picks its own bound — and it picks
+  // it only after an owner-scoped read, mirroring `/account/paranoid/disable`'s
+  // `restoreBodyParser`:
+  //   - another account's (or an unknown) portfolio → 404 PORTFOLIO_VAULT_NOT_FOUND,
+  //     the commit's own answer, WITHOUT the body ever being read;
+  //   - the owner's vaulted portfolio, or one holding a completed move-out
+  //     receipt (an idempotent retry re-sends the full document) → the wide
+  //     restore bound;
+  //   - the owner's plain portfolio → the 100 KiB global bound (never above
+  //     the route's own), which the commit then refuses as NOT_VAULTED.
+  // Response codes for every request the commit could ever accept are unchanged.
+  const moveOutRestoreLimit = paranoidRestoreJsonLimitBytes(ctx.config.vault.docMaxBytes.portfolio);
+  const moveOutRestoreJson = json({
+    limit: moveOutRestoreLimit,
+    verify: recordParsedJsonBodyBytes,
+  });
+  const moveOutStandardJson = json({
+    limit: Math.min(moveOutRestoreLimit, GLOBAL_JSON_BODY_LIMIT),
+    verify: recordParsedJsonBodyBytes,
   });
   const parseMoveOutBody: RequestHandler = (req, res, next) => {
-    moveOutJson(req, res, (error?: unknown) => {
-      if ((error as { type?: string } | undefined)?.type === 'entity.too.large') {
-        next(new ApiError(413, 'PAYLOAD_TOO_LARGE', 'The restore document exceeds the size cap.'));
-        return;
-      }
-      next(error);
-    });
+    const { portfolioId } = req.valid?.params as { portfolioId: string };
+    runPortfolioVaultTransition(() =>
+      ctx.portfolioVaultTransitions.moveOutBodyAdmission(req.authUser!.id, portfolioId),
+    ).then((admission) => {
+      const parser = admission === 'restore' ? moveOutRestoreJson : moveOutStandardJson;
+      parser(req, res, (error?: unknown) => {
+        if ((error as { type?: string } | undefined)?.type === 'entity.too.large') {
+          next(
+            new ApiError(413, 'PAYLOAD_TOO_LARGE', 'The restore document exceeds the size cap.'),
+          );
+          return;
+        }
+        next(error);
+      });
+    }, next);
   };
   router.post(
     '/:portfolioId/vault/move-out/challenge',
@@ -305,6 +336,9 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
     limiters.vault,
     validateParams(portfolioIdParamSchema),
     parseMoveOutBody,
+    // Bound the restore document's collections and stop at its first invalid
+    // element BEFORE the full zod parse (GHSA-mrhx-c7xc-m3w5).
+    boundStrictRestoreDocument(moveOutRestoreLimit),
     validateBody(portfolioVaultMoveOutRequestSchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };

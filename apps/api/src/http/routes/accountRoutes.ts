@@ -22,8 +22,10 @@ import {
   GLOBAL_JSON_BODY_LIMIT,
   PARANOID_RESTORE_PLAINTEXT_FACTOR,
   paranoidRestoreJsonLimitBytes,
+  recordParsedJsonBodyBytes,
 } from '../bodyLimits';
 import { clearSessionCookie } from '../cookies';
+import { boundStrictRestoreDocument } from '../middleware/restoreDocumentBounds';
 import { requireUser } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
@@ -201,8 +203,9 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // therefore never makes the process buffer and `JSON.parse` a multi-MiB body
   // just to be told `PARANOID_NOT_ENABLED`; it keeps the same 100 KiB bound as
   // every other route.
-  const restoreJson = json({ limit: paranoidDisableJsonLimitBytes(ctx.config.vault.maxBytes) });
-  const globalJson = json({ limit: GLOBAL_JSON_BODY_LIMIT });
+  const restoreJsonLimit = paranoidDisableJsonLimitBytes(ctx.config.vault.maxBytes);
+  const restoreJson = json({ limit: restoreJsonLimit, verify: recordParsedJsonBodyBytes });
+  const globalJson = json({ limit: GLOBAL_JSON_BODY_LIMIT, verify: recordParsedJsonBodyBytes });
   const restoreBodyParser: RequestHandler = (req, res, next) => {
     const parser = req.authUser?.privacyMode === 'paranoid' ? restoreJson : globalJson;
     parser(req, res, (error?: unknown) => {
@@ -235,6 +238,10 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     requireOwnerBrowserSession,
     limiters.vault,
     restoreBodyParser,
+    // GHSA-mrhx-c7xc-m3w5: bound the restore document's collections and stop at
+    // its first invalid element BEFORE the full zod parse can accumulate one
+    // issue per element of a multi-MiB body.
+    boundStrictRestoreDocument(restoreJsonLimit),
     validateBody(paranoidDisableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ParanoidDisableRequest;

@@ -10,6 +10,26 @@ export const apiErrorSchema = z.object({
 });
 export type ApiErrorBody = z.infer<typeof apiErrorSchema>;
 
+/**
+ * `error.details` of a `VALIDATION_ERROR` 400: zod's `flatten()` of at most
+ * {@link VALIDATION_ERROR_ISSUES_MAX} issues, each message capped at
+ * {@link VALIDATION_ERROR_MESSAGE_MAX_CHARS}, plus `issueCount`, the total number
+ * of issues the request produced. `issueCount` is additive — clients that read
+ * only `fieldErrors` / `formErrors` are unaffected.
+ *
+ * The cap exists because zod 3 returns every issue it found (GHSA-mrhx-c7xc-m3w5):
+ * a 100 KiB body could otherwise come back as a multi-MiB error response, and
+ * the flatten itself costs heap proportional to the issue count.
+ */
+export const VALIDATION_ERROR_ISSUES_MAX = 20;
+export const VALIDATION_ERROR_MESSAGE_MAX_CHARS = 1000;
+export const validationErrorDetailsSchema = z.object({
+  formErrors: z.array(z.string()),
+  fieldErrors: z.record(z.string(), z.array(z.string()).optional()),
+  issueCount: z.number().int().nonnegative(),
+});
+export type ValidationErrorDetails = z.infer<typeof validationErrorDetailsSchema>;
+
 /** Stable error codes emitted by shared authentication-state guards. */
 export const AUTH_ERROR_CODES = {
   unauthenticated: 'UNAUTHENTICATED',

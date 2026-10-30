@@ -9,6 +9,7 @@ import type { Logger } from '../logger';
 import { normalizeRoutePath } from '../services/security/routePath';
 
 import { bodyParserApiError } from './bodyLimits';
+import { validationErrorDetails } from './middleware/validate';
 
 /**
  * The request facts a report carries. Written to the captured problem's context
@@ -141,7 +142,9 @@ export function createErrorHandler(logger: Logger, report?: ErrorReporter): Erro
           error: {
             code: 'VALIDATION_ERROR',
             message: 'Invalid request.',
-            details: effective.flatten(),
+            // Same capped shape as `validateBody` (GHSA-mrhx-c7xc-m3w5): a
+            // handler-thrown ZodError must not ship every issue either.
+            details: validationErrorDetails(effective.issues),
           },
         });
         return;
