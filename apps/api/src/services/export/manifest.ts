@@ -112,7 +112,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   item_follows: exported('itemFollows'),
   chat_conversations: exported('chatConversations'),
   chat_messages: exported('chatMessages'),
-  announcement_dismissals: exported('announcementDismissals'),
+  // Renamed from announcement_dismissals in 0122 (§6.19.5): the user's own
+  // receipts — seen, dismissed, acknowledged, lapsed — travel with their data.
+  announcement_receipts: exported('announcementReceipts'),
   // Custom assets (owner_id set) + their user-entered value points.
   assets: exported('customAssets'),
   price_history: exported('customAssetPriceHistory'),
@@ -660,7 +662,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   idempotency_keys: 'server',
   export_jobs: 'server',
   announcements: 'server',
-  announcement_dismissals: 'server',
+  announcement_receipts: 'server',
 
   // Per-namespace widget compositions (mobile board #68 item 3) — classified
   // `server` for the SAME reason `users.home_layout` is: this is UI composition,

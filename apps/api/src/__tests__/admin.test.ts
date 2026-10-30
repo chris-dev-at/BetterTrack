@@ -1094,7 +1094,7 @@ describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
       .from(schema.auditLog)
       .where(eq(schema.auditLog.targetId, target.id));
     const deletion = entries.find((entry) => entry.action === 'user.deleted');
-    expect(deletion?.meta).toEqual({ via: 'admin' });
+    expect(deletion?.meta).toEqual({ via: 'admin', acknowledgementsKept: 0 });
     expect(JSON.stringify(deletion?.meta)).not.toContain(target.username);
   });
 });

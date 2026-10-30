@@ -228,7 +228,9 @@ export function createAccountDeletionService(
       } catch (err) {
         logger?.warn({ err, userId }, 'account deletion export artifact purge failed');
       }
-      await userRepo.remove(userId);
+      // Acknowledged announcement receipts survive pseudonymised (§6.19.5);
+      // the count rides on the audit row below.
+      const { acknowledgementsKept } = await userRepo.remove(userId);
       // Repeat the compatibility scan after the durable delete. A request that
       // already observed the user as active can write between the first scan and
       // its reverse-index reset, making that binding invisible to an index-only
@@ -249,7 +251,7 @@ export function createAccountDeletionService(
         targetType: 'user',
         targetId: userId,
         ip,
-        meta: { via: 'self' },
+        meta: { via: 'self', acknowledgementsKept },
       });
     },
   };
