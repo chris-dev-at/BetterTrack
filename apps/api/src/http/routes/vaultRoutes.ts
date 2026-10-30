@@ -1038,6 +1038,15 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
             PER_VAULT_ERROR_CODES.deleteRetirementPending,
             'The retired server set must pass the signed purge gate before deletion.',
           );
+        // #1610: fail-closed and self-resolving. The staged document belongs
+        // to a move-in that can still commit; it lapses with its capture window.
+        case 'move_in_pending':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.deleteMoveInPending,
+            'A portfolio move into this vault is still in progress. Finish that move, or wait a few minutes for it to lapse, then delete the vault.',
+            { portfolioIds: result.portfolioIds },
+          );
       }
     },
   );

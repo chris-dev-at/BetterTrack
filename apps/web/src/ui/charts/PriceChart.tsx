@@ -19,6 +19,7 @@ import { LOCALES, useI18n, useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { useResolvedTheme } from '../../lib/useTheme';
 import { Spinner } from '../Spinner';
+import { layoutPointerEvents } from './layoutPointerEvents';
 import * as palette from './palette';
 import {
   DISCREET_MASK,
@@ -696,6 +697,10 @@ export function PriceChart({
       handleScroll: false,
     });
     chartRef.current = chart;
+    // Under the interface scale the library would read every pointer event in
+    // rendered px and put the crosshair `scale ×` too far right; this hands it
+    // layout px instead (and leaves an unscaled page's events untouched).
+    const releasePointer = layoutPointerEvents(el);
 
     if (mode === 'baseline') {
       // Performance-% curve (#125): green above 0 %, red below — the zero line
@@ -790,6 +795,7 @@ export function PriceChart({
 
     return () => {
       observer.disconnect();
+      releasePointer();
       chart.remove();
       chartRef.current = null;
       mainRef.current = null;

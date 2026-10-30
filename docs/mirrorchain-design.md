@@ -530,7 +530,9 @@ chain**; any other viewer of a shared/public copy sees the rows with actor
 identity stripped (a generic "group member" chip) — a member may expose their
 own book, never their co-members' identities. This rule is about VIEWERS, not
 about copies: the holder of a copy is never the third party it guards against,
-so it does not reach a fork holder reading their own book (§6, #1612). The share dialog for a synced
+so it does not reach a fork holder reading their own book (§6, #1612). The strip
+is derived from the viewer (holder or active member → attribution; anyone else,
+anonymous included → stripped), never requested by the caller (#2033). The share dialog for a synced
 copy states this in one line. Per-copy audit trail: every applied op writes an
 `audit_log` row on every copy (§2), actor-attributed, surviving forks and
 account deletions — the "per-copy audit trail is complete" test enumerates one

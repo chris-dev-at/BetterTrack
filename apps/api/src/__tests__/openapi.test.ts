@@ -163,6 +163,7 @@ describe('OpenAPI document', () => {
       ['patch', '/auth/passkeys/{id}'],
       ['delete', '/auth/passkeys/{id}'],
       ['post', '/auth/first-run/complete'],
+      ['post', '/auth/fresh-start-notice/acknowledge'],
       ['get', '/settings/taxes/years'],
     ] as const;
     for (const [method, path] of nativeAccountSecurityOperations) {
@@ -172,6 +173,13 @@ describe('OpenAPI document', () => {
         { apiKeyBearer: [] },
       ]);
     }
+    // E9: the bearer scheme carries no per-operation scope list (it is an http
+    // bearer scheme, not oauth2), so the required scope is stated in the prose
+    // the mobile team reads — and the path documents only the one POST.
+    const freshStartAck = paths['/auth/fresh-start-notice/acknowledge'] as JsonObject;
+    expect(Object.keys(freshStartAck)).toEqual(['post']);
+    expect((freshStartAck.post as JsonObject).description).toContain('account:security');
+    expect((freshStartAck.post as JsonObject).description).toContain('INSUFFICIENT_SCOPE');
     expect(paths['/settings/taxes/years/{year}/unlock']).toBeUndefined();
     expect(paths['/settings/taxes/years/{year}/relock']).toBeUndefined();
 
@@ -760,6 +768,33 @@ describe('OpenAPI document', () => {
     expect(codes).toContain(contracts.PER_VAULT_ERROR_CODES.mediaCaptureInFlight);
     // The description has to carry the "how to proceed" the code alone cannot.
     expect(JSON.stringify(transition.description)).toContain('portfolioIds');
+  });
+
+  it('publishes the #1610 capture-binding refusals on both deletions and the revision read', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const vaultDelete = (paths['/vaults/{vaultId}'] as JsonObject).delete as JsonObject;
+    const portfolioDelete = (paths['/portfolios/{portfolioId}'] as JsonObject).delete as JsonObject;
+    const revision = (paths['/portfolios/{portfolioId}/vault/revision'] as JsonObject)
+      .get as JsonObject;
+
+    expect(vaultDelete['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PER_VAULT_DELETE_ERROR_CODES]),
+    );
+    for (const operation of [vaultDelete, portfolioDelete]) {
+      expect(operation['x-error-codes']).toContain(
+        contracts.PER_VAULT_ERROR_CODES.deleteMoveInPending,
+      );
+      expect(Object.keys(operation.responses as JsonObject)).toContain('409');
+      expect(JSON.stringify(operation.description)).toContain('portfolioIds');
+    }
+    expect(revision['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PORTFOLIO_VAULT_REVISION_ERROR_CODES]),
+    );
+    // #1498: the terminal binding refusal never shares the retryable conflict code.
+    expect(contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureBindingInvalid).not.toBe(
+      contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.transitionConflict,
+    );
   });
 
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {

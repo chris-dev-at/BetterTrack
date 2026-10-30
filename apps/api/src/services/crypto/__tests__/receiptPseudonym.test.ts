@@ -27,6 +27,9 @@ const USER_1 = '01975600-0000-7000-8000-000000000001';
 const USER_2 = '01975600-0000-7000-8000-000000000002';
 const TOKEN_1 = 'b956943dbe26de51bc71d0ec0e770f153cd2e8ac95f829af6189523d271da95a';
 const TOKEN_2 = '6f99cd04d6f40abda5a17f2e02cf7a491d846c26668c30d000e1165bd28e4f0a';
+/** The vector published in docs/announcements-contract.md §7.5 (same IKM). */
+const CONTRACT_USER = '00000000-0000-4000-8000-000000000001';
+const CONTRACT_TOKEN = '6f48c96a684cc03b8a9367ab7e8d225a70a458cea430c9068c6971f3a9b3cbb3';
 
 describe('receipt pseudonym (HKDF-SHA256 → HMAC-SHA256)', () => {
   const pseudonymizer = createReceiptPseudonymizer({ id: 'vector-v1', key: IKM });
@@ -35,6 +38,8 @@ describe('receipt pseudonym (HKDF-SHA256 → HMAC-SHA256)', () => {
     expect(pseudonymizer.token(USER_1)).toBe(TOKEN_1);
     expect(pseudonymizer.token(USER_2)).toBe(TOKEN_2);
     expect(pseudonymizer.keyId).toBe('vector-v1');
+    // …and the one the contract publishes for other implementations.
+    expect(pseudonymizer.token(CONTRACT_USER)).toBe(CONTRACT_TOKEN);
   });
 
   it('the vector key is the HKDF output: HMAC under it reproduces the token', () => {

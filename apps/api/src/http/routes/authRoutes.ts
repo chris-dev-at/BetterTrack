@@ -409,7 +409,10 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Acknowledging touches the caller's own wipe receipt only — there is no id in
   // the payload, so there is no ownership check to forget — and it is set-once
   // (guarded on `notice_acknowledged_at IS NULL`), so a replay is harmless. Same
-  // contract as `/first-run/complete` above, which it deliberately mirrors.
+  // contract as `/first-run/complete` above, which it deliberately mirrors —
+  // including its bearer shape: the owning session and an `account:security`
+  // bearer (the native client, which reads the bit from `GET /auth/me`) use the
+  // same handler; only this POST is widened in `resolveAuthPolicy`.
   //
   // Neither this nor anything else reachable over HTTP can perform the wipe; this
   // reads and stamps a receipt the owner-run wipe already wrote (see
