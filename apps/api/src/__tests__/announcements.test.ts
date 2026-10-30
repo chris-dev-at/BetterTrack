@@ -321,6 +321,9 @@ describe('announcements — the write path never fans out', () => {
   it('the list projection is parsed through its contract and carries the derived state', async () => {
     const admin = await harness.seedAdmin();
     const adminAgent = await harness.loginAdmin(admin);
+    // The fan-out walks the audience: user-kind accounts only (§6.19.8) — an
+    // admin is never a recipient, so the delivery needs one real user.
+    await harness.seedUser({ email: 'reader@bt.test', username: 'reader' });
 
     const expired = announcementSchema.parse(
       (
