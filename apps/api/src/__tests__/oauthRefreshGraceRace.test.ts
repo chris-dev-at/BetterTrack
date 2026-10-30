@@ -140,12 +140,20 @@ async function seedGrant(harness: TestHarness) {
   return { client: client!, grant: grant! };
 }
 
-/** An unconsumed refresh token on `grantId`, returned with its plaintext. */
-async function seedRefreshToken(harness: TestHarness, grantId: string) {
+/**
+ * An unconsumed refresh token on `grantId`, returned with its plaintext. No
+ * `familyId` = a legacy (NULL-family) row, as the pre-0119 code wrote it.
+ */
+async function seedRefreshToken(harness: TestHarness, grantId: string, familyId?: string) {
   const token = `${OAUTH_REFRESH_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
   const [row] = await harness.db
     .insert(schema.oauthRefreshTokens)
-    .values({ grantId, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + DAY_MS) })
+    .values({
+      grantId,
+      familyId: familyId ?? null,
+      tokenHash: hashToken(token),
+      expiresAt: new Date(Date.now() + DAY_MS),
+    })
     .returning();
   return { token, id: row!.id };
 }
@@ -347,6 +355,94 @@ describe.skipIf(!REAL_DATABASE_URL)('OAuth refresh rotation races (real Postgres
         [winnerTx, loserRotation].filter((p): p is Promise<unknown> => p !== undefined),
       );
       await Promise.all([winner.end(), loser.end(), observer.end()]);
+      await harness.dispose();
+    }
+  }, 20_000);
+
+  it('a rotation racing a family revoke waits on the FAMILY before any token row, so the revoke never deadlocks', async () => {
+    // Lock order grant → family → token rows (#2085 review). The revoke below
+    // runs the real `revokeFamilies` statements in their real order: the family
+    // row, then that family's live envelopes. Under the old rotation order the
+    // rotation had already locked the presented row AND its predecessor (whose
+    // envelope it nulls) before waiting on the family, so the revoke's envelope
+    // UPDATE waited on the rotation while the rotation waited on the revoke —
+    // a deadlock that could abort the logout and leave the family live.
+    const harness = await createTestApp();
+    const { grant } = await seedGrant(harness);
+    const [family] = await harness.db
+      .insert(schema.oauthTokenFamilies)
+      .values({ grantId: grant.id })
+      .returning();
+    const presented = await seedRefreshToken(harness, grant.id, family!.id);
+    const predecessor = await seedRefreshToken(harness, grant.id, family!.id);
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({
+        consumedAt: new Date(),
+        successorId: presented.id,
+        successorEnvelope: 'sealed-predecessor',
+      })
+      .where(eq(schema.oauthRefreshTokens.id, predecessor.id));
+    const revoker = postgres(REAL_DATABASE_URL!, { max: 1 });
+    const rotator = postgres(REAL_DATABASE_URL!, { max: 1 });
+    const observer = postgres(REAL_DATABASE_URL!, { max: 1 });
+    const rotatorRepo = createOAuthRepository(drizzlePostgres(rotator, { schema }) as Database);
+    const familyLocked = deferred();
+    const release = deferred();
+    let revokeTx: Promise<unknown> | undefined;
+    let rotation: Promise<OAuthRefreshTokenRotation> | undefined;
+
+    try {
+      const revokerPid = await backendPid(revoker);
+      const rotatorPid = await backendPid(rotator);
+      revokeTx = revoker.begin(async (tx) => {
+        await tx`
+          UPDATE oauth_token_families SET revoked_at = now(), revoked_reason = 'logout'
+          WHERE id = ${family!.id} AND revoked_at IS NULL
+        `;
+        familyLocked.resolve();
+        await release.promise;
+        await tx`
+          UPDATE oauth_refresh_tokens SET successor_envelope = NULL
+          WHERE family_id = ${family!.id} AND successor_envelope IS NOT NULL
+        `;
+      });
+      await waitForStarted(familyLocked, revokeTx, 'the revoke family claim');
+
+      rotation = rotatorRepo.rotateRefreshToken({
+        ...rotationInput(presented.id, grant.id, new Date(), () => {
+          throw new Error('a rotation into a revoked family must never seal a pair');
+        }),
+        familyId: family!.id,
+      });
+      // The rotation is parked on the FAMILY row — before touching any token row.
+      const wait = await waitForDatabaseLock(observer, {
+        blockedByPid: revokerPid,
+        waitingPid: rotatorPid,
+        description: 'the rotation to wait on the family row lock',
+        queryPattern: /update "oauth_token_families"/iu,
+      });
+      expect(wait.waitEventType).toBe('Lock');
+
+      // So the revoke's token-row statement has nothing to wait on and commits.
+      release.resolve();
+      await revokeTx;
+      // …and the rotation re-checks the committed family and refuses.
+      expect(await rotation).toEqual({ outcome: 'revoked' });
+
+      const rows = await harness.db
+        .select()
+        .from(schema.oauthRefreshTokens)
+        .where(eq(schema.oauthRefreshTokens.grantId, grant.id));
+      expect(rows.find((row) => row.id === presented.id)?.consumedAt).toBeNull();
+      expect(rows.find((row) => row.id === predecessor.id)?.successorEnvelope).toBeNull();
+      expect(await tokenRowCounts(harness, grant.id)).toEqual({ refresh: 2, access: 0 });
+    } finally {
+      release.resolve();
+      await Promise.allSettled(
+        [revokeTx, rotation].filter((p): p is Promise<unknown> => p !== undefined),
+      );
+      await Promise.all([revoker.end(), rotator.end(), observer.end()]);
       await harness.dispose();
     }
   }, 20_000);

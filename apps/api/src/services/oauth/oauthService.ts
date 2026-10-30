@@ -1626,6 +1626,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       refreshToken: pair.refreshToken,
       sealSuccessor: (ids) => sealRefreshGrace(pair, ids),
     });
+    if (rotation.outcome === 'revoked') {
+      // The grant or this install's family was revoked after the lookup above
+      // (a logout, revoke or Settings revoke racing this refresh). The rotation
+      // refused under the grant → family lock, so nothing was consumed or
+      // minted; answer exactly like the revoked check above.
+      throw badRequest('This authorization has been revoked.', 'INVALID_GRANT');
+    }
     if (rotation.outcome === 'replayed') {
       // Lost the atomic consume to a concurrent refresh of the SAME token. Both
       // callers presented it while it was current — a race, not reuse — so the

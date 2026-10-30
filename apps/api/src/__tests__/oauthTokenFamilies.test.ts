@@ -14,9 +14,12 @@ import {
   type OAuthTokenResponse,
 } from '@bettertrack/contracts';
 
+import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createOAuthRepository, type OAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
-import { AuditAction } from '../services/audit/auditService';
+import { AuditAction, createAuditService } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
+import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -330,6 +333,114 @@ describe('refresh reuse beyond the grace window revokes the FAMILY, not the gran
       .where(eq(schema.oauthRefreshTokens.familyId, familyA));
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.envelope === null)).toBe(true);
+  });
+});
+
+describe('a rotation never mints into a grant or family revoked after its lookup', () => {
+  async function refreshRowOf(refreshToken: string) {
+    const [row] = await harness.db
+      .select()
+      .from(schema.oauthRefreshTokens)
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(refreshToken)));
+    return row!;
+  }
+
+  function rotationOf(row: { id: string; grantId: string; familyId: string | null }) {
+    const at = new Date(clockMs);
+    return {
+      tokenId: row.id,
+      grantId: row.grantId,
+      familyId: row.familyId,
+      rotatedAt: at,
+      accessToken: {
+        tokenHash: hashToken(`bto_never_${randomBytes(8).toString('hex')}`),
+        scopes: ['portfolio:read'],
+        expiresAt: new Date(at.getTime() + 3_600_000),
+      },
+      refreshToken: {
+        tokenHash: hashToken(`btr_never_${randomBytes(8).toString('hex')}`),
+        expiresAt: new Date(at.getTime() + 86_400_000),
+      },
+      sealSuccessor: () => {
+        throw new Error('a refused rotation must never seal a pair');
+      },
+    };
+  }
+
+  async function tokenCounts(grantId: string) {
+    const refresh = await harness.db
+      .select({ id: schema.oauthRefreshTokens.id })
+      .from(schema.oauthRefreshTokens)
+      .where(eq(schema.oauthRefreshTokens.grantId, grantId));
+    const access = await harness.db
+      .select({ id: schema.oauthAccessTokens.id })
+      .from(schema.oauthAccessTokens)
+      .where(eq(schema.oauthAccessTokens.grantId, grantId));
+    return { refresh: refresh.length, access: access.length };
+  }
+
+  it('refuses under the family lock: outcome revoked, the presented token unconsumed, nothing minted', async () => {
+    const { app, a, grantId, familyA } = await twoInstalls();
+    const row = await refreshRowOf(a.refresh_token);
+    const before = await tokenCounts(grantId);
+    await harness.ctx.oauth.revokeOwnFamily({ userId: app.userId, grantId, familyId: familyA });
+
+    const repo = createOAuthRepository(harness.db);
+    expect(await repo.rotateRefreshToken(rotationOf(row))).toEqual({ outcome: 'revoked' });
+    expect((await refreshRowOf(a.refresh_token)).consumedAt).toBeNull();
+    expect(await tokenCounts(grantId)).toEqual(before);
+  });
+
+  it('refuses under the grant lock once the grant itself is revoked (legacy chain too)', async () => {
+    const { app, a, grantId } = await twoInstalls();
+    const row = await refreshRowOf(a.refresh_token);
+    const before = await tokenCounts(grantId);
+    await harness.ctx.oauth.revokeGrant({ userId: app.userId, id: grantId });
+
+    const repo = createOAuthRepository(harness.db);
+    expect(await repo.rotateRefreshToken(rotationOf(row))).toEqual({ outcome: 'revoked' });
+    expect(await repo.rotateRefreshToken({ ...rotationOf(row), familyId: null })).toEqual({
+      outcome: 'revoked',
+    });
+    expect((await refreshRowOf(a.refresh_token)).consumedAt).toBeNull();
+    expect(await tokenCounts(grantId)).toEqual(before);
+  });
+
+  it('answers INVALID_GRANT when a logout lands between the refresh lookup and its rotation', async () => {
+    const { app, a, b, grantId, familyA } = await twoInstalls();
+    const base = createOAuthRepository(harness.db);
+    // The install logs out on another request right after this refresh read
+    // its (then still live) family.
+    const repo: OAuthRepository = {
+      ...base,
+      async findRefreshTokenByHash(tokenHash, at) {
+        const found = await base.findRefreshTokenByHash(tokenHash, at);
+        await base.revokeFamily({
+          userId: app.userId,
+          grantId,
+          familyId: familyA,
+          reason: 'logout',
+          at,
+        });
+        return found;
+      },
+    };
+    const service = createOAuthService({
+      repo,
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+      now: () => new Date(clockMs),
+    });
+    const before = await tokenCounts(grantId);
+    await expect(
+      service.exchangeToken({
+        body: { grant_type: 'refresh_token', refresh_token: a.refresh_token, client_id: app.clientId },
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'INVALID_GRANT' });
+    expect(await tokenCounts(grantId)).toEqual(before);
+    // The other install is untouched.
+    expect((await refreshOk(app, b.refresh_token)).access_token).toEqual(expect.any(String));
   });
 });
 

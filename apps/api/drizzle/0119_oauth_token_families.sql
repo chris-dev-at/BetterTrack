@@ -37,17 +37,23 @@
 -- legacy grant shares one family until it signs in again; each new sign-in
 -- starts a family of its own. The DO block then proves the backfill: zero
 -- tokens without a family and zero tokens attached to another grant's family,
--- else it RAISES and drizzle's per-migration transaction rolls everything back.
+-- else it RAISES. drizzle's migrator runs the WHOLE pending batch in ONE
+-- transaction (not one per file), so the RAISE rolls back every migration of
+-- that deploy and the old schema keeps serving the old container.
 --
 -- CONCURRENCY. The ADD COLUMNs take ACCESS EXCLUSIVE on both token tables and
 -- hold it to commit, so no old-code insert can land between the attach and the
--- check. `lock_timeout` bounds how long the migration may queue for those locks
--- (behind, e.g., a nightly pg_dump's ACCESS SHARE) while every bearer read queues
--- behind IT: past 10 s it fails cleanly and the updater retries next tick. An
+-- check. The HOLD lasts through the two full-table UPDATEs, the DO-block scans
+-- and the two index builds, so it scales with every token row ever minted
+-- (nothing prunes token rows). `lock_timeout` bounds only the WAIT — how long
+-- the migration may queue for those locks (behind, e.g., a nightly pg_dump's
+-- ACCESS SHARE) while every bearer read queues behind IT: past 10 s it fails
+-- cleanly and the updater retries next tick. `SET LOCAL` lasts for the rest of
+-- that one batch transaction, i.e. it also bounds any later migration in it. An
 -- in-flight old-code token transaction can, in a millisecond window, deadlock
 -- with these lock upgrades; Postgres aborts one side — a single `/oauth/token`
 -- 500 (its refresh token is not consumed; the retry succeeds) or this migration
--- (rolled back whole; retried next tick). Both are self-healing.
+-- (its whole batch rolled back; retried next tick). Both are self-healing.
 --
 -- RE-RUNNABLE: IF NOT EXISTS everywhere, FKs/CHECKs inline in CREATE TABLE and
 -- ADD COLUMN IF NOT EXISTS so a re-run skips them, the family insert is guarded
