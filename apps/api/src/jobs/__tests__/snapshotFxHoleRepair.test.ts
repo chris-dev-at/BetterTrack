@@ -612,6 +612,64 @@ describe('snapshots.repairFxHoles', () => {
     expect((await stateOf(db, holed))?.dirtyFrom ?? null).toBeNull();
   });
 
+  it('never counts a day the position was flat as a hole, but does count the re-opened position', async () => {
+    // Both portfolios sell all their USD on −42 (flat −42 … −39) and buy it back
+    // on −38. A healthy engine keys USD at 0 on the flat days; a frozen save
+    // dropped the key there too. Only A also lost it on a HELD day (−37).
+    const db = await makeDb();
+    const { log } = capturingLogger();
+    const assets = await seedAssets(db);
+    const flatThenReopened = async (name: string) => {
+      const pid = await seedPortfolio(db, assets, await seedUser(db), name);
+      const trade = (side: 'buy' | 'sell', day: number) => ({
+        portfolioId: pid,
+        assetId: assets.usdId,
+        side,
+        quantity: '3',
+        price: '200',
+        fee: '0',
+        executedAt: new Date(`${dayOffset(day)}T00:00:00.000Z`),
+      });
+      await db.insert(schema.transactions).values([trade('sell', -42), trade('buy', -38)]);
+      return pid;
+    };
+    const a = await flatThenReopened('A');
+    const b = await flatThenReopened('B');
+    const healthy = snapshotService(db, 'ok', log);
+    await healthy.recompute(a);
+    await healthy.recompute(b);
+    const flatDays = [-42, -41, -40, -39].map(dayOffset);
+    for (const row of await rowsOf(db, b)) {
+      expect(usdOf(row, assets.usdId)).toBeCloseTo(flatDays.includes(row.date) ? 0 : 480, 9);
+    }
+    await freezeHole(db, a, assets, [-40, -39, -37]);
+    await freezeHole(db, b, assets, [-40, -39]);
+    const bBefore = await rowsOf(db, b);
+
+    await createSnapshotsFxHoleRepairJob(repairDeps(db, healthy)).handler(makeJob(), makeCtx(log));
+
+    const [enumerated, completed] = await repairAudit(db);
+    expect(enumerated?.meta).toMatchObject({
+      portfoliosScanned: 2,
+      portfoliosWithHoles: 1,
+      usersAffected: 1,
+      earliestHoleDay: dayOffset(-37),
+    });
+    expect(completed?.meta).toMatchObject({ repaired: 1, refused: 0, failed: 0, unmarked: 0 });
+    // B was never written.
+    expect(await rowsOf(db, b)).toEqual(bBefore);
+    // A: rewritten from −37 only. Every held day carries USD again; the frozen
+    // flat days were left alone, and the re-scan did not take them for a hole.
+    const rows = await rowsOf(db, a);
+    expect(rows).toHaveLength(45);
+    for (const row of rows) {
+      const usd = usdOf(row, assets.usdId);
+      if (row.date === dayOffset(-40) || row.date === dayOffset(-39)) expect(usd).toBeUndefined();
+      else expect(usd).toBeCloseTo(flatDays.includes(row.date) ? 0 : 480, 9);
+    }
+    expect((await stateOf(db, a))?.dirtyFrom ?? null).toBeNull();
+  });
+
   it('does not count a shape-2 recompute that persisted WITHOUT the asset as repaired: it re-marks it dirty for the nightly', async () => {
     // With no earlier row carrying USD, a replayed 404 is invisible to the
     // persist guard, so the recompute persists every day without USD. The
