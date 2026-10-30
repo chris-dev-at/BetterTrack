@@ -1318,6 +1318,15 @@ export function serializePerVaultRetiredServerPurgeTranscript(
  *    detail name the portfolios whose move must be finished or cancelled
  *    first, so a client can say that instead of retrying a readback that can
  *    never match.
+ *
+ * `VAULT_MOVE_IN_PENDING` (#1610) is the deletion-side twin of that fact: a
+ * portfolio's move-in has staged its encrypted document in this vault and the
+ * capture window is still open. `DELETE /vaults/:vaultId` (the vault it stages
+ * into) and `DELETE /portfolios/:portfolioId` (the portfolio being captured)
+ * both refuse with it, `409` and no mutation, with `portfolioIds` naming the
+ * capture. It is self-resolving: finish the move-in, or let the capture
+ * window lapse (`VAULT_SERVER_CANDIDATE_TTL_MS`); an expired capture is inert
+ * and is dropped atomically with either deletion.
  */
 export const PER_VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
@@ -1342,8 +1351,21 @@ export const PER_VAULT_ERROR_CODES = {
   retirementProofInvalid: 'VAULT_RETIRED_SERVER_PROOF_INVALID',
   deleteReferenced: 'VAULT_REFERENCED_BY_PORTFOLIO',
   deleteRetirementPending: 'VAULT_RETIREMENT_PENDING',
+  deleteMoveInPending: 'VAULT_MOVE_IN_PENDING',
 } as const;
 export type PerVaultErrorCode = (typeof PER_VAULT_ERROR_CODES)[keyof typeof PER_VAULT_ERROR_CODES];
+
+/**
+ * The refusal vocabulary of `DELETE /vaults/:vaultId`, published as
+ * `x-error-codes` (#1610). Every blocker is disclosed only after the in-body
+ * §15 step-up succeeded.
+ */
+export const PER_VAULT_DELETE_ERROR_CODES = [
+  PER_VAULT_ERROR_CODES.notFound,
+  PER_VAULT_ERROR_CODES.deleteReferenced,
+  PER_VAULT_ERROR_CODES.deleteRetirementPending,
+  PER_VAULT_ERROR_CODES.deleteMoveInPending,
+] as const;
 
 /**
  * The refusal vocabulary one document CAS write can answer with, published as
@@ -1795,6 +1817,29 @@ export const PORTFOLIO_VAULT_TRANSITION_ERROR_CODES = {
    * capturable" instead of reporting its own request as invalid.
    */
   captureUnservable: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
+  /**
+   * #1610: the portfolio's open capture is bound to a vault row that exists
+   * but belongs to another account. No conforming writer can produce that
+   * binding, so renewing it is refused with no mutation (a renewal deletes
+   * the bound vault's prospective rows). TERMINAL — distinct from the
+   * retryable `PORTFOLIO_VAULT_TRANSITION_CONFLICT` by the #1498 rule. A
+   * binding whose vault no longer exists at all is inert and is simply
+   * re-opened instead.
+   */
+  captureBindingInvalid: 'PORTFOLIO_VAULT_CAPTURE_BINDING_INVALID',
 } as const;
 export type PortfolioVaultTransitionErrorCode =
   (typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES)[keyof typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES];
+
+/**
+ * The refusal vocabulary of `GET /portfolios/:portfolioId/vault/revision`,
+ * published as `x-error-codes` (#1610). `PORTFOLIO_VAULT_TRANSITION_CONFLICT`
+ * is retryable (a preceding move-out still finalizing, or a concurrent staging
+ * write bound the capture while this renewal acquired its locks).
+ */
+export const PORTFOLIO_VAULT_REVISION_ERROR_CODES = [
+  PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.notFound,
+  PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.alreadyVaulted,
+  PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.transitionConflict,
+  PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureBindingInvalid,
+] as const;

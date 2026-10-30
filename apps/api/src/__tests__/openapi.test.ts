@@ -770,6 +770,33 @@ describe('OpenAPI document', () => {
     expect(JSON.stringify(transition.description)).toContain('portfolioIds');
   });
 
+  it('publishes the #1610 capture-binding refusals on both deletions and the revision read', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const vaultDelete = (paths['/vaults/{vaultId}'] as JsonObject).delete as JsonObject;
+    const portfolioDelete = (paths['/portfolios/{portfolioId}'] as JsonObject).delete as JsonObject;
+    const revision = (paths['/portfolios/{portfolioId}/vault/revision'] as JsonObject)
+      .get as JsonObject;
+
+    expect(vaultDelete['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PER_VAULT_DELETE_ERROR_CODES]),
+    );
+    for (const operation of [vaultDelete, portfolioDelete]) {
+      expect(operation['x-error-codes']).toContain(
+        contracts.PER_VAULT_ERROR_CODES.deleteMoveInPending,
+      );
+      expect(Object.keys(operation.responses as JsonObject)).toContain('409');
+      expect(JSON.stringify(operation.description)).toContain('portfolioIds');
+    }
+    expect(revision['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PORTFOLIO_VAULT_REVISION_ERROR_CODES]),
+    );
+    // #1498: the terminal binding refusal never shares the retryable conflict code.
+    expect(contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureBindingInvalid).not.toBe(
+      contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.transitionConflict,
+    );
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI
