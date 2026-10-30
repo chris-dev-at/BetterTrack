@@ -1,7 +1,14 @@
 import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
+import {
+  announcementBodyFormatSchema,
+  announcementContentLocaleSchema,
+  announcementKindSchema,
+  contentSha256Schema,
+} from './announcementBody';
 import { adminListPageSchema } from './common';
+import { announcementAckViaSchema, announcementLapseReasonSchema } from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
 import { notificationChannelsConfigurableSchema, notificationMatrixSchema } from './settings';
 import { vaultMediaSetSchema } from './vault';
@@ -1369,6 +1376,33 @@ export const ANNOUNCEMENT_TITLE_MAX = 120;
 export const ANNOUNCEMENT_BODY_MAX = 2000;
 
 /**
+ * §6.19.3 audience, immutable after publish: `everyone` (every user-kind
+ * account, including later ones) or `existing_at_publish` (accounts created
+ * strictly before the frozen `audienceCutoffAt`). Never on the user wire.
+ */
+export const ANNOUNCEMENT_AUDIENCES = ['everyone', 'existing_at_publish'] as const;
+export const announcementAudienceSchema = z.enum(ANNOUNCEMENT_AUDIENCES);
+export type AnnouncementAudience = z.infer<typeof announcementAudienceSchema>;
+
+/** §6.19.4: draft → published → archived (published → draft only before the window opens). */
+export const ANNOUNCEMENT_LIFECYCLES = ['draft', 'published', 'archived'] as const;
+export const announcementLifecycleSchema = z.enum(ANNOUNCEMENT_LIFECYCLES);
+export type AnnouncementLifecycle = z.infer<typeof announcementLifecycleSchema>;
+
+/**
+ * "Also notify by e-mail" delay (Chief ruling 2026-10-30): days after the
+ * window opened before the one e-mail goes to the accounts still pending;
+ * `0` = at window open. `ack_required` only, like the toggle.
+ */
+export const ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT = 7;
+export const ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_MAX = 365;
+export const announcementNotifyEmailAfterDaysSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_MAX);
+
+/**
  * The notification `type` reused by V4-P0c for the one-off lean-email-defaults
  * notice — announcement inbox entries share it so the deep-link route key
  * (V4-P0c's `NotificationBell.notificationLink`) resolves identically. Deep-link
@@ -1451,6 +1485,24 @@ export const announcementSchema = z
     failedCount: z.number().int().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
+    // ── §6.19 (contract §7.1). Optional until the lifecycle routes replace
+    // `active` (§6.19.14 T2-A, second PR); a current server sends them all.
+    kind: announcementKindSchema.optional(),
+    audience: announcementAudienceSchema.optional(),
+    lifecycle: announcementLifecycleSchema.optional(),
+    bodyFormat: announcementBodyFormatSchema.optional(),
+    /** When an operator published it; null for drafts. */
+    releasedAt: z.string().datetime().nullable().optional(),
+    /** The frozen `existing_at_publish` cutoff; null for drafts. */
+    audienceCutoffAt: z.string().datetime().nullable().optional(),
+    archivedAt: z.string().datetime().nullable().optional(),
+    /** When the lapse pass completed (`ack_required` only). */
+    lapseRecordedAt: z.string().datetime().nullable().optional(),
+    /** "Also notify by e-mail" — `true` only on `ack_required`. */
+    notifyByEmail: z.boolean().optional(),
+    notifyByEmailAfterDays: announcementNotifyEmailAfterDaysSchema.optional(),
+    /** When the e-mail pass completed; null otherwise. Read-only. */
+    emailPassRecordedAt: z.string().datetime().nullable().optional(),
   })
   .strict();
 export type Announcement = z.infer<typeof announcementSchema>;
@@ -1559,6 +1611,134 @@ export const announcementRedeliverResponseSchema = z
   })
   .strict();
 export type AnnouncementRedeliverResponse = z.infer<typeof announcementRedeliverResponseSchema>;
+
+// ── The acknowledgement log (contract §7.4, §7.5) ───────────────────────────
+
+/**
+ * `GET /admin/announcements/:id/stats`. `audience` counts the accounts in the
+ * audience now (a draft: as if published now); `acknowledged` counts accounts
+ * that still exist, and the pseudonymised rows of since-deleted accounts are
+ * counted ONLY in `acknowledgedByDeletedAccounts` — never in `audience`,
+ * `acknowledged` or `pending`. `pending` is `audience - acknowledged - lapsed`
+ * for `ack_required`, null otherwise.
+ */
+export const announcementStatsResponseSchema = z
+  .object({
+    announcementId: z.string().uuid(),
+    kind: announcementKindSchema,
+    audience: z.number().int().nonnegative(),
+    seen: z.number().int().nonnegative(),
+    dismissed: z.number().int().nonnegative(),
+    acknowledged: z.number().int().nonnegative(),
+    acknowledgedByDeletedAccounts: z.number().int().nonnegative(),
+    lapsed: z.number().int().nonnegative(),
+    pending: z.number().int().nonnegative().nullable(),
+    lapseRecorded: z.boolean(),
+    computedAt: z.string().datetime(),
+  })
+  .strict();
+export type AnnouncementStatsResponse = z.infer<typeof announcementStatsResponseSchema>;
+
+/** Receipt states, and the `?state=` tabs (`all` is the default). */
+export const ANNOUNCEMENT_RECEIPT_STATES = [
+  'pending',
+  'acknowledged',
+  'lapsed',
+  'seen',
+  'dismissed',
+  'unseen',
+] as const;
+export const announcementReceiptStateSchema = z.enum(ANNOUNCEMENT_RECEIPT_STATES);
+export type AnnouncementReceiptState = z.infer<typeof announcementReceiptStateSchema>;
+export const ANNOUNCEMENT_RECEIPT_FILTERS = [...ANNOUNCEMENT_RECEIPT_STATES, 'all'] as const;
+export const announcementReceiptFilterSchema = z.enum(ANNOUNCEMENT_RECEIPT_FILTERS);
+export type AnnouncementReceiptFilter = z.infer<typeof announcementReceiptFilterSchema>;
+
+export const ANNOUNCEMENT_RECEIPTS_PAGE_DEFAULT = 50;
+export const ANNOUNCEMENT_RECEIPTS_PAGE_MAX = 200;
+
+/** `GET /admin/announcements/:id/receipts?state=&cursor=&limit=` — keyset, opaque cursor. */
+export const announcementReceiptsQuerySchema = z
+  .object({
+    state: announcementReceiptFilterSchema.default('all'),
+    cursor: z.string().min(1).max(512).optional(),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ANNOUNCEMENT_RECEIPTS_PAGE_MAX)
+      .default(ANNOUNCEMENT_RECEIPTS_PAGE_DEFAULT),
+  })
+  .strict();
+export type AnnouncementReceiptsQuery = z.infer<typeof announcementReceiptsQuerySchema>;
+
+/** `GET /admin/announcements/:id/receipts.csv?state=` — the same filter, every page. */
+export const announcementReceiptsCsvQuerySchema = z
+  .object({ state: announcementReceiptFilterSchema.default('all') })
+  .strict();
+export type AnnouncementReceiptsCsvQuery = z.infer<typeof announcementReceiptsCsvQuerySchema>;
+
+/** Account status in the log — `deleted` for a pseudonymised row (§7.5). */
+export const ANNOUNCEMENT_RECEIPT_ACCOUNT_STATUSES = ['active', 'disabled', 'deleted'] as const;
+export const announcementReceiptAccountStatusSchema = z.enum(ANNOUNCEMENT_RECEIPT_ACCOUNT_STATUSES);
+export type AnnouncementReceiptAccountStatus = z.infer<
+  typeof announcementReceiptAccountStatusSchema
+>;
+
+/**
+ * One row of the acknowledgement log (contract §7.4). A deleted account's row
+ * has `userId`, `username` and `accountCreatedAt` null, `subjectToken` set,
+ * `accountStatus: "deleted"` and `state: "acknowledged"` (§7.5). Never an
+ * e-mail address, never an IP address.
+ */
+export const announcementReceiptRowSchema = z
+  .object({
+    userId: z.string().uuid().nullable(),
+    subjectToken: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    username: z.string().nullable(),
+    accountCreatedAt: z.string().datetime().nullable(),
+    accountStatus: announcementReceiptAccountStatusSchema,
+    state: announcementReceiptStateSchema,
+    seenAt: z.string().datetime().nullable(),
+    dismissedAt: z.string().datetime().nullable(),
+    acknowledgedAt: z.string().datetime().nullable(),
+    acknowledgedVia: announcementAckViaSchema.nullable(),
+    acknowledgedLocale: announcementContentLocaleSchema.nullable(),
+    contentSha256: contentSha256Schema.nullable(),
+    lapsedAt: z.string().datetime().nullable(),
+    lapseReason: announcementLapseReasonSchema.nullable(),
+  })
+  .strict();
+export type AnnouncementReceiptRow = z.infer<typeof announcementReceiptRowSchema>;
+
+/** The CSV header row — the receipt columns in order, snake_case (§7.4). */
+export const ANNOUNCEMENT_RECEIPTS_CSV_COLUMNS = [
+  'user_id',
+  'subject_token',
+  'username',
+  'account_created_at',
+  'account_status',
+  'state',
+  'seen_at',
+  'dismissed_at',
+  'acknowledged_at',
+  'acknowledged_via',
+  'acknowledged_locale',
+  'content_sha256',
+  'lapsed_at',
+  'lapse_reason',
+] as const;
+
+export const announcementReceiptsResponseSchema = z
+  .object({
+    items: z.array(announcementReceiptRowSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .strict();
+export type AnnouncementReceiptsResponse = z.infer<typeof announcementReceiptsResponseSchema>;
 
 // ── Backup / restore-drill readiness (#1406 W1) ──────────────────────────────
 // The production stack's `backup-scheduler` writes a machine-readable status

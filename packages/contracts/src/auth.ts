@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { localeSchema } from './i18n';
+import { pendingAcknowledgementSchema } from './notifications';
 import { profileIconIdSchema } from './social';
 
 export const ROLES = ['user', 'admin'] as const;
@@ -370,6 +371,17 @@ export const meResponseSchema = z.object({
    * and show nothing; never as "owed".
    */
   paranoidFreshStartPending: z.boolean().optional(),
+  /**
+   * The `ack_required` announcements this account still owes (contract §4.6,
+   * PROJECTPLAN §6.19.7), oldest obligation first; `[]` when nothing is owed
+   * and for admin-kind accounts. Present for sessions AND bearers, whatever
+   * the bearer gate flag says, so an app can show its dialog before the flag
+   * is ever turned on.
+   *
+   * Optional on the SCHEMA only: an older server omits it. Read absence as
+   * "unknown" (show nothing, rely on the gate's 403), never as "nothing owed".
+   */
+  pendingAcknowledgements: z.array(pendingAcknowledgementSchema).optional(),
   createdAt: z.string().datetime(),
 });
 export type MeResponse = z.infer<typeof meResponseSchema>;

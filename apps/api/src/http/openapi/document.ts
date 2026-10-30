@@ -109,6 +109,20 @@ const VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION = {
     'a plain reported line, which is what it was before the affordance existed.',
 };
 
+// Third instance: the announcement `bodyDoc` tree (contract §3.2) recurses
+// through `bodyInlineSchema`, a ZodLazy. Documented as an object whose exact,
+// closed shape the contract file specifies; the server only ever emits trees its
+// own parser built, and every client renders it as text nodes.
+const BODY_INLINE_DOCUMENTATION = {
+  type: 'object' as const,
+  additionalProperties: true,
+  description:
+    'One inline node of an announcement body (docs/announcements-contract.md §3.2): ' +
+    '{t:"text",v} · {t:"br"} · {t:"strong",c} · {t:"em",c} · {t:"code",v} · {t:"link",href,c}, ' +
+    'where c is an array of inline nodes. Documented as an object because OpenAPI 3.0 here ' +
+    'cannot express the recursive union; render every string as a text node, never as markup.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -140,6 +154,7 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
     contracts.vaultImportRowKindUndecidedSchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION,
   ],
+  [contracts.bodyInlineSchema as unknown as HintableSchema, BODY_INLINE_DOCUMENTATION],
 ];
 
 function withVaultJsonDocumentation<T>(generate: () => T): T {

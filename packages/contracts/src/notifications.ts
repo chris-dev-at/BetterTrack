@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+import {
+  announcementBodyFormatSchema,
+  announcementContentLocaleSchema,
+  announcementKindSchema,
+  bodyDocSchema,
+  contentSha256Schema,
+} from './announcementBody';
+
 /**
  * In-app notifications (PROJECTPLAN.md §6.10, §8). Rows are written by the
  * notification dispatcher (a pure event-bus subscriber); this contract only
@@ -666,29 +674,177 @@ export const ACTIVE_ANNOUNCEMENT_SEVERITIES = ['info', 'warning', 'critical'] as
 export const activeAnnouncementSeveritySchema = z.enum(ACTIVE_ANNOUNCEMENT_SEVERITIES);
 export type ActiveAnnouncementSeverity = z.infer<typeof activeAnnouncementSeveritySchema>;
 
-/** One active-for-me announcement rendered in the viewer's locale. */
-export const activeAnnouncementSchema = z
-  .object({
-    id: z.string().uuid(),
-    severity: activeAnnouncementSeveritySchema,
-    /** The viewer-locale rendered title (EN default when locale falls back). */
-    title: z.string(),
-    /** The viewer-locale rendered body (EN default when locale falls back). */
-    body: z.string(),
-    publishedAt: z.string().datetime().nullable(),
-  })
-  .strict();
-export type ActiveAnnouncement = z.infer<typeof activeAnnouncementSchema>;
+/**
+ * Where a user-visible announcement stands (contract §2): `active` (published,
+ * window open), `ended` (`endsAt` passed — for `ack_required` that is the
+ * lapse), `archived` (withdrawn). A client treats an unknown value as `ended`.
+ */
+export const ANNOUNCEMENT_STATUSES = ['active', 'ended', 'archived'] as const;
+export const announcementStatusSchema = z.enum(ANNOUNCEMENT_STATUSES);
+export type AnnouncementStatus = z.infer<typeof announcementStatusSchema>;
+
+/** Why an `ack_required` obligation lapsed (§6.19.3). */
+export const ANNOUNCEMENT_LAPSE_REASONS = ['ended', 'archived'] as const;
+export const announcementLapseReasonSchema = z.enum(ANNOUNCEMENT_LAPSE_REASONS);
+export type AnnouncementLapseReason = z.infer<typeof announcementLapseReasonSchema>;
+
+/** The channel an acknowledgement came through — first-party only (§4). */
+export const ANNOUNCEMENT_ACK_VIAS = ['web_session', 'first_party_oauth'] as const;
+export const announcementAckViaSchema = z.enum(ANNOUNCEMENT_ACK_VIAS);
+export type AnnouncementAckVia = z.infer<typeof announcementAckViaSchema>;
+
+/** `AnnouncementReceipt` (contract §3.3): the caller's own record for one item. */
+export const announcementReceiptSchema = z.object({
+  seenAt: z.string().datetime().nullable(),
+  dismissedAt: z.string().datetime().nullable(),
+  acknowledgedAt: z.string().datetime().nullable(),
+  lapsedAt: z.string().datetime().nullable(),
+  lapseReason: announcementLapseReasonSchema.nullable(),
+});
+export type AnnouncementReceipt = z.infer<typeof announcementReceiptSchema>;
 
 /**
- * `GET /notifications/announcements` — the active-for-me set. Server-computed:
- * currently in the window (start ≤ now ≤ end), flagged `active`, and NOT
- * dismissed by the caller. Rendered in the viewer's locale via `emailI18n`.
+ * `UserAnnouncement` (contract §3.3) — one announcement rendered in one locale.
+ *
+ * The five KEPT fields are required; every NEW one is optional in the schema
+ * so an older server's payload still decodes (a current server always sends
+ * them all). NOT `.strict()`, on purpose (CEO addendum 2026-10-30): clients
+ * ignore unknown response fields (contract conventions), and the web decodes
+ * this list with this very schema — a strict decoder would turn the next
+ * additive field into an outage.
  */
-export const activeAnnouncementListResponseSchema = z
-  .object({ announcements: z.array(activeAnnouncementSchema) })
-  .strict();
+export const activeAnnouncementSchema = z.object({
+  id: z.string().uuid(),
+  severity: activeAnnouncementSeveritySchema,
+  /** In `contentLocale` (EN when the requested locale is missing). */
+  title: z.string(),
+  /** The source text in `contentLocale`, read per `bodyFormat`. Prefer `bodyDoc`. */
+  body: z.string(),
+  /** When the inbox fan-out completed — not when the operator pressed Publish. */
+  publishedAt: z.string().datetime().nullable(),
+  kind: announcementKindSchema.optional(),
+  bodyFormat: announcementBodyFormatSchema.optional(),
+  /** The parsed body (§3.2). Clients render this, never `body`, when present. */
+  bodyDoc: bodyDocSchema.optional(),
+  contentLocale: announcementContentLocaleSchema.optional(),
+  availableLocales: z.array(announcementContentLocaleSchema).optional(),
+  /** SHA-256 of exactly what was rendered (§3.5) — echoed on acknowledge. */
+  contentSha256: contentSha256Schema.optional(),
+  startsAt: z.string().datetime().nullable().optional(),
+  /** Exclusive. For `ack_required`, `null` = binding until acknowledged. */
+  endsAt: z.string().datetime().nullable().optional(),
+  /** `false` exactly for `ack_required`. */
+  dismissible: z.boolean().optional(),
+  /** Always `active` in the list (§4.1). */
+  status: announcementStatusSchema.optional(),
+  receipt: announcementReceiptSchema.optional(),
+});
+export type ActiveAnnouncement = z.infer<typeof activeAnnouncementSchema>;
+/** The contract's name for the same shape. */
+export const userAnnouncementSchema = activeAnnouncementSchema;
+export type UserAnnouncement = ActiveAnnouncement;
+
+/**
+ * `GET /notifications/announcements` — published, window open, caller in the
+ * audience, minus dismissed `notice`/`once` and acknowledged `ack_required`.
+ * Order: `ack_required` (oldest obligation first), then `once`, then `notice`
+ * (each newest first); at most 50 (contract §4.1). Not strict (see above).
+ */
+export const activeAnnouncementListResponseSchema = z.object({
+  announcements: z.array(activeAnnouncementSchema),
+});
 export type ActiveAnnouncementListResponse = z.infer<typeof activeAnnouncementListResponseSchema>;
+
+/** `?locale=` on the user reads (§4.1, §4.2): overrides the stored locale once. */
+export const userAnnouncementQuerySchema = z
+  .object({ locale: announcementContentLocaleSchema.optional() })
+  .strict();
+export type UserAnnouncementQuery = z.infer<typeof userAnnouncementQuerySchema>;
+
+/** At most this many items in the user list (§4.1). */
+export const USER_ANNOUNCEMENT_LIST_MAX = 50;
+
+/**
+ * `PendingAcknowledgement` (contract §3.6) — one obligation still owed.
+ * Arrays of it are ordered oldest obligation first.
+ */
+export const pendingAcknowledgementSchema = z.object({
+  id: z.string().uuid(),
+  severity: activeAnnouncementSeveritySchema,
+  /** In the caller's stored locale (English fallback). */
+  title: z.string(),
+  startsAt: z.string().datetime().nullable(),
+  /** `null` = binding until acknowledged; otherwise the lapse instant. */
+  endsAt: z.string().datetime().nullable(),
+});
+export type PendingAcknowledgement = z.infer<typeof pendingAcknowledgementSchema>;
+
+/**
+ * `POST /notifications/announcements/:id/acknowledge` body (contract §4.5).
+ * Strict: an unknown field is a 400. `confirm` is the ticked checkbox and must
+ * be the literal `true`; `locale` and `contentSha256` name the exact text the
+ * person was shown.
+ */
+export const acknowledgeAnnouncementRequestSchema = z
+  .object({
+    confirm: z.literal(true),
+    locale: announcementContentLocaleSchema,
+    contentSha256: contentSha256Schema,
+  })
+  .strict();
+export type AcknowledgeAnnouncementRequest = z.infer<typeof acknowledgeAnnouncementRequestSchema>;
+
+/** The recorded acknowledgement — first write wins, a replay returns the original. */
+export const announcementAcknowledgementSchema = z.object({
+  announcementId: z.string().uuid(),
+  acknowledgedAt: z.string().datetime(),
+  via: announcementAckViaSchema,
+  locale: announcementContentLocaleSchema,
+  contentSha256: contentSha256Schema,
+});
+export type AnnouncementAcknowledgement = z.infer<typeof announcementAcknowledgementSchema>;
+
+export const acknowledgeAnnouncementResponseSchema = z.object({
+  acknowledgement: announcementAcknowledgementSchema,
+  /** Still owed after this one. */
+  pendingAcknowledgements: z.array(pendingAcknowledgementSchema),
+});
+export type AcknowledgeAnnouncementResponse = z.infer<typeof acknowledgeAnnouncementResponseSchema>;
+
+/**
+ * The gate's refusal (contract §5.2): `403 ACKNOWLEDGEMENT_REQUIRED`, also a
+ * realtime connection error. Kept out of `AUTH_ERROR_CODES` until the gate is
+ * mounted (§6.19.14 T2-B) — OpenAPI publishes that set on every operation, and
+ * it must not claim a refusal no operation can yet produce.
+ */
+export const ACKNOWLEDGEMENT_REQUIRED = 'ACKNOWLEDGEMENT_REQUIRED';
+export const acknowledgementRequiredDetailsSchema = z.object({
+  /** Never empty; the shape and order of §3.6. */
+  pendingAcknowledgements: z.array(pendingAcknowledgementSchema).min(1),
+});
+export type AcknowledgementRequiredDetails = z.infer<typeof acknowledgementRequiredDetailsSchema>;
+
+/** Every announcement error code of contract §8, by name. */
+export const ANNOUNCEMENT_ERROR_CODES = {
+  acknowledgementRequired: ACKNOWLEDGEMENT_REQUIRED,
+  notFound: 'ANNOUNCEMENT_NOT_FOUND',
+  notDismissible: 'ANNOUNCEMENT_NOT_DISMISSIBLE',
+  notAcknowledgeable: 'ANNOUNCEMENT_NOT_ACKNOWLEDGEABLE',
+  notPending: 'ANNOUNCEMENT_NOT_PENDING',
+  contentChanged: 'ANNOUNCEMENT_CONTENT_CHANGED',
+  localeUnavailable: 'ANNOUNCEMENT_LOCALE_UNAVAILABLE',
+  textInvalid: 'ANNOUNCEMENT_TEXT_INVALID',
+  bodyInvalid: 'ANNOUNCEMENT_BODY_INVALID',
+  incomplete: 'ANNOUNCEMENT_INCOMPLETE',
+  notDraft: 'ANNOUNCEMENT_NOT_DRAFT',
+  notPublished: 'ANNOUNCEMENT_NOT_PUBLISHED',
+  alreadyLive: 'ANNOUNCEMENT_ALREADY_LIVE',
+  fieldLocked: 'ANNOUNCEMENT_FIELD_LOCKED',
+  ended: 'ANNOUNCEMENT_ENDED',
+  invalidWindow: 'INVALID_ANNOUNCEMENT_WINDOW',
+} as const;
+export type AnnouncementErrorCode =
+  (typeof ANNOUNCEMENT_ERROR_CODES)[keyof typeof ANNOUNCEMENT_ERROR_CODES];
 
 /**
  * `POST /notifications/announcements/:id/dismiss` — per-user dismissal.
