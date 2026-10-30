@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -10,7 +11,12 @@ import {
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
 } from '@bettertrack/contracts';
 
-vi.mock('../../lib/feedbackApi', () => ({ submitFeedback: vi.fn() }));
+vi.mock('../../lib/feedbackApi', () => ({
+  // The Settings panel also renders "my submissions"; an empty list keeps
+  // these composer tests about the composer.
+  listMyFeedback: vi.fn(() => Promise.resolve({ submissions: [] })),
+  submitFeedback: vi.fn(),
+}));
 
 import { I18nProvider } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
@@ -30,12 +36,15 @@ function renderDialog(path = '/portfolio?portfolio=portfolio-1') {
 }
 
 function renderFeedbackPanel(screenPath: string) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <I18nProvider initialLocale="en">
-      <MemoryRouter initialEntries={['/control/feedback']}>
-        <FeedbackPanel screen={screenPath} />
-      </MemoryRouter>
-    </I18nProvider>,
+    <QueryClientProvider client={queryClient}>
+      <I18nProvider initialLocale="en">
+        <MemoryRouter initialEntries={['/control/feedback']}>
+          <FeedbackPanel screen={screenPath} />
+        </MemoryRouter>
+      </I18nProvider>
+    </QueryClientProvider>,
   );
 }
 

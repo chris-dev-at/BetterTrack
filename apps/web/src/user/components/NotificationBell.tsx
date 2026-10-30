@@ -83,11 +83,13 @@ function notificationLink(notification: Notification): string | null {
         ? `/people/shared#thread-${enc(itemKind)}-${enc(itemId)}`
         : '/people/shared';
     }
-    // Feedback updates share the compact Control Center surface. The payload's
-    // feedbackId/messageId remain available for clients with a detail route.
+    // Feedback updates → that submission's conversation in the Control Center's
+    // Feedback panel (`?submission=`, the panel's public deep-link contract).
     case 'feedback.status_changed':
-    case 'feedback.reply_created':
-      return '/control/feedback';
+    case 'feedback.reply_created': {
+      const feedbackId = payloadString(p, 'feedbackId');
+      return feedbackId ? `/control/feedback?submission=${enc(feedbackId)}` : '/control/feedback';
+    }
     // Account/security → the matching settings page.
     case 'account.temp_password':
       return '/settings/security';
