@@ -14,6 +14,7 @@ describe('withTimeout', () => {
   });
 
   it('rejects with TimeoutError when the operation is too slow', async () => {
+    // eslint-disable-next-line tests/no-sleep -- the delay IS the fixture: `withTimeout`'s subject is an operation slower than its budget, so there is nothing to await. The test costs the 10 ms budget, not the 50 ms.
     const slow = () => new Promise<string>((resolve) => setTimeout(() => resolve('late'), 50));
     await expect(withTimeout(slow, 10)).rejects.toBeInstanceOf(TimeoutError);
   });

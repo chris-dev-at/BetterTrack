@@ -672,7 +672,22 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
           },
           { refresh: providerRefreshFields(hit, resolved !== null) },
         );
-        if (created) await backfill.enqueue(row.id);
+        if (created) {
+          // One row's enqueue failing costs only that row's backfill, never the
+          // rest of the run (#1184: a job id BullMQ refused threw here, escaped
+          // into the whole-run catch below, and every later hit of the search
+          // went unwritten). The row exists either way; a later run sees it as
+          // existing, so its history is then warmed on first reference
+          // (services/assets/referenceBackfill.ts) instead.
+          try {
+            await backfill.enqueue(row.id);
+          } catch (err) {
+            logger.warn(
+              { err, query, assetId: row.id },
+              'catalog enrichment could not enqueue a history backfill',
+            );
+          }
+        }
       }
     } catch (err) {
       // A provider outage or 404 must never surface to the user (§6.2) — they

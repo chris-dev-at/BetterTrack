@@ -55,6 +55,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
+import { authorizeReturnTo } from '../../services/auth/authorizeReturnTo';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -71,7 +72,9 @@ import {
 } from '../cookies';
 import {
   ACCOUNT_SECURITY_SCOPE,
+  isAdminRoleBearerPrincipal,
   passkeyManagementRouteAcceptsBearer,
+  recordBearerScopeDenied,
 } from '../middleware/bearerAuth';
 import { requireAuth, requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
@@ -98,35 +101,80 @@ const securityMutationContextOf = (req: Request): SecurityMutationContext => {
 /**
  * Router-local twin of the global passkey-management policy (#1365), the same
  * shape the tax-documentation, mirrorchain and vault surfaces already carry.
- * It independently re-checks credential kind, scope AND the exact method+path
- * allowlist, so neither a policy-table reshuffle nor a direct router mount can
- * hand a bearer the registration or sign-in ceremonies — or any future
- * `/auth/passkeys/*` sibling — by accident. Live behavior is unchanged: the
- * global rail resolves the same three routes and answers first.
+ *
+ * It independently re-checks scope AND the exact method+path allowlist, so
+ * neither a policy-table reshuffle nor a direct router mount can hand a bearer
+ * the registration or sign-in ceremonies — or any future `/auth/passkeys/*`
+ * sibling — by accident. Live behavior is unchanged: the global rail resolves
+ * the same three routes and answers first.
+ *
+ * It deliberately does NOT re-check credential KIND (#1951 §3). #1324 widened
+ * this surface to every `account:security` bearer — a personal API key and a
+ * delegated OAuth token are equally admitted here, exactly as the global table
+ * admits them — so a kind check would be a narrowing this twin never had and
+ * must not acquire. The grant twin in `settingsRoutes.ts` is the one that is
+ * kind- and first-party-aware, because ITS global policy is.
+ *
+ * ## Why it takes `ctx` (#1951 §2)
+ *
+ * The global rail audits the identical refusal; a silent twin would drop that
+ * `api_key.scope_denied` row precisely when the table it backstops has
+ * regressed. So the twin writes it through the same
+ * {@link recordBearerScopeDenied} rail — and only for a real scope denial: a
+ * bearer refused on a route the allowlist ACCEPTS. A bearer on an off-allowlist
+ * `/auth/passkeys/*` path (a registration or login ceremony) is not a scope
+ * event at all — the global table classifies those session-only and audits
+ * nothing — and an unauthenticated caller has no principal to audit.
+ *
+ * Exactly one row per refusal: the global guard short-circuits before routing
+ * whenever it answers, so the two writers can never both run for one request.
+ *
+ * ## The account-kind backstop (#1958)
+ *
+ * A bearer-backed admin principal 404s here exactly as it does on the rail and
+ * on the portfolio-vault / per-vault twins — the boundary is one shared
+ * predicate, so the five twins state it identically. It precedes every other
+ * branch, so such a principal learns nothing about this surface and writes no
+ * `api_key.scope_denied` row: a 404 across the user/admin boundary is not a
+ * scope event, and the rail does not audit it either.
  */
-export const requireCookieSessionOrPasskeyManagementBearer: RequestHandler = (req, _res, next) => {
-  const bearerAllowed =
-    req.apiKey !== undefined &&
-    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-    passkeyManagementRouteAcceptsBearer(
-      req.method,
-      `/auth${req.path === '/' || req.path === '' ? '' : req.path}`,
-    );
-  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
-    next();
-    return;
-  }
-  next(
-    forbidden(
+export function requireCookieSessionOrPasskeyManagementBearer(ctx: AppContext): RequestHandler {
+  return function requireCookieSessionOrPasskeyManagementBearer(req, _res, next) {
+    if (isAdminRoleBearerPrincipal(req)) {
+      next(notFound());
+      return;
+    }
+    const path = `/auth${req.path === '/' || req.path === '' ? '' : req.path}`;
+    const routeAccepted = passkeyManagementRouteAcceptsBearer(req.method, path);
+    const scoped =
+      req.apiKey !== undefined && scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE);
+    if ((!req.apiKey && req.sessionId) || (scoped && routeAccepted)) {
+      next();
+      return;
+    }
+    const refusal = forbidden(
       'Passkey management requires the owning session or account-security access.',
       'API_KEY_FORBIDDEN',
-    ),
-  );
-};
+    );
+    if (req.apiKey !== undefined && routeAccepted) {
+      // Reachable only with `!scoped` — the admit branch above took the scoped
+      // case — so this is the rail's `insufficient-scope`, one row, same reason.
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, 'insufficient-scope', path).then(
+        () => next(refusal),
+        next,
+      );
+      return;
+    }
+    next(refusal);
+  };
+}
 
 /** Auth endpoints (PROJECTPLAN.md §6.1, §8). Controllers stay thin. */
 export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
+  // Built once per router, not per request: the guard closes over `ctx` only to
+  // reach the audit rail.
+  const passkeyManagementAccess = requireCookieSessionOrPasskeyManagementBearer(ctx);
 
   /**
    * Stamp `paranoidFreshStartPending` onto a session payload (PARANOID E9, §17
@@ -221,15 +269,22 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Logout is the unified sign-out for both clients (§6.1, §6.13, #361). A cookie
   // session is destroyed and its cookie cleared. A **bearer** principal instead
   // self-revokes the credential it presented — the personal API key, or (for a
-  // delegated OAuth token) its whole grant, which instantly kills that grant's
-  // access + refresh tokens (server-side revocation, not just a local wipe). No
+  // delegated OAuth token) its OWN per-install token family, which instantly
+  // kills that install's access + refresh tokens while every other install on
+  // the same grant stays signed in (§16 2026-10-29; a legacy NULL-family token
+  // still revokes its grant). Server-side revocation, not just a local wipe. No
   // scope is required beyond a valid token: you may always revoke yourself.
   router.post('/logout', async (req, res) => {
     if (req.apiKey) {
       const userId = req.authUser!.id;
       const ip = req.ip ?? null;
       if (req.apiKey.kind === 'oauth') {
-        await ctx.oauth.revokeGrant({ userId, id: req.apiKey.id, ip });
+        await ctx.oauth.revokeOwnFamily({
+          userId,
+          grantId: req.apiKey.id,
+          familyId: req.apiKey.familyId ?? null,
+          ip,
+        });
       } else {
         await ctx.apiKeys.revoke({ userId, id: req.apiKey.id, ip });
       }
@@ -344,7 +399,10 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Acknowledging touches the caller's own wipe receipt only — there is no id in
   // the payload, so there is no ownership check to forget — and it is set-once
   // (guarded on `notice_acknowledged_at IS NULL`), so a replay is harmless. Same
-  // contract as `/first-run/complete` above, which it deliberately mirrors.
+  // contract as `/first-run/complete` above, which it deliberately mirrors —
+  // including its bearer shape: the owning session and an `account:security`
+  // bearer (the native client, which reads the bit from `GET /auth/me`) use the
+  // same handler; only this POST is widened in `resolveAuthPolicy`.
   //
   // Neither this nor anything else reachable over HTTP can perform the wipe; this
   // reads and stamps a receipt the owner-run wipe already wrote (see
@@ -649,14 +707,9 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // a fresh password or a 2FA factor — while rename deliberately is not.
   // Registration stays session-only and origin-bound; options are minted
   // server-side from `config.webauthn` with a single-use, short-TTL challenge.
-  router.get(
-    '/passkeys',
-    requireUser,
-    requireCookieSessionOrPasskeyManagementBearer,
-    async (req, res) => {
-      res.json(await ctx.passkeys.list(req.authUser!.id));
-    },
-  );
+  router.get('/passkeys', requireUser, passkeyManagementAccess, async (req, res) => {
+    res.json(await ctx.passkeys.list(req.authUser!.id));
+  });
 
   router.post('/passkeys/register/options', requireUser, async (req, res) => {
     res.json(await ctx.passkeys.startRegistration(req.authUser!.id));
@@ -675,7 +728,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.patch(
     '/passkeys/:id',
     requireUser,
-    requireCookieSessionOrPasskeyManagementBearer,
+    passkeyManagementAccess,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyRenameRequestSchema),
     async (req, res) => {
@@ -688,7 +741,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.delete(
     '/passkeys/:id',
     requireUser,
-    requireCookieSessionOrPasskeyManagementBearer,
+    passkeyManagementAccess,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyDeleteRequestSchema),
     async (req, res) => {
@@ -821,12 +874,33 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Kick off the flow: bind a single-use `state` and redirect to Google. A live
   // cookie session turns this into a "link Google to my account" flow (from
   // Settings); anonymous is a sign-in/registration. A brand-new identity lands
-  // back on the connected register form, where any invite token is entered — so
-  // nothing rides through `start` beyond the flow's CSRF state.
+  // back on the connected register form, where any invite token is entered.
+  //
+  // `?returnTo=` (owner directive 2026-10-29): the pending `/oauth/authorize?…`
+  // request of the app's Custom-Tab sign-in, so the callback lands back INTO it.
+  // It is attacker-controlled, so it is validated with the SPA's own rule
+  // (same-origin path, exactly `/oauth/authorize`, no `//`, `\`, `#` or control
+  // characters — {@link authorizeReturnTo}) and an unsafe one REFUSES the flow:
+  // no state is minted, no cookie set, Google is never contacted, and the
+  // browser lands on the login page's generic Google error. A safe one is bound
+  // to the single-use server-side `state` (never echoed through Google), so the
+  // callback only ever redirects to a value THIS browser started the flow with.
+  // A link flow keeps its fixed Settings landing; `returnTo` is dropped there.
   router.get('/google/start', async (req, res) => {
     if (!ctx.google.isEnabled()) throw notFound();
+    let returnTo: string | null = null;
+    if (req.query.returnTo !== undefined) {
+      returnTo = authorizeReturnTo(req.query.returnTo);
+      if (returnTo === null) {
+        res.redirect(`${ctx.config.appOrigin}/login?error=google_return_invalid`);
+        return;
+      }
+    }
     const linkUserId = req.authUser && !req.apiKey ? req.authUser.id : null;
-    const { url, state } = await ctx.google.buildAuthorizeUrl({ linkUserId });
+    const { url, state } = await ctx.google.buildAuthorizeUrl({
+      linkUserId,
+      returnTo: linkUserId ? null : returnTo,
+    });
     // Bind the state to this browser: the callback requires the same value back
     // from this signed cookie (login-CSRF defence, §13.4 V4-P4b).
     setGoogleOAuthStateCookie(res, ctx.config, state);
@@ -837,24 +911,35 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // in / links / registers. Always ends in a redirect to the SPA — a success sets
   // the session cookie exactly like password login; every failure carries a
   // friendly `?error=` the SPA renders (no JSON error page for a browser flow).
+  //
+  // A sign-in started inside the app's OAuth authorize flow carries `returnTo`
+  // back from the service — read from the server-side `state` record, validated
+  // again there — and every outcome lands INSIDE that pending authorize request
+  // (owner directive 2026-10-29): success → the authorize URL itself (consent →
+  // the app's PKCE redirect), a brand-new identity → the connected register
+  // form carrying it, a failure → the login page carrying it. Only ever
+  // appended to the configured web origin.
   router.get('/google/callback', async (req, res) => {
     if (!ctx.google.isEnabled()) throw notFound();
     const web = ctx.config.appOrigin;
     // The state cookie is single-use — always clear it, whatever the outcome.
     const cookieState = req.signedCookies?.[GOOGLE_OAUTH_STATE_COOKIE] as string | undefined;
     clearGoogleOAuthStateCookie(res, ctx.config);
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
     // The user denied consent (or Google errored) before we ever got a code.
+    // The `state` is still spent (single-use), and a sign-in started inside the
+    // authorize flow still returns into it.
     if (typeof req.query.error === 'string' && req.query.error.length > 0) {
-      res.redirect(`${web}/login?error=google_failed`);
+      const { returnTo } = await ctx.google.abandonCallback({ state, cookieState });
+      res.redirect(`${web}/login?error=google_failed${returnToQuery(returnTo)}`);
       return;
     }
-    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
     const code = typeof req.query.code === 'string' ? req.query.code : undefined;
     const result = await ctx.google.handleCallback({ state, cookieState, code, ip: req.ip });
     switch (result.status) {
       case 'authenticated':
         await applySessionCookie(res, result.sessionId, result.persistent);
-        res.redirect(`${web}/?google=signed_in`);
+        res.redirect(result.returnTo ? `${web}${result.returnTo}` : `${web}/?google=signed_in`);
         return;
       case 'linked':
         res.redirect(`${web}/settings/connections?google=linked`);
@@ -864,11 +949,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         // on the connected register form — no account exists yet (owner order
         // 2026-07-16). The account is created only on explicit submit.
         setGoogleRegisterTicketCookie(res, ctx.config, result.ticket);
-        res.redirect(`${web}/register?google=connected`);
+        res.redirect(`${web}/register?google=connected${returnToQuery(result.returnTo)}`);
         return;
       case 'error': {
         const base = result.intent === 'link' ? '/settings/connections' : '/login';
-        res.redirect(`${web}${base}?error=${googleErrorParam(result.code)}`);
+        res.redirect(
+          `${web}${base}?error=${googleErrorParam(result.code)}${returnToQuery(result.returnTo)}`,
+        );
         return;
       }
     }
@@ -1024,6 +1111,16 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   );
 
   return router;
+}
+
+/**
+ * The `&returnTo=…` suffix that carries a pending OAuth authorize request onto
+ * an SPA landing (login / register), or `''`. The value has already passed
+ * `authorizeReturnTo` in the Google service; it is percent-encoded here so it
+ * stays ONE query parameter, and the SPA re-validates it before using it.
+ */
+function returnToQuery(returnTo: string | null | undefined): string {
+  return returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : '';
 }
 
 /**

@@ -13,8 +13,8 @@ import { legalUrl } from '../legal';
 import { Alert, AuthCard, Button, OrDivider, Spinner, TextField } from '../components/ui';
 import { GoogleButton } from './GoogleButton';
 import {
-  OAUTH_RETURN_TO_PARAM,
-  safeAuthorizeContinuation,
+  authorizeReturnTarget,
+  continuationFromSearch,
   withoutScreenHint,
 } from './oauthContinuation';
 
@@ -127,7 +127,7 @@ export function RegisterPage() {
   // registration, or null for an ordinary web signup. Validated fail-closed:
   // an absent, foreign or non-authorize `returnTo` is simply ignored, which
   // leaves the ordinary flow byte-identical.
-  const continuation = safeAuthorizeContinuation(searchParams.get(OAUTH_RETURN_TO_PARAM));
+  const continuation = continuationFromSearch(searchParams);
   // Where every "back to sign in" affordance points. Inside the OAuth flow it
   // is the authorize request itself: `RequireUser` bounces an anonymous visitor
   // to /login carrying it, so signing in lands on consent. The `screen` hint is
@@ -147,16 +147,18 @@ export function RegisterPage() {
   // Whether "Continue with Google" is offered (§13.4 V4-P4b) — env-gated server-side.
   const [googleEnabled, setGoogleEnabled] = useState(false);
   // Google-assisted registration (owner order 2026-07-16). A `?google=connected`
-  // visit resolves the pending ticket; everything else stays `off`. Never
-  // inside an OAuth continuation: the Google round-trip returns through the API
-  // to a bare `/register?google=connected`, which drops the continuation — the
-  // exact stranding this flow exists to fix. The button is hidden there, so
-  // this only ever disarms a hand-built URL.
+  // visit resolves the pending ticket; everything else stays `off`. Inside an
+  // OAuth continuation too (owner directive 2026-10-29): the API binds the
+  // authorize request to the Google `state` and the callback lands a brand-new
+  // identity on `/register?google=connected&returnTo=…`, so the continuation
+  // survives the round trip and the created account walks on into consent. The
+  // ticket itself also records that it was minted inside the authorize flow, so
+  // the server mints the EPHEMERAL session (§399 §A) whatever this page asks.
   const [google, setGoogle] = useState<GoogleConnectState>(() =>
-    searchParams.get('google') === 'connected' && continuation === null
-      ? { phase: 'loading' }
-      : { phase: 'off' },
+    searchParams.get('google') === 'connected' ? { phase: 'loading' } : { phase: 'off' },
   );
+  // The authorize request to carry through a Google round trip started HERE.
+  const googleReturnTo = authorizeReturnTarget(continuation);
   const [googleTicketAttempt, setGoogleTicketAttempt] = useState(0);
 
   useEffect(() => {
@@ -179,7 +181,6 @@ export function RegisterPage() {
   // A missing/expired ticket falls back to a plain form with a notice.
   useEffect(() => {
     if (searchParams.get('google') !== 'connected') return;
-    if (safeAuthorizeContinuation(searchParams.get(OAUTH_RETURN_TO_PARAM)) !== null) return;
     const controller = new AbortController();
     void (async () => {
       try {
@@ -343,12 +344,12 @@ export function RegisterPage() {
           "Continue with Google" on top, the register form in the middle, an OR
           divider, and a prominent "Have an account? → Sign in" box at the very
           bottom. Google is hidden once connected (the OAuth round-trip is done
-          and the account is a submit away) — and inside an OAuth continuation,
-          where the Google round-trip would drop it and strand the user in the
-          webapp (owner 2026-08-07). */}
-      {googleEnabled && !connected && !continuation ? (
+          and the account is a submit away). Inside an OAuth continuation it is
+          offered too and carries the authorize request through the round trip
+          (owner directive 2026-10-29; supersedes the 2026-08-07 hide). */}
+      {googleEnabled && !connected ? (
         <div className="mb-5">
-          <GoogleButton />
+          <GoogleButton returnTo={googleReturnTo} />
         </div>
       ) : null}
       <form onSubmit={onSubmit} className="flex flex-col gap-4">

@@ -10,10 +10,12 @@ import {
   mySharedResponseSchema,
   FRIEND_GROUPS_MAX,
   FRIEND_GROUP_MEMBERS_MAX,
+  GROUP_AUDIENCE_INVALID_ERROR_CODE,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { limiterKeyForUser } from '../http/middleware/rateLimit';
+import { buildOpenApiDocument } from '../http/openapi';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -308,6 +310,10 @@ describe('friend group CRUD', () => {
     const bobPid = await defaultPortfolioId(bobAgent);
     const res = await shareToGroup(bobAgent, bobPid, aliceGroup);
     expect(res.status).toBe(400);
+    // The CODE, not just the status: the SPA's repair branch keys on it, and a
+    // foreign circle must be indistinguishable from a deleted one — naming a
+    // stranger's circle may never confirm that it exists (§6.9).
+    expect(res.body.error.code).toBe(GROUP_AUDIENCE_INVALID_ERROR_CODE);
 
     // A group audience with no group id at all is rejected (on his own item, so
     // ownership passes and we hit the group-validation gate, not a 404).
@@ -316,6 +322,37 @@ describe('friend group CRUD', () => {
       .set(...XRW)
       .send({ audience: 'group' });
     expect(missing.status).toBe(400);
+    expect(missing.body.error.code).toBe(GROUP_AUDIENCE_INVALID_ERROR_CODE);
+  });
+
+  it('refuses a write naming a DELETED circle with the code the picker repairs on', async () => {
+    // #1899/#1978 — the picker caches the circle list for 30 s, so the owner can
+    // delete "Family" in another tab and still pick it here. That write is the
+    // one refusal the owner can act on from inside the dialog, so it must carry
+    // the shared code rather than fall into the generic retry copy.
+    const { aliceAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    expect((await aliceAgent.delete(`/api/v1/social/groups/${groupId}`).set(...XRW)).status).toBe(
+      204,
+    );
+
+    const refused = await shareToGroup(aliceAgent, pid, groupId);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe(GROUP_AUDIENCE_INVALID_ERROR_CODE);
+
+    // The refused write changed nothing: the subject is still private, so a
+    // retry loop can never leak it while the owner re-picks.
+    const audience = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);
+    expect(audience.body).toMatchObject({ audience: 'private', groupId: null });
+  });
+
+  it('publishes GROUP_AUDIENCE_INVALID on the audience write in OpenAPI', () => {
+    // The code is a documented part of the endpoint's vocabulary, not an
+    // undocumented string a generated client has to discover by failing.
+    const paths = buildOpenApiDocument().paths as Record<string, Record<string, unknown>>;
+    const put = paths['/social/audience/{kind}/{subjectId}']?.put as Record<string, unknown>;
+    expect(put['x-error-codes']).toContain(GROUP_AUDIENCE_INVALID_ERROR_CODE);
   });
 });
 

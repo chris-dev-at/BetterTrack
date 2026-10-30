@@ -265,6 +265,18 @@ const SWEEP_CURSOR_KEYS = {
 /** A resume hint, not durable state: it outlives a daily cadence comfortably. */
 const SWEEP_CURSOR_TTL_SECONDS = 30 * 24 * 60 * 60;
 
+/**
+ * Who is READING a copy's ledger overlay (design §10, #2033). The overlay
+ * derives attribution from this alone — there is no flag to request it.
+ * `viewerId: null` is an anonymous reader (a public link): always stripped.
+ */
+export interface MirrorOverlayViewer {
+  readonly viewerId: string | null;
+}
+
+/** §10 entitlement for one (copy, viewer) pair. Exhaustive at every use. */
+type MirrorAttributionEntitlement = 'full' | 'stripped';
+
 export interface MirrorService {
   /**
    * The active membership behind a synced copy, or null for a normal
@@ -290,12 +302,15 @@ export interface MirrorService {
    * Ledger DTO overlay for one copy (design §3/§10/§11): per-kind maps keyed
    * by the copy-local row id, so ledger read paths can attach `mirror` cheaply
    * by localId lookup. Non-synced portfolios short-circuit to empty maps.
-   * `stripAttribution` swaps every `addedBy` for the generic "group member"
-   * chip (design §10) — used when a non-member views a shared/public copy.
+   * `addedBy` is FULL only when the viewer holds this copy (fork included,
+   * §6) or is an active member of its chain; every other viewer — anonymous
+   * included — gets the generic "group member" chip (design §10, #2033). The
+   * strip outranks the `deleted` state, so a third-party viewer never receives
+   * the frozen name of an author whose account is gone (#2009).
    */
   overlayForPortfolio(
     portfolioId: string,
-    opts?: { stripAttribution?: boolean },
+    viewer: MirrorOverlayViewer,
   ): Promise<{
     transactions: Map<string, MirrorRowInfo>;
     dividends: Map<string, MirrorRowInfo>;
@@ -1624,6 +1639,27 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   }
 
   /**
+   * Design §10 entitlement, derived from the viewer and the roster — never from
+   * a caller flag (#2033). Full for the holder of the copy (`membership.userId`,
+   * whatever its status: a fork holder keeps their own attribution, §6/#1612)
+   * and for an ACTIVE member of the chain; stripped for everyone else.
+   */
+  async function attributionEntitlement(
+    membership: MirrorChainMemberRow,
+    viewer: MirrorOverlayViewer,
+  ): Promise<MirrorAttributionEntitlement> {
+    // Fail closed on anything but a real id: an untyped caller (the paranoid
+    // binding forwards raw args) that drops the viewer is a third party.
+    const viewerId = viewer?.viewerId;
+    if (typeof viewerId !== 'string' || viewerId.length === 0) return 'stripped';
+    // Only after the null check: a membership whose user was deleted carries
+    // `userId: null`, and `null === null` must never read as "the holder".
+    if (membership.userId === viewerId) return 'full';
+    const onRoster = await repo.findActiveMembership(membership.chainId, viewerId);
+    return onRoster ? 'full' : 'stripped';
+  }
+
+  /**
    * Ledger DTO overlay for one copy (M5, design §3/§10/§11). Returns per-kind
    * maps keyed by the copy-local row id, so ledger read paths (transactions /
    * dividends / cash movements / cash sources) can attach `mirror` cheaply by
@@ -1637,21 +1673,34 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
    * attribution only, with no live profile icon and no chain op version, since
    * §6 severs every live chain read along with the member list and the oplog.
    *
-   * `stripAttribution` (design §10) is the ORTHOGONAL rule and applies to
-   * VIEWERS, not to copies: a non-member viewer of a shared/public copy sees
-   * every actor replaced with the generic "group member" chip — a member
+   * Attribution stripping (design §10) is the ORTHOGONAL rule and applies to
+   * VIEWERS, not to copies: a viewer who is not an active member of the chain
+   * sees every actor replaced with the generic "group member" chip — a member
    * exposes their own book, never their co-members' identities. The holder of a
    * copy, fork included, is never that third-party viewer.
    *
+   * Orthogonal again to BOTH: `state: 'deleted'` (#2009), which says the
+   * author's ACCOUNT is gone (§6/§7) rather than that this viewer may not see
+   * it. A frozen fork read and a deleted author are independent — a fork can
+   * hold rows by a living co-member and by a deleted one at once — so the row
+   * loop below derives `deleted` per row from the stored `created_by`, not from
+   * the copy's membership status.
+   *
+   * The strip is DERIVED from `viewer` + the roster ({@link
+   * attributionEntitlement}), never requested by the caller (#2033): it used to
+   * be an opt-in boolean defaulting to full, so the first shared-ledger caller
+   * that forgot it would have leaked every co-member's name and id. The
+   * owner-scoped ledger routes pass the authenticated user, who is the copy's
+   * holder, so they cost no extra query and read exactly as before.
+   *
    * NOTE: no wire path exposes chain-copy ledger rows to non-members today —
    * `getSharedPortfolio` in the social service only ships holdings/history/
-   * totals, never per-row DTOs. `stripAttribution` is a keystone the guard
-   * relies on and the M5 unit tests exercise it directly, so a future
-   * shared-ledger view can flip it on without touching the strip logic itself.
+   * totals, never per-row DTOs. A future shared-ledger view passes its viewer
+   * and gets the strip by construction.
    */
   async function overlayForPortfolio(
     portfolioId: string,
-    opts?: { stripAttribution?: boolean },
+    viewer: MirrorOverlayViewer,
   ): Promise<{
     transactions: Map<string, MirrorRowInfo>;
     dividends: Map<string, MirrorRowInfo>;
@@ -1676,15 +1725,46 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // profile icon or the chain's still-advancing op version, both of which §6
     // severs along with the member list and oplog access.
     const frozen = membership.status !== 'active';
+    const entitlement = await attributionEntitlement(membership, viewer);
     const rows = await repo.listMirrorRowInfoForPortfolio(portfolioId, { frozen });
+    // THREE states, two of which carry no actor id (#2009, contracts
+    // `mirrorAttributionState`). Order matters and is a privacy decision:
+    //
+    //  1. `stripped` FIRST — §10 is about the VIEWER. A third-party viewer of
+    //     a shared copy gets the constant chip even when the author's account
+    //     is gone, because the frozen `created_by_username` is exactly the
+    //     co-member identity §10 forbids handing them. Stripping outranks
+    //     `deleted` by construction: the `deleted`/`shown` split only exists
+    //     inside the `full` arm, so no reordering of the two below can leak a
+    //     name to the one reader who may not have it.
+    //  2. `deleted` — `mirror_rows.created_by` SET-NULLed when the author's
+    //     user row went away (§6/§7). The denormalized username survives on
+    //     the row itself, so an entitled viewer keeps reading
+    //     "alice (account deleted)". No live icon exists to read (the `users`
+    //     LEFT JOIN yields null); we pin it null rather than trust the join.
+    //  3. `shown` — a live actor the viewer is entitled to see.
+    const addedByFor = (row: (typeof rows)[number]): MirrorAttribution => {
+      switch (entitlement) {
+        case 'stripped':
+          return strippedMirrorAttribution;
+        case 'full':
+          return row.createdBy === null
+            ? {
+                state: 'deleted',
+                userId: null,
+                username: row.createdByUsername,
+                profileIcon: null,
+              }
+            : {
+                state: 'shown',
+                userId: row.createdBy,
+                username: row.createdByUsername,
+                profileIcon: row.profileIcon,
+              };
+      }
+    };
     for (const row of rows) {
-      const addedBy: MirrorAttribution = opts?.stripAttribution
-        ? strippedMirrorAttribution
-        : {
-            userId: row.createdBy,
-            username: row.createdByUsername,
-            profileIcon: row.profileIcon,
-          };
+      const addedBy = addedByFor(row);
       const info: MirrorRowInfo = {
         mirrorId: row.mirrorId,
         version: row.latestSeq,
@@ -2433,8 +2513,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       return enrichPortfolioSummaries(userId, summaries);
     },
 
-    overlayForPortfolio(portfolioId, opts) {
-      return overlayForPortfolio(portfolioId, opts);
+    overlayForPortfolio(portfolioId, viewer) {
+      return overlayForPortfolio(portfolioId, viewer);
     },
 
     async convertToChain(userId, portfolioId, opts) {

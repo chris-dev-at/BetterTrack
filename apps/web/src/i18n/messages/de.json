@@ -3704,7 +3704,8 @@
     },
     "attribution": {
       "by": "Hinzugefügt von {{username}}",
-      "groupMember": "Gruppenmitglied"
+      "groupMember": "Gruppenmitglied",
+      "accountDeleted": "{{username}} (Konto gelöscht)"
     },
     "role": {
       "owner": "Besitzer",
@@ -3891,6 +3892,7 @@
       "deleteAction": "Leeren Tresor löschen",
       "deleteReferenced": "Dieser Tresor enthält noch ein Portfolio. Verschiebe alle Portfolios heraus, bevor du ihn löschst.",
       "deleteError": "Der Tresor konnte nicht gelöscht werden. Es wurde nichts geändert.",
+      "deleteThrottled": "Zu viele Versuche. Warte einen Moment und versuche die Löschung dann erneut. Es wurde nichts geändert.",
       "deferredFold": "Warum manche Aktionen noch nicht verfügbar sind",
       "deferred": {
         "rotate": "Das Wechseln der Wiederherstellungswörter ist noch nicht verfügbar: Es braucht einen geprüften Durchlauf auf jedem Speicher dieses Tresors. Bis dahin bleiben dieser Tresor und seine Wörter genau so, wie sie sind.",
@@ -4077,6 +4079,7 @@
         "working": "Portfolio wird in den Tresor verschoben…",
         "done": "Das Portfolio ist im Tresor verschlüsselt und auf dem Server gesperrt.",
         "error": "Das Portfolio wurde nicht verschoben. Seine Serverdaten sind unverändert.",
+        "throttled": "Zu viele Versuche. Warte einen Moment und versuche es dann erneut. Das Portfolio wurde nicht verschoben und seine Serverdaten sind unverändert.",
         "captureInFlight": "Das Portfolio wurde nicht verschoben, und ein erneuter Versuch hilft nicht. In diesem Tresor liegt noch ein unfertiger Umzug von {{portfolios}}. Schließe diesen Umzug zuerst ab oder brich ihn ab, und verschiebe dieses Portfolio danach hinein. Seine Serverdaten sind unverändert.",
         "captureInFlightUnnamed": "Das Portfolio wurde nicht verschoben, und ein erneuter Versuch hilft nicht. In diesem Tresor liegt noch der unfertige Umzug eines anderen Portfolios. Schließe diesen Umzug zuerst ab oder brich ihn ab, und verschiebe dieses Portfolio danach hinein. Seine Serverdaten sind unverändert."
       },
@@ -4089,7 +4092,8 @@
         "action": "Als normales Portfolio wiederherstellen",
         "working": "Portfolio wird wiederhergestellt…",
         "done": "Das Portfolio wurde unter derselben ID wiederhergestellt und ist für den Server wieder lesbar.",
-        "error": "Das Portfolio konnte nicht vollständig wiederhergestellt werden. Es bleibt im Tresor gesperrt; ein erneuter Versuch setzt denselben Vorgang fort."
+        "error": "Das Portfolio konnte nicht vollständig wiederhergestellt werden. Es bleibt im Tresor gesperrt; ein erneuter Versuch setzt denselben Vorgang fort.",
+        "throttled": "Zu viele Versuche. Warte einen Moment und versuche es dann erneut. Das Portfolio bleibt im Tresor gesperrt, bis es klappt."
       }
     },
     "enable": {
@@ -4147,7 +4151,8 @@
         "credentialHint": "Dein Kontopasswort (das für die Anmeldung) — nicht die Tresor-Passphrase. BetterTrack prüft es, bevor etwas verworfen wird.",
         "action": "Tresor verwerfen und neu beginnen",
         "working": "Wird verworfen…",
-        "error": "Der Tresor konnte nicht verworfen werden. Es wurde nichts geändert — versuche es erneut, sobald die Verbindung verfügbar ist."
+        "error": "Der Tresor konnte nicht verworfen werden. Es wurde nichts geändert — versuche es erneut, sobald die Verbindung verfügbar ist.",
+        "throttled": "Zu viele Versuche. Warte einen Moment und versuche das Verwerfen dann erneut. Es wurde nichts geändert."
       },
       "errors": {
         "wrongPassphrase": "Diese Tresor-Passphrase ist falsch.",

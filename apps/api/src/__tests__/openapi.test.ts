@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import * as contracts from '@bettertrack/contracts';
 
+import { BODY_PARSER_ERROR_CODES, bodyParserApiError } from '../http/bodyLimits';
 import { buildOpenApiDocument, OPENAPI_ENDPOINT_COUNT } from '../http/openapi';
 import { createTestApp } from '../testing/createTestApp';
 
@@ -163,6 +164,7 @@ describe('OpenAPI document', () => {
       ['patch', '/auth/passkeys/{id}'],
       ['delete', '/auth/passkeys/{id}'],
       ['post', '/auth/first-run/complete'],
+      ['post', '/auth/fresh-start-notice/acknowledge'],
       ['get', '/settings/taxes/years'],
     ] as const;
     for (const [method, path] of nativeAccountSecurityOperations) {
@@ -172,6 +174,13 @@ describe('OpenAPI document', () => {
         { apiKeyBearer: [] },
       ]);
     }
+    // E9: the bearer scheme carries no per-operation scope list (it is an http
+    // bearer scheme, not oauth2), so the required scope is stated in the prose
+    // the mobile team reads — and the path documents only the one POST.
+    const freshStartAck = paths['/auth/fresh-start-notice/acknowledge'] as JsonObject;
+    expect(Object.keys(freshStartAck)).toEqual(['post']);
+    expect((freshStartAck.post as JsonObject).description).toContain('account:security');
+    expect((freshStartAck.post as JsonObject).description).toContain('INSUFFICIENT_SCOPE');
     expect(paths['/settings/taxes/years/{year}/unlock']).toBeUndefined();
     expect(paths['/settings/taxes/years/{year}/relock']).toBeUndefined();
 
@@ -762,6 +771,33 @@ describe('OpenAPI document', () => {
     expect(JSON.stringify(transition.description)).toContain('portfolioIds');
   });
 
+  it('publishes the #1610 capture-binding refusals on both deletions and the revision read', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const vaultDelete = (paths['/vaults/{vaultId}'] as JsonObject).delete as JsonObject;
+    const portfolioDelete = (paths['/portfolios/{portfolioId}'] as JsonObject).delete as JsonObject;
+    const revision = (paths['/portfolios/{portfolioId}/vault/revision'] as JsonObject)
+      .get as JsonObject;
+
+    expect(vaultDelete['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PER_VAULT_DELETE_ERROR_CODES]),
+    );
+    for (const operation of [vaultDelete, portfolioDelete]) {
+      expect(operation['x-error-codes']).toContain(
+        contracts.PER_VAULT_ERROR_CODES.deleteMoveInPending,
+      );
+      expect(Object.keys(operation.responses as JsonObject)).toContain('409');
+      expect(JSON.stringify(operation.description)).toContain('portfolioIds');
+    }
+    expect(revision['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PORTFOLIO_VAULT_REVISION_ERROR_CODES]),
+    );
+    // #1498: the terminal binding refusal never shares the retryable conflict code.
+    expect(contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureBindingInvalid).not.toBe(
+      contracts.PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.transitionConflict,
+    );
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI
@@ -822,5 +858,228 @@ describe('OpenAPI document', () => {
 
     // The rest of /api/v1 still requires a session.
     await request(app).get('/api/v1/portfolios').expect(401);
+  });
+});
+
+/**
+ * Emitted ⇒ documented (mobile board ask 2026-10-29 A5). Four codes reached the
+ * wire without appearing in the `x-error-codes` of the operations that emit
+ * them, so a generated client had no name for them. Each test below drives the
+ * real emitter where one can be driven, and asserts the code it produced is in
+ * the vocabulary the document publishes for that operation.
+ */
+describe('OpenAPI x-error-codes — emitted codes are documented (A5)', () => {
+  type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
+  const METHODS: readonly Method[] = ['get', 'post', 'put', 'patch', 'delete'];
+  const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+  function operations(): Array<{ method: Method; path: string; op: JsonObject }> {
+    const paths = (buildOpenApiDocument() as unknown as JsonObject).paths as JsonObject;
+    return Object.entries(paths).flatMap(([path, item]) =>
+      METHODS.flatMap((method) => {
+        const op = (item as JsonObject)[method] as JsonObject | undefined;
+        return op ? [{ method, path, op }] : [];
+      }),
+    );
+  }
+  const codesOf = (op: JsonObject) => (op['x-error-codes'] as string[] | undefined) ?? [];
+
+  it('the body-parser vocabulary covers every code the global parser can answer with', () => {
+    // Every body-parser type the normaliser maps, plus the unlisted-but-exposable
+    // 4xx fallbacks it answers by status: whatever code it yields must be in the
+    // published vocabulary (the generic BAD_REQUEST catch-all aside).
+    const failures: Array<{ type: string; status: number }> = [
+      { type: 'entity.parse.failed', status: 400 },
+      { type: 'entity.verify.failed', status: 403 },
+      { type: 'request.aborted', status: 400 },
+      { type: 'request.size.invalid', status: 400 },
+      { type: 'entity.too.large', status: 413 },
+      { type: 'parameters.too.many', status: 413 },
+      { type: 'charset.unsupported', status: 415 },
+      { type: 'encoding.unsupported', status: 415 },
+      { type: 'some.future.type', status: 413 },
+      { type: 'some.future.type', status: 415 },
+    ];
+    for (const failure of failures) {
+      const code = bodyParserApiError({ ...failure, expose: true })?.code;
+      expect(BODY_PARSER_ERROR_CODES, `${failure.type} (${failure.status})`).toContain(code);
+    }
+    expect(BODY_PARSER_ERROR_CODES).toEqual(
+      expect.arrayContaining(['MALFORMED_BODY', 'UNSUPPORTED_MEDIA_TYPE', 'PAYLOAD_TOO_LARGE']),
+    );
+  });
+
+  it('lists the body-parser codes, with a status for each, on EVERY JSON-bodied operation', () => {
+    const jsonBody = (op: JsonObject) =>
+      ((op.requestBody as JsonObject | undefined)?.content as JsonObject | undefined)?.[
+        'application/json'
+      ] !== undefined;
+    const bodied = operations().filter(({ op }) => jsonBody(op));
+    expect(bodied.length).toBeGreaterThan(100);
+    for (const { method, path, op } of bodied) {
+      const name = `${method.toUpperCase()} ${path}`;
+      expect(codesOf(op), name).toEqual(expect.arrayContaining([...BODY_PARSER_ERROR_CODES]));
+      // 400 MALFORMED_BODY, 413 PAYLOAD_TOO_LARGE, 415 UNSUPPORTED_MEDIA_TYPE.
+      expect(Object.keys(op.responses as JsonObject), name).toEqual(
+        expect.arrayContaining(['400', '413', '415']),
+      );
+    }
+    // …and on nothing without a body: a plain GET and a bodyless POST.
+    for (const [method, path] of [
+      ['get', '/auth/me'],
+      ['post', '/settings/telegram/link'],
+    ] as const) {
+      const found = operations().find((o) => o.method === method && o.path === path)!;
+      expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).not.toContain('MALFORMED_BODY');
+    }
+  });
+
+  it('a malformed and an unsupported-charset body answer with codes POST /cash/rules lists', async () => {
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = request.agent(h.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const op = operations().find(
+      ({ method, path }) => method === 'post' && path === '/cash/rules',
+    )!;
+
+    const malformed = await agent
+      .post('/api/v1/cash/rules')
+      .set(...XRW)
+      .set('Content-Type', 'application/json')
+      .send('{"pattern": ');
+    expect(malformed.body.error.code).toBe('MALFORMED_BODY');
+    expect(codesOf(op.op)).toContain(malformed.body.error.code);
+
+    const charset = await agent
+      .post('/api/v1/cash/rules')
+      .set(...XRW)
+      .set('Content-Type', 'application/json; charset=klingon')
+      .send('{}');
+    expect(charset.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    expect(codesOf(op.op)).toContain(charset.body.error.code);
+  });
+
+  it('every Telegram/Discord settings operation lists the kill-switch 404 it answers with', async () => {
+    const channelOps = operations().filter(({ path }) =>
+      /^\/settings\/(?:telegram|discord)(?:\/|$)/.test(path),
+    );
+    // GET/DELETE telegram, POST link + confirm; GET/DELETE discord, POST webhook + test.
+    expect(channelOps).toHaveLength(8);
+
+    // The default harness runs with the channel kill-switch OFF — drive the
+    // real guard on every documented operation.
+    const h = await createTestApp();
+    try {
+      const user = await h.seedUser();
+      const agent = request.agent(h.app);
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: user.email, password: user.password });
+      for (const { method, path, op } of channelOps) {
+        const res = await agent[method](`/api/v1${path}`).set(...XRW);
+        const name = `${method.toUpperCase()} ${path}`;
+        expect(res.status, name).toBe(404);
+        expect(res.body.error.code, name).toBe('CHANNEL_DEACTIVATED');
+        expect(codesOf(op), name).toContain('CHANNEL_DEACTIVATED');
+      }
+    } finally {
+      await h.ctx.events.close();
+    }
+
+    // Scoped to the kill-switched family: the neighbouring settings are not.
+    const notifications = operations().find(
+      ({ method, path }) => method === 'get' && path === '/settings/notifications',
+    )!;
+    expect(codesOf(notifications.op)).not.toContain('CHANNEL_DEACTIVATED');
+  });
+
+  it('the octet-stream writes list the raw parser codes they answer with, but not its 413', async () => {
+    // The vault's raw parser (`vaultRoutes.ts`) translates only an oversized
+    // body, to its own VAULT_TOO_LARGE; every other failure falls through to the
+    // shared normaliser (`bodyLimits.ts`) as 400 MALFORMED_BODY or 415
+    // UNSUPPORTED_MEDIA_TYPE. Drive the real route with an encoding the parser
+    // does not speak, then hold every octet-stream operation to that vocabulary.
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = request.agent(h.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const res = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set('Content-Type', 'application/octet-stream')
+      .set('Content-Encoding', 'x-bogus')
+      .set('If-None-Match', '*')
+      .send(Buffer.from('abcdef'));
+    expect(res.status).toBe(415);
+    expect(res.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+
+    const octet = operations().filter(
+      ({ op }) =>
+        ((op.requestBody as JsonObject | undefined)?.content as JsonObject | undefined)?.[
+          'application/octet-stream'
+        ] !== undefined,
+    );
+    expect(octet).toHaveLength(4);
+    expect(octet.map(({ path }) => path)).toContain('/vault');
+    for (const { method, path, op } of octet) {
+      const name = `${method.toUpperCase()} ${path}`;
+      expect(codesOf(op), name).toEqual(
+        expect.arrayContaining(['MALFORMED_BODY', 'UNSUPPORTED_MEDIA_TYPE']),
+      );
+      expect(codesOf(op), name).not.toContain('PAYLOAD_TOO_LARGE');
+      expect(Object.keys(op.responses as JsonObject), name).toEqual(
+        expect.arrayContaining(['400', '415']),
+      );
+    }
+  });
+
+  it('PATCH /admin/account-defaults lists the 400 it answers for a deactivated channel', () => {
+    // `adminService` refuses a notification default for a kill-switched channel.
+    const found = operations().find(
+      (o) => o.method === 'patch' && o.path === '/admin/account-defaults',
+    )!;
+    expect(codesOf(found.op)).toContain('CHANNEL_DEACTIVATED');
+  });
+
+  it('does NOT list CASH_RULE_TAG_DUPLICATE on the cash-rule writes, which accept a repeated tag', async () => {
+    // The only raise is `cashTagService.restoreRuleTags`, behind the strict
+    // restore schema that refuses a repeated (rule, tag) pair first; the
+    // ordinary writes dedupe `tagIds` (review of #2086). Drive POST to prove it.
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = request.agent(h.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const tag = await agent
+      .post('/api/v1/cash/tags')
+      .set(...XRW)
+      .send({ name: 'Groceries' });
+    expect(tag.status).toBe(201);
+    const tagId = (tag.body as { tag: { id: string } }).tag.id;
+    const rule = await agent
+      .post('/api/v1/cash/rules')
+      .set(...XRW)
+      .send({ tagIds: [tagId, tagId], pattern: 'spar' });
+    expect(rule.status).toBe(201);
+
+    for (const [method, path] of [
+      ['post', '/cash/rules'],
+      ['patch', '/cash/rules/{ruleId}'],
+    ] as const) {
+      const found = operations().find((o) => o.method === method && o.path === path)!;
+      expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).not.toContain(
+        'CASH_RULE_TAG_DUPLICATE',
+      );
+    }
   });
 });

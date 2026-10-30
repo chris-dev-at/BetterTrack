@@ -83,8 +83,11 @@ describe('cash fusion schema (migration 0075)', () => {
       await expectDbRefusal(insertTag({ name: 'groceries' }), /cash_tags_user_name_lower_unique/);
       // The SAME name for a different account is fine — tags are per user.
       await expect(
-        h.db.insert(schema.cashTags).values({ userId: otherUserId, name: 'Groceries' }),
-      ).resolves.toBeDefined();
+        h.db
+          .insert(schema.cashTags)
+          .values({ userId: otherUserId, name: 'Groceries' })
+          .returning({ id: schema.cashTags.id, userId: schema.cashTags.userId }),
+      ).resolves.toEqual([{ id: expect.any(String), userId: otherUserId }]);
     });
 
     it('ties `system` and `system_key` together in both directions', async () => {
@@ -98,7 +101,7 @@ describe('cash fusion schema (migration 0075)', () => {
       );
       await expect(
         insertTag({ name: 'Proper system', system: true, systemKey: 'dividend' }),
-      ).resolves.toBeDefined();
+      ).resolves.toEqual(expect.any(String));
     });
 
     it('allows one row per (owner, system key) and unlimited user tags', async () => {
@@ -180,8 +183,12 @@ describe('cash fusion schema (migration 0075)', () => {
       await expect(
         h.db
           .insert(schema.cashBudgets)
-          .values({ portfolioId, tagId, periodKey: '2026-12', amount: '400.00' }),
-      ).resolves.toBeDefined();
+          .values({ portfolioId, tagId, periodKey: '2026-12', amount: '400.00' })
+          .returning({
+            periodKey: schema.cashBudgets.periodKey,
+            amount: schema.cashBudgets.amount,
+          }),
+      ).resolves.toEqual([{ periodKey: '2026-12', amount: '400.00' }]);
       // …but only once per month.
       await expectDbRefusal(
         h.db

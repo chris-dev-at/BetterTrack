@@ -4,7 +4,12 @@ import { PORTFOLIO_KINDS, type PortfolioKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
-import { assets, portfolios, priceHistory } from '../schema';
+import {
+  isLiveCaptureBinding,
+  lockCaptureBindingVault,
+  releaseProspectiveDocuments,
+} from './portfolioVaultTransitionRepository';
+import { assets, portfolioVaultTransitionStates, portfolios, priceHistory } from '../schema';
 import type { AssetRow } from '../schema';
 
 /**
@@ -339,17 +344,89 @@ export function createPortfolioRepository(db: Database) {
      * the `dividends`/`portfolio_cash_movements` schema comments describe).
      *
      * Scoped to the owner at the DB layer (§8): a foreign/unknown id deletes
-     * nothing and returns false, so the caller 404s without leaking existence — no
-     * IDOR, never a 403. Polymorphic bare-ref rows that carry NO FK to the
-     * portfolio (the sharing audience + its public links) are cleared by the
-     * service after this returns, mirroring conglomerate/watchlist deletion.
+     * nothing and returns `not_found`, so the caller 404s without leaking
+     * existence — no IDOR, never a 403. Polymorphic bare-ref rows that carry NO
+     * FK to the portfolio (the sharing audience + its public links) are cleared
+     * by the service after this returns, mirroring conglomerate/watchlist
+     * deletion.
+     *
+     * #1610: a plain portfolio's move-in stages its encrypted document in the
+     * target vault BEFORE the commit, and that `vault_blobs.portfolio_id` FK is
+     * deliberately NO ACTION (DEFERRABLE) — so the bare DELETE used to fail at
+     * COMMIT with a 500 for as long as the staged row existed. The same
+     * transaction now resolves the capture first, in E1's lock order (bound
+     * vault -> portfolio -> transition state; the account row is already held
+     * FOR KEY SHARE by the privacy guard around this service call):
+     *  - a LIVE capture (one the move-in can still commit) refuses with
+     *    `move_in_pending`, nothing mutated — the same fail-closed rule as
+     *    `DELETE /vaults/:id`;
+     *  - an EXPIRED capture is inert: its staged documents are released (and
+     *    the vault attestation invalidated, exactly like a capture renewal)
+     *    before the row is deleted;
+     *  - a binding to a vault that no longer exists has nothing left to
+     *    release, and another account's vault row is never touched.
      */
-    async deletePortfolio(userId: string, portfolioId: string): Promise<boolean> {
-      const rows = await db
-        .delete(portfolios)
-        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
-        .returning({ id: portfolios.id });
-      return rows.length > 0;
+    async deletePortfolio(
+      userId: string,
+      portfolioId: string,
+      now: () => Date = () => new Date(),
+    ): Promise<PortfolioDeleteResult> {
+      return db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Database;
+        // Unlocked, owner-scoped discovery of which vault row must be locked
+        // first. Every writer that can move an EXISTING binding holds that
+        // vault row; a first-time staging bind (null -> vault) is re-checked
+        // under the transition-row lock below.
+        const [binding] = await tx
+          .select({ captureVaultId: portfolioVaultTransitionStates.captureVaultId })
+          .from(portfolioVaultTransitionStates)
+          .where(
+            and(
+              eq(portfolioVaultTransitionStates.portfolioId, portfolioId),
+              eq(portfolioVaultTransitionStates.userId, userId),
+            ),
+          );
+        const bindingVault = await lockCaptureBindingVault(
+          tx,
+          userId,
+          binding?.captureVaultId ?? null,
+        );
+        const [portfolio] = await tx
+          .select({ id: portfolios.id, vaultId: portfolios.vaultId })
+          .from(portfolios)
+          .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+          .for('update');
+        if (!portfolio) return { status: 'not_found' as const };
+        if (portfolio.vaultId === null) {
+          const [state] = await tx
+            .select()
+            .from(portfolioVaultTransitionStates)
+            .where(eq(portfolioVaultTransitionStates.portfolioId, portfolioId))
+            .for('update');
+          const lockedAt = now();
+          // A binding that appeared after discovery is a staging CAS that just
+          // bound a capture, and CAS binds only a live window. Fail closed.
+          if ((state?.captureVaultId ?? null) !== (binding?.captureVaultId ?? null)) {
+            return { status: 'move_in_pending' as const, portfolioIds: [portfolioId] };
+          }
+          if (state?.captureVaultId && bindingVault === 'owned') {
+            if (isLiveCaptureBinding(state, lockedAt)) {
+              return { status: 'move_in_pending' as const, portfolioIds: [portfolioId] };
+            }
+            await releaseProspectiveDocuments(tx, {
+              userId,
+              portfolioId,
+              vaultId: state.captureVaultId,
+              now: lockedAt,
+            });
+          }
+        }
+        const rows = await tx
+          .delete(portfolios)
+          .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+          .returning({ id: portfolios.id });
+        return rows.length > 0 ? { status: 'deleted' as const } : { status: 'not_found' as const };
+      });
     },
 
     /**
@@ -480,3 +557,9 @@ export function createPortfolioRepository(db: Database) {
 }
 
 export type PortfolioRepository = ReturnType<typeof createPortfolioRepository>;
+
+export type PortfolioDeleteResult =
+  | { status: 'deleted' }
+  | { status: 'not_found' }
+  /** #1610: a live move-in of this portfolio has staged its document in a vault. */
+  | { status: 'move_in_pending'; portfolioIds: string[] };

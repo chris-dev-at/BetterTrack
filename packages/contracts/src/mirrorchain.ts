@@ -559,20 +559,96 @@ export type MirrorOpPayload = z.infer<typeof mirrorOpPayloadSchema>;
 // --- Additive per-row DTO fields --------------------------------------------
 
 /**
+ * The generic "group member" chip a non-member viewer of a shared synced copy
+ * sees (design §10). A member exposes their own book, never their co-members'
+ * identities — so the service replaces every `mirror.addedBy` with this token
+ * on non-member reads. The web client renders it as a neutral chip with the
+ * same shape as {@link mirrorAttributionSchema}.
+ */
+export const MIRROR_STRIPPED_ATTRIBUTION_USERNAME = 'group member';
+
+/**
+ * Which of the THREE attribution states a chain row's actor chip is in (#2009).
+ * `userId: null` alone cannot say — it is produced by two unrelated mechanisms
+ * that the design gives opposite renderings:
+ *
+ * - `shown` — the actor is a live account the viewer is entitled to see.
+ *   `userId` is their id, `username` their name, `profileIcon` their live icon.
+ * - `stripped` — the §10 PRIVACY rule fired: this viewer is not an active
+ *   member of the chain, so the server replaced the actor wholesale. `username`
+ *   is exactly {@link MIRROR_STRIPPED_ATTRIBUTION_USERNAME} and carries NO
+ *   information about who really wrote the row; the client renders a generic
+ *   "group member" chip. Never emit the frozen name on a stripped row.
+ * - `deleted` — the actor's ACCOUNT is gone (§6/§7). `mirror_rows.created_by`
+ *   SET-NULLed, but the denormalized `created_by_username` survives so the row
+ *   keeps rendering "alice (account deleted)" on every copy that holds it. This
+ *   is HISTORY the design guarantees, not a privacy state.
+ *
+ * `stripped` outranks `deleted`: a third-party viewer of a row whose author
+ * deleted their account still sees the generic chip, because the frozen name is
+ * precisely what §10 forbids handing them.
+ */
+export const MIRROR_ATTRIBUTION_STATES = ['shown', 'stripped', 'deleted'] as const;
+export const mirrorAttributionStateSchema = z.enum(MIRROR_ATTRIBUTION_STATES);
+export type MirrorAttributionState = z.infer<typeof mirrorAttributionStateSchema>;
+
+/**
  * Attribution chip data (design §10/§11): who added a chain row, rendered as a
- * small actor chip in the transaction/dividend/cash lists. `userId` SET-NULLs on
- * account deletion while the denormalized `username` keeps rendering ("alice
- * (account deleted)"). Attribution is exposed only to viewers who are themselves
- * active chain members — a non-member viewer of a shared copy sees identity
- * stripped (enforced by the service in M5, not here).
+ * small actor chip in the transaction/dividend/cash lists. `state` (above) is
+ * the discriminator the chip renders on; `userId` is NOT, because it is null in
+ * two different states. Attribution is exposed only to viewers who are
+ * themselves active chain members — a non-member viewer of a shared copy sees
+ * identity stripped (the service decides, M5).
+ *
+ * The refinement is the §10 boundary made structural: a `stripped` row that
+ * still carried a real username or icon cannot be constructed here, so a
+ * regression in the service seam fails at the wire instead of leaking a
+ * co-member's identity to a third party.
  */
 export const mirrorAttributionSchema = z
   .object({
+    state: mirrorAttributionStateSchema,
     userId: z.string().uuid().nullable(),
     username: z.string(),
     profileIcon: z.string().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.state === 'shown') {
+      if (value.userId === null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['userId'],
+          message: 'A shown attribution must carry the actor id.',
+        });
+      }
+      return;
+    }
+    // Both null-actor states: no account id ever travels with them.
+    if (value.userId !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['userId'],
+        message: `A ${value.state} attribution must not carry an actor id.`,
+      });
+    }
+    if (value.state !== 'stripped') return;
+    // §10: the stripped chip is a constant, not a redacted copy of the real one.
+    if (value.username !== MIRROR_STRIPPED_ATTRIBUTION_USERNAME) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['username'],
+        message: 'A stripped attribution must not carry the actor name (design §10).',
+      });
+    }
+    if (value.profileIcon !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['profileIcon'],
+        message: 'A stripped attribution must not carry the actor icon (design §10).',
+      });
+    }
+  });
 export type MirrorAttribution = z.infer<typeof mirrorAttributionSchema>;
 
 /**
@@ -701,14 +777,13 @@ export const mirrorGuardRequestSchema = z.preprocess(
 export type MirrorGuardRequest = z.infer<typeof mirrorGuardRequestSchema>;
 
 /**
- * The generic "group member" chip a non-member viewer of a shared synced copy
- * sees (design §10). A member exposes their own book, never their co-members'
- * identities — so the service replaces every `mirror.addedBy` with this token
- * on non-member reads. The web client renders it as a neutral chip with the
- * same shape as {@link mirrorAttributionSchema}.
+ * The one value a §10-stripped `mirror.addedBy` may ever be — the service hands
+ * this exact object to a viewer who is not an active member of the chain. The
+ * token itself lives next to {@link mirrorAttributionSchema}, which refuses any
+ * other shape for `state: 'stripped'`.
  */
-export const MIRROR_STRIPPED_ATTRIBUTION_USERNAME = 'group member';
 export const strippedMirrorAttribution: MirrorAttribution = {
+  state: 'stripped',
   userId: null,
   username: MIRROR_STRIPPED_ATTRIBUTION_USERNAME,
   profileIcon: null,

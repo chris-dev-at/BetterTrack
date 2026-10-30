@@ -27,6 +27,11 @@ import {
   sendChatMessageResponseSchema,
 } from '@bettertrack/contracts';
 
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -34,14 +39,29 @@ import * as schema from '../data/schema';
 import {
   ACCOUNT_SECURITY_SCOPE,
   SETTINGS_SUBPATH_POLICY_CENSUS,
+  VAULT_SYNC_SCOPE,
   passkeyManagementRouteAcceptsBearer,
   pathAcceptsBearer,
+  recordBearerScopeDenied,
   resolveBearerPolicyClassification,
   taxYearDocumentationRouteAcceptsBearer,
+  type ResolvedBearerPolicyClassification,
 } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrPasskeyManagementBearer } from '../http/routes/authRoutes';
-import { requireCookieSessionOrTaxYearDocumentationBearer } from '../http/routes/settingsRoutes';
-import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
+import { requirePortfolioVaultTransitionBearerAccess } from '../http/routes/portfolioRoutes';
+import {
+  requireCookieSessionOrFirstPartyOAuthGrant,
+  requireCookieSessionOrTaxYearDocumentationBearer,
+} from '../http/routes/settingsRoutes';
+import {
+  requireCookieSessionOrPerVaultAccess,
+  requireCookieSessionOrVaultSync,
+} from '../http/routes/vaultRoutes';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
+import {
+  BEARER_SCOPE_DENIAL_REASONS,
+  type BearerScopeDenialReason,
+} from '../services/audit/auditService';
 import { ACCOUNT_PASSKEY_NAMESPACE } from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
@@ -227,6 +247,11 @@ const ACCOUNT_SECURITY_WIDENED_ROUTES: readonly AccountSecurityRoute[] = [
   },
   { name: 'tax-year documentation', method: 'get', path: '/settings/taxes/years' },
   { name: 'first-run completion', method: 'post', path: '/auth/first-run/complete' },
+  {
+    name: 'fresh-start notice acknowledgement',
+    method: 'post',
+    path: '/auth/fresh-start-notice/acknowledge',
+  },
 ] as const;
 
 function callAccountSecurityRoute(token: string, row: AccountSecurityRoute) {
@@ -311,6 +336,16 @@ async function exerciseWidenedAccountSecuritySurface(input: {
   expect(completed.status, JSON.stringify(completed.body)).toBe(200);
   expect(meResponseSchema.parse(completed.body).firstRunCompletedAt).not.toBeNull();
   responses.push(completed);
+
+  // E9: an account the §17 wipe never touched owes no notice, so the
+  // acknowledgement is a truthful no-op — but it must be REACHABLE (the wiped
+  // case is driven end to end in paranoidFreshStartNotice.test.ts).
+  const acknowledged = await request(harness.app)
+    .post('/api/v1/auth/fresh-start-notice/acknowledge')
+    .set(bearer(input.token));
+  expect(acknowledged.status, JSON.stringify(acknowledged.body)).toBe(200);
+  expect(meResponseSchema.parse(acknowledged.body).paranoidFreshStartPending).toBe(false);
+  responses.push(acknowledged);
 
   // Bearer management never mints or refreshes a browser session.
   for (const response of responses) expect(response.headers['set-cookie']).toBeUndefined();
@@ -683,20 +718,284 @@ describe('#1324 account:security parity for native account state', () => {
     expect(pathAcceptsBearer('/auth/first-run/complete', 'GET')).toBe(false);
   });
 
-  it('keeps the router-local passkey guard method-, path- and scope-aware', () => {
+  it('keeps the router-local passkey guard method-, path- and scope-aware', async () => {
     const id = '11111111-1111-4111-8111-111111111111';
-    const invoke = (input: {
+    // A real account: the twin writes an `api_key.scope_denied` row and
+    // `audit_log.actor_id` is a foreign key onto `users`.
+    const user = await seedFreshUser();
+    const guard = requireCookieSessionOrPasskeyManagementBearer(harness.ctx);
+    // ORDER BY, always: Postgres guarantees no SELECT order and these rows are
+    // read as a sequence. `id` is a UUIDv7, so ascending id is write order.
+    const auditRows = () =>
+      harness.db
+        .select()
+        .from(schema.auditLog)
+        .where(
+          and(
+            eq(schema.auditLog.actorId, user.id),
+            eq(schema.auditLog.action, 'api_key.scope_denied'),
+          ),
+        )
+        .orderBy(schema.auditLog.id);
+    const invoke = async (input: {
       scopes?: string[];
+      kind?: 'personal' | 'oauth';
       sessionId?: string;
       method: string;
       path: string;
     }) => {
       const next = vi.fn();
-      requireCookieSessionOrPasskeyManagementBearer(
+      guard(
         {
+          authUser: { id: user.id },
           apiKey: input.scopes
             ? {
-                id: 'bypassed-policy-key',
+                id: MISSING_ID,
+                scopes: input.scopes,
+                kind: input.kind ?? 'personal',
+                securityGeneration: 0,
+              }
+            : undefined,
+          sessionId: input.sessionId,
+          method: input.method,
+          path: input.path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      // The audited branch reaches `next` only after its write resolves.
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
+      return next;
+    };
+
+    // The owning browser session and a scoped bearer on the three management
+    // routes pass — the twin admits exactly what the global table admits.
+    expect(
+      await invoke({ sessionId: 'session', method: 'GET', path: '/passkeys' }),
+    ).toHaveBeenCalledWith();
+    for (const [method, path] of [
+      ['GET', '/passkeys'],
+      ['PATCH', `/passkeys/${id}`],
+      ['DELETE', `/passkeys/${id}`],
+    ] as const) {
+      expect(
+        await invoke({ scopes: [ACCOUNT_SECURITY_SCOPE], method, path }),
+        `${method} ${path}`,
+      ).toHaveBeenCalledWith();
+    }
+    // #1951 §3: the twin does NOT check credential KIND — #1324 admits personal
+    // keys here, and the global table admits them too. A kind check would be a
+    // narrowing this guard never had.
+    expect(
+      await invoke({
+        scopes: [ACCOUNT_SECURITY_SCOPE],
+        kind: 'personal',
+        method: 'GET',
+        path: '/passkeys',
+      }),
+    ).toHaveBeenCalledWith();
+    expect(await auditRows()).toHaveLength(0);
+
+    // Wrong scope, the two WebAuthn ceremonies, a method the allowlist does not
+    // carry and a future `/auth/passkeys/*` sibling all stay closed here even if
+    // the global policy table were to regress.
+    for (const input of [
+      { scopes: ['market:read'], method: 'GET', path: '/passkeys' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/passkeys/register/options' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/passkeys/login/verify' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: `/passkeys/${id}` },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'GET', path: '/passkeys/export' },
+    ]) {
+      expect(
+        (await invoke(input)).mock.calls[0]![0],
+        `${input.method} ${input.path}`,
+      ).toMatchObject({
+        statusCode: 403,
+        code: 'API_KEY_FORBIDDEN',
+      });
+    }
+
+    // #1951 §2: exactly ONE of those five is a scope denial — the first, a
+    // bearer refused on a route the allowlist accepts. The other four are
+    // off-allowlist paths the global table calls session-only and audits
+    // nowhere; auditing them here would invent scope events the rail never
+    // records.
+    const rows = await auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      method: 'GET',
+      path: '/auth/passkeys',
+    });
+    expect(rows[0]!.targetType).toBe('api_key');
+  });
+
+  it('writes exactly one scope-denied row for a live passkey refusal — rail or twin, never both', async () => {
+    // End-to-end: the global guard answers before routing, so the twin never
+    // runs. One refusal, one row.
+    const principal = await mintKey(['market:read']);
+    const refused = await request(harness.app)
+      .get('/api/v1/auth/passkeys')
+      .set(bearer(principal.token));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, principal.userId),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      method: 'GET',
+    });
+    // §10: the row names the key by id; the presented secret appears nowhere.
+    expect(JSON.stringify(rows[0])).not.toContain(principal.token);
+  });
+
+  it('#1958/#1965 404s a bearer-backed admin principal on ALL SIX router-local twins', async () => {
+    // The portfolio-vault and per-vault twins always carried this backstop; the
+    // passkey, grant and tax-year twins gained it in #1958 and the vault-sync
+    // twin in #1965, so the six are alike. It is only reachable by driving a
+    // guard directly: in production the global rail 404s the same principal
+    // before routing, which is exactly why the admission set does not move
+    // (pinned in `bearerAdmissionParity`).
+    const user = await seedFreshUser();
+    const vaultId = '22222222-2222-4222-8222-222222222222';
+    const twins = [
+      {
+        name: 'tax-year documentation',
+        guard: requireCookieSessionOrTaxYearDocumentationBearer(harness.ctx),
+        method: 'GET',
+        path: '/taxes/years',
+      },
+      {
+        name: 'oauth grant',
+        guard: requireCookieSessionOrFirstPartyOAuthGrant(harness.ctx),
+        method: 'GET',
+        path: '/oauth-grants',
+      },
+      {
+        name: 'passkey management',
+        guard: requireCookieSessionOrPasskeyManagementBearer(harness.ctx),
+        method: 'GET',
+        path: '/passkeys',
+      },
+      {
+        name: 'portfolio-vault transition',
+        guard: requirePortfolioVaultTransitionBearerAccess(harness.ctx),
+        method: 'GET',
+        path: `/${vaultId}/vault/revision`,
+      },
+      {
+        name: 'per-vault',
+        guard: requireCookieSessionOrPerVaultAccess(harness.ctx),
+        method: 'GET',
+        path: `/${vaultId}`,
+      },
+      {
+        name: 'vault-sync',
+        guard: requireCookieSessionOrVaultSync(harness.ctx),
+        method: 'GET',
+        // Mount-relative: `/` is `GET /vault`, the account-singleton envelope.
+        path: '/',
+      },
+    ] as const;
+
+    const drive = async (
+      twin: (typeof twins)[number],
+      role: 'user' | 'admin',
+      firstParty: boolean,
+    ) => {
+      const next = vi.fn();
+      twin.guard(
+        {
+          authUser: { id: user.id, role },
+          apiKey: {
+            id: MISSING_ID,
+            // Every scope any of the six could ask for, so a refusal here is
+            // never about scope — precision, not just recall.
+            scopes: [ACCOUNT_SECURITY_SCOPE, VAULT_SYNC_SCOPE],
+            kind: firstParty ? 'oauth' : 'personal',
+            firstParty,
+            securityGeneration: 0,
+          },
+          method: twin.method,
+          path: twin.path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
+      return next;
+    };
+
+    for (const twin of twins) {
+      // The grant twin is the one that also demands a trusted first-party
+      // client, so its control principal carries that marker too.
+      const firstParty = twin.name === 'oauth grant';
+      // Admin role → 404, with no hint that the surface exists.
+      expect(
+        (await drive(twin, 'admin', firstParty)).mock.calls[0]![0],
+        `${twin.name} (admin)`,
+      ).toMatchObject({ statusCode: 404 });
+      // The same request on a user-role account is ADMITTED — so the 404 above
+      // is the account-kind boundary answering, not some unrelated refusal.
+      expect(await drive(twin, 'user', firstParty), `${twin.name} (user)`).toHaveBeenCalledWith();
+    }
+
+    // A 404 across the account-kind boundary is not a scope event on any twin.
+    const rows = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, user.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(rows).toHaveLength(0);
+  });
+
+  it('keeps the tax-year documentation guard read-only and scope-aware', async () => {
+    // A real account: the twin writes an `api_key.scope_denied` row and
+    // `audit_log.actor_id` is a foreign key onto `users` (#1958).
+    const user = await seedFreshUser();
+    const guard = requireCookieSessionOrTaxYearDocumentationBearer(harness.ctx);
+    // ORDER BY, always: Postgres guarantees no SELECT order and these rows are
+    // read as a sequence. `id` is a UUIDv7, so ascending id is write order.
+    const auditRows = () =>
+      harness.db
+        .select()
+        .from(schema.auditLog)
+        .where(
+          and(
+            eq(schema.auditLog.actorId, user.id),
+            eq(schema.auditLog.action, 'api_key.scope_denied'),
+          ),
+        )
+        .orderBy(schema.auditLog.id);
+    const invoke = async (input: {
+      scopes?: string[];
+      role?: 'user' | 'admin';
+      sessionId?: string;
+      method: string;
+      path: string;
+    }) => {
+      const next = vi.fn();
+      guard(
+        {
+          authUser: { id: user.id, role: input.role ?? 'user' },
+          apiKey: input.scopes
+            ? {
+                id: MISSING_ID,
                 scopes: input.scopes,
                 kind: 'personal',
                 securityGeneration: 0,
@@ -709,81 +1008,68 @@ describe('#1324 account:security parity for native account state', () => {
         {} as Response,
         next,
       );
+      // The audited branch reaches `next` only after its write resolves.
+      await vi.waitFor(() => expect(next).toHaveBeenCalled());
       return next;
     };
 
-    // The owning browser session and a scoped bearer on the three management
-    // routes pass — the twin admits exactly what the global table admits.
+    // The owning browser session and a scoped bearer on the one allowlisted
+    // read pass — the twin admits exactly what the global table admits.
     expect(
-      invoke({ sessionId: 'session', method: 'GET', path: '/passkeys' }),
+      await invoke({ sessionId: 'session', method: 'GET', path: '/taxes/years' }),
     ).toHaveBeenCalledWith();
-    for (const [method, path] of [
-      ['GET', '/passkeys'],
-      ['PATCH', `/passkeys/${id}`],
-      ['DELETE', `/passkeys/${id}`],
-    ] as const) {
-      expect(
-        invoke({ scopes: [ACCOUNT_SECURITY_SCOPE], method, path }),
-        `${method} ${path}`,
-      ).toHaveBeenCalledWith();
-    }
+    expect(
+      await invoke({ scopes: [ACCOUNT_SECURITY_SCOPE], method: 'GET', path: '/taxes/years' }),
+    ).toHaveBeenCalledWith();
+    expect(await auditRows()).toHaveLength(0);
 
-    // Wrong scope, the two WebAuthn ceremonies, a method the allowlist does not
-    // carry and a future `/auth/passkeys/*` sibling all stay closed here even if
-    // the global policy table were to regress.
+    // Wrong scope, a method the allowlist does not carry, and two future
+    // `/settings/taxes/years/*` siblings all stay closed here even if the
+    // global policy table were to regress.
     for (const input of [
-      { scopes: ['market:read'], method: 'GET', path: '/passkeys' },
-      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/passkeys/register/options' },
-      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/passkeys/login/verify' },
-      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: `/passkeys/${id}` },
-      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'GET', path: '/passkeys/export' },
+      { scopes: ['market:read'], method: 'GET', path: '/taxes/years' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/taxes/years' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/taxes/years/2025/export' },
+      { scopes: [ACCOUNT_SECURITY_SCOPE], method: 'POST', path: '/taxes/years/2025/change' },
     ]) {
-      expect(invoke(input).mock.calls[0]![0], `${input.method} ${input.path}`).toMatchObject({
+      expect(
+        (await invoke(input)).mock.calls[0]![0],
+        `${input.method} ${input.path}`,
+      ).toMatchObject({
         statusCode: 403,
         code: 'API_KEY_FORBIDDEN',
       });
     }
-  });
-
-  it('keeps the tax-year documentation guard read-only and scope-aware', () => {
-    const invoke = (scopes: string[], method: string, path: string) => {
-      const next = vi.fn();
-      requireCookieSessionOrTaxYearDocumentationBearer(
-        {
-          apiKey: {
-            id: 'bypassed-policy-key',
-            scopes,
-            kind: 'personal',
-            securityGeneration: 0,
-          },
-          method,
-          path,
-        } as unknown as Request,
-        {} as Response,
-        next,
-      );
-      return next;
-    };
-
-    const wrongScope = invoke(['market:read'], 'GET', '/taxes/years');
-    expect(wrongScope.mock.calls[0]![0]).toMatchObject({
-      statusCode: 403,
-      code: 'API_KEY_FORBIDDEN',
-    });
-
-    const unknownRoute = invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/export');
-    expect(unknownRoute.mock.calls[0]![0]).toMatchObject({
-      statusCode: 403,
-      code: 'API_KEY_FORBIDDEN',
-    });
-
-    expect(invoke([ACCOUNT_SECURITY_SCOPE], 'GET', '/taxes/years')).toHaveBeenCalledWith();
-    expect(
-      invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/change'),
-    ).not.toHaveBeenCalledWith();
     expect(
       taxYearDocumentationRouteAcceptsBearer('POST', '/settings/taxes/years/2025/change'),
     ).toBe(false);
+
+    // #1958: exactly ONE of those four is a scope denial — the first, a bearer
+    // refused on the route the allowlist accepts. The other three are
+    // off-allowlist method/path pairs the global table calls session-only and
+    // audits nowhere; auditing them here would invent scope events the rail
+    // never records.
+    const rows = await auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.meta).toMatchObject({
+      reason: 'insufficient-scope',
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      method: 'GET',
+      path: '/settings/taxes/years',
+    });
+    expect(rows[0]!.targetType).toBe('api_key');
+
+    // #1958 backstop: a bearer-backed admin principal 404s before any of it,
+    // and a 404 across the account-kind boundary is not a scope event — the
+    // row count is unchanged.
+    const adminBearer = await invoke({
+      scopes: [ACCOUNT_SECURITY_SCOPE],
+      role: 'admin',
+      method: 'GET',
+      path: '/taxes/years',
+    });
+    expect(adminBearer.mock.calls[0]![0]).toMatchObject({ statusCode: 404 });
+    expect(await auditRows()).toHaveLength(1);
   });
 
   it('keeps bearer passkey deletion on the shared contract, audit and account throttle', async () => {
@@ -892,6 +1178,101 @@ describe('#1328 bearer-started Google LINK policy', () => {
     expect(pathAcceptsBearer('/auth/google/start', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/auth/google/callback', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/auth/google/link/callback', 'GET')).toBe(false);
+  });
+});
+
+describe('E9 bearer fresh-start notice acknowledgement policy', () => {
+  const ACK = '/auth/fresh-start-notice/acknowledge';
+
+  it('widens exactly the POST, scope-gated on account:security, and nothing beside it', () => {
+    expect(resolveBearerPolicyClassification(ACK, 'POST')).toEqual({
+      kind: 'scope',
+      read: ACCOUNT_SECURITY_SCOPE,
+      write: ACCOUNT_SECURITY_SCOPE,
+    });
+    expect(pathAcceptsBearer(ACK, 'POST')).toBe(true);
+    // Express routes case-insensitively; the policy folds case the same way, so
+    // a variant spelling reaches the same handler under the same rule.
+    expect(pathAcceptsBearer('/Auth/Fresh-Start-Notice/Acknowledge', 'post')).toBe(true);
+
+    // Every other method on the exact path stays the module's session-only default.
+    for (const method of ['GET', 'HEAD', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+      expect(resolveBearerPolicyClassification(ACK, method), `${method} ${ACK}`).toEqual({
+        kind: 'session-only',
+      });
+    }
+    // …and so does every sibling: no prefix match was introduced.
+    for (const path of [
+      '/auth/fresh-start-notice',
+      '/auth/fresh-start-notice/',
+      '/auth/fresh-start-notice/status',
+      `${ACK}/`,
+      `${ACK}/extra`,
+      '/auth/fresh-start-notice/acknowledgement',
+    ]) {
+      expect(pathAcceptsBearer(path, 'POST'), `POST ${path}`).toBe(false);
+      expect(pathAcceptsBearer(path, 'GET'), `GET ${path}`).toBe(false);
+    }
+  });
+
+  it('refuses any other method with the unchanged session-only answer, unaudited', async () => {
+    const scoped = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    for (const call of [
+      request(harness.app).get(`/api/v1${ACK}`),
+      request(harness.app).put(`/api/v1${ACK}`),
+      request(harness.app).delete(`/api/v1${ACK}`),
+    ]) {
+      const res = await call.set(bearer(scoped.token));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+    // The other session-only /auth routes beside it are untouched by the carve-out.
+    for (const call of [
+      request(harness.app).get('/api/v1/auth/session'),
+      request(harness.app).post('/api/v1/auth/session/persist'),
+      request(harness.app).post('/api/v1/auth/reauth'),
+    ]) {
+      const res = await call.set(bearer(scoped.token));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+    // A session-only refusal is not a scope event: no `api_key.scope_denied` row.
+    const denials = await harness.db
+      .select({ id: schema.auditLog.id })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, scoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toEqual([]);
+  });
+
+  it('audits a missing-scope refusal on the shared rail with the existing vocabulary', async () => {
+    const unscoped = await mintKey(['market:read']);
+    const res = await request(harness.app).post(`/api/v1${ACK}`).set(bearer(unscoped.token));
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(res.body.error.message).toContain(ACCOUNT_SECURITY_SCOPE);
+
+    const denials = await harness.db
+      .select({ meta: schema.auditLog.meta, targetType: schema.auditLog.targetType })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, unscoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.targetType).toBe('api_key');
+    expect(denials[0]?.meta).toMatchObject({
+      requiredScope: ACCOUNT_SECURITY_SCOPE,
+      reason: 'insufficient-scope',
+      method: 'POST',
+      path: ACK,
+    });
   });
 });
 
@@ -1103,7 +1484,7 @@ describe('#361 self-revocation on logout', () => {
     expect(row!.revokedAt).not.toBeNull();
   });
 
-  it('a delegated OAuth token revokes its OWN grant via POST /auth/logout', async () => {
+  it('a delegated OAuth token revokes its OWN install (token family) via POST /auth/logout', async () => {
     // `grantId` is scoped to (this test's user × this test's client) inside
     // {@link mintOAuthToken} — it can never resolve to a different test's grant,
     // which was the #514 order/timing failure mode. The assertions below are on
@@ -1117,7 +1498,9 @@ describe('#361 self-revocation on logout', () => {
     const out = await request(harness.app).post('/api/v1/auth/logout').set(bearer(token));
     expect(out.status).toBe(200);
 
-    // Revoking the grant instantly kills the access token it minted.
+    // Revoking the install's token family instantly kills the access token it
+    // minted (§16 2026-10-29) — the grant itself stays, for the user's other
+    // installs of the same app.
     const after = await request(harness.app).get('/api/v1/portfolios').set(bearer(token));
     expect(after.status).toBe(401);
     expect(after.body.error.code).toBe('API_KEY_INVALID');
@@ -1129,7 +1512,70 @@ describe('#361 self-revocation on logout', () => {
     const grant = grantRows[0]!;
     expect(grant.userId).toBe(userId);
     expect(grant.clientId).toBe(clientRowId);
-    expect(grant.revokedAt).not.toBeNull();
+    expect(grant.revokedAt).toBeNull();
+    const families = await harness.db
+      .select()
+      .from(schema.oauthTokenFamilies)
+      .where(eq(schema.oauthTokenFamilies.grantId, grantId));
+    expect(families).toHaveLength(1);
+    expect(families[0]!.revokedReason).toBe('logout');
+  });
+
+  it('two installs of one app: one logs out, the other keeps calling and refreshing', async () => {
+    const first = await mintOAuthToken(['portfolio:read']);
+    // A second install of the SAME app for the SAME user: one more code
+    // exchange through the user's own session, on the reused grant.
+    const agent = await loginAgent(harness.app, first.email, first.password);
+    const [clientRow] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.id, first.clientRowId));
+    const { verifier, challenge } = pkce();
+    const approve = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({
+        client_id: clientRow!.clientId,
+        redirect_uri: REDIRECT,
+        scope: 'portfolio:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      });
+    expect(approve.status).toBe(200);
+    const code = new URL(approve.body.redirectTo as string).searchParams.get('code');
+    const second = oauthTokenResponseSchema.parse(
+      (
+        await request(harness.app).post('/api/v1/oauth/token').send({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: REDIRECT,
+          client_id: clientRow!.clientId,
+          code_verifier: verifier,
+        })
+      ).body,
+    );
+
+    // Install 1 logs out.
+    expect(
+      (await request(harness.app).post('/api/v1/auth/logout').set(bearer(first.token))).status,
+    ).toBe(200);
+    expect(
+      (await request(harness.app).get('/api/v1/portfolios').set(bearer(first.token))).status,
+    ).toBe(401);
+
+    // Install 2 keeps calling, refreshes, and keeps calling with the new token.
+    await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set(bearer(second.access_token))
+      .expect(200);
+    const refreshed = await request(harness.app).post('/api/v1/oauth/token').send({
+      grant_type: 'refresh_token',
+      refresh_token: second.refresh_token,
+      client_id: clientRow!.clientId,
+    });
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    const next = oauthTokenResponseSchema.parse(refreshed.body);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(next.access_token)).expect(200);
   });
 });
 
@@ -1919,5 +2365,285 @@ describe('#1730 /settings sub-path bearer classification', () => {
         entry.unsafe,
       );
     }
+  });
+});
+
+/**
+ * #1951 §4 — a true set-equality census for the `/auth` mount.
+ *
+ * `/settings`, `/vault`, `/vaults`, `/mirrorchain` and `/drive-connections` all
+ * carry one; `/auth` did not, so its bearer coverage rested on a hand-picked
+ * table of the routes somebody remembered. `/auth` is the module where a new
+ * route is most likely to be account-security state, so an omission there is the
+ * expensive kind: it would default to session-only silently, or — worse — land
+ * under one of the `startsWith` account-security prefixes and become
+ * bearer-callable with nobody deciding that it should be.
+ *
+ * Equality in BOTH directions. Left: a mounted route with no census row (the
+ * route shipped without a deliberate bearer decision). Right: a census row for a
+ * route that no longer exists (the table rotted). The synthetic methods
+ * {@link BEARER_ALL_METHODS_ROUTE_METHOD} / {@link BEARER_OPAQUE_MOUNT_METHOD}
+ * cannot match a real HTTP verb, so a `router.all` or an opaque `router.use`
+ * leaf appearing under `/auth` fails this closed rather than vanishing.
+ */
+const SCOPE_ACCOUNT_SECURITY = {
+  kind: 'scope',
+  read: ACCOUNT_SECURITY_SCOPE,
+  write: ACCOUNT_SECURITY_SCOPE,
+} as const;
+
+const AUTH_BEARER_ROUTE_CENSUS = [
+  { method: 'POST', path: '/auth/2fa/confirm', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/disable', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/email-code', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/2fa/email/confirm', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/email/disable', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/email/enroll', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'DELETE', path: '/auth/2fa/enroll', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/enroll', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/recovery-codes', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'GET', path: '/auth/2fa/status', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/2fa/verify', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/accept-invite', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/change-password', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/first-run/complete', policy: SCOPE_ACCOUNT_SECURITY },
+  {
+    method: 'POST',
+    path: '/auth/fresh-start-notice/acknowledge',
+    policy: SCOPE_ACCOUNT_SECURITY,
+  },
+  { method: 'GET', path: '/auth/google/callback', policy: { kind: 'session-only' } },
+  { method: 'GET', path: '/auth/google/link-status', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'GET', path: '/auth/google/link/callback', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/google/link/start', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/google/register', policy: { kind: 'session-only' } },
+  { method: 'GET', path: '/auth/google/register-ticket', policy: { kind: 'session-only' } },
+  { method: 'GET', path: '/auth/google/start', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/google/unlink', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'GET', path: '/auth/invite/{token}', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/login', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/logout', policy: { kind: 'allow' } },
+  { method: 'GET', path: '/auth/me', policy: { kind: 'allow' } },
+  { method: 'GET', path: '/auth/passkeys', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'DELETE', path: '/auth/passkeys/{id}', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'PATCH', path: '/auth/passkeys/{id}', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/passkeys/login/options', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/passkeys/login/verify', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/passkeys/register/options', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/passkeys/register/verify', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/password-reset/complete', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/password-reset/request', policy: { kind: 'session-only' } },
+  { method: 'DELETE', path: '/auth/pin', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'PUT', path: '/auth/pin', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'PUT', path: '/auth/pin/idle-timeout', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/pin/quick-auth', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'GET', path: '/auth/pin/status', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/pin/verify', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/reauth', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/register', policy: { kind: 'session-only' } },
+  { method: 'GET', path: '/auth/registration-info', policy: { kind: 'session-only' } },
+  { method: 'DELETE', path: '/auth/remembered-device', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/remembered-device', policy: { kind: 'session-only' } },
+  { method: 'DELETE', path: '/auth/remembered-devices', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'GET', path: '/auth/remembered-devices', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'DELETE', path: '/auth/remembered-devices/{handle}', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'GET', path: '/auth/session', policy: { kind: 'session-only' } },
+  { method: 'POST', path: '/auth/session/persist', policy: { kind: 'session-only' } },
+  { method: 'GET', path: '/auth/sessions', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'DELETE', path: '/auth/sessions/{id}', policy: SCOPE_ACCOUNT_SECURITY },
+  { method: 'POST', path: '/auth/sessions/revoke-others', policy: SCOPE_ACCOUNT_SECURITY },
+] as const satisfies readonly {
+  method: string;
+  path: string;
+  policy: ResolvedBearerPolicyClassification;
+}[];
+
+/** Census templates carry OpenAPI-style params; policy resolution takes live paths. */
+const liveAuthPath = (path: string): string =>
+  path
+    .replaceAll('{id}', '11111111-1111-4111-8111-111111111111')
+    .replaceAll('{token}', 'a'.repeat(32))
+    .replaceAll('{handle}', 'b'.repeat(32));
+
+describe('#1951 /auth bearer-route census', () => {
+  const sortRoutes = (routes: { method: string; path: string }[]) =>
+    [...routes].sort(
+      (left, right) =>
+        left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+    );
+
+  it('censuses every mounted /auth route — set equality, both directions', () => {
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/auth');
+    const censused = AUTH_BEARER_ROUTE_CENSUS.map(({ method, path }) => ({ method, path }));
+
+    // No duplicate rows, or "equal lengths" below would stop meaning anything.
+    expect(new Set(censused.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      censused.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(censused));
+  });
+
+  it('resolves each censused /auth route exactly as the census declares', () => {
+    for (const row of AUTH_BEARER_ROUTE_CENSUS) {
+      expect(
+        resolveBearerPolicyClassification(liveAuthPath(row.path), row.method),
+        `${row.method} ${row.path}`,
+      ).toEqual(row.policy);
+      // …and the census agrees with the live admission predicate, so a row can
+      // never claim `scope` for a path the rail actually refuses.
+      expect(
+        pathAcceptsBearer(liveAuthPath(row.path), row.method),
+        `${row.method} ${row.path}`,
+      ).toBe(row.policy.kind === 'scope' || row.policy.kind === 'allow');
+    }
+  });
+
+  it('fails closed on a new bearer-reachable /auth route nobody censused', () => {
+    // The red-proof, kept in the suite rather than done once by hand: a route
+    // added under `/auth` with no census row — and `router.all` / opaque
+    // `router.use` leaves too — must break the equality above.
+    const withStrangers: MountedSurface[] = [
+      ...buildRouteTable(),
+      { kind: 'route', method: 'GET', path: '/api/v1/auth/x' },
+      { kind: 'all-methods-route', path: '/api/v1/auth/future-all' },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/auth/future-leaf',
+        handler: 'futureAuthLeaf',
+        occurrence: 1,
+      },
+    ];
+    const mounted = mountedBearerRouteInventory(withStrangers, '/auth');
+    const censused = AUTH_BEARER_ROUTE_CENSUS.map(({ method, path }) => ({ method, path }));
+
+    expect(sortRoutes(mounted)).not.toEqual(sortRoutes(censused));
+    expect(
+      sortRoutes(
+        mounted.filter(
+          (route) =>
+            !censused.some((row) => row.method === route.method && row.path === route.path),
+        ),
+      ),
+    ).toEqual([
+      { method: BEARER_ALL_METHODS_ROUTE_METHOD, path: '/auth/future-all' },
+      { method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureAuthLeaf[1]`, path: '/auth/future-leaf' },
+      { method: 'GET', path: '/auth/x' },
+    ]);
+  });
+});
+
+/**
+ * #1951 §1 — the denial-reason vocabulary, enforced where the row is written.
+ *
+ * `BEARER_SCOPE_DENIAL_REASONS` was a compile-time constant only: a caller that
+ * reached a writer through `as never` persisted whatever string it liked into a
+ * column the Signals view groups by, for the full 400-day retention. These tests
+ * pin the runtime fence on all three entry points — both credential-kind writers
+ * and the shared rail every guard funnels through.
+ */
+describe('#1951 bearer denial-reason vocabulary at runtime', () => {
+  const GRANT_ID = '33333333-3333-4333-8333-333333333333';
+  const KEY_ID = '44444444-4444-4444-8444-444444444444';
+  const BOGUS = 'totally-made-up' as unknown as BearerScopeDenialReason;
+
+  const scopeDeniedRows = (userId: string) =>
+    harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, userId),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      )
+      .orderBy(schema.auditLog.id);
+
+  it('refuses an unknown reason on the personal-key writer and writes nothing', async () => {
+    const user = await seedFreshUser();
+    await expect(
+      harness.ctx.apiKeys.recordScopeDenied({
+        userId: user.id,
+        keyId: KEY_ID,
+        requiredScope: ACCOUNT_SECURITY_SCOPE,
+        reason: BOGUS,
+        method: 'GET',
+        path: '/auth/passkeys',
+      }),
+    ).rejects.toThrow();
+    expect(await scopeDeniedRows(user.id)).toHaveLength(0);
+  });
+
+  it('refuses an unknown reason on the OAuth twin and writes nothing', async () => {
+    const user = await seedFreshUser();
+    await expect(
+      harness.ctx.oauth.recordScopeDenied({
+        userId: user.id,
+        grantId: GRANT_ID,
+        requiredScope: ACCOUNT_SECURITY_SCOPE,
+        reason: BOGUS,
+        method: 'DELETE',
+        path: '/settings/oauth-grants',
+      }),
+    ).rejects.toThrow();
+    expect(await scopeDeniedRows(user.id)).toHaveLength(0);
+  });
+
+  it('refuses an unknown reason at the shared rail, before either kind is dispatched to', async () => {
+    const user = await seedFreshUser();
+    for (const kind of ['personal', 'oauth'] as const) {
+      await expect(
+        recordBearerScopeDenied(
+          harness.ctx,
+          {
+            authUser: { id: user.id },
+            apiKey: { id: kind === 'oauth' ? GRANT_ID : KEY_ID, kind, scopes: [] },
+            method: 'GET',
+            path: '/auth/passkeys',
+          } as unknown as Request,
+          ACCOUNT_SECURITY_SCOPE,
+          BOGUS,
+        ),
+        kind,
+      ).rejects.toThrow();
+    }
+    expect(await scopeDeniedRows(user.id)).toHaveLength(0);
+  });
+
+  it('still writes every reason the vocabulary DOES contain, through both writers', async () => {
+    const user = await seedFreshUser();
+    for (const reason of BEARER_SCOPE_DENIAL_REASONS) {
+      await harness.ctx.apiKeys.recordScopeDenied({
+        userId: user.id,
+        keyId: KEY_ID,
+        requiredScope: ACCOUNT_SECURITY_SCOPE,
+        reason,
+        method: 'GET',
+        path: '/auth/passkeys',
+      });
+      await harness.ctx.oauth.recordScopeDenied({
+        userId: user.id,
+        grantId: GRANT_ID,
+        requiredScope: ACCOUNT_SECURITY_SCOPE,
+        reason,
+        method: 'GET',
+        path: '/settings/oauth-grants',
+      });
+    }
+
+    const rows = await scopeDeniedRows(user.id);
+    expect(rows).toHaveLength(BEARER_SCOPE_DENIAL_REASONS.length * 2);
+    expect(rows.map((row) => (row.meta as { reason?: string }).reason)).toEqual([
+      'insufficient-scope',
+      'insufficient-scope',
+      'first-party-only',
+      'first-party-only',
+    ]);
+    // The OAuth twin keeps its discriminator; the personal-key row has none.
+    expect(rows.map((row) => (row.meta as { kind?: string }).kind)).toEqual([
+      undefined,
+      'oauth',
+      undefined,
+      'oauth',
+    ]);
   });
 });

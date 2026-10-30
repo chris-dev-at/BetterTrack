@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
   displayZoneDay,
@@ -470,5 +470,59 @@ describe('the display zone day (#1792)', () => {
     expect(displayZoneDay(new Date('2026-01-31T23:30:00.000Z'))).toBe('2026-02-01');
     setFormatLocale('de-AT');
     expect(displayZoneDay(new Date('2026-01-31T23:30:00.000Z'))).toBe('2026-02-01');
+  });
+});
+
+describe('displayZoneDay around midnight and the DST switches (#2082 B2)', () => {
+  // Each case is [instant, Vienna calendar day]. On every "first hours after
+  // midnight" row the UTC day (`toISOString`) is the day BEFORE the expected
+  // answer — the gap the dialog date pre-fills used to fall into.
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    // Summer midnight (CEST, UTC+2): 00:00 Vienna is 22:00Z the day before.
+    ['2026-07-15T21:59:59.999Z', '2026-07-15'],
+    ['2026-07-15T22:00:00.000Z', '2026-07-16'],
+    ['2026-07-15T22:30:00.000Z', '2026-07-16'],
+    // Winter midnight (CET, UTC+1): 00:00 Vienna is 23:00Z the day before.
+    ['2026-01-14T22:59:59.999Z', '2026-01-14'],
+    ['2026-01-14T23:00:00.000Z', '2026-01-15'],
+    // Year boundary: 00:30 on New Year's Day is still 31 December in UTC.
+    ['2026-12-31T23:30:00.000Z', '2027-01-01'],
+    // Spring forward, 2026-03-29: 02:00 CET jumps to 03:00 CEST at 01:00Z.
+    ['2026-03-28T22:59:59.999Z', '2026-03-28'],
+    ['2026-03-28T23:00:00.000Z', '2026-03-29'],
+    ['2026-03-29T00:30:00.000Z', '2026-03-29'],
+    ['2026-03-29T01:00:00.000Z', '2026-03-29'],
+    ['2026-03-29T21:59:59.999Z', '2026-03-29'],
+    ['2026-03-29T22:00:00.000Z', '2026-03-30'],
+    // Fall back, 2026-10-25: 03:00 CEST returns to 02:00 CET at 01:00Z, so
+    // 02:30 happens twice — both are the 25th.
+    ['2026-10-24T21:59:59.999Z', '2026-10-24'],
+    ['2026-10-24T22:00:00.000Z', '2026-10-25'],
+    ['2026-10-25T00:30:00.000Z', '2026-10-25'],
+    ['2026-10-25T01:30:00.000Z', '2026-10-25'],
+    ['2026-10-25T22:30:00.000Z', '2026-10-25'],
+    ['2026-10-25T22:59:59.999Z', '2026-10-25'],
+    ['2026-10-25T23:00:00.000Z', '2026-10-26'],
+  ];
+
+  test.each(cases)('%s is %s in Vienna', (instant, viennaDay) => {
+    expect(displayZoneDay(new Date(instant))).toBe(viennaDay);
+  });
+
+  test('defaults to the wall clock, and agrees with the UTC day at noon', () => {
+    vi.useFakeTimers();
+    try {
+      // 00:30 Vienna (CEST): the UTC day is still yesterday.
+      vi.setSystemTime(new Date('2026-07-15T22:30:00.000Z'));
+      expect(displayZoneDay()).toBe('2026-07-16');
+      expect(new Date().toISOString().slice(0, 10)).toBe('2026-07-15');
+
+      // 12:00 Vienna: both clocks name the same day, so nothing changes there.
+      vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+      expect(displayZoneDay()).toBe('2026-07-15');
+      expect(displayZoneDay()).toBe(new Date().toISOString().slice(0, 10));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

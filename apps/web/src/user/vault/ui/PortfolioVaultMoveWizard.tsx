@@ -18,6 +18,7 @@ import {
   Select,
 } from '../../../ui/origin';
 import { PortfolioMoveCaptureError } from '../portfolioMoveCapture';
+import { stepUpFailureCopy } from './stepUpFailureCopy';
 
 /** Stated in the copy, derived from the server's TTL so the two cannot drift. */
 const VAULT_SERVER_CANDIDATE_TTL_MINUTES = Math.round(VAULT_SERVER_CANDIDATE_TTL_MS / 60_000);
@@ -84,6 +85,13 @@ type MoveWizardProps = {
 
 export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
   const t = useT();
+  /**
+   * This wizard's half of the catalog. Named once because the failure line now
+   * picks between two keys under it (#2028) and a fifth hand-spelled
+   * `move${…}` template is a fifth chance to point the new one at the wrong
+   * direction's copy.
+   */
+  const copyRoot = `vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}`;
   const [credentialKind, setCredentialKind] = useState<'password' | 'code' | 'recoveryCode'>(
     'password',
   );
@@ -91,7 +99,10 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
   const [vaultId, setVaultId] = useState('');
   const [serverReadableAcknowledged, setServerReadableAcknowledged] = useState(false);
   const [working, setWorking] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // The key the failure renders, not a bare flag: a refused credential and a
+  // §15 throttle are two different answers and must not share one line
+  // (#2028 — see {@link stepUpFailureCopy}).
+  const [failureKey, setFailureKey] = useState<string | null>(null);
   /**
    * The one refusal that must not read as "try again" (#1530). Everything else
    * this ceremony can fail with is either transient or clears on a retry with a
@@ -109,7 +120,7 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
     const value = credential.trim();
     if (value === '' || blocked || confirmationMissing) return;
     setWorking(true);
-    setFailed(false);
+    setFailureKey(null);
     setBlockedByMove(null);
     try {
       const stepUp = { [credentialKind]: value } as VaultStepUpCredential;
@@ -122,7 +133,12 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
       ) {
         setBlockedByMove(cause.blockingPortfolios);
       } else {
-        setFailed(true);
+        setFailureKey(
+          stepUpFailureCopy(cause, {
+            refused: `${copyRoot}.error`,
+            throttled: `${copyRoot}.throttled`,
+          }),
+        );
       }
     } finally {
       setWorking(false);
@@ -130,14 +146,9 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
   }
 
   return (
-    <section
-      aria-label={t(`vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}.title`)}
-      className="bt-panel flex flex-col gap-4 p-4"
-    >
+    <section aria-label={t(`${copyRoot}.title`)} className="bt-panel flex flex-col gap-4 p-4">
       <div>
-        <h3 className="bt-h2">
-          {t(`vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}.title`)}
-        </h3>
+        <h3 className="bt-h2">{t(`${copyRoot}.title`)}</h3>
         <p className="bt-row-sub">
           {t('vault.portfolioMove.subject', {
             portfolio: props.portfolioName,
@@ -261,9 +272,9 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
         </Field>
       </div>
 
-      {failed ? (
+      {failureKey ? (
         <p className="bt-neg text-sm" role="alert">
-          {t(`vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}.error`)}
+          {t(failureKey)}
         </p>
       ) : null}
       {blockedByMove ? (
@@ -292,9 +303,7 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
           type="button"
           variant={props.mode === 'out' ? 'danger' : 'primary'}
         >
-          {working
-            ? t(`vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}.working`)
-            : t(`vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}.action`)}
+          {working ? t(`${copyRoot}.working`) : t(`${copyRoot}.action`)}
         </Button>
       </div>
     </section>

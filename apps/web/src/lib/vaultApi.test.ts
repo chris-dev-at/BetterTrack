@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
+
+import { ApiError, setAuthResponsePolicy } from './apiClient';
 import {
   createVaultDocument,
+  deleteVault,
+  listVaults,
+  movePortfolioIntoVault,
+  movePortfolioOutOfVault,
   purgeVaultRetiredServer,
+  requestPortfolioMoveOutChallenge,
   requestVaultRetiredPurgeChallenge,
   writeVaultDocument,
 } from './vaultApi';
@@ -203,5 +211,155 @@ describe('per-vault retired-server purge', () => {
         signature: 'S'.repeat(86),
       }),
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * #2000 — a wrong §15 step-up credential is an IN-FORM error, never a logout.
+ *
+ * Every gated operation sends its credential in the request body and the server
+ * refuses it generically: `401 INVALID_CREDENTIALS`, the same status an expired
+ * session produces. The app-wide auth policy cannot tell those apart, so before
+ * this fix a typo in the delete-vault dialog or either move wizard tore the
+ * session down client-side and bounced the owner to the login screen — with the
+ * half-finished ceremony gone. #1632/#1999 fixed exactly one of the four calls
+ * (the acknowledged Drive disconnect); these are the other three.
+ *
+ * What is pinned here is deliberately narrow: whether the ONE global policy hook
+ * fires. Recall alone would pass on a module that suppressed everything, so the
+ * ungated challenge call below is asserted to still fire it — the credential is
+ * what earns the opt-out, not the URL prefix.
+ */
+const MOVE_PORTFOLIO_ID = '018f6a3e-3333-7000-8000-000000000031';
+const MOVE_DIGEST = 'D'.repeat(43);
+const MOVE_SET_HASH = 'E'.repeat(43);
+const STEP_UP = { password: 'the-owners-account-password' } as const;
+
+const RESTORE_DOCUMENT: VaultStrictDocumentV1 = {
+  schemaVersion: 1,
+  entities: [],
+  mergeLog: [],
+  mirrorProvenance: [],
+};
+
+function unauthorizedResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: { code: 'INVALID_CREDENTIALS', message: 'Re-authentication failed.' },
+    }),
+    { status: 401, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+/** Every §15 gated call this module owns, each with a credential in its body. */
+const GATED_CALLS: readonly { name: string; call: () => Promise<unknown> }[] = [
+  {
+    name: 'deleteVault',
+    call: () => deleteVault(VAULT_ID, { stepUp: STEP_UP }),
+  },
+  {
+    name: 'movePortfolioIntoVault',
+    call: () =>
+      movePortfolioIntoVault(MOVE_PORTFOLIO_ID, {
+        vaultId: VAULT_ID,
+        docVersion: 4,
+        portfolioDataRevision: 'rev-1',
+        stepUp: STEP_UP,
+      }),
+  },
+  {
+    name: 'movePortfolioOutOfVault',
+    call: () =>
+      movePortfolioOutOfVault(MOVE_PORTFOLIO_ID, {
+        vaultId: VAULT_ID,
+        moveOutId: '018f6a3e-5555-7000-8000-000000000031',
+        lifecycleGeneration: 1,
+        documentSetHash: MOVE_SET_HASH,
+        document: RESTORE_DOCUMENT,
+        vaultProof: { challenge: CHALLENGE, signature: 'S'.repeat(86) },
+        stepUp: STEP_UP,
+      }),
+  },
+];
+
+describe('§15 gated calls and the app-wide auth policy', () => {
+  for (const gated of GATED_CALLS) {
+    it(`${gated.name}: a refused credential stays an in-form error — no session teardown`, async () => {
+      const onUnauthorized = vi.fn();
+      const dispose = setAuthResponsePolicy({ onUnauthorized });
+      try {
+        const fetchMock = vi.fn().mockResolvedValue(unauthorizedResponse());
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(gated.call()).rejects.toBeInstanceOf(ApiError);
+
+        // The request really went out — without this the assertion below would
+        // also pass on a wrapper that never called the server at all.
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(onUnauthorized).not.toHaveBeenCalled();
+      } finally {
+        dispose();
+      }
+    });
+
+    it(`${gated.name}: the §15 throttle's 429 is the dialog's to report, not the app banner's`, async () => {
+      const onRateLimited = vi.fn();
+      const dispose = setAuthResponsePolicy({ onRateLimited });
+      try {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue(
+            new Response(JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'slow' } }), {
+              status: 429,
+              headers: { 'Content-Type': 'application/json', 'Retry-After': '20' },
+            }),
+          ),
+        );
+
+        await expect(gated.call()).rejects.toBeInstanceOf(ApiError);
+
+        // The per-account step-up throttle and the route limiter both answer
+        // 429 here and the surface cannot tell them apart; naming one in a
+        // global banner would leak whether the credential path was reached.
+        expect(onRateLimited).not.toHaveBeenCalled();
+      } finally {
+        dispose();
+      }
+    });
+  }
+
+  it('the move-out CHALLENGE carries no credential, so its 401 still clears the session', async () => {
+    const onUnauthorized = vi.fn();
+    const dispose = setAuthResponsePolicy({ onUnauthorized });
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(unauthorizedResponse()));
+
+      await expect(
+        requestPortfolioMoveOutChallenge(MOVE_PORTFOLIO_ID, {
+          vaultId: VAULT_ID,
+          lifecycleGeneration: 1,
+          documentDigest: MOVE_DIGEST,
+          documentSetHash: MOVE_SET_HASH,
+        }),
+      ).rejects.toBeInstanceOf(ApiError);
+
+      expect(onUnauthorized).toHaveBeenCalledOnce();
+    } finally {
+      dispose();
+    }
+  });
+
+  it('an ordinary vault read still clears the session on 401', async () => {
+    const onUnauthorized = vi.fn();
+    const dispose = setAuthResponsePolicy({ onUnauthorized });
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(unauthorizedResponse()));
+
+      await expect(listVaults()).rejects.toBeInstanceOf(ApiError);
+
+      expect(onUnauthorized).toHaveBeenCalledOnce();
+    } finally {
+      dispose();
+    }
   });
 });

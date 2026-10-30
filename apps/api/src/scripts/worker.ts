@@ -19,6 +19,7 @@ import { createEmailLogRepository } from '../data/repositories/emailLogRepositor
 import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
+import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   createParanoidEnforcementRepository,
@@ -786,6 +787,9 @@ const definitions = assembleRegisteredJobDefinitions({
     // Delivered digest-queue rows (#1696) — the one operational table that had
     // no sweep; pending rows are the live work list and are never eligible.
     digestQueue: notificationDigestRepo,
+    // Re-servable OAuth refresh pairs past their 60 s grace window: only the
+    // sealed envelope is nulled; the token rows and reuse detection stay.
+    oauthGraceEnvelopes: createOAuthRepository(db),
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,

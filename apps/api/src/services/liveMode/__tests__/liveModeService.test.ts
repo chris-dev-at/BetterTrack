@@ -38,7 +38,19 @@ const quoteResult = (price: number): CachedResult<Quote> => ({
 let redis: Redis;
 let services: LiveModeService[];
 
+/**
+ * The service's poll loop, its coordination sweep and its leader leases are all
+ * driven by `setTimeout`/`setInterval` and a `now()` this suite can inject, so
+ * the whole file runs on Vitest's fake clock (#1622). Every "wait N ms for the
+ * loop to do something" is then an explicit `advanceTimersByTimeAsync(N)`: the
+ * tick count is the same on an idle laptop and a saturated CI runner, and the
+ * quiet windows that used to cost 60–150 ms of real time cost nothing.
+ *
+ * `ioredis-mock` expires keys against `Date.now()`, which the fake clock also
+ * owns, so the lease/TTL assertions below advance with everything else.
+ */
 beforeEach(async () => {
+  vi.useFakeTimers();
   redis = new RedisMock() as unknown as Redis;
   await redis.flushall();
   services = [];
@@ -46,9 +58,33 @@ beforeEach(async () => {
 
 afterEach(() => {
   for (const service of services) service.close();
+  vi.useRealTimers();
 });
 
 const emptyHistory = (): CachedResult<PricePoint[]> => ({ value: [], stale: false, asOf: 0 });
+
+/**
+ * Advance the fake clock in small steps until `check` stops throwing.
+ *
+ * The drop-in for `vi.waitFor` once the suite owns the clock (#1622): `waitFor`
+ * polls on REAL time, so every "wait for the loop to tick" still cost real
+ * milliseconds and still stretched under load. This advances simulated time
+ * instead — the same number of steps on an idle laptop and a saturated runner,
+ * at a fraction of the wall clock. `maxMs` is simulated time too, so a condition
+ * that never becomes true fails with the assertion's own message rather than
+ * hanging to Vitest's timeout.
+ */
+async function advanceUntil(check: () => void, maxMs = 5_000, stepMs = 5): Promise<void> {
+  for (let elapsed = 0; ; elapsed += stepMs) {
+    try {
+      check();
+      return;
+    } catch (err) {
+      if (elapsed >= maxMs) throw err;
+    }
+    await vi.advanceTimersByTimeAsync(stepMs);
+  }
+}
 
 function makeService(
   stub = createStubMarketData({ poll: () => quoteResult(100), history: emptyHistory }),
@@ -81,7 +117,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     const { service } = makeService(stub);
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
 
     // Two more viewers arrive: same loop, only the counter moves.
     await service.watch(ASSET_ID, REF);
@@ -89,7 +125,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     expect(service.watcherCount(ASSET_ID)).toBe(3);
 
     const before = stub.calls.poll;
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(before + 3));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(before + 3));
     // Three viewers over ≥3 further ticks: calls grew by ticks, not by viewers.
     // (A per-viewer loop would have added ~3× as many.)
     expect(stub.calls.poll).toBeLessThan(before + 3 + 4);
@@ -106,7 +142,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     service.onFrame((f) => seenB.push(f.price));
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(seenA.length).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(seenA.length).toBeGreaterThanOrEqual(2));
     expect(seenB).toEqual(seenA); // every subscriber gets every frame
 
     const backfilled = await service.backfill(ASSET_ID, REF, '12h');
@@ -141,6 +177,9 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     const { service } = makeService(stub);
     await redis.set(liveRingKey(ASSET_ID), 'retained-private-frame');
     await service.watch(ASSET_ID, REF);
+    // The loop's first tick is scheduled, not immediate: let the fake clock
+    // reach it so the (gated) poll is genuinely in flight.
+    await vi.advanceTimersByTimeAsync(0);
     await pollStarted;
 
     let retired = false;
@@ -155,7 +194,9 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     expect(service.watcherCount(ASSET_ID)).toBe(0);
     expect(await redis.get(liveRingKey(ASSET_ID))).toBeNull();
     const callsAfterRetirement = stub.calls.poll;
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Three base intervals on the fake clock: a loop that had not really
+    // stopped would have ticked three more times by here.
+    await vi.advanceTimersByTimeAsync(60);
     expect(stub.calls.poll).toBe(callsAfterRetirement);
   });
 
@@ -180,6 +221,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     service.onFrame((frame) => frames.push(frame.price));
 
     await expect(service.watch(ASSET_ID, REF)).resolves.toEqual({ retirementEpoch: 0 });
+    await vi.advanceTimersByTimeAsync(0);
     await pollStarted;
     await fenceRetiredLiveAssets(redis, [ASSET_ID]);
     expect(await readLiveAssetRetirementGeneration(redis, ASSET_ID)).toEqual({
@@ -190,7 +232,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     await releaseRetiredLiveAssets(redis, [ASSET_ID]);
     releasePoll();
 
-    await vi.waitFor(() => expect(service.watcherCount(ASSET_ID)).toBe(0));
+    await advanceUntil(() => expect(service.watcherCount(ASSET_ID)).toBe(0));
     expect(frames).toEqual([]);
     expect(await redis.get(liveRingKey(ASSET_ID))).toBeNull();
     await expect(service.watch(ASSET_ID, REF)).resolves.toEqual({ retirementEpoch: 1 });
@@ -224,7 +266,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
 
     await service.watch(ASSET_ID, REF);
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
 
     service.unwatch(ASSET_ID);
     expect(service.watcherCount(ASSET_ID)).toBe(1); // one viewer left → still hot
@@ -234,9 +276,9 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     expect(service.pollIntervalMs(ASSET_ID)).toBeNull();
 
     // Let any in-flight tick drain, then assert the calls are frozen.
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await vi.advanceTimersByTimeAsync(60);
     const after = stub.calls.poll;
-    await new Promise((resolve) => setTimeout(resolve, 100)); // 5× base interval
+    await vi.advanceTimersByTimeAsync(100); // 5× base interval
     expect(stub.calls.poll).toBe(after);
   });
 
@@ -244,13 +286,13 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     const { service, stub } = makeService();
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
     service.unwatch(ASSET_ID);
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await vi.advanceTimersByTimeAsync(60);
     const cold = stub.calls.poll;
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThan(cold));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThan(cold));
     expect(service.watcherCount(ASSET_ID)).toBe(1);
   });
 
@@ -273,21 +315,21 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     });
 
     await first.watch(ASSET_ID, REF, 40, false);
-    await vi.waitFor(() => expect(firstStub.calls.poll).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(firstStub.calls.poll).toBeGreaterThanOrEqual(2));
     await second.watch(ASSET_ID, REF, 20, true);
 
     // The follower contributes its finer cadence through Redis, but never
     // starts a second provider loop while process A owns the lease.
-    await vi.waitFor(() => expect(first.pollIntervalMs(ASSET_ID)).toBe(20));
-    await new Promise((resolve) => setTimeout(resolve, 70));
+    await advanceUntil(() => expect(first.pollIntervalMs(ASSET_ID)).toBe(20));
+    await vi.advanceTimersByTimeAsync(70);
     expect(firstStub.calls.poll).toBeGreaterThan(0);
     expect(secondStub.calls.poll).toBe(0);
 
     first.unwatch(ASSET_ID, 40);
-    await vi.waitFor(() => expect(secondStub.calls.poll).toBeGreaterThanOrEqual(2));
-    await new Promise((resolve) => setTimeout(resolve, 50)); // drain A's in-flight tick
+    await advanceUntil(() => expect(secondStub.calls.poll).toBeGreaterThanOrEqual(2));
+    await vi.advanceTimersByTimeAsync(50); // drain A's in-flight tick
     const firstFrozen = firstStub.calls.poll;
-    await new Promise((resolve) => setTimeout(resolve, 70));
+    await vi.advanceTimersByTimeAsync(70);
     expect(firstStub.calls.poll).toBe(firstFrozen);
     expect(secondStub.calls.poll).toBeGreaterThanOrEqual(2);
   });
@@ -320,13 +362,13 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     });
 
     await behind.watch(ASSET_ID, REF, 20, false);
-    await vi.waitFor(() => expect(behindStub.calls.poll).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(behindStub.calls.poll).toBeGreaterThanOrEqual(2));
     await ahead.watch(ASSET_ID, REF, 20, true);
 
     // The fast peer coordinates repeatedly (10 ms cadence). Reaping the owner's
     // registration against its own clock would evict a lease Redis still holds
     // and start a second upstream loop for the same asset.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await vi.advanceTimersByTimeAsync(150);
     expect(aheadStub.calls.poll).toBe(0);
     expect(behindStub.calls.poll).toBeGreaterThanOrEqual(2);
     expect(await redis.get(liveLoopLeaderKey(ASSET_ID))).not.toBeNull();
@@ -352,7 +394,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     });
 
     await owner.watch(ASSET_ID, REF, 20, false);
-    await vi.waitFor(() => expect(ownerStub.calls.poll).toBeGreaterThanOrEqual(1));
+    await advanceUntil(() => expect(ownerStub.calls.poll).toBeGreaterThanOrEqual(1));
     const leader = await redis.get(liveLoopLeaderKey(ASSET_ID));
     expect(leader).not.toBeNull();
 
@@ -360,7 +402,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     // a trimmed key) while its leader lease is untouched and far from expiry.
     await redis.zrem(liveLoopProcessesKey(ASSET_ID), leader!);
     await peer.watch(ASSET_ID, REF, 20, true);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.advanceTimersByTimeAsync(100);
 
     expect(await redis.get(liveLoopLeaderKey(ASSET_ID))).toBe(leader);
     expect(await redis.pttl(liveLoopLeaderKey(ASSET_ID))).toBeGreaterThan(0);
@@ -386,16 +428,14 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     });
 
     await first.watch(ASSET_ID, REF, 120, false);
-    await vi.waitFor(() => expect(firstStub.calls.poll).toBe(1));
+    await advanceUntil(() => expect(firstStub.calls.poll).toBe(1));
     await second.watch(ASSET_ID, REF, 20, true);
 
     // Process A does not reconcile again before its lease expires. Process B
     // reaps it and starts polling; A's already-scheduled 120 ms tick then wakes
     // after takeover and must fail its local lease fence before provider work.
-    await vi.waitFor(() => expect(secondStub.calls.poll).toBeGreaterThanOrEqual(1), {
-      timeout: 1_000,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 140));
+    await advanceUntil(() => expect(secondStub.calls.poll).toBeGreaterThanOrEqual(1), 1_000);
+    await vi.advanceTimersByTimeAsync(140);
     expect(firstStub.calls.poll).toBe(1);
     expect(secondStub.calls.poll).toBeGreaterThanOrEqual(1);
   });
@@ -413,18 +453,14 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     const { service } = makeService(stub, { intervalMs: 20, maxIntervalMs: 160 });
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20);
 
     failing = true;
-    await vi.waitFor(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(160), {
-      timeout: 2000,
-    }); // 20 → 40 → 80 → 160 and holds the ceiling
+    await advanceUntil(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(160), 2000); // 20 → 40 → 80 → 160 and holds the ceiling
 
     failing = false;
-    await vi.waitFor(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(20), {
-      timeout: 2000,
-    }); // first success resets to the base cadence
+    await advanceUntil(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(20), 2000); // first success resets to the base cadence
   });
 
   it('failed ticks emit no frames — viewers see silence, never an error', async () => {
@@ -438,7 +474,7 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     service.onFrame((f) => frames.push(f));
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
     expect(frames).toEqual([]);
     expect(await service.backfill(ASSET_ID, REF, '12h')).toEqual([]);
   });
@@ -453,7 +489,7 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     service.onFrame((f) => frames.push(f));
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(frames.length).toBeGreaterThanOrEqual(2));
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20); // never stretched
   });
 });
@@ -491,13 +527,13 @@ describe('liveModeService — finest ACTIVE rate (#372)', () => {
     // A slow viewer alone: after the immediate first tick the next poll sits
     // half a second out.
     await service.watch(ASSET_ID, REF, 500);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
 
     // A 20 ms viewer joins — the pending tick must be pulled forward, not sit
     // out the remaining ~480 ms.
     await service.watch(ASSET_ID, REF, 20);
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(4));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(4));
   });
 
   it('distress stretches from the finest active rate; recovery snaps back to it', async () => {
@@ -513,15 +549,15 @@ describe('liveModeService — finest ACTIVE rate (#372)', () => {
 
     await service.watch(ASSET_ID, REF, 20);
     await service.watch(ASSET_ID, REF, 80);
-    await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
+    await advanceUntil(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20);
 
     failing = true;
-    await vi.waitFor(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(160), { timeout: 2000 });
+    await advanceUntil(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(160), 2000);
 
     // First success returns to the FINEST active rate, not the coarsest.
     failing = false;
-    await vi.waitFor(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(20), { timeout: 2000 });
+    await advanceUntil(() => expect(service.pollIntervalMs(ASSET_ID)).toBe(20), 2000);
   });
 });
 
@@ -635,7 +671,7 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     service.onFrame((f) => frames.push(f.marketState ?? 'none'));
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+    await advanceUntil(() => expect(frames.length).toBeGreaterThan(0));
     expect(frames[0]).toBe('closed');
   });
 
@@ -646,7 +682,7 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     service.onFrame((f) => seen.push(f.marketState));
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    await advanceUntil(() => expect(seen.length).toBeGreaterThan(0));
     expect(seen[0]).toBeNull();
   });
 
@@ -661,7 +697,7 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     service.onFrame((f) => states.push(f.marketState));
 
     await service.watch(ASSET_ID, REF);
-    await vi.waitFor(() => expect(states.length).toBeGreaterThanOrEqual(2));
+    await advanceUntil(() => expect(states.length).toBeGreaterThanOrEqual(2));
     // The closed state still fans out to live viewers (drives the badge)…
     expect(states.every((s) => s === 'closed')).toBe(true);
     // …but no closed frame landed in the ring: a fresh joiner backfills only the

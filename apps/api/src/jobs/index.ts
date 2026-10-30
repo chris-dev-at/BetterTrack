@@ -33,10 +33,12 @@ export {
 export { createJobConnection, jobConnectionFactory, type JobConnectionFactory } from './connection';
 export { createQueueRegistry, type QueueRegistry } from './queues';
 export {
+  backfillJobId,
   createBackfillScheduler,
   noopBackfillScheduler,
   type BackfillScheduler,
 } from './backfillScheduler';
+export { customJobId } from './jobIds';
 export {
   createDeadLetter,
   isPermanentFailure,

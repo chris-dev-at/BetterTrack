@@ -8,6 +8,7 @@ import * as contracts from '@bettertrack/contracts';
 import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
+import { BODY_PARSER_ERROR_CODES } from '../bodyLimits';
 import { openApiPathTemplateAcceptsBearer } from '../middleware/bearerAuth';
 import { pathRequiresAdminTwoFactorSetup, pathRequiresPasswordChange } from '../middleware/session';
 
@@ -702,6 +703,7 @@ const componentSchemas = {
   OAuthDenyResponse: contracts.oauthDenyResponseSchema,
   OAuthTokenRequest: contracts.oauthTokenRequestSchema,
   OAuthTokenResponse: contracts.oauthTokenResponseSchema,
+  OAuthRevokeRequest: contracts.oauthRevokeRequestSchema,
 };
 
 /** Registered component refs, keyed by component name (literal keys preserved). */
@@ -964,6 +966,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/logout',
     tag: 'Auth',
     summary: 'Clear the current session.',
+    description:
+      'A cookie session is destroyed and its cookie cleared. A bearer caller self-revokes the credential it presented instead: a personal API key revokes that key; a delegated OAuth access token revokes its OWN per-install token family — that install’s access and refresh tokens stop working at once, while every other install signed in to the same app keeps working (§16 2026-10-29). A token minted before token families existed belongs to the legacy family that is the whole grant, so its logout still signs out every install that shares it until each signs in again. Always 200 for a valid credential, including one whose family was already revoked.',
     public: true,
     status: 200,
     response: R.OkResponse,
@@ -1140,6 +1144,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/fresh-start-notice/acknowledge',
     tag: 'Auth',
     summary: 'Acknowledge the one-time paranoid fresh-start notice (§17, idempotent, set-once).',
+    description:
+      'Available to an owning session or a bearer holding account:security (this POST only; every other method on the path stays session-only). Stamps the caller’s own wipe receipt — there is no id in the payload — and a replay never moves the timestamp. Returns the refreshed session payload with paranoidFreshStartPending false. A bearer without account:security gets 403 INSUFFICIENT_SCOPE.',
     status: 200,
     response: R.MeResponse,
   },
@@ -1422,8 +1428,11 @@ const endpoints: EndpointDef[] = [
     path: '/auth/google/start',
     tag: 'Auth',
     summary:
-      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; anonymous is a sign-in/registration. 404 when Google is not configured.',
+      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; anonymous is a sign-in/registration. An optional `returnTo` — a pending same-origin `/oauth/authorize?…` request, nothing else — is bound to the state so the callback lands back inside that authorize flow; an unsafe value refuses the flow (redirect to the login page’s Google error). 404 when Google is not configured.',
     public: true,
+    query: z.object({
+      returnTo: z.string().optional(),
+    }),
     status: 302,
   },
   {
@@ -1997,6 +2006,9 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAccountDefaultsRequest,
     status: 200,
     response: R.AccountDefaultsResponse,
+    // `adminService` refuses a notification default for a channel the
+    // deployment's kill-switch has turned off (400).
+    errorCodes: ['CHANNEL_DEACTIVATED'],
   },
   {
     method: 'get',
@@ -2525,6 +2537,8 @@ const endpoints: EndpointDef[] = [
     path: '/assets/{id}/intel/dividends',
     tag: 'Assets',
     summary: 'Dividend history, upcoming ex/pay dates and forward yield.',
+    description:
+      '`upcoming` carries only events with at least one ex/pay date on or after today (the Europe/Vienna display day); an event whose dates are all behind us is dropped from it (`history` is the provider’s own payout record, which already carries that payout). An ex-but-unpaid event stays upcoming until its pay date has passed.',
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.DividendsResponse,
@@ -2646,8 +2660,15 @@ const endpoints: EndpointDef[] = [
     path: '/portfolios/{portfolioId}',
     tag: 'Portfolios',
     summary: 'Permanently delete a portfolio and all its data (rejects the only active one).',
+    description:
+      'A plain portfolio whose move into a vault is still in progress (its encrypted document is staged in the vault and the capture window is open) is refused with 409 VAULT_MOVE_IN_PENDING and nothing is deleted; error.details.portfolioIds names it. The refusal lapses with the capture window. An expired capture is inert: its staged documents are released in the same commit as the delete.',
     params: contracts.portfolioIdParamSchema,
     status: 204,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_NOT_FOUND).',
+      409: 'A move of this portfolio into a vault is still in progress (VAULT_MOVE_IN_PENDING).',
+    },
+    errorCodes: [contracts.PER_VAULT_ERROR_CODES.deleteMoveInPending],
   },
   {
     method: 'get',
@@ -3324,7 +3345,9 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/standing-orders/{id}/resume',
     tag: 'Standing orders',
-    summary: 'Resume a paused standing order (fires from the current period onward).',
+    summary: 'Resume a paused standing order (no back-fill of periods that elapsed while paused).',
+    description:
+      "Resume a paused order with no back-fill: a period whose anchor day fell before the resume day (Europe/Vienna) is never booked; the next booking is the first anchor on or after the resume day — an anchor on the resume day still books at the next 07:00 scan; a daily order resumed after that day's scan first books the following day. Resuming an order that is already active changes nothing.",
     params: contracts.standingOrderIdParamSchema,
     status: 200,
     response: R.StandingOrder,
@@ -4060,6 +4083,10 @@ const endpoints: EndpointDef[] = [
     body: R.SetAudienceRequest,
     status: 200,
     response: R.AudienceMutationResponse,
+    // Published because a client must be able to branch on it: a `group` write
+    // naming a circle the caller no longer owns is repairable (re-pick), unlike
+    // the generic 400 (#1978).
+    errorCodes: [contracts.GROUP_AUDIENCE_INVALID_ERROR_CODE],
   },
   {
     method: 'put',
@@ -4909,15 +4936,32 @@ const endpoints: EndpointDef[] = [
     summary:
       'Public token endpoint: exchange an authorization code (+ PKCE / client secret) or rotate a refresh token.',
     description:
-      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set none of whose entries satisfies any consented scope (write⇒read counts as satisfying) — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot: with no effective scope the grant can reach no scoped route, and the only thing its tokens could still do — read the caller’s own identity via /auth/me — is not worth keeping a dead grant alive for; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT.',
+      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set none of whose entries satisfies any consented scope (write⇒read counts as satisfying) — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot: with no effective scope the grant can reach no scoped route, and the only thing its tokens could still do — read the caller’s own identity via /auth/me — is not worth keeping a dead grant alive for; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT. Refresh tokens rotate on every use, with a 60-second grace window (OAUTH_REFRESH_TOKEN_GRACE_SECONDS): re-presenting the refresh token that was JUST rotated — because the earlier answer was lost, or because two refreshes of the same token raced — returns 200 with the IDENTICAL access_token and refresh_token that rotation issued, expires_in recomputed to the access token’s remaining lifetime and scope recomputed as the issued scope intersected with what a fresh refresh would grant at that moment; nothing new is minted and nothing is revoked. That holds only while the successor refresh token has not itself been used, and only for the same client with the same client authentication. Reuse after the window, or of any older refresh token in the chain, is treated as token theft of THAT install’s chain: its token family is revoked and the request answers INVALID_GRANT, while the grant and every other install stay signed in (RFC 9700 §4.14.2; a token minted before token families existed belongs to the legacy family that is the whole grant, so it still revokes the grant). Token families (§16 2026-10-29): every authorization_code exchange starts a NEW family — one install’s revocation unit — and refresh rotation keeps it. The optional instance_id (16–64 characters of [A-Za-z0-9._~-], a random id the install generates once and keeps) is stored on the family; a later code exchange with the same instance_id on the same grant retires that install’s previous family, so a reinstall or forgotten PIN leaves no orphan behind (without one the old family simply expires with its refresh token). A re-login UNIONS its consent into the grant rather than replacing it, so one install consenting to fewer scopes never strips another install; narrowing an app is Settings → revoke. The code exchange’s own token carries exactly that consent’s scopes; a later refresh mints the grant’s union, capped by the app’s current ceiling.',
     public: true,
     body: R.OAuthTokenRequest,
     status: 200,
     response: R.OAuthTokenResponse,
     errorResponses: {
-      400: 'authorization_code: unknown/expired/replayed code, redirect_uri mismatch or failed PKCE (INVALID_GRANT); unknown client or wrong client secret (INVALID_CLIENT). refresh_token: unknown, expired, already-rotated or revoked-grant token (INVALID_GRANT). BOTH forms: an effective scope set that clamps to empty (INVALID_SCOPE) — the refresh form revokes the grant as it refuses.',
+      400: 'authorization_code: unknown/expired/replayed code, redirect_uri mismatch or failed PKCE (INVALID_GRANT); unknown client or wrong client secret (INVALID_CLIENT). refresh_token: unknown, expired, revoked-grant or revoked-family token (INVALID_GRANT); an already-rotated token re-presented after the 60 s grace window, or one older than the immediately previous token (INVALID_GRANT — and that install’s token family is revoked; a legacy pre-family token revokes the grant); a just-rotated token inside the window whose stored successor pair can no longer be re-served, e.g. after an encryption-key rotation (INVALID_GRANT, nothing revoked); the losing side of two concurrent refreshes of the same token when the winner’s pair cannot be re-served — including when the winner’s successor has already been rotated again by the time the loser reads it (INVALID_GRANT, nothing revoked). BOTH forms: an effective scope set that clamps to empty (INVALID_SCOPE) — the refresh form revokes the grant as it refuses, and this is checked before any grace re-serve.',
     },
     errorCodes: ['INVALID_CLIENT', 'INVALID_GRANT', 'INVALID_SCOPE'],
+  },
+  {
+    method: 'post',
+    path: '/oauth/revoke',
+    tag: 'OAuth',
+    summary:
+      'RFC 7009 token revocation: sign one install out by revoking the presented token’s family.',
+    description:
+      'Client-authenticated exactly like /oauth/token (client_id, plus client_secret for a confidential client). DEVIATION from RFC 7009 §2.1: the request body is JSON — the same encoding this server’s token endpoint uses — not application/x-www-form-urlencoded. `token` may be an access token (bto_…) or a refresh token (btr_…); `token_type_hint` is accepted but only a hint — the server classifies the token by its prefix. The presented token’s per-install token family is revoked: that install’s access and refresh tokens stop working at once and its realtime sockets drop, while the grant and every other install stay signed in (§16 2026-10-29). A token minted before token families existed belongs to the legacy family that is the whole grant, so revoking it revokes the grant. Per RFC 7009 §2.2 the answer is 200 {ok:true} whether or not anything was revoked: an unknown token, a token issued to a different client, or one that is already expired, rotated or revoked is answered identically, so the endpoint never reveals which tokens exist. The response is Cache-Control: no-store. Rate-limited like /oauth/token.',
+    public: true,
+    body: R.OAuthRevokeRequest,
+    status: 200,
+    response: R.OkResponse,
+    errorResponses: {
+      400: 'Unknown client or wrong client secret (INVALID_CLIENT); a malformed body (VALIDATION_ERROR). Never for an unknown, foreign or already-revoked token — those answer 200.',
+    },
+    errorCodes: ['INVALID_CLIENT'],
   },
 
   // Separately-authenticated browser-only Google Drive identities (E5 #1415).
@@ -5032,11 +5076,16 @@ const endpoints: EndpointDef[] = [
     summary:
       'Delete an unreferenced vault only after in-request password, TOTP, or recovery-code step-up.',
     description:
-      'Available to an owning session or a bearer holding account:security. The same in-body step-up applies to both. Deletion refuses while a portfolio references the vault or while its signed-purge retirement gate remains live.',
+      'Available to an owning session or a bearer holding account:security. The same in-body step-up applies to both, and every refusal below is disclosed only after it succeeds. Deletion refuses while a portfolio references the vault (VAULT_REFERENCED_BY_PORTFOLIO), while its signed-purge retirement gate remains live (VAULT_RETIREMENT_PENDING), or while a portfolio move-in has staged its document here and its capture window is still open (VAULT_MOVE_IN_PENDING, with error.details.portfolioIds; it lapses with that window). An expired capture bound to the vault is inert and is unbound in the same commit as the delete.',
     params: contracts.vaultIdParamSchema,
     body: R.DeleteVaultRequest,
     status: 200,
     response: R.DeleteVaultResponse,
+    errorResponses: {
+      404: 'No such caller-owned vault (VAULT_NOT_FOUND).',
+      409: 'A member portfolio, a pending retirement, or an in-progress move-in blocks the delete (VAULT_REFERENCED_BY_PORTFOLIO / VAULT_RETIREMENT_PENDING / VAULT_MOVE_IN_PENDING).',
+    },
+    errorCodes: contracts.PER_VAULT_DELETE_ERROR_CODES,
   },
   {
     method: 'get',
@@ -5217,9 +5266,10 @@ const endpoints: EndpointDef[] = [
     noStore: true,
     errorResponses: {
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
-      409: 'The portfolio is already vaulted or cannot currently be captured.',
+      409: 'The portfolio is already vaulted or cannot currently be captured (PORTFOLIO_ALREADY_VAULTED; PORTFOLIO_VAULT_TRANSITION_CONFLICT is retryable; PORTFOLIO_VAULT_CAPTURE_BINDING_INVALID is terminal).',
       429: 'The dedicated vault-transition rate limit was exceeded.',
     },
+    errorCodes: contracts.PORTFOLIO_VAULT_REVISION_ERROR_CODES,
   },
   {
     method: 'get',
@@ -5480,6 +5530,44 @@ const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
   content: jsonContent(R.ApiError),
 });
 
+/**
+ * True for an operation whose request body the GLOBAL JSON parser reads, and so
+ * can refuse with the `bodyLimits.ts` vocabulary: one that declares a JSON body
+ * (whatever its method — `DELETE /drive-connections/{connectionId}` has one). A
+ * bodyless operation has nothing for a client to malform.
+ */
+function takesJsonBody(endpoint: EndpointDef): boolean {
+  return (
+    endpoint.body !== undefined &&
+    (endpoint.bodyContentType === undefined || endpoint.bodyContentType === 'application/json')
+  );
+}
+
+/**
+ * True for the octet-stream vault writes. Their raw parser (`vaultRoutes.ts`)
+ * translates only an oversized body, into their own VAULT_TOO_LARGE; every other
+ * parser failure (an unknown Content-Encoding, an aborted upload) falls through
+ * to the shared normaliser as 415 UNSUPPORTED_MEDIA_TYPE or 400 MALFORMED_BODY.
+ * So they carry the parser vocabulary minus PAYLOAD_TOO_LARGE, whose 413 their
+ * own code owns.
+ */
+function takesRawBody(endpoint: EndpointDef): boolean {
+  return endpoint.body !== undefined && endpoint.bodyContentType === 'application/octet-stream';
+}
+const RAW_BODY_PARSER_ERROR_CODES = BODY_PARSER_ERROR_CODES.filter(
+  (code) => code !== 'PAYLOAD_TOO_LARGE',
+);
+
+/**
+ * Codes a route emits that its endpoint row cannot carry by itself because one
+ * guard answers for a whole path family. `settingsRoutes.ts` refuses every
+ * `/settings/telegram*` and `/settings/discord*` operation with 404
+ * CHANNEL_DEACTIVATED while the global channel kill-switch is off (§13.5 V5-P0).
+ */
+const CHANNEL_DEACTIVATED_CODE = 'CHANNEL_DEACTIVATED';
+const pathIsKillSwitchedChannel = (path: string): boolean =>
+  /^\/settings\/(?:telegram|discord)(?:\/|$)/.test(path);
+
 function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
   return [
     ...(endpoint.public ? [] : [contracts.AUTH_ERROR_CODES.unauthenticated]),
@@ -5489,6 +5577,9 @@ function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
     ...(pathRequiresAdminTwoFactorSetup(endpoint.path, endpoint.method)
       ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
       : []),
+    ...(takesJsonBody(endpoint) ? BODY_PARSER_ERROR_CODES : []),
+    ...(takesRawBody(endpoint) ? RAW_BODY_PARSER_ERROR_CODES : []),
+    ...(pathIsKillSwitchedChannel(endpoint.path) ? [CHANNEL_DEACTIVATED_CODE] : []),
     ...(endpoint.errorCodes ?? []),
   ].filter((code, index, all) => all.indexOf(code) === index);
 }
@@ -5565,6 +5656,21 @@ for (const ep of endpoints) {
     // No content member: RFC 9110 §15.4.5 forbids a 304 body, so the response
     // carries only the same validators the 200 would have sent.
     responses['304'] = { description: ep.notModified, ...successHeaders };
+  }
+  // The global body parser's refusals (`bodyLimits.ts`), so every code in
+  // BODY_PARSER_ERROR_CODES has a status to live under; 400 MALFORMED_BODY rides
+  // the 400 above. An endpoint's own `errorResponses` below still wins.
+  if (takesJsonBody(ep)) {
+    responses['413'] = errorResponse(
+      'The request body exceeds the size limit (PAYLOAD_TOO_LARGE).',
+      errorHeaders,
+    );
+  }
+  if (takesJsonBody(ep) || takesRawBody(ep)) {
+    responses['415'] = errorResponse(
+      'The request body uses an unsupported charset or content encoding (UNSUPPORTED_MEDIA_TYPE).',
+      errorHeaders,
+    );
   }
   for (const [status, description] of Object.entries(ep.errorResponses ?? {})) {
     responses[status] = errorResponse(description, errorHeaders);

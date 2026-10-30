@@ -3704,7 +3704,8 @@
     },
     "attribution": {
       "by": "Added by {{username}}",
-      "groupMember": "Group member"
+      "groupMember": "Group member",
+      "accountDeleted": "{{username}} (account deleted)"
     },
     "role": {
       "owner": "Owner",
@@ -3891,6 +3892,7 @@
       "deleteAction": "Delete empty vault",
       "deleteReferenced": "This vault still contains a portfolio. Move every portfolio out before deleting it.",
       "deleteError": "The vault could not be deleted. Nothing changed.",
+      "deleteThrottled": "Too many attempts. Wait a moment, then try the deletion again. Nothing changed.",
       "deferredFold": "Why some actions aren’t available yet",
       "deferred": {
         "rotate": "Rotating the recovery words isn’t available yet: it needs a verified round trip on every storage this vault uses. Until then this vault and its words stay exactly as they are.",
@@ -4077,6 +4079,7 @@
         "working": "Moving portfolio into the vault…",
         "done": "The portfolio is encrypted in the vault and locked on the server.",
         "error": "The portfolio was not moved. Its server data is unchanged.",
+        "throttled": "Too many attempts. Wait a moment, then try again. The portfolio was not moved and its server data is unchanged.",
         "captureInFlight": "The portfolio was not moved, and trying again will not help. This vault still holds an unfinished move of {{portfolios}}. Finish or cancel that move first, then move this portfolio in. Its server data is unchanged.",
         "captureInFlightUnnamed": "The portfolio was not moved, and trying again will not help. This vault still holds another portfolio’s unfinished move. Finish or cancel that move first, then move this portfolio in. Its server data is unchanged."
       },
@@ -4089,7 +4092,8 @@
         "action": "Restore as a normal portfolio",
         "working": "Restoring the portfolio…",
         "done": "The portfolio is restored under the same ID and is server-readable again.",
-        "error": "The portfolio could not be restored completely. It remains locked in the vault; retry resumes the same move."
+        "error": "The portfolio could not be restored completely. It remains locked in the vault; retry resumes the same move.",
+        "throttled": "Too many attempts. Wait a moment, then try again. The portfolio stays locked in the vault until it succeeds."
       }
     },
     "enable": {
@@ -4147,7 +4151,8 @@
         "credentialHint": "Your account password (the one you sign in with) — not the vault passphrase. BetterTrack verifies it before anything is discarded.",
         "action": "Discard the vault and start fresh",
         "working": "Discarding…",
-        "error": "The vault could not be discarded. Nothing changed — try again when the connection is available."
+        "error": "The vault could not be discarded. Nothing changed — try again when the connection is available.",
+        "throttled": "Too many attempts. Wait a moment, then try the discard again. Nothing changed."
       },
       "errors": {
         "wrongPassphrase": "That vault passphrase is incorrect.",

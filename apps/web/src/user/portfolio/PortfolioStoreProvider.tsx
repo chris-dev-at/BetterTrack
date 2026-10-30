@@ -20,11 +20,37 @@ export interface PortfolioStoreCapabilities {
   readonly writes: boolean;
   /** Row reads (transactions, cash sources, movements) answer rather than refuse. */
   readonly rowReads: boolean;
+  /**
+   * A server endpoint under this subtree may be given THIS portfolio's id.
+   *
+   * False inside an unlocked vault portfolio, where it is not a preference but
+   * an arithmetic fact: `createVaultedPortfolioRouteGuard` reads a portfolio id
+   * off the path, the query or the body and answers 403 VAULTED_PORTFOLIO
+   * (§6.16 kills server-computed reads for a vaulted portfolio), so such a
+   * request is doomed before it is written — doubled by `apiRetryPolicy` and
+   * swallowed by whatever asked. Surfaces state it up front instead of calling
+   * and catching the refusal (#1416, paranoid-UX failure map #7).
+   *
+   * SEPARATE FROM `rowReads` ON PURPOSE (#1981). The two answer different
+   * questions — "does the store answer row projections?" versus "may an
+   * endpoint be handed this id?" — and they are already diverging: since #1532
+   * the resolver-backed vault store serves the full row projection set out of
+   * its authenticated document. A surface that reads `rowReads` to decide
+   * whether to call the SERVER therefore sits on a flag that is expected to
+   * flip for an unrelated reason, and the flip would silently restore the 403
+   * storm this flag exists to prevent.
+   *
+   * It is a statement about the per-portfolio vault boundary only; a paranoid
+   * ACCOUNT is fenced separately (`ParanoidSurfaceGate`, and the server's own
+   * `createParanoidRouteGuard`).
+   */
+  readonly serverPortfolioReads: boolean;
 }
 
 export const FULL_PORTFOLIO_STORE_CAPABILITIES: PortfolioStoreCapabilities = {
   writes: true,
   rowReads: true,
+  serverPortfolioReads: true,
 };
 
 interface PortfolioStoreBinding {

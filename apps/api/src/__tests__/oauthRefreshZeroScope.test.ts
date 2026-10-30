@@ -324,6 +324,48 @@ describe('a refresh under an emptied ceiling mints nothing and retires the grant
     expect((await tokenCounts(grant.id)).access).toBe(1);
   });
 
+  it('retires the grant BEFORE the grace path: a just-rotated token is not re-served under an emptied ceiling', async () => {
+    // The refresh grace window re-serves the successor pair of a token rotated
+    // moments ago. It must not become a way around #1985: once the ceiling is
+    // empty, a replay inside the window is refused exactly like a fresh refresh
+    // (INVALID_SCOPE, grant retired), never answered with the stored pair.
+    // Frozen OAuth clock: the replay is provably inside the window however slow
+    // the machine is.
+    await harness.dispose();
+    const frozen = new Date();
+    harness = await createTestApp({ oauthNow: () => frozen });
+    const ownerAgent = await freshUserAgent();
+    const client = await registerThirdPartyClient(ownerAgent, ['portfolio:read']);
+    const user = await freshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const tok = await consentAndToken(agent, client.clientId, 'portfolio:read');
+    const grant = await grantRow(user.id);
+
+    const rotated = await redeemRefresh(client.clientId, tok.refresh_token);
+    expect(rotated.status).toBe(200);
+    const successor = oauthTokenResponseSchema.parse(rotated.body);
+
+    await setCeiling(client.clientId, []);
+
+    const replay = await redeemRefresh(client.clientId, tok.refresh_token);
+    emptyScopeRefusal(replay, 'grace replay under an emptied ceiling');
+    expect(replay.body.access_token).toBeUndefined();
+    expect(replay.body.refresh_token).toBeUndefined();
+
+    expect((await grantRow(user.id)).revokedAt).not.toBeNull();
+    expect(await revocationAudits(grant.id)).toHaveLength(1);
+    const graceReplays = await harness.db
+      .select({ id: schema.auditLog.id })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, 'oauth.token_refresh_replayed_in_grace'));
+    expect(graceReplays).toHaveLength(0);
+    // The successor pair died with the grant.
+    const dead = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set(...bearer(successor.access_token));
+    expect(dead.status).toBe(401);
+  });
+
   it('retires a FIRST-PARTY grant the same way when the ceiling goes disjoint', async () => {
     const adminAgent = await freshAdminAgent();
     const client = await registerFirstPartyClient(adminAgent, ['portfolio:write']);

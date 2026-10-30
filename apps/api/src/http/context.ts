@@ -730,6 +730,12 @@ export interface BuildContextDeps {
   aiFetch?: typeof fetch;
   /** Test seam for save-time OAuth logo fetching; production uses guarded HTTPS. */
   oauthLogoFetcher?: OAuthLogoFetcher;
+  /**
+   * Test seam: the OAuth service's clock — token/code TTLs and the refresh
+   * grace window derive from it, so they are provable without wall-clock
+   * waits. Defaults to the real time.
+   */
+  oauthNow?: () => Date;
 }
 
 /** Composition root: repositories → services → context. */
@@ -866,6 +872,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     events,
     logger,
     logoFetcher: deps.oauthLogoFetcher,
+    // Seals a rotated refresh token's successor pair for the grace window.
+    recordEncryption: config.recordEncryption,
+    now: deps.oauthNow,
   });
   const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 
@@ -2063,6 +2072,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return {
         kind: 'oauth' as const,
         grantId: tokenPrincipal.grantId,
+        familyId: tokenPrincipal.familyId,
         accessTokenId: tokenPrincipal.accessTokenId,
         expiresAt: tokenPrincipal.expiresAt.toISOString(),
         scopes: tokenPrincipal.scopes,
@@ -2103,6 +2113,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return {
         kind: 'oauth' as const,
         grantId: principal.grantId,
+        familyId: principal.familyId,
         accessTokenId: principal.accessTokenId,
         expiresAt: principal.expiresAt.toISOString(),
         scopes: principal.scopes,
