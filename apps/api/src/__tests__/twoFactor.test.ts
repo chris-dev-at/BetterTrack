@@ -117,7 +117,10 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const agent = await loginAgent(user.email, user.password);
 
     // Enroll: provisional secret + otpauth URI, TOTP not yet on.
-    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enroll = await agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(enroll.status).toBe(200);
     const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
     expect(enroll.body.otpauthUri).toContain('otpauth://totp/');
@@ -131,7 +134,7 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const badConfirm = await agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: '000000' });
+      .send({ code: '000000', stepUp: { password: user.password } });
     expect(badConfirm.status).toBe(400);
     expect(badConfirm.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
 
@@ -139,7 +142,7 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const confirm = await agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
     expect(confirm.status).toBe(200);
     const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
     expect(recoveryCodes).not.toBeNull();
@@ -185,7 +188,10 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const agent = await loginAgent(user.email, user.password);
 
     // Enroll to arm a pending (unconfirmed) secret.
-    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enroll = await agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(enroll.status).toBe(200);
     let status = twoFactorStatusResponseSchema.parse(
       (await agent.get('/api/v1/auth/2fa/status')).body,
@@ -214,12 +220,15 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(user.email, user.password);
 
-    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enroll = await agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
     const confirm = await agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
     expect(confirm.status).toBe(200);
 
     const enrolledAgent = await loginWithTotp(user.email, user.password, secret);
@@ -239,19 +248,27 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const agent = await loginAgent(user.email, user.password);
 
     const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+      (
+        await agent
+          .post('/api/v1/auth/2fa/enroll')
+          .set(...XRW)
+          .send({ stepUp: { password: user.password } })
+      ).body,
     );
     const first = twoFactorMethodEnabledResponseSchema.parse(
       (
         await agent
           .post('/api/v1/auth/2fa/confirm')
           .set(...XRW)
-          .send({ code: generateTotpCode(secret) })
+          .send({ code: generateTotpCode(secret), stepUp: { password: user.password } })
       ).body,
     ).recoveryCodes;
 
     const enrolledAgent = await loginWithTotp(user.email, user.password, secret);
-    const regen = await enrolledAgent.post('/api/v1/auth/2fa/recovery-codes').set(...XRW);
+    const regen = await enrolledAgent
+      .post('/api/v1/auth/2fa/recovery-codes')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(regen.status).toBe(200);
     const second = twoFactorMethodEnabledResponseSchema.parse(regen.body).recoveryCodes;
     expect(second).not.toBeNull();
@@ -287,7 +304,10 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(user.email, user.password);
 
-    const enroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+    const enroll = await agent
+      .post('/api/v1/auth/2fa/email/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(enroll.status).toBe(200);
     expect(enroll.body).toEqual({ ok: true });
 
@@ -298,7 +318,7 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     const confirm = await agent
       .post('/api/v1/auth/2fa/email/confirm')
       .set(...XRW)
-      .send({ code });
+      .send({ code, stepUp: { password: user.password } });
     expect(confirm.status).toBe(200);
     const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
     expect(recoveryCodes).not.toBeNull();
@@ -311,7 +331,10 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     expect(status).toMatchObject({ totpEnabled: false, emailEnabled: true });
 
     // Disable turns just the email method off.
-    const disable = await enrolledAgent.post('/api/v1/auth/2fa/email/disable').set(...XRW);
+    const disable = await enrolledAgent
+      .post('/api/v1/auth/2fa/email/disable')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(disable.status).toBe(200);
     expect((await enrolledAgent.get('/api/v1/auth/2fa/status')).status).toBe(401);
     const disabledAgent = await loginAgent(user.email, user.password);
@@ -330,7 +353,10 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     const user = await harness.seedUser();
     const stale = await loginAgent(user.email, user.password);
 
-    const enroll = await stale.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+    const enroll = await stale
+      .post('/api/v1/auth/2fa/email/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(enroll.status).toBe(200);
     const staleCode = lastEmailedCode(transport);
 
@@ -345,7 +371,7 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     const rejected = await fresh
       .post('/api/v1/auth/2fa/email/confirm')
       .set(...XRW)
-      .send({ code: staleCode });
+      .send({ code: staleCode, stepUp: { password: newPassword } });
     expect(rejected.status).toBe(400);
     expect(rejected.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
     expect(await harness.ctx.redis.get(`2fa_email_setup:${user.id}`)).toBeNull();
@@ -361,7 +387,10 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(user.email, user.password);
 
-    const enroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+    const enroll = await agent
+      .post('/api/v1/auth/2fa/email/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(enroll.status).toBe(400);
     expect(enroll.body.error.code).toBe('TWO_FACTOR_EMAIL_UNAVAILABLE');
 

@@ -360,6 +360,7 @@ const dataExportService = createExportService({
     audit,
     redis: deadLetterConnection,
     email,
+    passwordHasher: createPasswordHasher(),
   }),
   audit,
   notify,

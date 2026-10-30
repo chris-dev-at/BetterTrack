@@ -7,6 +7,7 @@ import type {
   TwoFactorMethodEnabledResponse,
   TwoFactorRecoveryCodesResponse,
   TwoFactorStatusResponse,
+  TwoFactorStepUpCredential,
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
@@ -20,8 +21,10 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
+import type { PasswordHasher } from '../password/passwordHasher';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SecurityMutationContext, SessionService } from '../sessions/sessionService';
+import { recordFactorIssuance } from './factorProvenance';
 import { TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE } from './loginThrottle';
 import {
   buildOtpauthUri,
@@ -44,7 +47,34 @@ export interface TwoFactorServiceDeps {
   email: EmailService;
   /** Omitted in the worker, whose export-only instance never mutates factors. */
   sessions?: Pick<SessionService, 'destroyAllForUser'>;
+  /** Verifies the password member of a factor-management step-up (R-05). */
+  passwordHasher: PasswordHasher;
 }
+
+/**
+ * How a USER-side factor mutation is authorized (R-05). Minting or removing a
+ * second factor needs a credential the caller held BEFORE the request — the
+ * password, or an existing TOTP / recovery code — verified here on the
+ * per-account 2FA-management throttle. `credentialKey` (see
+ * `factorProvenance.ts`) names the presenting credential, so a mint is recorded
+ * against it before it commits.
+ */
+export interface FactorStepUpAuthorization {
+  kind: 'step-up';
+  stepUp: TwoFactorStepUpCredential;
+  credentialKey: string;
+}
+
+/**
+ * The admin console's own 2FA surface (§6.12): the admin session is 2FA-checked
+ * on every request and the owner ruled out step-up prompts there. Only
+ * `adminTwoFactorService` passes this; no user route may.
+ */
+export interface AdminSessionAuthorization {
+  kind: 'admin-session';
+}
+
+export type FactorMutationAuthorization = FactorStepUpAuthorization | AdminSessionAuthorization;
 
 /** Which second-factor methods an account has switched on (#298). */
 export interface TwoFactorMethods {
@@ -80,6 +110,7 @@ export interface TwoFactorService {
    */
   enrollTotp(
     userId: string,
+    authorization: FactorMutationAuthorization,
     ip?: string | null,
     security?: SecurityMutationContext,
   ): Promise<TwoFactorEnrollResponse>;
@@ -104,6 +135,7 @@ export interface TwoFactorService {
   confirmTotp(
     userId: string,
     code: string,
+    authorization: FactorMutationAuthorization,
     ip?: string | null,
     security?: SecurityMutationContext,
   ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
@@ -126,6 +158,7 @@ export interface TwoFactorService {
    */
   startEmailEnrollment(
     userId: string,
+    authorization: FactorStepUpAuthorization,
     ip?: string | null,
     security?: SecurityMutationContext,
   ): Promise<void>;
@@ -137,22 +170,25 @@ export interface TwoFactorService {
   confirmEmail(
     userId: string,
     code: string,
+    authorization: FactorStepUpAuthorization,
     ip?: string | null,
     security?: SecurityMutationContext,
   ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /**
-   * Turn the email method off (#298). Authorized by the authenticated session
-   * alone — the mailbox was already proven at enable time and there is no offline
-   * factor to re-enter. Recovery codes are dropped only if no method remains.
+   * Turn the email method off (#298). Authorized by the step-up (R-05): the
+   * password or an existing TOTP / recovery code — a bare session or bearer can
+   * no longer strip it. Recovery codes are dropped only if no method remains.
    */
   disableEmail(
     userId: string,
+    authorization: FactorStepUpAuthorization,
     ip?: string | null,
     security?: SecurityMutationContext,
   ): Promise<TwoFactorMutationResult<void>>;
   /** Regenerate the recovery codes (§6.1): only while some method is on; old set voided. */
   regenerateRecoveryCodes(
     userId: string,
+    authorization: FactorMutationAuthorization,
     ip?: string | null,
     security?: SecurityMutationContext,
   ): Promise<TwoFactorMutationResult<TwoFactorRecoveryCodesResponse>>;
@@ -220,7 +256,10 @@ interface EmailSetupState {
 }
 
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
-  const { config, userRepo, twoFactorRepo, audit, redis, email, sessions } = deps;
+  const { config, userRepo, twoFactorRepo, audit, redis, email, sessions, passwordHasher } = deps;
+  // One per-account budget for every authenticated factor-management proof:
+  // the TOTP-disable code and the R-05 step-up share it, so splitting the 2FA
+  // surface across routes buys an attacker no extra guesses.
   const disableTotpThrottle = createProgressiveLimiter(
     redis,
     TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE,
@@ -330,6 +369,101 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
     return twoFactorRepo.consumeRecoveryCode(userId, hash, new Date());
   }
 
+  /**
+   * R-05 step-up for a factor mutation, run AFTER the mutation's own cheap
+   * preconditions (so a request that was always going to fail never spends a
+   * recovery code) and BEFORE anything is written. Peek-before-verify on the
+   * shared 2FA-management throttle: a cooling account is refused even with a
+   * correct credential. The password wins when several members are sent; an
+   * existing factor counts only while a method is on.
+   */
+  async function verifyStepUp(
+    userId: string,
+    state: TwoFactorState,
+    authorization: FactorMutationAuthorization,
+    ip: string | null | undefined,
+    purpose: string,
+  ): Promise<void> {
+    // §6.12: the admin console's 2FA surface carries no step-up by owner ruling.
+    if (authorization.kind === 'admin-session') return;
+    const { stepUp } = authorization;
+
+    const cooling = await disableTotpThrottle.peek(userId);
+    if (cooling > 0) {
+      throw tooManyRequests(cooling, 'Too many attempts. Please wait and retry.');
+    }
+
+    let kind: 'password' | 'recovery_code' | 'totp';
+    let ok: boolean;
+    if (stepUp.password !== undefined) {
+      kind = 'password';
+      const user = await userRepo.findById(userId);
+      if (!user || user.status !== 'active') throw unauthorized();
+      ok = await passwordHasher.verify(user.passwordHash, stepUp.password);
+    } else if (!anyMethodOn(state)) {
+      // A code for an account with no factor: never treat it as a match.
+      throw unauthorized('Re-authenticate with your password.', 'TWO_FACTOR_NOT_ENABLED');
+    } else if (stepUp.recoveryCode !== undefined) {
+      kind = 'recovery_code';
+      ok = await twoFactorRepo.consumeRecoveryCode(
+        userId,
+        hashToken(normalizeRecoveryCode(stepUp.recoveryCode)),
+        new Date(),
+      );
+    } else if (stepUp.code !== undefined) {
+      kind = 'totp';
+      ok = false;
+      const trimmed = stepUp.code.trim();
+      if (state.enabled && state.secret && /^\d{6}$/.test(trimmed)) {
+        try {
+          ok = await consumeTotpStep(
+            userId,
+            decryptSecret(state.secret, config.recordEncryption),
+            trimmed,
+          );
+        } catch {
+          ok = false;
+        }
+      }
+    } else {
+      // The contract requires one member; a direct call without one fails closed.
+      throw unauthorized('Re-authentication is required.', 'INVALID_CREDENTIALS');
+    }
+
+    if (!ok) {
+      const decision = await disableTotpThrottle.consume(userId);
+      await audit.record({
+        actorId: userId,
+        action: AuditAction.AuthReauthFail,
+        targetType: 'user',
+        targetId: userId,
+        ip,
+        meta: { purpose, kind, locked: !decision.allowed },
+      });
+      if (!decision.allowed) {
+        throw tooManyRequests(decision.retryAfterSec, 'Too many attempts. Please wait and retry.');
+      }
+      if (kind === 'password') {
+        throw unauthorized('Current password is incorrect.', 'INVALID_CREDENTIALS');
+      }
+      throw unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+    }
+    await disableTotpThrottle.reset(userId);
+  }
+
+  /**
+   * Record the presenting credential as the issuer of new factor material
+   * BEFORE the commit (see `factorProvenance.ts`): if Redis refuses, the mint
+   * fails closed instead of producing a factor its issuer could replay.
+   */
+  async function recordIssuance(
+    userId: string,
+    authorization: FactorMutationAuthorization,
+  ): Promise<void> {
+    if (authorization.kind !== 'step-up') return;
+    await recordFactorIssuance(redis, userId, authorization.credentialKey);
+  }
+
   return {
     async status(userId) {
       const state = await twoFactorRepo.getState(userId);
@@ -344,11 +478,13 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       };
     },
 
-    async enrollTotp(userId, ip, security) {
+    async enrollTotp(userId, authorization, ip, security) {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
       const state = await twoFactorRepo.getState(userId);
-      if (state?.enabled) throw alreadyEnabled();
+      if (!state) throw unauthorized();
+      if (state.enabled) throw alreadyEnabled();
+      await verifyStepUp(userId, state, authorization, ip, '2fa.totp.enroll');
 
       const secret = generateTotpSecret();
       const stored = await twoFactorRepo.setProvisionalSecret(
@@ -402,7 +538,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       });
     },
 
-    async confirmTotp(userId, code, ip, security) {
+    async confirmTotp(userId, code, authorization, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       if (state.enabled) throw alreadyEnabled();
@@ -426,11 +562,15 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       if (!verifyTotp(secret, code)) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
+      // Knowing the new secret proves only that the caller saw the enroll
+      // response; the confirm is the mint and needs the prior credential too.
+      await verifyStepUp(userId, state, authorization, ip, '2fa.totp.confirm');
 
       // First method on ⇒ issue the shared recovery codes; otherwise the email
       // method already provided them and they stay valid.
       const isFirstMethod = !state.emailEnabled;
       const recovery = isFirstMethod ? recoveryCodeBatch() : null;
+      await recordIssuance(userId, authorization);
       const securityGeneration = await twoFactorRepo.confirmTotp(
         userId,
         encryptedSecret,
@@ -490,7 +630,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       return { response: undefined, securityGeneration };
     },
 
-    async startEmailEnrollment(userId, ip, security) {
+    async startEmailEnrollment(userId, authorization, ip, security) {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
       const state = await twoFactorRepo.getState(userId);
@@ -515,6 +655,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
           'TWO_FACTOR_EMAIL_UNAVAILABLE',
         );
       }
+      await verifyStepUp(userId, state, authorization, ip, '2fa.email.enroll');
 
       const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
       const current = await twoFactorRepo.getState(userId);
@@ -548,7 +689,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       });
     },
 
-    async confirmEmail(userId, code, ip, security) {
+    async confirmEmail(userId, code, authorization, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       if (state.emailEnabled) {
@@ -577,12 +718,17 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       if (hashToken(code.trim()) !== setup.codeHash) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
+      // The mailbox proof stands; a failed step-up keeps the setup code so the
+      // owner can retry the credential without a new mail.
+      await verifyStepUp(userId, state, authorization, ip, '2fa.email.confirm');
       await redis.del(emailSetupKey(userId));
 
       // First method on ⇒ issue the shared recovery codes; otherwise TOTP already
       // provided them.
       const isFirstMethod = !state.enabled;
       const recovery = isFirstMethod ? recoveryCodeBatch() : null;
+      // An e-mail code is no step-up factor, but first-method recovery codes are.
+      if (recovery) await recordIssuance(userId, authorization);
       const committedGeneration = await twoFactorRepo.confirmEmail(
         userId,
         undefined,
@@ -602,7 +748,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       return { response: { recoveryCodes }, securityGeneration: committedGeneration };
     },
 
-    async disableEmail(userId, ip, security) {
+    async disableEmail(userId, authorization, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state?.emailEnabled) {
         throw badRequest(
@@ -610,6 +756,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
           'TWO_FACTOR_NOT_ENABLED',
         );
       }
+      await verifyStepUp(userId, state, authorization, ip, '2fa.email.disable');
 
       const securityGeneration = await twoFactorRepo.disableEmail(
         userId,
@@ -630,11 +777,13 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       return { response: undefined, securityGeneration };
     },
 
-    async regenerateRecoveryCodes(userId, ip, security) {
+    async regenerateRecoveryCodes(userId, authorization, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state || !anyMethodOn(state)) throw notEnabled();
+      await verifyStepUp(userId, state, authorization, ip, '2fa.recovery_codes');
 
       const recovery = recoveryCodeBatch();
+      await recordIssuance(userId, authorization);
       const securityGeneration = await twoFactorRepo.regenerateRecoveryCodes(
         userId,
         recovery.hashes,

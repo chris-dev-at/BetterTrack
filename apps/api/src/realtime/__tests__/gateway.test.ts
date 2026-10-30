@@ -236,14 +236,17 @@ async function defaultPortfolioId(agent: Agent): Promise<string> {
 }
 
 /** Enable TOTP on an already-authenticated ordinary-user session. */
-async function enrollTotp(agent: Agent): Promise<string> {
-  const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+async function enrollTotp(agent: Agent, password: string): Promise<string> {
+  const enroll = await agent
+    .post('/api/v1/auth/2fa/enroll')
+    .set(...XRW)
+    .send({ stepUp: { password: password } });
   expect(enroll.status).toBe(200);
   const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
   const confirm = await agent
     .post('/api/v1/auth/2fa/confirm')
     .set(...XRW)
-    .send({ code: generateTotpCode(secret) });
+    .send({ code: generateTotpCode(secret), stepUp: { password: password } });
   expect(confirm.status).toBe(200);
   return secret;
 }
@@ -1982,7 +1985,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     const alice = await harness.seedUser({ email: 'alice-2fa@bt.test', username: 'alice2fa' });
     const bob = await harness.seedUser({ email: 'bob-2fa@bt.test', username: 'bob2fa' });
     const bobLogin = await login(bob.email, bob.password);
-    const bobTotpSecret = await enrollTotp(bobLogin.agent);
+    const bobTotpSecret = await enrollTotp(bobLogin.agent, bob.password);
     const aliceLogin = await login(alice.email, alice.password);
     const aliceSocket = await connect(aliceLogin.cookie);
 

@@ -96,6 +96,7 @@ import {
 } from '../middleware/bearerAuth';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
+import { nestedStepUp, refuseSelfIssuedStepUpFactor } from '../middleware/stepUpProvenance';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 
 const preconditionRequired = (): ApiError =>
@@ -879,6 +880,7 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
           : driveConnectionEmptyBodySchema,
       )(req, res, next);
     },
+    refuseSelfIssuedStepUpFactor(ctx, 'drive.disconnect', nestedStepUp),
     async (req, res) => {
       const { acknowledgeBound } = req.valid?.query as DriveConnectionDisconnectQuery;
       const { connectionId } = req.valid?.params as DriveConnectionIdParam;
@@ -1012,6 +1014,7 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
     '/:vaultId',
     validateParams(vaultIdParamSchema),
     validateBody(deleteVaultRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'vault.delete', nestedStepUp),
     async (req, res) => {
       const { vaultId } = req.valid?.params as VaultIdParam;
       const result = await ctx.vaults.delete({

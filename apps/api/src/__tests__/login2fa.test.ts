@@ -61,14 +61,19 @@ async function enrollTotp(
   expect(meResponseSchema.safeParse(first.body).success).toBe(true);
 
   const { secret } = twoFactorEnrollResponseSchema.parse(
-    (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+    (
+      await agent
+        .post('/api/v1/auth/2fa/enroll')
+        .set(...XRW)
+        .send({ stepUp: { password: user.password } })
+    ).body,
   );
   const { recoveryCodes } = twoFactorRecoveryCodesResponseSchema.parse(
     (
       await agent
         .post('/api/v1/auth/2fa/confirm')
         .set(...XRW)
-        .send({ code: generateTotpCode(secret) })
+        .send({ code: generateTotpCode(secret), stepUp: { password: user.password } })
     ).body,
   );
   // Sign the enrollment agent out so it can't interfere with the login tests.
@@ -402,12 +407,15 @@ async function enrollEmailMethod(user: SeededUser, transport: { sent: OutgoingMa
   if (twoFactorChallengeResponseSchema.safeParse(first.body).success) {
     throw new Error('enrollEmailMethod expects a fresh (no-2FA) session; enroll email first');
   }
-  const enroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+  const enroll = await agent
+    .post('/api/v1/auth/2fa/email/enroll')
+    .set(...XRW)
+    .send({ stepUp: { password: user.password } });
   expect(enroll.status).toBe(200);
   await agent
     .post('/api/v1/auth/2fa/email/confirm')
     .set(...XRW)
-    .send({ code: lastEmailedCode(transport) });
+    .send({ code: lastEmailedCode(transport), stepUp: { password: user.password } });
   return agent;
 }
 
@@ -459,12 +467,17 @@ describe('login 2FA email-code method (§6.1, §6.10, §13.2 V2-P5, #298)', () =
       .set(...XRW)
       .send({ identifier: user.email, password: user.password });
     const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await enrollmentAgent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+      (
+        await enrollmentAgent
+          .post('/api/v1/auth/2fa/enroll')
+          .set(...XRW)
+          .send({ stepUp: { password: user.password } })
+      ).body,
     );
     await enrollmentAgent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
     const agent = request.agent(harness.app);
     const factorChallenge = twoFactorChallengeResponseSchema.parse(
       (
@@ -482,12 +495,15 @@ describe('login 2FA email-code method (§6.1, §6.10, §13.2 V2-P5, #298)', () =
         code: generateTotpCode(secret),
       })
       .expect(200);
-    const emailEnroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+    const emailEnroll = await agent
+      .post('/api/v1/auth/2fa/email/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     expect(emailEnroll.status).toBe(200);
     await agent
       .post('/api/v1/auth/2fa/email/confirm')
       .set(...XRW)
-      .send({ code: lastEmailedCode(transport) });
+      .send({ code: lastEmailedCode(transport), stepUp: { password: user.password } });
     transport.sent.length = 0;
 
     const challenge = twoFactorChallengeResponseSchema.parse(

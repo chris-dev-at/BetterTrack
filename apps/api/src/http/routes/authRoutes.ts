@@ -24,10 +24,10 @@ import {
   setPinLockRequestSchema,
   setPinRequestSchema,
   tokenParamSchema,
-  twoFactorConfirmRequestSchema,
   twoFactorDisableRequestSchema,
   twoFactorEmailCodeRequestSchema,
-  twoFactorEmailConfirmRequestSchema,
+  twoFactorStepUpConfirmRequestSchema,
+  twoFactorStepUpRequestSchema,
   twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
@@ -47,15 +47,18 @@ import {
   type RegisterRequest,
   type SetPinLockRequest,
   type SetPinRequest,
-  type TwoFactorConfirmRequest,
   type TwoFactorDisableRequest,
   type TwoFactorEmailCodeRequest,
-  type TwoFactorEmailConfirmRequest,
+  type TwoFactorStepUpConfirmRequest,
+  type TwoFactorStepUpCredential,
+  type TwoFactorStepUpRequest,
   type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
 import { authorizeReturnTo } from '../../services/auth/authorizeReturnTo';
+import { stepUpCredentialKey } from '../../services/auth/factorProvenance';
+import type { FactorStepUpAuthorization } from '../../services/auth/twoFactorService';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -77,6 +80,11 @@ import {
   recordBearerScopeDenied,
 } from '../middleware/bearerAuth';
 import { requireAuth, requireUser } from '../middleware/session';
+import {
+  nestedStepUp,
+  refuseSelfIssuedStepUpFactor,
+  topLevelStepUp,
+} from '../middleware/stepUpProvenance';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
@@ -96,6 +104,20 @@ const securityMutationContextOf = (req: Request): SecurityMutationContext => {
   // authentication attached no generation proof, so a security write must fail
   // closed instead of silently falling back to an unfenced user-id update.
   throw unauthorized();
+};
+
+/**
+ * The R-05 authorization a user-side factor mutation hands the 2FA service: the
+ * in-body step-up plus the presenting credential, which a mint is recorded
+ * against. A request with no identifiable credential fails closed.
+ */
+const factorStepUpOf = (
+  req: Request,
+  stepUp: TwoFactorStepUpCredential,
+): FactorStepUpAuthorization => {
+  const credentialKey = stepUpCredentialKey({ sessionId: req.sessionId, apiKey: req.apiKey });
+  if (!credentialKey) throw unauthorized();
+  return { kind: 'step-up', stepUp, credentialKey };
 };
 
 /**
@@ -598,11 +620,32 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // 403s admin-kind sessions (§3, §5.5). Two independently-toggleable methods:
   // the authenticator app (TOTP: enroll/confirm/disable) and email codes
   // (email/enroll/confirm/disable), sharing recovery codes + status.
-  router.post('/2fa/enroll', requireUser, async (req, res) => {
-    res.json(
-      await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip, securityMutationContextOf(req)),
-    );
-  });
+  //
+  // R-05: every call that mints or removes a factor carries `stepUp` — the
+  // password or an existing TOTP / recovery code — on the cookie and bearer
+  // paths alike; the service verifies it on the 2FA-management throttle. A
+  // factor-only step-up from a credential that itself issued factor material in
+  // the last 24 h is refused before the service runs.
+  const selfIssuedTwoFactorStepUp = (purpose: string) =>
+    refuseSelfIssuedStepUpFactor(ctx, purpose, nestedStepUp);
+
+  router.post(
+    '/2fa/enroll',
+    requireUser,
+    validateBody(twoFactorStepUpRequestSchema),
+    selfIssuedTwoFactorStepUp('2fa.totp.enroll'),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorStepUpRequest;
+      res.json(
+        await ctx.twoFactor.enrollTotp(
+          req.authUser!.id,
+          factorStepUpOf(req, body.stepUp),
+          req.ip,
+          securityMutationContextOf(req),
+        ),
+      );
+    },
+  );
 
   // Cancel a pending (unconfirmed) TOTP enrollment (#401). Armed 2FA is
   // untouchable here — 409 when TOTP is already on, 404 when nothing is pending.
@@ -620,12 +663,14 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.post(
     '/2fa/confirm',
     requireUser,
-    validateBody(twoFactorConfirmRequestSchema),
+    validateBody(twoFactorStepUpConfirmRequestSchema),
+    selfIssuedTwoFactorStepUp('2fa.totp.confirm'),
     async (req, res) => {
-      const body = req.valid?.body as TwoFactorConfirmRequest;
+      const body = req.valid?.body as TwoFactorStepUpConfirmRequest;
       const result = await ctx.twoFactor.confirmTotp(
         req.authUser!.id,
         body.code,
+        factorStepUpOf(req, body.stepUp),
         req.ip,
         securityMutationContextOf(req),
       );
@@ -638,6 +683,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     '/2fa/disable',
     requireUser,
     validateBody(twoFactorDisableRequestSchema),
+    // Deliberately NOT behind the self-issued-factor guard: this route accepts
+    // only an existing factor, and every factor a credential can mint needed a
+    // step-up that already satisfies it (that factor, or the password, which
+    // logs in to the same reach). The guard would add nothing here, but it would
+    // stop an owner from undoing a just-enabled authenticator on the same phone.
     async (req, res) => {
       const body = req.valid?.body as TwoFactorDisableRequest;
       await ctx.twoFactor.disableTotp(
@@ -653,25 +703,35 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
 
   // Email-code method (#298): enroll sends a mailbox-proof code, confirm turns it
   // on (blocked with TWO_FACTOR_EMAIL_UNAVAILABLE when SMTP is off), disable turns
-  // it off from the authenticated session alone.
-  router.post('/2fa/email/enroll', requireUser, async (req, res) => {
-    await ctx.twoFactor.startEmailEnrollment(
-      req.authUser!.id,
-      req.ip,
-      securityMutationContextOf(req),
-    );
-    res.json({ ok: true });
-  });
+  // it off. All three carry the R-05 step-up.
+  router.post(
+    '/2fa/email/enroll',
+    requireUser,
+    validateBody(twoFactorStepUpRequestSchema),
+    selfIssuedTwoFactorStepUp('2fa.email.enroll'),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorStepUpRequest;
+      await ctx.twoFactor.startEmailEnrollment(
+        req.authUser!.id,
+        factorStepUpOf(req, body.stepUp),
+        req.ip,
+        securityMutationContextOf(req),
+      );
+      res.json({ ok: true });
+    },
+  );
 
   router.post(
     '/2fa/email/confirm',
     requireUser,
-    validateBody(twoFactorEmailConfirmRequestSchema),
+    validateBody(twoFactorStepUpConfirmRequestSchema),
+    selfIssuedTwoFactorStepUp('2fa.email.confirm'),
     async (req, res) => {
-      const body = req.valid?.body as TwoFactorEmailConfirmRequest;
+      const body = req.valid?.body as TwoFactorStepUpConfirmRequest;
       const result = await ctx.twoFactor.confirmEmail(
         req.authUser!.id,
         body.code,
+        factorStepUpOf(req, body.stepUp),
         req.ip,
         securityMutationContextOf(req),
       );
@@ -680,25 +740,45 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  router.post('/2fa/email/disable', requireUser, async (req, res) => {
-    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip, securityMutationContextOf(req));
-    if (req.sessionId) clearSessionCookie(res, ctx.config);
-    res.json({ ok: true });
-  });
+  router.post(
+    '/2fa/email/disable',
+    requireUser,
+    validateBody(twoFactorStepUpRequestSchema),
+    selfIssuedTwoFactorStepUp('2fa.email.disable'),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorStepUpRequest;
+      await ctx.twoFactor.disableEmail(
+        req.authUser!.id,
+        factorStepUpOf(req, body.stepUp),
+        req.ip,
+        securityMutationContextOf(req),
+      );
+      if (req.sessionId) clearSessionCookie(res, ctx.config);
+      res.json({ ok: true });
+    },
+  );
 
   router.get('/2fa/status', requireUser, async (req, res) => {
     res.json(await ctx.twoFactor.status(req.authUser!.id));
   });
 
-  router.post('/2fa/recovery-codes', requireUser, async (req, res) => {
-    const result = await ctx.twoFactor.regenerateRecoveryCodes(
-      req.authUser!.id,
-      req.ip,
-      securityMutationContextOf(req),
-    );
-    if (req.sessionId) clearSessionCookie(res, ctx.config);
-    res.json(result.response);
-  });
+  router.post(
+    '/2fa/recovery-codes',
+    requireUser,
+    validateBody(twoFactorStepUpRequestSchema),
+    selfIssuedTwoFactorStepUp('2fa.recovery_codes'),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorStepUpRequest;
+      const result = await ctx.twoFactor.regenerateRecoveryCodes(
+        req.authUser!.id,
+        factorStepUpOf(req, body.stepUp),
+        req.ip,
+        securityMutationContextOf(req),
+      );
+      if (req.sessionId) clearSessionCookie(res, ctx.config);
+      res.json(result.response);
+    },
+  );
 
   // ── Passkeys / WebAuthn (§13.4 V4-P4) ───────────────────────────────────────
   // Existing-passkey management accepts the owning user session or an
@@ -719,6 +799,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     '/passkeys/register/verify',
     requireUser,
     validateBody(passkeyRegisterVerifyRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'passkey.register', topLevelStepUp),
     async (req, res) => {
       const body = req.valid?.body as PasskeyRegisterVerifyRequest;
       res.status(201).json(await ctx.passkeys.finishRegistration(req.authUser!.id, body, req.ip));
@@ -744,6 +825,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     passkeyManagementAccess,
     validateParams(passkeyIdParamSchema),
     validateBody(passkeyDeleteRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'passkey.delete', topLevelStepUp),
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const body = req.valid?.body as PasskeyDeleteRequest;

@@ -76,6 +76,7 @@ import {
   vaultedPortfolioStubName,
 } from '../../../data/repositories/vaultedPortfolioProbe';
 import { createTestApp, type SeededUser, type TestHarness } from '../../../testing/createTestApp';
+import { passwordStepUp } from '../../../testing/factorStepUp';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { AuditAction, createAuditService, type AuditService } from '../../audit/auditService';
 import { runAlertsEvaluation } from '../../alerts/alertEvaluator';
@@ -1929,9 +1930,14 @@ describe('portfolio vault move-in destructive commit', () => {
   });
 
   it('refuses stale TOTP and a spent recovery code, preserves the rich graph, and throttles only move-in', async () => {
-    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id);
-    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret)))
-      .response;
+    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id, passwordStepUp(user.password));
+    const { recoveryCodes } = (
+      await h.ctx.twoFactor.confirmTotp(
+        user.id,
+        generateTotpCode(secret),
+        passwordStepUp(user.password),
+      )
+    ).response;
     if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
     expect(await h.ctx.twoFactor.consumeRecoveryCode(user.id, recoveryCodes[0]!)).toBe(true);
 
@@ -2007,9 +2013,14 @@ describe('portfolio vault move-in destructive commit', () => {
   });
 
   it('rolls back a consumed recovery code on a later CAS refusal and lets outcome replay bypass the spent code', async () => {
-    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id);
-    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret)))
-      .response;
+    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id, passwordStepUp(user.password));
+    const { recoveryCodes } = (
+      await h.ctx.twoFactor.confirmTotp(
+        user.id,
+        generateTotpCode(secret),
+        passwordStepUp(user.password),
+      )
+    ).response;
     if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
     const recoveryCode = recoveryCodes[0]!;
     const request = await stageMoveIn();
@@ -2873,9 +2884,14 @@ describe('portfolio vault move-out strict restore', () => {
 
   it('refuses stale TOTP and a spent recovery code, preserves the locked boundary, and throttles only move-out', async () => {
     await moveTargetIn();
-    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id);
-    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret)))
-      .response;
+    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id, passwordStepUp(user.password));
+    const { recoveryCodes } = (
+      await h.ctx.twoFactor.confirmTotp(
+        user.id,
+        generateTotpCode(secret),
+        passwordStepUp(user.password),
+      )
+    ).response;
     if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
     expect(await h.ctx.twoFactor.consumeRecoveryCode(user.id, recoveryCodes[0]!)).toBe(true);
 
@@ -2952,9 +2968,14 @@ describe('portfolio vault move-out strict restore', () => {
 
   it('rolls back a consumed move-out recovery code on restore refusal, then reuses it and replays after consumption', async () => {
     await moveTargetIn();
-    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id);
-    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret)))
-      .response;
+    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id, passwordStepUp(user.password));
+    const { recoveryCodes } = (
+      await h.ctx.twoFactor.confirmTotp(
+        user.id,
+        generateTotpCode(secret),
+        passwordStepUp(user.password),
+      )
+    ).response;
     if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
     const recoveryCode = recoveryCodes[0]!;
     const before = await readTransitionBoundary();
@@ -2996,8 +3017,12 @@ describe('portfolio vault move-out strict restore', () => {
 
   it('accepts a fresh TOTP for move-out and unlocks the restored portfolio', async () => {
     await moveTargetIn();
-    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id);
-    await h.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret));
+    const { secret } = await h.ctx.twoFactor.enrollTotp(user.id, passwordStepUp(user.password));
+    await h.ctx.twoFactor.confirmTotp(
+      user.id,
+      generateTotpCode(secret),
+      passwordStepUp(user.password),
+    );
 
     await expect(
       h.ctx.portfolioVaultTransitions.moveOut(user.id, TEST_VECTOR.targetPortfolioId, {

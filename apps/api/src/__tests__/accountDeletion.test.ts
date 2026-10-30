@@ -231,12 +231,15 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     expect(keyRes.status).toBe(201);
     const bearer = createApiKeyResponseSchema.parse(keyRes.body).token;
 
-    const enroll = await user.agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enroll = await user.agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
     const confirm = await user.agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
     expect(confirm.status).toBe(200);
     user.agent = await loginWithTotp(harness.app, user.email, user.password, secret);
 
@@ -535,12 +538,15 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
 
   it('a fresh TOTP code is valid re-auth on its own', async () => {
     const user = await seedPerson('totp_user');
-    const enroll = await user.agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enroll = await user.agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
     const confirm = await user.agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
     expect(confirm.status).toBe(200);
     user.agent = await loginWithTotp(harness.app, user.email, user.password, secret);
 

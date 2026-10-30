@@ -28,6 +28,7 @@ import {
 } from '../exportService';
 import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from '../manifest';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
+import { passwordStepUp } from '../../../testing/factorStepUp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const EXPORT_DIR = joinPath(tmpdir(), 'bettertrack-test-exports');
@@ -1117,9 +1118,16 @@ describe('account data export', () => {
       email: 'recovery-export@bettertrack.test',
       username: 'recovery_export',
     });
-    const { secret } = await harness.ctx.twoFactor.enrollTotp(user.id);
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(
+      user.id,
+      passwordStepUp(user.password),
+    );
     const { recoveryCodes } = (
-      await harness.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret))
+      await harness.ctx.twoFactor.confirmTotp(
+        user.id,
+        generateTotpCode(secret),
+        passwordStepUp(user.password),
+      )
     ).response;
     if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
     const recoveryCode = recoveryCodes[0]!;
