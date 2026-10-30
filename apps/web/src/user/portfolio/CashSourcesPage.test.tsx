@@ -310,6 +310,7 @@ describe('CashSourcesPage', () => {
         mirrorId: '00000000-0000-0000-0000-0000000000e0',
         version: 41,
         addedBy: {
+          state: 'shown',
           userId: '00000000-0000-0000-0000-0000000000a1',
           username: 'alice',
           profileIcon: null,
@@ -338,6 +339,7 @@ describe('CashSourcesPage', () => {
         mirrorId: '00000000-0000-0000-0000-0000000000e0',
         version: 43,
         addedBy: {
+          state: 'stripped',
           userId: null,
           username: 'group member',
           profileIcon: null,
@@ -438,7 +440,7 @@ describe('CashSourcesPage', () => {
       mirror: {
         mirrorId: '00000000-0000-0000-0000-0000000000e1',
         version: 42,
-        addedBy: { userId: null, username: 'group member', profileIcon: null },
+        addedBy: { state: 'stripped', userId: null, username: 'group member', profileIcon: null },
       },
     });
     vi.mocked(portfolioApi.listCashSources).mockResolvedValue({ sources: [MAIN, CHAINED] });
@@ -470,7 +472,7 @@ describe('CashSourcesPage', () => {
       mirror: {
         mirrorId: '00000000-0000-0000-0000-0000000000e2',
         version: 7,
-        addedBy: { userId: null, username: 'group member', profileIcon: null },
+        addedBy: { state: 'stripped', userId: null, username: 'group member', profileIcon: null },
       },
     });
     vi.mocked(portfolioApi.listCashSources).mockResolvedValue({ sources: [MAIN, CHAINED] });

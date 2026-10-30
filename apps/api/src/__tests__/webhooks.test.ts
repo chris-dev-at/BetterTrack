@@ -1978,6 +1978,13 @@ describe('destination guard: user-supplied webhook URLs cannot reach the deploym
       expect(row.error).toBe(WEBHOOK_DELIVERY_NETWORK_ERROR);
       expect(row.responseStatus).toBeNull();
     }
+    // Dropping these three narrows nothing: all are server-generated and none is
+    // ever derived from the receiver — `id`/`subscriptionId` are UUIDs this
+    // server mints before any request leaves it, and `createdAt` is our own
+    // clock, so no URL, response body or transport error can reach any of them.
+    // The columns that CAN carry receiver text (`error`, `responseStatus`, and
+    // anything a later migration adds) all stay in the scan below.
+    //
     // Drop the server-generated columns before scanning. `id`/`subscriptionId`
     // are random UUIDs, and the port halves of this pattern (`5432`, `6379`,
     // `9090`) are all hex digits — so ~102 four-char windows across the six

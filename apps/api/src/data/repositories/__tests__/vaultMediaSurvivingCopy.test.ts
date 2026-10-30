@@ -3,6 +3,7 @@ import { asc, eq } from 'drizzle-orm';
 
 import {
   encodeVaultDocEnvelope,
+  perVaultMediaTransitionRequestSchema,
   VAULT_CONTENT_CIPHER,
   type PerVaultMediaDocAttestation,
   type PerVaultMediaTransitionRequest,
@@ -31,6 +32,7 @@ const TEST_VECTOR = {
   headerDocId: id(2),
   commonDocId: id(3),
   driveConnectionId: id(4),
+  otherDriveConnectionId: id(10),
   keyId: id(5),
   deviceId: id(6),
   transitionId: id(7),
@@ -77,12 +79,23 @@ let userId: string;
 async function seedVault(media: readonly VaultMedia[]): Promise<void> {
   const user = await h.seedUser({ email: 'rule2@bt.test', username: 'rule2' });
   userId = user.id;
-  await h.db.insert(driveConnections).values({
-    id: TEST_VECTOR.driveConnectionId,
-    userId,
-    googleSub: 'TEST_VECTOR_rule2_drive_sub',
-    email: 'test-vector-rule2-drive@example.test',
-  });
+  await h.db.insert(driveConnections).values([
+    {
+      id: TEST_VECTOR.driveConnectionId,
+      userId,
+      googleSub: 'TEST_VECTOR_rule2_drive_sub',
+      email: 'test-vector-rule2-drive@example.test',
+    },
+    // A second connection the SAME user owns: the gap this file guards is a
+    // readback taken from another of the owner's Drive accounts, which passes
+    // every ownership check and still proves nothing about the surviving home.
+    {
+      id: TEST_VECTOR.otherDriveConnectionId,
+      userId,
+      googleSub: 'TEST_VECTOR_rule2_other_drive_sub',
+      email: 'test-vector-rule2-other-drive@example.test',
+    },
+  ]);
   const driveSelected = media.includes('drive');
   await h.db.insert(vaults).values({
     id: TEST_VECTOR.vaultId,
@@ -137,9 +150,10 @@ function request(
 
 const driveAttestation = (
   docs: readonly PerVaultMediaDocAttestation[] = DOCS,
+  driveConnectionId: string = TEST_VECTOR.driveConnectionId,
 ): PerVaultMediaTransitionRequest['verification'] => ({
   kind: 'drive',
-  driveConnectionId: TEST_VECTOR.driveConnectionId,
+  driveConnectionId,
   docs: [...docs],
 });
 
@@ -284,5 +298,80 @@ describe('§7 rule 2 — a medium removal is attested by the SURVIVING medium', 
 
     expect(applied.status).toBe('ok');
     expect(await storedMedia()).toEqual(['drive', 'server']);
+  });
+});
+
+/**
+ * §7 rule 2, the Drive half (#1987). A `drive`-kind readback proves a fresh copy
+ * only on the connection it was read from, so the attestation must name the
+ * connection the post-state KEEPS (`next.driveConnectionId`). The wire contract
+ * has always refused the mismatch; before #1987 the repository did not, so a
+ * non-HTTP caller could retire the server copy — starting the 7-day purge clock
+ * — on a readback from a different Drive account of the same owner.
+ */
+describe('§7 rule 2 — the drive attestation must name the SURVIVING Drive connection', () => {
+  const REMOVE_SERVER = {
+    media: ['drive'] as const,
+    driveConnectionId: TEST_VECTOR.driveConnectionId,
+  };
+  const BOTH_MEDIA = {
+    media: ['server', 'drive'] as const,
+    driveConnectionId: TEST_VECTOR.driveConnectionId,
+  };
+
+  it('refuses to retire the server medium on a readback from a DIFFERENT connection', async () => {
+    await seedVault(['server', 'drive']);
+
+    const refused = await transition(
+      driveAttestation(DOCS, TEST_VECTOR.otherDriveConnectionId),
+      REMOVE_SERVER,
+      BOTH_MEDIA,
+    );
+
+    expect(refused.status).toBe('verification_failed');
+    // Nothing retired, no purge clock, the server copy still active and selected.
+    expect(await retiredDocIds()).toEqual([]);
+    expect(await purgeClockStarted()).toBe(false);
+    expect(await activeDocIds()).toEqual([TEST_VECTOR.headerDocId, TEST_VECTOR.commonDocId].sort());
+    expect(await storedMedia()).toEqual(['drive', 'server']);
+  });
+
+  it('agrees with the wire edge-by-edge on the attested connection id', async () => {
+    await seedVault(['server', 'drive']);
+
+    // The mismatch runs FIRST and on purpose: it must be refused against a state
+    // it does not change, so the second row's acceptance is attributable to the
+    // attested connection id alone and not to a CAS that has moved underneath.
+    const matrix: Array<{ attested: string; wire: string; repo: string }> = [];
+    for (const [attested, driveConnectionId] of [
+      ['other', TEST_VECTOR.otherDriveConnectionId],
+      ['surviving', TEST_VECTOR.driveConnectionId],
+    ] as const) {
+      const verification = driveAttestation(DOCS, driveConnectionId);
+      const wire = perVaultMediaTransitionRequestSchema.safeParse(
+        request(REMOVE_SERVER, BOTH_MEDIA, verification),
+      );
+      const repo = await transition(verification, REMOVE_SERVER, BOTH_MEDIA);
+      matrix.push({
+        attested,
+        wire: wire.success ? 'accepted' : 'rejected',
+        repo: repo.status,
+      });
+    }
+
+    // The one-line agreement probe: both boundaries draw the same edge.
+    expect(matrix.map((row) => row.wire === 'accepted')).toEqual(
+      matrix.map((row) => row.repo === 'ok'),
+    );
+    expect(matrix).toEqual([
+      { attested: 'other', wire: 'rejected', repo: 'verification_failed' },
+      { attested: 'surviving', wire: 'accepted', repo: 'ok' },
+    ]);
+    // And the accepted edge is the one that actually retires the bytes.
+    expect(await storedMedia()).toEqual(['drive']);
+    expect(await retiredDocIds()).toEqual(
+      [TEST_VECTOR.headerDocId, TEST_VECTOR.commonDocId].sort(),
+    );
+    expect(await purgeClockStarted()).toBe(true);
   });
 });

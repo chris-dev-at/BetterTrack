@@ -1431,17 +1431,23 @@ function DividendIntelSection({ portfolioId }: { portfolioId: string | null }) {
   const capabilities = usePortfolioStoreCapabilities();
   const storeScope = usePortfolioStoreScope();
 
-  // A resolver-backed vault portfolio serves no server-side row reads at all
-  // (`RESOLVED_VAULT_STORE_CAPABILITIES`), and these two are server reads about
-  // a specific portfolio. Asked anyway with a vaulted id they do not come back
-  // empty: the vaulted-portfolio route guard reads `portfolioId` off the query
-  // and answers 403 VAULTED_PORTFOLIO, so the block would fire four doomed
-  // requests per mount and swallow every one. Stating the capability up front is
-  // what `PortfolioStoreProvider` exists for — "stated up front instead of
-  // discovered by calling it and catching the refusal" (#1416) — and the block
-  // disappearing on a vaulted portfolio is the correct §6.16 outcome anyway:
-  // server-computed reads are killed for that portfolio.
-  const serverReadable = capabilities.rowReads;
+  // Both reads below are server reads ABOUT a specific portfolio, and inside an
+  // unlocked vault portfolio that is not a preference: the vaulted-portfolio
+  // route guard reads `portfolioId` off the query and answers 403
+  // VAULTED_PORTFOLIO, so the block would fire four doomed requests per mount
+  // (the retry policy doubles each) and swallow every one. Stating the
+  // capability up front is what `PortfolioStoreProvider` exists for — "stated
+  // up front instead of discovered by calling it and catching the refusal"
+  // (#1416) — and the block disappearing on a vaulted portfolio is the correct
+  // §6.16 outcome anyway: server-computed reads are killed for that portfolio.
+  //
+  // The flag read here is `serverPortfolioReads`, NOT `rowReads` (#1981). This
+  // gate arrived on `rowReads` because the resolver-backed store happened to
+  // refuse both, but the two are unrelated questions and are already diverging
+  // — since #1532 that store serves the full row projection set from its
+  // authenticated document — so leaving the gate there would have let a correct
+  // change to what the CLIENT store can answer silently reopen the 403 storm.
+  const serverReadable = capabilities.serverPortfolioReads;
 
   // Both reads carry the portfolio this block sits on, and its id is part of
   // both query keys (#1898). The block stands between the allocation ring and

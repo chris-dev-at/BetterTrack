@@ -136,6 +136,14 @@ export const WORKER_HEALTH_HOST =
 export const FAKE_GOOGLE_PORT = process.env.E2E_FAKE_GOOGLE_PORT ?? '4545';
 export const FAKE_GOOGLE_URL =
   process.env.E2E_FAKE_GOOGLE_URL ?? `http://localhost:${FAKE_GOOGLE_PORT}`;
+/**
+ * Bind address for the fake IdP — loopback, for the same reason as API_HOST:
+ * it mints signed id_tokens with zero authentication, so an all-interfaces
+ * listener would hand the developer's LAN a token-minting oracle for the
+ * length of a run (#2016). Every dialer (the browser and the e2e API's
+ * server-side token/JWKS fetches) is same-box, so this is a no-op for them.
+ */
+export const FAKE_GOOGLE_HOST = process.env.E2E_FAKE_GOOGLE_HOST ?? bindHostFor(FAKE_GOOGLE_URL);
 export const GOOGLE_CLIENT_ID = process.env.E2E_GOOGLE_CLIENT_ID ?? 'e2e-google-client-id';
 export const GOOGLE_CLIENT_SECRET =
   process.env.E2E_GOOGLE_CLIENT_SECRET ?? 'e2e-google-client-secret';

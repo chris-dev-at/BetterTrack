@@ -552,10 +552,12 @@ against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at.
 > is now `false` everywhere: a server the run did not start is never trusted, so
 > a leaked process fails the run instead of quietly answering for it.
 
-> **Who can reach the throwaway stack.** The e2e API (`BT_HOST`) and the BullMQ
-> worker wrapper's readiness endpoint listen on **127.0.0.1 only** — the browser,
-> the harness and both Vite servers never leave this box, and the stack boots with
-> repo-known seed-admin credentials plus `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`, so
+> **Who can reach the throwaway stack.** All e2e helpers listen on loopback: the
+> e2e API (`BT_HOST`), the BullMQ worker wrapper's readiness endpoint, and the
+> fake Google IdP (which mints signed id_tokens with zero authentication) are all
+> **127.0.0.1 only** — the browser, the harness and both Vite servers never leave
+> this box, and the stack boots with repo-known seed-admin credentials plus
+> `BT_OUTBOUND_DEPLOYMENT_SUBNETS=none`, so
 > an all-interfaces listener handed the developer's LAN an SSRF probe for the
 > length of a run. Production leaves `BT_HOST` empty, which binds every interface
 > exactly as before. The one thing that must **not** be on loopback is the webhook

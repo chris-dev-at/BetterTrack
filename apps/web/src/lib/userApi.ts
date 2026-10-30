@@ -93,7 +93,7 @@ import {
   type VaultStepUpCredential,
 } from '@bettertrack/contracts';
 
-import { ApiError, apiRequest } from './apiClient';
+import { ApiError, apiRequest, STEP_UP_GATED_REQUEST } from './apiClient';
 import { apiBaseUrl } from './runtimeConfig';
 
 /**
@@ -210,13 +210,29 @@ export async function getParanoidMediaState(
   return paranoidMediaStateResponseSchema.parse(data);
 }
 
-/** Atomically rehydrate an unlocked strict vault document and return to normal mode. */
+/**
+ * Atomically rehydrate an unlocked strict vault document and return to normal
+ * mode.
+ *
+ * The `discard: true` form is the locked-vault "start fresh" exit — the owner
+ * cannot decrypt, so it restores NOTHING and destroys the ciphertext instead.
+ * The schema requires the typed username plus a server-verified credential on
+ * exactly that form (`paranoidDiscardReauth`, the `DELETE /account` rung), so it
+ * takes the §15 in-form error path ({@link STEP_UP_GATED_REQUEST}): a mistyped
+ * password on the stuck-unlock dialog must leave the owner in the dialog, not
+ * sign them out of the session they still hold.
+ *
+ * The RESTORING disable carries no credential — `confirm` plus the decrypted
+ * document is its whole gate — so it keeps the global policy, where a 401 really
+ * does mean the session is gone.
+ */
 export async function disableParanoidMode(
   body: ParanoidDisableRequest,
 ): Promise<ParanoidDisableResponse> {
   const data = await apiRequest<unknown>('/account/paranoid/disable', {
     method: 'POST',
     body,
+    ...(body.discard === true ? STEP_UP_GATED_REQUEST : null),
   });
   return paranoidDisableResponseSchema.parse(data);
 }
@@ -366,12 +382,11 @@ export async function deleteDriveConnection(
     method: 'DELETE',
     query: acknowledgeBound ? { acknowledgeBound: 'true' } : undefined,
     body: acknowledgeBound ? { stepUp } : undefined,
-    // `suppressAuthRedirect` on the gated form only: a 401 there is the step-up
-    // refusing a wrong password or code — an in-form error, exactly as on
-    // `/auth/change-password` — and must not eject the owner from the dialog as
-    // an expired session. The unacknowledged probe keeps the global policy,
+    // The in-form error path on the GATED form only ({@link STEP_UP_GATED_REQUEST}):
+    // a 401 there is the step-up refusing a wrong password or code. The
+    // unacknowledged probe carries no credential and keeps the global policy,
     // where a 401 really does mean the session is gone.
-    suppressAuthRedirect: acknowledgeBound,
+    ...(acknowledgeBound ? STEP_UP_GATED_REQUEST : null),
   });
 }
 

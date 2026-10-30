@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createEventBus, type DomainEvent, type EventBus } from '../../events';
 import type { Logger } from '../../logger';
+import { waitForEvent } from '../../test/waitFor';
 import { createDeadLetter } from '../deadLetter';
 import { HEARTBEAT_ASSET_ID, HEARTBEAT_INTERVAL_MS, heartbeatJob } from '../definitions';
 import type { JobContext } from '../types';
@@ -41,14 +42,16 @@ describe('heartbeat job', () => {
   });
 
   it('publishes a typed quote.updated proof event through the bus when run', async () => {
-    const received = new Promise<DomainEvent>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no event published')), 1000);
-      void bus.subscribe('quote.updated', (event) => {
-        clearTimeout(timer);
-        resolve(event);
-      });
+    // `bus.subscribe` resolves only once Redis has acknowledged the SUBSCRIBE,
+    // so awaiting it is the registration signal the old 20 ms sleep guessed at
+    // (#1622); `waitForEvent` keeps the bounded deadline the sleep did not have.
+    let deliver!: (event: DomainEvent) => void;
+    const received = waitForEvent<DomainEvent>('the heartbeat proof event', (handoff) => {
+      deliver = handoff;
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await bus.subscribe('quote.updated', (event) => {
+      deliver(event);
+    });
 
     const runAt = Date.parse('2026-06-15T08:00:00.000Z');
     const job = {

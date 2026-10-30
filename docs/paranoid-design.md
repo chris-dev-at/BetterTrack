@@ -325,10 +325,14 @@ reconciliation (#895/#896) and is kept because it is right:
    The readback that authorises it is taken from a medium the transition KEEPS,
    never from the one it retires: removing `server` needs a `drive`-kind
    attestation and removing `drive` a `server`-kind one, and the other way round
-   is refused `VAULT_MEDIA_VERIFICATION_FAILED`. The surviving-medium rule is
-   enforced twice — on the wire by `perVaultMediaTransitionRequestSchema`, and
-   again in `vaultBlobRepository`, which is the boundary that actually retires
-   the bytes.
+   is refused `VAULT_MEDIA_VERIFICATION_FAILED`. A `drive`-kind attestation must
+   additionally NAME the Drive connection the post-state keeps
+   (`next.driveConnectionId`): a readback from another of the owner's connected
+   Drive accounts passes every ownership check and still says nothing about the
+   copy the user is actually left with (#1987). The surviving-medium rule and
+   that connection identity are both enforced twice — on the wire by
+   `perVaultMediaTransitionRequestSchema`, and again in `vaultBlobRepository`,
+   which is the boundary that actually retires the bytes.
    Removing `server` atomically moves the vault's blobs + history into the
    retired recovery set (`vault_retired`), destroyable only through the signed
    purge gate: minimum 7-day retention, fresh other-medium readback, server
@@ -820,6 +824,19 @@ untouched** and is not part of this arc's diff.
   so sign-out, an account switch and the PIN idle lock reach the endpoint
   keystore; `ui/useEndpointVaultLock.ts` ships the "Lock vault" control in the
   account menu and in the shield chip's popover.
+  **One keystore instance per tab, and that is load-bearing (#2013).** An
+  endpoint is a device, so a second `EndpointVaultKeystore` in the same tab is a
+  second §12 session holder on one endpoint — sharing that endpoint's single
+  keystore IndexedDB, its account `BroadcastChannel`, its device-locked marker
+  and its one device-session record, and able to disagree with the first about
+  every one of them. The §13 transfer surfaces therefore mount the SAME
+  `endpointVaultKeystore` the manager, the shield chip and the locked stubs read
+  (`qr/runtime.ts`), and the account is bound through `bindEndpointKeystoreAccount`
+  for all of them. The defect this rule was written from: the transfer runtime
+  owned a private keystore nothing ever bound to an account, and every session
+  edge inside the keystore is guarded on a bound account — so a phrase received
+  on a second device established no session at all, and the device whose
+  password the user had just proven came back LOCKED.
 - **A session belongs to the ENDPOINT, not to one tab (ruled 2026-09-01, §16;
   binding).** "Unlocks ALL wrapped phrases on that endpoint" is read the way it
   is written: an endpoint is a device. A newly opened tab therefore asks the
