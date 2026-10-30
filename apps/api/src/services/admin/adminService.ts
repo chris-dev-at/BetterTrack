@@ -24,7 +24,11 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
-import type { ApiKeyService } from '../apiKeys/apiKeyService';
+import {
+  revokePersonalKeysInTransaction,
+  type ApiKeyRevocationEvent,
+  type ApiKeyService,
+} from '../apiKeys/apiKeyService';
 import type { OAuthService } from '../oauth/oauthService';
 import type {
   AdminModerationActionRow,
@@ -1006,19 +1010,28 @@ export function createAdminService(deps: AdminServiceDeps) {
       const target = await loadUser(id);
       const tempPassword = generateTempPassword();
       const passwordHash = await passwordHasher.hash(tempPassword);
-      // A reset also ends every personal API key of the account (§6.1): no key
-      // keeps acting for the account across the credential change, exactly as
-      // a suspension ends them. It runs BEFORE the password write so any later
-      // failure only over-revokes, and the admin's retry (a reset is
-      // idempotent) finishes the rest. One `api_key.revoked` row per key, the
-      // admin as actor; failures propagate rather than answer 200.
-      await apiKeys.revokeAllForUser(target.id, {
+      // A reset also ends every personal API key of the account (§6.1), exactly
+      // as a suspension does, one `api_key.revoked` row per key (admin as
+      // actor). Ordering contract: keys are revoked BEFORE the password write
+      // (a failed write then only over-revokes) and AGAIN inside the same
+      // transaction as the password write and generation bump (a key added in
+      // between commits or rolls back with the bump); key creation itself is
+      // fenced on the creating session's generation, so nothing a superseded
+      // session starts can land afterwards. Failures propagate rather than
+      // answer 200; a reset is idempotent, so the admin's retry finishes it.
+      const keyRevocation: ApiKeyRevocationEvent = {
         reason: 'password_reset',
         source: 'admin',
         actorId: actor.id,
         ip: actor.ip,
+      };
+      await apiKeys.revokeAllForUser(target.id, keyRevocation);
+      const securityGeneration = await userRepo.withSerializedAdminMutation(async (repo, tx) => {
+        const generation = await repo.updatePassword(target.id, passwordHash, true);
+        if (generation === null) return null;
+        await revokePersonalKeysInTransaction(tx, audit, target.id, keyRevocation);
+        return generation;
       });
-      const securityGeneration = await userRepo.updatePassword(target.id, passwordHash, true);
       if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
       await destroySessionsBestEffort(target.id);
       await invalidateAllRealtimePrincipals(target.id);

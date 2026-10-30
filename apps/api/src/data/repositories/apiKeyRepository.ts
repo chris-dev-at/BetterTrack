@@ -39,6 +39,41 @@ export function createApiKeyRepository(db: Database) {
       return row;
     },
 
+    /**
+     * Insert a key only while its owner is still at `securityGeneration` — the
+     * generation of the session creating it. The owner row is read `FOR SHARE`,
+     * so the insert serializes against a credential change on that row (which
+     * bumps the generation in an `UPDATE`): either this insert commits first and
+     * the change's own key revocation, committed with the bump, sees the key, or
+     * the change commits first and this read sees the new generation and inserts
+     * nothing. Returns `undefined` when the generation no longer matches.
+     */
+    async createAtGeneration(
+      input: CreateApiKeyInput,
+      securityGeneration: number,
+    ): Promise<ApiKeyRow | undefined> {
+      return db.transaction(async (tx) => {
+        const [owner] = await tx
+          .select({ securityGeneration: users.securityGeneration })
+          .from(users)
+          .where(eq(users.id, input.userId))
+          .limit(1)
+          .for('share');
+        if (!owner || owner.securityGeneration !== securityGeneration) return undefined;
+        const [row] = await tx
+          .insert(apiKeys)
+          .values({
+            userId: input.userId,
+            name: input.name,
+            tokenHash: input.tokenHash,
+            scopes: input.scopes,
+          })
+          .returning();
+        if (!row) throw new Error('Failed to insert API key');
+        return row;
+      });
+    },
+
     /** A user's active (non-revoked) keys, newest first. */
     async listActiveForUser(userId: string): Promise<ApiKeyRow[]> {
       return db
@@ -170,14 +205,30 @@ export function createApiKeyRepository(db: Database) {
      * suspension, administrator password reset). Returns the ids it revoked in
      * THIS call — an already-revoked key is never returned again, so a retry
      * audits nothing twice.
+     *
+     * `inSameCommit`, when given, runs inside one transaction with the revoke
+     * (the per-key audit rows of a credential event): both commit or neither
+     * does, so a revoked key never lacks its row.
      */
-    async revokeAllForUser(userId: string): Promise<string[]> {
-      const rows = await db
-        .update(apiKeys)
-        .set({ revokedAt: new Date() })
-        .where(and(eq(apiKeys.userId, userId), isNull(apiKeys.revokedAt)))
-        .returning({ id: apiKeys.id });
-      return rows.map((row) => row.id);
+    async revokeAllForUser(
+      userId: string,
+      inSameCommit?: (tx: Database, revokedIds: string[]) => Promise<void>,
+    ): Promise<string[]> {
+      const revoke = async (executor: Database): Promise<string[]> => {
+        const rows = await executor
+          .update(apiKeys)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(apiKeys.userId, userId), isNull(apiKeys.revokedAt)))
+          .returning({ id: apiKeys.id });
+        return rows.map((row) => row.id);
+      };
+      if (!inSameCommit) return revoke(db);
+      return db.transaction(async (tx) => {
+        const transaction = tx as unknown as Database;
+        const revokedIds = await revoke(transaction);
+        await inSameCommit(transaction, revokedIds);
+        return revokedIds;
+      });
     },
 
     /** Stamp `lastUsedAt` (throttled by the service, not written per request). */
