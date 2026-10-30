@@ -28,8 +28,21 @@ export const OAUTH_REFRESH_TOKEN_PREFIX = 'btr_';
 
 /** Access-token lifetime (seconds) — short-lived; refresh to renew. */
 export const OAUTH_ACCESS_TOKEN_TTL_SECONDS = 3600;
-/** Refresh-token lifetime (seconds) — 30 days, rotated on every use. */
+/**
+ * Refresh-token idle lifetime (seconds) for THIRD-PARTY clients — 30 days,
+ * sliding: every rotation mints a fresh token with a fresh 30-day expiry.
+ * Official first-party clients use {@link OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS};
+ * pick between the two with {@link oauthRefreshTokenTtlSeconds}.
+ */
 export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
+/**
+ * Refresh-token idle lifetime (seconds) for OFFICIAL FIRST-PARTY clients (the
+ * seeded `is_first_party` apps) — 90 days, sliding: every rotation (and the
+ * code exchange) mints a fresh token with a fresh 90-day expiry, so an install
+ * that refreshes at least once every 90 days never reaches it. §16 2026-10-29
+ * (Chief ruling under the owner's indefinite-persistence directive).
+ */
+export const OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 3600;
 /**
  * Refresh-rotation grace window (seconds). For this long after a refresh token
  * is rotated, re-presenting it (a lost HTTP answer, or the losing side of two
@@ -44,6 +57,40 @@ export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
  * that daily sweep.
  */
 export const OAUTH_REFRESH_TOKEN_GRACE_SECONDS = 60;
+/**
+ * First-party UNUSED-successor re-serve cap (seconds) — 24 hours. For an
+ * official first-party client, past the strict
+ * {@link OAUTH_REFRESH_TOKEN_GRACE_SECONDS} window and up to this long after a
+ * refresh token was rotated, re-presenting it still returns the IDENTICAL
+ * successor pair — but only while that pair has NEVER BEEN USED: the successor
+ * refresh token is unconsumed AND the successor access token has never
+ * authenticated a request. A used successor, a grandparent token, or a replay
+ * past this cap is theft detection (the grant is revoked). The sealed pair of a
+ * first-party row is kept at rest for this long instead of 60 s. Because the
+ * access token lives only {@link OAUTH_ACCESS_TOKEN_TTL_SECONDS}, a re-serve
+ * more than an hour after the rotation carries an already-expired access token
+ * (`expires_in: 0`) next to a live refresh token, which the client then
+ * rotates normally. Third-party clients never get this extension.
+ */
+export const OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS = 24 * 3600;
+
+/** The refresh-token idle lifetime (seconds) a client's rotations slide to. */
+export function oauthRefreshTokenTtlSeconds(firstParty: boolean): number {
+  return firstParty ? OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS : OAUTH_REFRESH_TOKEN_TTL_SECONDS;
+}
+
+/**
+ * How long (seconds) after its rotation a consumed refresh token's sealed
+ * successor pair may still be re-served — and so how long it is kept at rest.
+ * The strict window for everyone; the 24 h unused-successor cap for official
+ * first-party clients (which additionally requires the pair to be unused past
+ * the strict window — that check lives in the token service).
+ */
+export function oauthRefreshReplayWindowSeconds(firstParty: boolean): number {
+  return firstParty
+    ? OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS
+    : OAUTH_REFRESH_TOKEN_GRACE_SECONDS;
+}
 /** Authorization-code lifetime (seconds) — very short, single-use. */
 export const OAUTH_AUTH_CODE_TTL_SECONDS = 60;
 
@@ -470,7 +517,11 @@ export const oauthTokenResponseSchema = z
   .object({
     access_token: z.string(),
     token_type: z.literal('Bearer'),
-    expires_in: z.number().int().positive(),
+    // Seconds the access token has left. Positive on every freshly minted pair;
+    // 0 only on a first-party unused-successor re-serve made after the access
+    // token already lapsed (OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS): the
+    // refresh_token next to it is live and the client should rotate it now.
+    expires_in: z.number().int().nonnegative(),
     refresh_token: z.string(),
     scope: z.string(),
   })

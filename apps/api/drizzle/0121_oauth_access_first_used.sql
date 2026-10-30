@@ -1,0 +1,28 @@
+-- First-party refresh persistence (§16 2026-10-29, Chief ruling under the
+-- owner's indefinite-persistence directive).
+--
+-- For an official first-party client, a consumed refresh token is re-served its
+-- identical successor pair for up to 24 h — but only while that pair has NEVER
+-- BEEN USED. "Unused" has two halves: the successor refresh token is unconsumed
+-- (already visible as `oauth_refresh_tokens.consumed_at`) and the successor
+-- ACCESS token has never authenticated a request, which nothing recorded until
+-- now. This column is that record.
+--
+--   first_used_at — stamped ONCE, by the first successful bearer authentication
+--                   of the token (HTTP middleware or realtime handshake), with
+--                   `UPDATE … SET first_used_at = $now WHERE id = $id AND
+--                   first_used_at IS NULL`. Never rewritten. NULL = never used.
+--
+-- NULLABLE, no default, NO backfill: every access token issued before this
+-- migration reads as "never used", even if it was used. That is harmless by
+-- construction, not by timing: the 24 h re-serve also requires the sealed pair
+-- to carry envelope version 2, which only the code shipping with this column
+-- writes. A pair sealed before it (version 1) is served only inside the strict
+-- 60 s window, where first use is never consulted; past it, it is reuse.
+--
+-- No index: the column is only ever read off a row already fetched by its
+-- unique token hash, and written by primary key.
+--
+-- Additive and reversible: dropping the column restores the previous table
+-- exactly; no existing value is read or rewritten.
+ALTER TABLE "oauth_access_tokens" ADD COLUMN IF NOT EXISTS "first_used_at" timestamp with time zone;

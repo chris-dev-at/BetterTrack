@@ -3081,6 +3081,13 @@ export const oauthAccessTokens = pgTable(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    // Set ONCE, on the first successful bearer authentication of this token
+    // (HTTP or realtime handshake) — `UPDATE … WHERE first_used_at IS NULL`,
+    // never rewritten. NULL means the token has never authenticated a request,
+    // which is what lets a first-party refresh replay re-serve its pair past
+    // the strict grace window (§16 2026-10-29, migration 0121). Not an
+    // activity clock: `oauth_grants.last_used_at` is that.
+    firstUsedAt: timestamp('first_used_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

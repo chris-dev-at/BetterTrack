@@ -344,9 +344,16 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // Log out every other device, keeping the caller signed in on this session.
+  // "Sign out everywhere": log out every other device — every other session AND
+  // every official first-party app grant (§16 2026-10-29) — keeping the caller
+  // signed in on this session, or on its own grant when the caller is an OAuth
+  // bearer (the mobile app). `req.apiKey.id` IS the grant id for an OAuth
+  // principal; a personal key or a cookie session keeps no grant.
   router.post('/sessions/revoke-others', requireAuth, async (req, res) => {
-    const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null);
+    const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null, {
+      oauthGrantId: req.apiKey?.kind === 'oauth' ? req.apiKey.id : null,
+      ip: req.ip,
+    });
     res.json({ revoked });
   });
 

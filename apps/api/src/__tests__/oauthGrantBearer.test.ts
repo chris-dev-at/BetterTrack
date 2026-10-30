@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+import type { PGlite } from '@electric-sql/pglite';
 import { and, eq } from 'drizzle-orm';
+import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import type { Request, Response } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,22 +13,31 @@ import {
   createOAuthClientResponseSchema,
   oauthGrantListResponseSchema,
   oauthTokenResponseSchema,
+  twoFactorEnrollResponseSchema,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
+import type { Database } from '../data/db';
+import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import { openApiPathTemplateAcceptsBearer, pathAcceptsBearer } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrFirstPartyOAuthGrant } from '../http/routes/settingsRoutes';
+import { AuditAction, createAuditService } from '../services/audit/auditService';
+import { generateTotpCode } from '../services/auth/totp';
+import { hashToken } from '../services/crypto/tokens';
+import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import {
   BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
   FIRST_PARTY_CLIENTS,
   seedFirstPartyClients,
 } from '../services/oauth/firstPartyClients';
+import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const THIRD_PARTY_REDIRECT = 'https://third-party.example/callback';
+const OFFICIAL_REDIRECT = 'https://official.example/callback';
 const MISSING_ID = '00000000-0000-0000-0000-000000000000';
 const MOBILE = FIRST_PARTY_CLIENTS.find(
   (client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
@@ -693,5 +704,375 @@ describe('#1325 first-party OAuth grant management', () => {
         scopeCeiling: EXPECTED_SCOPES,
       },
     ]);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §16 2026-10-29 — first-party persistence: `first_used_at` and the
+ * credential events that end OAuth grants.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** A second official app (admin-registered, `is_first_party`) for the same user. */
+async function mintAdminFirstPartyToken(
+  scopes: readonly ApiKeyScope[],
+  existing: { user: TestUser; agent: Agent },
+): Promise<{ token: string; grantId: string; clientId: string }> {
+  const tag = randomBytes(4).toString('hex');
+  const admin = await harness.seedAdmin({
+    email: `fp-admin-${tag}@bettertrack.test`,
+    username: `fpadmin${tag}`,
+  });
+  const adminAgent = await harness.loginAdmin(admin);
+  const created = await adminAgent
+    .post('/api/v1/admin/oauth-clients')
+    .set(...XRW)
+    .send({ name: 'Official Desktop', redirectUris: [OFFICIAL_REDIRECT], scopes, public: true });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const client = createOAuthClientResponseSchema.parse(created.body).client;
+  const issued = await issuePublicClientToken({
+    agent: existing.agent,
+    userId: existing.user.id,
+    clientId: client.clientId,
+    redirectUri: OFFICIAL_REDIRECT,
+    scopes,
+  });
+  expect(issued.firstParty).toBe(true);
+  return { token: issued.token, grantId: issued.grantId, clientId: client.clientId };
+}
+
+async function grantRevokedAt(grantId: string): Promise<Date | null> {
+  const [row] = await harness.db
+    .select({ revokedAt: schema.oauthGrants.revokedAt })
+    .from(schema.oauthGrants)
+    .where(eq(schema.oauthGrants.id, grantId));
+  return row!.revokedAt;
+}
+
+/** Every `oauth.grant_revoked` row of a user, as `{ grantId, meta }`. */
+async function grantRevocations(userId: string) {
+  const rows = await harness.db
+    .select({ targetId: schema.auditLog.targetId, meta: schema.auditLog.meta })
+    .from(schema.auditLog)
+    .where(
+      and(
+        eq(schema.auditLog.actorId, userId),
+        eq(schema.auditLog.action, AuditAction.OAuthGrantRevoked),
+      ),
+    );
+  return rows
+    .map((row) => ({ grantId: row.targetId, meta: row.meta }))
+    .sort((a, b) => String(a.grantId).localeCompare(String(b.grantId)));
+}
+
+/** The OAuth grant ids a `realtime.principal.invalidated` spy was called with. */
+function invalidatedGrants(publish: { mock: { calls: unknown[][] } }): string[] {
+  return publish.mock.calls
+    .map(([event]) => event as { type: string; kind?: string; credentialId?: string | null })
+    .filter((event) => event.type === 'realtime.principal.invalidated' && event.kind === 'oauth')
+    .map((event) => String(event.credentialId))
+    .sort();
+}
+
+async function accessFirstUsedAt(token: string): Promise<Date | null> {
+  const [row] = await harness.db
+    .select({ firstUsedAt: schema.oauthAccessTokens.firstUsedAt })
+    .from(schema.oauthAccessTokens)
+    .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(token)));
+  return row!.firstUsedAt;
+}
+
+describe('§16 2026-10-29 first_used_at — stamped once per access token, in authenticateToken only', () => {
+  it('writes ONE UPDATE for the first authentication and none for later ones (query count)', async () => {
+    const { token } = await mintFirstPartyToken(['portfolio:read']);
+    expect(await accessFirstUsedAt(token)).toBeNull();
+
+    // A second drizzle handle over the SAME database, logging every statement
+    // the OAuth repository sends.
+    const statements: string[] = [];
+    const pglite = (harness.db as unknown as { $client: PGlite }).$client;
+    const logged = drizzlePglite(pglite, {
+      schema,
+      logger: { logQuery: (query: string) => statements.push(query) },
+    }) as unknown as Database;
+    const service = createOAuthService({
+      repo: createOAuthRepository(logged),
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+    });
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      expect(await service.authenticateToken(token)).not.toBeNull();
+    }
+    const lookups = statements.filter((query) =>
+      /^select .* from "oauth_access_tokens"/i.test(query),
+    );
+    const stamps = statements.filter((query) => /^update "oauth_access_tokens"/i.test(query));
+    expect(lookups).toHaveLength(4);
+    expect(stamps).toHaveLength(1);
+    expect(stamps[0]).toMatch(/set "first_used_at" = \$1/i);
+    expect(stamps[0]).toMatch(/"first_used_at" is null/i);
+
+    const stampedAt = await accessFirstUsedAt(token);
+    expect(stampedAt).toBeInstanceOf(Date);
+    // Later requests over HTTP never move it.
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+    expect(await accessFirstUsedAt(token)).toEqual(stampedAt);
+  });
+
+  it('stamps on the first HTTP bearer request, not at issue time', async () => {
+    const { token } = await mintFirstPartyToken(['portfolio:read']);
+    expect(await accessFirstUsedAt(token)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+    expect(await accessFirstUsedAt(token)).toBeInstanceOf(Date);
+  });
+
+  it('fails closed: an authentication whose stamp cannot be written is rejected', async () => {
+    const { token } = await mintFirstPartyToken(['portfolio:read']);
+    const markAccessTokenFirstUsed = vi.fn(async () => {
+      throw new Error('first-use write unavailable');
+    });
+    const service = createOAuthService({
+      repo: { ...createOAuthRepository(harness.db), markAccessTokenFirstUsed },
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+    });
+
+    await expect(service.authenticateToken(token)).rejects.toThrow('first-use write unavailable');
+    expect(await accessFirstUsedAt(token)).toBeNull();
+
+    // Once the real writer has stamped it, the writer is never called again.
+    expect(await harness.ctx.oauth.authenticateToken(token)).not.toBeNull();
+    markAccessTokenFirstUsed.mockClear();
+    expect(await service.authenticateToken(token)).not.toBeNull();
+    expect(markAccessTokenFirstUsed).not.toHaveBeenCalled();
+  });
+});
+
+describe('§16 2026-10-29 credential events end OAuth grants', () => {
+  it('a password change revokes EVERY grant — first- and third-party — audited and invalidated per grant', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const changed = await mobile.agent
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: mobile.user.password, newPassword: 'Str0ng-New-Passw0rd!' });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(
+      (await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token))).status,
+    ).toBe(401);
+    expect(await harness.ctx.oauth.authenticateToken(partner.token)).toBeNull();
+    expect(invalidatedGrants(publish)).toEqual([mobile.grantId, partner.grantId].sort());
+    expect(await grantRevocations(mobile.user.id)).toEqual(
+      [
+        { grantId: mobile.grantId, meta: { clientId: MOBILE.clientId, reason: 'password_change' } },
+        {
+          grantId: partner.grantId,
+          meta: { clientId: expect.stringMatching(/^btc_/), reason: 'password_change' },
+        },
+      ].sort((a, b) => a.grantId.localeCompare(b.grantId)),
+    );
+  });
+
+  it('sign out everywhere from a browser revokes every FIRST-PARTY grant and leaves third-party grants alone', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const desktop = await mintAdminFirstPartyToken(['portfolio:read'], mobile);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const out = await mobile.agent.post('/api/v1/auth/sessions/revoke-others').set(...XRW);
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+
+    // The browser stays signed in; both official apps are signed out.
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(200);
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(desktop.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeNull();
+    expect(await harness.ctx.oauth.authenticateToken(partner.token)).not.toBeNull();
+    expect(invalidatedGrants(publish)).toEqual([mobile.grantId, desktop.grantId].sort());
+    expect(await grantRevocations(mobile.user.id)).toEqual(
+      [
+        {
+          grantId: mobile.grantId,
+          meta: { clientId: MOBILE.clientId, reason: 'sign_out_everywhere' },
+        },
+        {
+          grantId: desktop.grantId,
+          meta: { clientId: desktop.clientId, reason: 'sign_out_everywhere' },
+        },
+      ].sort((a, b) => a.grantId.localeCompare(b.grantId)),
+    );
+
+    // Idempotent: a second sign-out-everywhere revokes and audits nothing more.
+    await mobile.agent
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(...XRW)
+      .expect(200);
+    expect(await grantRevocations(mobile.user.id)).toHaveLength(2);
+  });
+
+  it('sign out everywhere also consumes pending first-party authorization codes', async () => {
+    const user = await seedFreshUser();
+    const agent = await login(user);
+    const { verifier, challenge } = pkce();
+    const approved = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({
+        client_id: MOBILE.clientId,
+        redirect_uri: MOBILE.redirectUris[0],
+        scope: 'portfolio:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      });
+    expect(approved.status).toBe(200);
+    const code = new URL(approved.body.redirectTo as string).searchParams.get('code');
+
+    await agent
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(...XRW)
+      .expect(200);
+
+    const exchanged = await request(harness.app).post('/api/v1/oauth/token').send({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: MOBILE.redirectUris[0],
+      client_id: MOBILE.clientId,
+      code_verifier: verifier,
+    });
+    expect(exchanged.status).toBe(400);
+    expect(exchanged.body.error.code).toBe('INVALID_GRANT');
+  });
+
+  it('2FA enrollment and PIN changes stay sessions-only: OAuth grants survive', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+
+    const pin = await mobile.agent
+      .put('/api/v1/auth/pin')
+      .set(...XRW)
+      .send({ pin: '4826' });
+    expect(pin.status, JSON.stringify(pin.body)).toBe(200);
+    const pinOff = await mobile.agent.delete('/api/v1/auth/pin').set(...XRW);
+    expect(pinOff.status, JSON.stringify(pinOff.body)).toBe(200);
+
+    const enroll = await mobile.agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    expect(enroll.status, JSON.stringify(enroll.body)).toBe(200);
+    const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
+    const confirm = await mobile.agent
+      .post('/api/v1/auth/2fa/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirm.status, JSON.stringify(confirm.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);
+    expect(await grantRevocations(mobile.user.id)).toEqual([]);
+  });
+});
+
+describe('§16 2026-10-29 a completed password reset ends every OAuth grant', () => {
+  const SMTP_ENV = {
+    SMTP_HOST: 'smtp.test.local',
+    SMTP_PORT: '587',
+    SMTP_USER: 'mailer',
+    SMTP_PASS: 'super-secret-smtp-pass',
+    SMTP_FROM: 'BetterTrack <no-reply@test.local>',
+  } satisfies Partial<NodeJS.ProcessEnv>;
+  let sent: OutgoingMail[];
+
+  beforeEach(async () => {
+    await harness.dispose();
+    sent = [];
+    const transport: MailTransport = {
+      async send(mail) {
+        sent.push(mail);
+      },
+    };
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    await seedFirstPartyClients(createOAuthRepository(harness.db));
+  });
+
+  it('revokes first- and third-party grants, audited password_reset', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+
+    const requested = await request(harness.app)
+      .post('/api/v1/auth/password-reset/request')
+      .set(...XRW)
+      .send({ email: mobile.user.email });
+    expect(requested.body).toEqual({ ok: true });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const token = sent[0]!.text.split('/reset/')[1]?.split(/\s/)[0];
+    expect(token).toBeTruthy();
+
+    const completed = await request(harness.app)
+      .post('/api/v1/auth/password-reset/complete')
+      .set(...XRW)
+      .send({ token, newPassword: 'Reset-Str0ng-Passw0rd!' });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(mobile.token)).toBeNull();
+    expect((await grantRevocations(mobile.user.id)).map((row) => row.meta)).toEqual([
+      expect.objectContaining({ reason: 'password_reset' }),
+      expect.objectContaining({ reason: 'password_reset' }),
+    ]);
+  });
+});
+
+describe('§16 2026-10-29 an ADMIN temp-password reset ends every OAuth grant', () => {
+  it('revokes first- and third-party grants, audited password_reset with source admin', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const tag = randomBytes(4).toString('hex');
+    const admin = await harness.seedAdmin({
+      email: `reset-admin-${tag}@bettertrack.test`,
+      username: `resetadmin${tag}`,
+    });
+    const adminAgent = await harness.loginAdmin(admin);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const reset = await adminAgent
+      .post(`/api/v1/admin/users/${mobile.user.id}/reset-password`)
+      .set(...XRW);
+    expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(mobile.token)).toBeNull();
+    expect(await harness.ctx.oauth.authenticateToken(partner.token)).toBeNull();
+    expect(invalidatedGrants(publish)).toEqual([mobile.grantId, partner.grantId].sort());
+
+    // One row per grant; the admin is the actor; the meta names event + source.
+    const rows = await harness.db
+      .select({
+        actorId: schema.auditLog.actorId,
+        targetId: schema.auditLog.targetId,
+        meta: schema.auditLog.meta,
+      })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, AuditAction.OAuthGrantRevoked));
+    const byGrant = new Map(rows.map((row) => [row.targetId, row]));
+    expect(rows).toHaveLength(2);
+    expect(byGrant.get(mobile.grantId)).toMatchObject({
+      actorId: admin.id,
+      meta: { clientId: MOBILE.clientId, reason: 'password_reset', source: 'admin' },
+    });
+    expect(byGrant.get(partner.grantId)).toMatchObject({
+      actorId: admin.id,
+      meta: {
+        clientId: expect.stringMatching(/^btc_/),
+        reason: 'password_reset',
+        source: 'admin',
+      },
+    });
   });
 });

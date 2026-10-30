@@ -1013,7 +1013,10 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/auth/sessions/revoke-others',
     tag: 'Auth',
-    summary: 'Revoke every other session, keeping the caller signed in.',
+    summary:
+      'Sign out everywhere: revoke every other session and every other official-app OAuth grant, keeping the caller signed in.',
+    description:
+      'Revokes every session of the caller except the current one AND every OAuth grant of an official first-party app except the caller’s own (when the caller is itself an OAuth bearer, its grant is kept — the “keep me signed in” promise). Third-party app grants are untouched. Pending first-party authorization codes are consumed. Each revoked grant is audited `oauth.grant_revoked` with `meta.reason: sign_out_everywhere`. The response counts revoked SESSIONS only. Until per-install refresh-token families land, every install of one official app shares a single grant, so a call made from one phone keeps every phone on that grant signed in.',
     status: 200,
     response: R.RevokeSessionsResponse,
   },
@@ -1021,7 +1024,9 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/auth/change-password',
     tag: 'Auth',
-    summary: 'Change the password; rotates the session.',
+    summary: 'Change the password; rotates the session and ends every OAuth grant.',
+    description:
+      'Every session of the account is destroyed (the caller’s too; no replacement cookie is minted) and every OAuth grant — first- and third-party, INCLUDING the caller’s own when it is an OAuth bearer — is revoked and audited `oauth.grant_revoked` with `meta.reason: password_change`, so every app and device signs in again with the new password. Pending authorization codes are consumed.',
     body: R.ChangePasswordRequest,
     status: 200,
     response: R.MeResponse,
@@ -1402,6 +1407,8 @@ const endpoints: EndpointDef[] = [
     tag: 'Auth',
     summary:
       'Complete a password reset with the emailed token; signs the user in, or returns a 2FA challenge when 2FA is enabled.',
+    description:
+      'Every session of the account is destroyed and every OAuth grant (first- and third-party) is revoked and audited `oauth.grant_revoked` with `meta.reason: password_reset`; pending authorization codes are consumed.',
     public: true,
     body: R.PasswordResetComplete,
     status: 200,
@@ -1649,6 +1656,8 @@ const endpoints: EndpointDef[] = [
     path: '/admin/users/{id}/reset-password',
     tag: 'Admin',
     summary: 'Reset a user’s password to a temp password.',
+    description:
+      'Destroys every session of the user and revokes every OAuth grant (first- and third-party), each audited `oauth.grant_revoked` with `meta.reason: password_reset` and `meta.source: admin` (the admin as actor); the user signs in again with the temp password and must change it.',
     params: contracts.idParamSchema,
     status: 200,
     response: R.ResetPasswordResponse,
@@ -4924,13 +4933,13 @@ const endpoints: EndpointDef[] = [
     summary:
       'Public token endpoint: exchange an authorization code (+ PKCE / client secret) or rotate a refresh token.',
     description:
-      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set none of whose entries satisfies any consented scope (write⇒read counts as satisfying) — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot: with no effective scope the grant can reach no scoped route, and the only thing its tokens could still do — read the caller’s own identity via /auth/me — is not worth keeping a dead grant alive for; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT. Refresh tokens rotate on every use, with a 60-second grace window (OAUTH_REFRESH_TOKEN_GRACE_SECONDS): re-presenting the refresh token that was JUST rotated — because the earlier answer was lost, or because two refreshes of the same token raced — returns 200 with the IDENTICAL access_token and refresh_token that rotation issued, expires_in recomputed to the access token’s remaining lifetime and scope recomputed as the issued scope intersected with what a fresh refresh would grant at that moment; nothing new is minted and nothing is revoked. That holds only while the successor refresh token has not itself been used, and only for the same client with the same client authentication. Reuse after the window, or of any older refresh token in the chain, is treated as token theft: the grant is revoked (signing out every device on it) and the request answers INVALID_GRANT.',
+      'Both grant types issue a token whose scope is the set the user consented to intersected with the app’s CURRENT allowed-scope ceiling, so narrowing the app applies from the next exchange onwards. When that intersection is EMPTY — the app was narrowed to nothing, or to a set none of whose entries satisfies any consented scope (write⇒read counts as satisfying) — neither grant type mints a token: both refuse with INVALID_SCOPE (#1985). The refresh_token form additionally revokes the grant on the spot: with no effective scope the grant can reach no scoped route, and the only thing its tokens could still do — read the caller’s own identity via /auth/me — is not worth keeping a dead grant alive for; the client must run consent again, and a repeated refresh then answers the terminal INVALID_GRANT. Refresh tokens rotate on every use, and every rotation (like the code exchange) issues a refresh token with a fresh idle lifetime — 90 days for an official first-party app, 30 days for a third-party app (OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS / OAUTH_REFRESH_TOKEN_TTL_SECONDS) — so an install that refreshes within that time never reaches it. Re-presenting the refresh token that was JUST rotated — because the earlier answer was lost, or because two refreshes of the same token raced — returns 200 with the IDENTICAL access_token and refresh_token that rotation issued, expires_in recomputed to the access token’s remaining lifetime and scope recomputed as the issued scope intersected with what a fresh refresh would grant at that moment; nothing new is minted and nothing is revoked. That holds for 60 seconds after the rotation (OAUTH_REFRESH_TOKEN_GRACE_SECONDS) for every client, and only while the successor refresh token has not itself been used and for the same client with the same client authentication. For an official first-party app it extends to 24 hours (OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS) as long as the successor pair has NEVER BEEN USED: the successor refresh token is unconsumed and the successor access token has never authenticated a request. Because access tokens live one hour, such a late re-serve can carry an access token that has already expired: expires_in is then 0 and the client should rotate the returned refresh token right away. Any other reuse — after the client’s window, of any older refresh token in the chain, or (first-party, after 60 seconds) of a token whose successor somebody already used — is treated as token theft: the grant is revoked (signing out every device on it), audited `oauth.grant_revoked` with `meta.reason: refresh_reuse`, and the request answers INVALID_GRANT.',
     public: true,
     body: R.OAuthTokenRequest,
     status: 200,
     response: R.OAuthTokenResponse,
     errorResponses: {
-      400: 'authorization_code: unknown/expired/replayed code, redirect_uri mismatch or failed PKCE (INVALID_GRANT); unknown client or wrong client secret (INVALID_CLIENT). refresh_token: unknown, expired or revoked-grant token (INVALID_GRANT); an already-rotated token re-presented after the 60 s grace window, or one older than the immediately previous token (INVALID_GRANT — and the grant is revoked); a just-rotated token inside the window whose stored successor pair can no longer be re-served, e.g. after an encryption-key rotation (INVALID_GRANT, nothing revoked); the losing side of two concurrent refreshes of the same token when the winner’s pair cannot be re-served — including when the winner’s successor has already been rotated again by the time the loser reads it (INVALID_GRANT, nothing revoked). BOTH forms: an effective scope set that clamps to empty (INVALID_SCOPE) — the refresh form revokes the grant as it refuses, and this is checked before any grace re-serve.',
+      400: 'authorization_code: unknown/expired/replayed code, redirect_uri mismatch or failed PKCE (INVALID_GRANT); unknown client or wrong client secret (INVALID_CLIENT). refresh_token: unknown, expired or revoked-grant token (INVALID_GRANT); an already-rotated token re-presented after the client’s window (60 s; 24 h for an official first-party app), one older than the immediately previous token, or — first-party, after 60 s — one whose successor pair has already been used (INVALID_GRANT — and the grant is revoked); a just-rotated token inside the window whose stored successor pair can no longer be re-served, e.g. after an encryption-key rotation (INVALID_GRANT, nothing revoked); the losing side of two concurrent refreshes of the same token when the winner’s pair cannot be re-served — including when the winner’s successor has already been rotated again by the time the loser reads it (INVALID_GRANT, nothing revoked). BOTH forms: an effective scope set that clamps to empty (INVALID_SCOPE) — the refresh form revokes the grant as it refuses, and this is checked before any grace re-serve.',
     },
     errorCodes: ['INVALID_CLIENT', 'INVALID_GRANT', 'INVALID_SCOPE'],
   },

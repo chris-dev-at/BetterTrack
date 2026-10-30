@@ -1,5 +1,18 @@
-import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from 'drizzle-orm';
+import { oauthRefreshReplayWindowSeconds } from '@bettertrack/contracts';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
@@ -22,9 +35,11 @@ import {
  * OAuth 2.0 provider persistence (PROJECTPLAN.md §6.13, §14, V2-P12). Only
  * token/secret *hashes* are stored — the one exception is a rotated refresh
  * token's `successor_envelope`, an AES-256-GCM envelope (sealed by the service)
- * of the pair it was rotated into, served only inside the refresh grace window
- * and nulled once it has passed (on read, on the successor's rotation, after
- * the next rotation anywhere, and by the daily sweep).
+ * of the pair it was rotated into, served only inside the re-serve window of
+ * the token's own client (60 s third-party, 24 h first-party — see
+ * `oauthRefreshReplayWindowSeconds`) and nulled once it has passed (on read, on
+ * the successor's rotation, after the next rotation anywhere, and by the daily
+ * sweep).
  * Single-use codes and rotating refresh tokens
  * are consumed with an atomic `UPDATE … WHERE consumed_at IS NULL RETURNING`, so
  * a concurrent double-exchange can only ever win once. Every token lookup joins
@@ -217,18 +232,30 @@ export type OAuthRefreshTokenRotation =
   | { outcome: 'rotated' }
   | { outcome: 'replayed'; current: OAuthRefreshTokenLookup | undefined };
 
-const REFRESH_GRACE_MS = OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000;
+/**
+ * What a credential event ({@link createOAuthRepository}'s
+ * `revokeGrantsForCredentialEvent`) revoked: the grant id (the realtime
+ * invalidation credential + the audit target) and the client's public
+ * `btc_…` id (the audit meta). Never a token or a hash.
+ */
+export interface OAuthCredentialEventRevocation {
+  grantId: string;
+  clientId: string;
+}
 
 /** The successor side of the refresh-token self-join. */
 const successorTokens = alias(oauthRefreshTokens, 'successor_tokens');
 
 /**
  * Read one refresh token with its grant, user and successor, enforcing the
- * envelope-lifetime rule on the way: a row whose grace window has passed loses
- * its `successor_envelope` on this very read (and the caller never sees it), so
- * a read past the window can never be the one that serves it. Rows nobody
- * reads again are left to the post-rotation and daily sweeps. Every
- * refresh-token read goes through here.
+ * envelope-lifetime rule on the way: a row whose re-serve window has passed
+ * loses its `successor_envelope` on this very read (and the caller never sees
+ * it), so a read past the window can never be the one that serves it. The
+ * window follows the token's OWN client (joined through the grant):
+ * {@link oauthRefreshReplayWindowSeconds} — 60 s for a third-party app, 24 h for
+ * an official first-party app (§16 2026-10-29). Rows nobody reads again are
+ * left to the post-rotation and daily sweeps. Every refresh-token read goes
+ * through here.
  */
 async function readRefreshToken(
   executor: Pick<Database, 'select' | 'update'>,
@@ -240,6 +267,7 @@ async function readRefreshToken(
       token: oauthRefreshTokens,
       grant: oauthGrants,
       user: users,
+      clientIsFirstParty: oauthClients.isFirstParty,
       successor: {
         id: successorTokens.id,
         tokenHash: successorTokens.tokenHash,
@@ -250,16 +278,18 @@ async function readRefreshToken(
     .from(oauthRefreshTokens)
     .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
     .innerJoin(users, eq(oauthGrants.userId, users.id))
+    .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
     .leftJoin(successorTokens, eq(successorTokens.id, oauthRefreshTokens.successorId))
     .where(where)
     .limit(1);
   if (!row) return undefined;
 
   let token = row.token;
+  const windowMs = oauthRefreshReplayWindowSeconds(row.clientIsFirstParty) * 1000;
   if (
     token.successorEnvelope !== null &&
     token.consumedAt !== null &&
-    now.getTime() - token.consumedAt.getTime() > REFRESH_GRACE_MS
+    now.getTime() - token.consumedAt.getTime() > windowMs
   ) {
     await executor
       .update(oauthRefreshTokens)
@@ -628,8 +658,103 @@ export function createOAuthRepository(db: Database) {
         .where(and(eq(oauthAuthCodes.userId, userId), isNull(oauthAuthCodes.consumedAt)));
     },
 
+    /**
+     * Credential-event revocation (§16 2026-10-29): a password change, a
+     * password reset, or "sign out everywhere" ends the user's OAuth grants —
+     * every grant, or (`firstPartyOnly`) only those of official first-party
+     * apps — except `exceptGrantId` (the caller's own grant on "sign out
+     * everywhere", which promises to keep the caller signed in). Pending
+     * authorization codes for the same client set are consumed permanently.
+     *
+     * Ordering is the race guard, and it is deliberately lock-free. Codes are
+     * consumed FIRST: an exchange in flight holds its code row `FOR UPDATE`, so
+     * that statement waits for it to commit (and then skips the code it
+     * consumed); the grant UPDATE that follows is a fresh READ COMMITTED
+     * snapshot, so it sees — and revokes — the grant that exchange created or
+     * reused. An exchange that starts after the first statement finds its code
+     * consumed and is refused. Locks are taken codes → grants, the same order
+     * an exchange takes code → (user) → grant, so the two cannot deadlock.
+     *
+     * IDEMPOTENCY KEY: the grant id, guarded by `revoked_at IS NULL`. A replay
+     * (or a concurrent revoke of the same grant) returns nothing for that
+     * grant, so the service audits and invalidates each grant exactly once.
+     */
+    async revokeGrantsForCredentialEvent(input: {
+      userId: string;
+      firstPartyOnly: boolean;
+      exceptGrantId: string | null;
+      revokedAt: Date;
+    }): Promise<OAuthCredentialEventRevocation[]> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const clientFilter = input.firstPartyOnly
+          ? executor
+              .select({ id: oauthClients.id })
+              .from(oauthClients)
+              .where(eq(oauthClients.isFirstParty, true))
+          : undefined;
+
+        await executor
+          .update(oauthAuthCodes)
+          .set({ consumedAt: input.revokedAt })
+          .where(
+            and(
+              eq(oauthAuthCodes.userId, input.userId),
+              isNull(oauthAuthCodes.consumedAt),
+              clientFilter ? inArray(oauthAuthCodes.clientId, clientFilter) : undefined,
+            ),
+          );
+
+        const revoked = await executor
+          .update(oauthGrants)
+          .set({ revokedAt: input.revokedAt })
+          .where(
+            and(
+              eq(oauthGrants.userId, input.userId),
+              isNull(oauthGrants.revokedAt),
+              clientFilter ? inArray(oauthGrants.clientId, clientFilter) : undefined,
+              input.exceptGrantId ? ne(oauthGrants.id, input.exceptGrantId) : undefined,
+            ),
+          )
+          .returning({ id: oauthGrants.id, clientRowId: oauthGrants.clientId });
+        if (revoked.length === 0) return [];
+
+        const clients = await executor
+          .select({ id: oauthClients.id, clientId: oauthClients.clientId })
+          .from(oauthClients)
+          .where(
+            inArray(
+              oauthClients.id,
+              revoked.map((grant) => grant.clientRowId),
+            ),
+          );
+        const publicId = new Map(clients.map((client) => [client.id, client.clientId]));
+        return revoked
+          .map((grant) => ({
+            grantId: grant.id,
+            clientId: publicId.get(grant.clientRowId) ?? grant.clientRowId,
+          }))
+          .sort((a, b) => a.grantId.localeCompare(b.grantId));
+      });
+    },
+
     async touchGrantLastUsed(grantId: string, at: Date): Promise<void> {
       await db.update(oauthGrants).set({ lastUsedAt: at }).where(eq(oauthGrants.id, grantId));
+    },
+
+    /**
+     * Stamp an access token's FIRST successful authentication (§16 2026-10-29,
+     * migration 0121). Written once, by primary key, and never rewritten:
+     * IDEMPOTENCY KEY the access-token id, guarded by `first_used_at IS NULL`,
+     * so a concurrent second request (or a replay) changes nothing. The
+     * first-party re-serve reads this to tell an unused successor pair from
+     * one somebody has already acted on.
+     */
+    async markAccessTokenFirstUsed(id: string, at: Date): Promise<void> {
+      await db
+        .update(oauthAccessTokens)
+        .set({ firstUsedAt: at })
+        .where(and(eq(oauthAccessTokens.id, id), isNull(oauthAccessTokens.firstUsedAt)));
     },
 
     // ── Authorization codes ──────────────────────────────────────────────────
@@ -834,21 +959,36 @@ export function createOAuthRepository(db: Database) {
     },
 
     /**
-     * Retention sweep step (`data.retentionCleanup`): null at most `limit`
-     * envelopes on rows consumed before `cutoff` (the caller passes "run time
-     * minus the grace window"). Envelope lifetime is otherwise enforced on read
-     * and on the successor's rotation; this catches the rows nobody touches
-     * again. Served by the partial `oauth_refresh_tokens_live_envelope_idx`.
-     * Resolves to how many envelopes were cleared; idempotent.
+     * Sweep step (`data.retentionCleanup`, and best-effort after every
+     * successful rotation): null at most `limit` envelopes whose re-serve
+     * window has passed at `now`. The window follows each row's OWN client,
+     * exactly like the read path ({@link oauthRefreshReplayWindowSeconds}):
+     * a third-party row goes once it was consumed more than 60 s before `now`,
+     * an official first-party row only once it was consumed more than 24 h
+     * before `now` — inside that, its sealed pair may still be re-served
+     * (§16 2026-10-29). Envelope lifetime is otherwise enforced on read and on
+     * the successor's rotation; this catches the rows nobody touches again.
+     * Walks the partial `oauth_refresh_tokens_live_envelope_idx`. Resolves to
+     * how many envelopes were cleared; idempotent.
      */
-    async clearExpiredSuccessorEnvelopes(cutoff: Date, limit: number): Promise<number> {
+    async clearExpiredSuccessorEnvelopes(now: Date, limit: number): Promise<number> {
+      const strictCutoff = new Date(now.getTime() - oauthRefreshReplayWindowSeconds(false) * 1000);
+      const firstPartyCutoff = new Date(
+        now.getTime() - oauthRefreshReplayWindowSeconds(true) * 1000,
+      );
       const candidates = db
         .select({ id: oauthRefreshTokens.id })
         .from(oauthRefreshTokens)
+        .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
+        .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
         .where(
           and(
             isNotNull(oauthRefreshTokens.successorEnvelope),
-            lt(oauthRefreshTokens.consumedAt, cutoff),
+            lt(oauthRefreshTokens.consumedAt, strictCutoff),
+            or(
+              eq(oauthClients.isFirstParty, false),
+              lt(oauthRefreshTokens.consumedAt, firstPartyCutoff),
+            ),
           ),
         )
         .orderBy(asc(oauthRefreshTokens.consumedAt), asc(oauthRefreshTokens.id))

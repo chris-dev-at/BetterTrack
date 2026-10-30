@@ -2582,3 +2582,144 @@ describe('#1951 bearer denial-reason vocabulary at runtime', () => {
     ]);
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §16 2026-10-29 — the two credential events the mobile app issues from its
+ * own bearer: "change password" (signs the phone itself out) and "log out all
+ * others" (keeps the phone's own grant).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe('§16 2026-10-29 credential events issued from the phone', () => {
+  const MOBILE = FIRST_PARTY_CLIENTS.find(
+    (client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+  )!;
+  const OFFICIAL_REDIRECT = 'https://official.example/callback';
+
+  beforeEach(async () => {
+    await seedFirstPartyClients(createOAuthRepository(harness.db));
+  });
+
+  /** Consent + exchange for an existing user's agent against any public client. */
+  async function issueFor(
+    agent: Agent,
+    userId: string,
+    clientId: string,
+    redirectUri: string,
+    scopes: string[],
+  ): Promise<{ token: string; grantId: string }> {
+    const { verifier, challenge } = pkce();
+    const approval = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        scope: scopes.join(' '),
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      });
+    expect(approval.status, JSON.stringify(approval.body)).toBe(200);
+    const code = new URL(approval.body.redirectTo as string).searchParams.get('code');
+    const tokenRes = await request(harness.app).post('/api/v1/oauth/token').send({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(tokenRes.status, JSON.stringify(tokenRes.body)).toBe(200);
+    const grants = await createOAuthRepository(harness.db).listGrantsForUser(userId);
+    const grant = grants.find((row) => row.client.clientId === clientId)!;
+    return {
+      token: oauthTokenResponseSchema.parse(tokenRes.body).access_token,
+      grantId: grant.grant.id,
+    };
+  }
+
+  async function revokedAt(grantId: string): Promise<Date | null> {
+    const [row] = await harness.db
+      .select({ revokedAt: schema.oauthGrants.revokedAt })
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.id, grantId));
+    return row!.revokedAt;
+  }
+
+  async function revocationReasons(userId: string): Promise<Record<string, unknown>[]> {
+    const rows = await harness.db
+      .select({ targetId: schema.auditLog.targetId, meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.actorId, userId), eq(schema.auditLog.action, 'oauth.grant_revoked')),
+      );
+    return rows.map((row) => ({ grantId: row.targetId, ...(row.meta as Record<string, unknown>) }));
+  }
+
+  it('a password change made FROM the phone signs the phone out too (its grant is revoked)', async () => {
+    const user = await seedFreshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const phone = await issueFor(agent, user.id, MOBILE.clientId, MOBILE.redirectUris[0]!, [
+      'account:security',
+      'portfolio:read',
+    ]);
+    const newPassword = 'Phone-New-Str0ng-Pass!';
+
+    const changed = await request(harness.app)
+      .post('/api/v1/auth/change-password')
+      .set(bearer(phone.token))
+      .send({ currentPassword: user.password, newPassword });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(meResponseSchema.parse(changed.body).email).toBe(user.email);
+
+    // WIRE-VISIBLE for mobile: the bearer that made the change no longer works;
+    // the app logs in again with the new password.
+    const after = await request(harness.app).get('/api/v1/auth/me').set(bearer(phone.token));
+    expect(after.status).toBe(401);
+    expect(await revokedAt(phone.grantId)).toBeInstanceOf(Date);
+    expect(await revocationReasons(user.id)).toEqual([
+      { grantId: phone.grantId, clientId: MOBILE.clientId, reason: 'password_change' },
+    ]);
+  });
+
+  it('"log out all others" FROM the phone keeps the phone’s own grant and ends the other official app', async () => {
+    const user = await seedFreshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const phone = await issueFor(agent, user.id, MOBILE.clientId, MOBILE.redirectUris[0]!, [
+      'account:security',
+      'portfolio:read',
+    ]);
+    const tag = uniq();
+    const admin = await harness.seedAdmin({
+      email: `official-${tag}@bettertrack.test`,
+      username: `official${tag}`,
+    });
+    const adminAgent = await harness.loginAdmin(admin);
+    const created = await adminAgent
+      .post('/api/v1/admin/oauth-clients')
+      .set(...XRW)
+      .send({
+        name: 'Official Desktop',
+        redirectUris: [OFFICIAL_REDIRECT],
+        scopes: ['portfolio:read'],
+        public: true,
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const desktopClientId = createOAuthClientResponseSchema.parse(created.body).client.clientId;
+    const desktop = await issueFor(agent, user.id, desktopClientId, OFFICIAL_REDIRECT, [
+      'portfolio:read',
+    ]);
+
+    const out = await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token));
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+    // The wire count stays SESSIONS only (the browser session above).
+    expect(out.body).toEqual({ revoked: 1 });
+
+    expect((await agent.get('/api/v1/auth/me')).status).toBe(401);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    expect(await revokedAt(phone.grantId)).toBeNull();
+    expect(await revokedAt(desktop.grantId)).toBeInstanceOf(Date);
+    expect(await revocationReasons(user.id)).toEqual([
+      { grantId: desktop.grantId, clientId: desktopClientId, reason: 'sign_out_everywhere' },
+    ]);
+  });
+});

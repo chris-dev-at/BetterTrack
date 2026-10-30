@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,8 +10,11 @@ import {
   OAUTH_ACCESS_TOKEN_TTL_SECONDS,
   OAUTH_CLIENT_ID_PREFIX,
   OAUTH_CLIENT_SECRET_PREFIX,
+  OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS,
+  OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS,
   OAUTH_REFRESH_TOKEN_GRACE_SECONDS,
   OAUTH_REFRESH_TOKEN_PREFIX,
+  OAUTH_REFRESH_TOKEN_TTL_SECONDS,
   apiErrorSchema,
   auditQuerySchema,
   createOAuthClientResponseSchema,
@@ -32,7 +35,7 @@ import {
 } from '../data/repositories/oauthRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { AuditAction, createAuditService } from '../services/audit/auditService';
-import { createSecretBoxKeyring, encryptSecret } from '../services/crypto/secretBox';
+import { createSecretBoxKeyring, decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { hashToken } from '../services/crypto/tokens';
 import {
   OAUTH_LOGO_MAX_BYTES,
@@ -1229,6 +1232,9 @@ describe('refresh-token rotation', () => {
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expect((await refreshWith(clientId, clientSecret, next.refresh_token)).status).toBe(400);
     expect(await graceAudits()).toHaveLength(0);
+    expect(await revocationAudits((await grantFor(first.refresh_token)).id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
+    ]);
   });
 
   it('treats a GRANDPARENT replay as theft even inside the window', async () => {
@@ -1246,6 +1252,9 @@ describe('refresh-token rotation', () => {
     expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
     expect(await harness.ctx.oauth.authenticateToken(third.access_token)).toBeNull();
     expect(await graceAudits()).toHaveLength(0);
+    expect(await revocationAudits((await grantFor(first.refresh_token)).id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'successor_rotated' },
+    ]);
   });
 
   it('serves nothing to another client, or to the right client with a wrong secret, and revokes nothing', async () => {
@@ -1353,6 +1362,9 @@ describe('refresh-token rotation', () => {
     expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
     expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
     expect(await graceAudits()).toHaveLength(0);
+    expect(await revocationAudits((await grantFor(first.refresh_token)).id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'no_successor' },
+    ]);
   });
 
   it('advertises the CURRENT scope on a replay after the app was partly narrowed inside the window', async () => {
@@ -1425,8 +1437,10 @@ describe('refresh-token rotation', () => {
       },
     });
     expect(next.refresh_token).not.toBe(first.refresh_token);
+    // The rotation instant itself: the repository applies each row's OWN
+    // window (60 s third-party, 24 h first-party — §16 2026-10-29).
     expect(clearExpiredSuccessorEnvelopes).toHaveBeenCalledWith(
-      new Date(clockMs - OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000),
+      new Date(clockMs),
       POST_ROTATION_ENVELOPE_SWEEP_BATCH,
     );
     expect(warn).toHaveBeenCalledWith(
@@ -1533,6 +1547,352 @@ describe('refresh-token rotation', () => {
     expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
     expect(await service.authenticateToken(winner.value.access_token)).not.toBeNull();
     expect(await graceAudits()).toHaveLength(0);
+  });
+
+  // ── First-party persistence (§16 2026-10-29) ─────────────────────────────
+  // Official first-party apps (`is_first_party`) keep an install signed in
+  // through a lost answer retried hours later: past the strict 60 s window and
+  // up to 24 h after the rotation, the consumed token is re-served its identical
+  // successor pair while that pair has NEVER BEEN USED. Everything else stays
+  // theft detection, and every such death is audited with its evidence.
+
+  /** Consent + code exchange against an admin-registered first-party (public, PKCE) app. */
+  async function issueFirstPartyPair(scopes: string[] = ['portfolio:read']): Promise<{
+    clientId: string;
+    first: ReturnType<typeof oauthTokenResponseSchema.parse>;
+  }> {
+    const { clientId } = await registerFirstPartyClient({ scopes, public: true });
+    const tag = randomBytes(4).toString('hex');
+    const user = await harness.seedUser({
+      email: `fp-user-${tag}@bettertrack.test`,
+      username: `fpuser${tag}`,
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const { verifier, challenge } = pkce();
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: scopes.join(' '),
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    const res = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(res.status).toBe(200);
+    return { clientId, first: oauthTokenResponseSchema.parse(res.body) };
+  }
+
+  /** A public client authenticates by `client_id` alone. */
+  function refreshPublic(clientId: string, refreshToken: string) {
+    return tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+    });
+  }
+
+  async function rotatePublic(clientId: string, refreshToken: string) {
+    const res = await refreshPublic(clientId, refreshToken);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return oauthTokenResponseSchema.parse(res.body);
+  }
+
+  async function accessRow(accessToken: string) {
+    const [row] = await harness.db
+      .select()
+      .from(schema.oauthAccessTokens)
+      .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(accessToken)));
+    return row!;
+  }
+
+  /** The `oauth.grant_revoked` rows of one grant, meta only. */
+  async function revocationAudits(grantId: string) {
+    const rows = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.action, AuditAction.OAuthGrantRevoked),
+          eq(schema.auditLog.targetId, grantId),
+        ),
+      );
+    return rows.map((row) => row.meta);
+  }
+
+  /** Use an access token for a real request — the act that stamps `first_used_at`. */
+  async function useAccessToken(accessToken: string): Promise<void> {
+    const res = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set(...bearer(accessToken));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  }
+
+  function expectInvalidGrant(res: { status: number; body: Record<string, unknown> }): void {
+    expect(res.status).toBe(400);
+    expect(apiErrorSchema.parse(res.body).error.code).toBe('INVALID_GRANT');
+    expect(res.body.access_token).toBeUndefined();
+    expect(res.body.refresh_token).toBeUndefined();
+  }
+
+  it('first-party: re-serves the identical UNUSED successor pair 10 min and 23 h after rotation', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    const next = await rotatePublic(clientId, first.refresh_token);
+
+    // The lost answer, retried after the 10-minute quarantine…
+    advance(10 * 60);
+    const at10m = await refreshPublic(clientId, first.refresh_token);
+    expect(at10m.status, JSON.stringify(at10m.body)).toBe(200);
+    expect(oauthTokenResponseSchema.parse(at10m.body)).toEqual({
+      ...next,
+      expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS - 600,
+    });
+
+    // …and again 23 h after the rotation (a killed process). The access token
+    // lapsed 22 h ago, so it is advertised as `expires_in: 0` next to the live
+    // successor refresh token — the contract admits exactly that.
+    advance(23 * 3600 - 10 * 60);
+    const at23h = await refreshPublic(clientId, first.refresh_token);
+    expect(at23h.status, JSON.stringify(at23h.body)).toBe(200);
+    expect(oauthTokenResponseSchema.parse(at23h.body)).toEqual({ ...next, expires_in: 0 });
+
+    // Nothing was minted, nothing revoked; the extended re-serves are audited as such.
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeNull();
+    expect(await accessRowCount(grant.id)).toBe(2);
+    expect((await graceAudits()).map((row) => row.meta)).toEqual([
+      { clientId, via: 'replay', window: 'first_party_24h' },
+      { clientId, via: 'replay', window: 'first_party_24h' },
+    ]);
+    expect(await revocationAudits(grant.id)).toEqual([]);
+    // Re-serving is not a use: the grace path's own access lookup never stamps.
+    expect((await accessRow(next.access_token)).firstUsedAt).toBeNull();
+
+    // The re-served refresh token rotates normally into a fresh pair.
+    const fresh = await rotatePublic(clientId, next.refresh_token);
+    expect(fresh.expires_in).toBe(OAUTH_ACCESS_TOKEN_TTL_SECONDS);
+    expect(fresh.refresh_token).not.toBe(next.refresh_token);
+  });
+
+  it('first-party: a replay 25 h after rotation is theft — revoked, audited window_passed', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    const next = await rotatePublic(clientId, first.refresh_token);
+
+    advance(25 * 3600);
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
+    ]);
+    expectInvalidGrant(await refreshPublic(clientId, next.refresh_token));
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('first-party: once the successor ACCESS token was used, a replay past 60 s revokes (successor_access_used)', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    const next = await rotatePublic(clientId, first.refresh_token);
+    await useAccessToken(next.access_token);
+    expect((await accessRow(next.access_token)).firstUsedAt).toBeInstanceOf(Date);
+
+    advance(10 * 60);
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'successor_access_used' },
+    ]);
+    // The pair somebody was using dies with the grant.
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
+    expectInvalidGrant(await refreshPublic(clientId, next.refresh_token));
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('first-party: once the successor REFRESH token was rotated, a replay revokes (successor_rotated)', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    const second = await rotatePublic(clientId, first.refresh_token);
+    advance(5 * 60);
+    const third = await rotatePublic(clientId, second.refresh_token);
+
+    advance(5 * 60);
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'successor_rotated' },
+    ]);
+    expect(await harness.ctx.oauth.authenticateToken(third.access_token)).toBeNull();
+  });
+
+  it('first-party: a GRANDPARENT is theft even inside the strict window, while its child is still re-served', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    const second = await rotatePublic(clientId, first.refresh_token);
+    advance(10);
+    const third = await rotatePublic(clientId, second.refresh_token);
+    advance(10);
+
+    // The immediate parent of the current pair is a lost answer: re-served.
+    const parent = await refreshPublic(clientId, second.refresh_token);
+    expect(parent.status, JSON.stringify(parent.body)).toBe(200);
+    expect(oauthTokenResponseSchema.parse(parent.body).refresh_token).toBe(third.refresh_token);
+
+    // The grandparent is not the current device.
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'successor_rotated' },
+    ]);
+  });
+
+  it('first-party: inside the strict 60 s window a race is never punished, even after the winner used its access token', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    const next = await rotatePublic(clientId, first.refresh_token);
+    await useAccessToken(next.access_token);
+
+    advance(30);
+    const replay = await refreshPublic(clientId, first.refresh_token);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(oauthTokenResponseSchema.parse(replay.body)).toEqual({
+      ...next,
+      expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS - 30,
+    });
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    // A strict-window re-serve keeps #2065's audit shape exactly.
+    expect((await graceAudits()).map((row) => row.meta)).toEqual([{ clientId, via: 'replay' }]);
+  });
+
+  it('third-party: a replay 10 min after rotation is still theft — the strict 60 s rule is unchanged', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+
+    advance(10 * 60);
+    expectInvalidGrant(await refreshWith(clientId, clientSecret, first.refresh_token));
+
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
+    ]);
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
+    // The successor was never used — for a third-party app that buys nothing.
+    expect((await accessRow(next.access_token)).firstUsedAt).toBeNull();
+  });
+
+  it('first-party: a pair sealed before first-use tracking (envelope v1) is never re-served past the strict window', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    await rotatePublic(clientId, first.refresh_token);
+    // Exactly what the #2065 code sealed: the same pair, `v: 1`. Its successor's
+    // access token was authenticated by code that never stamped `first_used_at`,
+    // so a NULL there proves nothing — only the strict window may serve it.
+    const keyring = harness.ctx.config.recordEncryption;
+    const row = await refreshRow(first.refresh_token);
+    const opened = JSON.parse(decryptSecret(row.successorEnvelope!, keyring)) as { v: number };
+    expect(opened.v).toBe(2);
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ successorEnvelope: encryptSecret(JSON.stringify({ ...opened, v: 1 }), keyring) })
+      .where(eq(schema.oauthRefreshTokens.id, row.id));
+
+    advance(10 * 60);
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
+    ]);
+  });
+
+  it('first-party refresh tokens slide to a fresh 90 days on every rotation; third-party ones to 30 days', async () => {
+    const day = 24 * 3600;
+    const fp = await issueFirstPartyPair();
+    const fpFirstRow = await refreshRow(fp.first.refresh_token);
+    expect(fpFirstRow.expiresAt.getTime()).toBe(
+      clockMs + OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS * 1000,
+    );
+    expect(OAUTH_FIRST_PARTY_REFRESH_TOKEN_TTL_SECONDS).toBe(90 * day);
+
+    // Day 80: rotate — the successor gets a full fresh 90 days from now.
+    advance(80 * day);
+    const fpSecond = await rotatePublic(fp.clientId, fp.first.refresh_token);
+    expect((await refreshRow(fpSecond.refresh_token)).expiresAt.getTime()).toBe(
+      clockMs + 90 * day * 1000,
+    );
+    // Day 160 — long past the FIRST token's original deadline — still rotates.
+    advance(80 * day);
+    const fpThird = await rotatePublic(fp.clientId, fpSecond.refresh_token);
+    // Only a token left idle for more than 90 days lapses.
+    advance(90 * day + 1);
+    const idle = await refreshPublic(fp.clientId, fpThird.refresh_token);
+    expect(idle.status).toBe(400);
+    expect(apiErrorSchema.parse(idle.body).error.message).toBe('Refresh token has expired.');
+
+    const tp = await issueFirstPair();
+    expect((await refreshRow(tp.first.refresh_token)).expiresAt.getTime()).toBe(
+      clockMs + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000,
+    );
+    expect(OAUTH_REFRESH_TOKEN_TTL_SECONDS).toBe(30 * day);
+    advance(25 * day);
+    const tpSecond = await rotate(tp.clientId, tp.clientSecret, tp.first.refresh_token);
+    expect((await refreshRow(tpSecond.refresh_token)).expiresAt.getTime()).toBe(
+      clockMs + 30 * day * 1000,
+    );
+    advance(30 * day + 1);
+    const tpIdle = await refreshWith(tp.clientId, tp.clientSecret, tpSecond.refresh_token);
+    expect(tpIdle.status).toBe(400);
+    expect(apiErrorSchema.parse(tpIdle.body).error.message).toBe('Refresh token has expired.');
+  });
+
+  it('keeps a first-party sealed pair at rest for 24 h — read path and post-rotation sweep — and drops it after', async () => {
+    // Two first-party installs rotate at t0 and go quiet; one third-party app too.
+    const readPath = await issueFirstPartyPair();
+    await rotatePublic(readPath.clientId, readPath.first.refresh_token);
+    const swept = await issueFirstPartyPair();
+    await rotatePublic(swept.clientId, swept.first.refresh_token);
+    const tp = await issueFirstPair();
+    await rotate(tp.clientId, tp.clientSecret, tp.first.refresh_token);
+    const repo = createOAuthRepository(harness.db);
+    const t0 = clockMs;
+
+    // Two hours later another rotation sweeps the instance: the third-party
+    // envelope (window 60 s) goes, both first-party ones (window 24 h) stay.
+    advance(2 * 3600);
+    const other = await issueFirstPair();
+    await rotate(other.clientId, other.clientSecret, other.first.refresh_token);
+    expect((await refreshRow(tp.first.refresh_token)).successorEnvelope).toBeNull();
+    expect((await refreshRow(readPath.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+    expect((await refreshRow(swept.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+
+    // A read exactly at the 24 h edge keeps it (the window is inclusive).
+    const edge = await repo.findRefreshTokenByHash(
+      hashToken(readPath.first.refresh_token),
+      new Date(t0 + OAUTH_FIRST_PARTY_REFRESH_REPLAY_MAX_SECONDS * 1000),
+    );
+    expect(edge?.token.successorEnvelope).toMatch(/^v2\./);
+
+    // One second past 24 h: a read nulls its own row's envelope…
+    advance(22 * 3600 + 1);
+    const past = await repo.findRefreshTokenByHash(
+      hashToken(readPath.first.refresh_token),
+      new Date(clockMs),
+    );
+    expect(past?.token.successorEnvelope).toBeNull();
+    expect((await refreshRow(readPath.first.refresh_token)).successorEnvelope).toBeNull();
+    expect((await refreshRow(swept.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+
+    // …and the next rotation anywhere takes the other with it.
+    const later = await issueFirstPair();
+    await rotate(later.clientId, later.clientSecret, later.first.refresh_token);
+    expect((await refreshRow(swept.first.refresh_token)).successorEnvelope).toBeNull();
+    // Only envelopes go — never a revocation.
+    expect((await grantFor(swept.first.refresh_token)).revokedAt).toBeNull();
   });
 });
 
