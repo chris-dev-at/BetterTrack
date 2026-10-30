@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useId, useRef } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
 import { useT } from '../../i18n';
@@ -17,6 +17,12 @@ interface PinInputProps {
   autoFocus?: boolean;
   disabled?: boolean;
   hint?: string;
+  /**
+   * Field-level failure (FRONTEND-09). Marks every box `aria-invalid` and
+   * associates the message with them, so the first box is also what
+   * "focus the first invalid field" lands on.
+   */
+  error?: string;
 }
 
 /**
@@ -42,9 +48,20 @@ export function PinInput({
   autoFocus,
   disabled,
   hint,
+  error,
 }: PinInputProps) {
   const t = useT();
-  const baseId = label.toLowerCase().replace(/\s+/g, '-');
+  // Per-instance, not label-derived (review nit): the previous slug
+  // (`label.toLowerCase().replace(/\s+/g, '-')`) made every id a function of the
+  // visible text, so two co-mounted `PinInput`s whose labels normalise alike —
+  // one locale collapsing "PIN" and "PIN bestätigen" differently, or any reused
+  // label — would emit duplicate box ids and cross-link `aria-describedby`, i.e.
+  // one field's error announced on another's boxes. `useId` is what `Field` and
+  // `TextField` already use, so the hazard is retired rather than avoided by
+  // convention.
+  const baseId = useId();
+  const errorId = `${baseId}-error`;
+  const hasError = error !== undefined;
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
   function focusIndex(index: number) {
@@ -115,6 +132,8 @@ export function PinInput({
               aria-label={
                 index === 0 ? label : t('auth.pin.digitLabel', { label, position: index + 1 })
               }
+              aria-describedby={hasError ? errorId : undefined}
+              aria-invalid={hasError || undefined}
               type="text"
               inputMode="numeric"
               autoComplete="off"
@@ -139,6 +158,11 @@ export function PinInput({
           );
         })}
       </div>
+      {hasError ? (
+        <p className="bt-field__error" id={errorId} role="alert">
+          {error}
+        </p>
+      ) : null}
       {hint ? <p className="bt-field__hint">{hint}</p> : null}
     </div>
   );

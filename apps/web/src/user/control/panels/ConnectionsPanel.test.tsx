@@ -249,7 +249,7 @@ describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Securit
     expect(await screen.findByText('Google account unlinked.')).toBeInTheDocument();
   });
 
-  test('a wrong password surfaces an in-form error and does not unlink further', async () => {
+  test('a wrong password is attributed to the password box, described and focused', async () => {
     vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
     vi.mocked(unlinkGoogle).mockRejectedValue(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'));
     const user = userEvent.setup();
@@ -259,7 +259,31 @@ describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Securit
     await user.type(await screen.findByLabelText('Password'), 'wrong');
     await user.click(screen.getByRole('button', { name: 'Unlink Google' }));
 
-    expect(await screen.findByText('Your password is incorrect.')).toBeInTheDocument();
+    // The server judged what was typed, so the box — not just the region — says so.
+    const field = await screen.findByLabelText('Password');
+    await waitFor(() => expect(field).toHaveAttribute('aria-invalid', 'true'));
+    expect(field).toHaveAccessibleDescription('Your password is incorrect.');
+    expect(field).toHaveFocus();
+  });
+
+  test('a refusal about the account, not the credential, stays form-level (FRONTEND-09)', async () => {
+    // `GOOGLE_ONLY_SIGN_IN` means the account has no other usable method — the
+    // password may have been perfectly correct, so no box is blamed.
+    vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
+    vi.mocked(unlinkGoogle).mockRejectedValue(
+      new ApiError(400, 'GOOGLE_ONLY_SIGN_IN', 'only method'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Unlink' }));
+    await user.type(await screen.findByLabelText('Password'), 'my-password-1');
+    await user.click(screen.getByRole('button', { name: 'Unlink Google' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/only way to sign in/i);
+    await waitFor(() => expect(alert.parentElement).toHaveFocus());
+    expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
   });
 
   test('Google as the only sign-in method: unlink is withheld with a hint', async () => {

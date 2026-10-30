@@ -57,7 +57,7 @@ import {
   setPin,
   setPinLockIdleMinutes,
 } from '../../../lib/userApi';
-import { SignInPanel } from './SignInPanel';
+import { SignInPanel, passkeyErrorMessage } from './SignInPanel';
 
 const ME: MeResponse = {
   id: '00000000-0000-0000-0000-000000000001',
@@ -190,6 +190,13 @@ describe('SignInPanel — password', () => {
 
     expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
     expect(changePassword).not.toHaveBeenCalled();
+    // The confirmation is the box that disagrees, so it is the one marked and
+    // focused (FRONTEND-09) — the new password itself may well be fine.
+    const confirmField = within(form).getByLabelText('Confirm new password');
+    expect(confirmField).toHaveAttribute('aria-invalid', 'true');
+    expect(confirmField).toHaveAccessibleDescription(/do not match/i);
+    expect(confirmField).toHaveFocus();
+    expect(within(form).getByLabelText('New password')).not.toHaveAttribute('aria-invalid');
   });
 
   test('a wrong current password surfaces the credential error, not a generic one', async () => {
@@ -204,6 +211,28 @@ describe('SignInPanel — password', () => {
     await user.click(within(form).getByRole('button', { name: 'Update password' }));
 
     expect(await screen.findByText(/current password is incorrect/i)).toBeInTheDocument();
+    const currentField = within(form).getByLabelText('Current password');
+    expect(currentField).toHaveAttribute('aria-invalid', 'true');
+    expect(currentField).toHaveAccessibleDescription(/current password is incorrect/i);
+    expect(currentField).toHaveFocus();
+  });
+
+  test('an outage stays a form-level alert and leaves every field valid', async () => {
+    vi.mocked(changePassword).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    const form = group('Change password');
+    await user.type(within(form).getByLabelText('Current password'), 'oldpassword1');
+    await user.type(within(form).getByLabelText('New password'), 'newpassword123');
+    await user.type(within(form).getByLabelText('Confirm new password'), 'newpassword123');
+    await user.click(within(form).getByRole('button', { name: 'Update password' }));
+
+    const alert = await within(form).findByRole('alert');
+    for (const label of ['Current password', 'New password', 'Confirm new password']) {
+      expect(within(form).getByLabelText(label)).not.toHaveAttribute('aria-invalid');
+    }
+    expect(document.activeElement).toContainElement(alert);
   });
 });
 
@@ -327,6 +356,105 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     expect(await screen.findByText(/authenticator app turned off/i)).toBeInTheDocument();
   });
 
+  test('a refused disable code is attributed to the code box, not just the form', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    vi.mocked(disableTwoFactor).mockRejectedValue(
+      new ApiError(400, 'TWO_FACTOR_INVALID_CODE', 'That code is not valid.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    const codeField = screen.getByLabelText(/authenticator code or recovery code/i);
+    await user.type(codeField, '000000');
+    await user.click(screen.getByRole('button', { name: 'Turn off authenticator app' }));
+
+    // The server refused what was typed — that is the box's failure (FRONTEND-09).
+    await waitFor(() => expect(codeField).toHaveAttribute('aria-invalid', 'true'));
+    expect(codeField).toHaveAccessibleDescription(/that code is not valid/i);
+    expect(codeField).toHaveFocus();
+  });
+
+  test('an outage while disabling stays form-level and leaves the code box valid', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    vi.mocked(disableTwoFactor).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    const codeField = screen.getByLabelText(/authenticator code or recovery code/i);
+    await user.type(codeField, '000000');
+    await user.click(screen.getByRole('button', { name: 'Turn off authenticator app' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/something went wrong/i);
+    expect(codeField).not.toHaveAttribute('aria-invalid');
+    expect(document.activeElement).toContainElement(alert);
+  });
+
+  test('a lapsed session while disabling stays form-level and leaves the code box valid', async () => {
+    // Only TWO_FACTOR_INVALID_CODE judges the digits; a 401 says the session
+    // went away, which is not the code box's failure (review nit).
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    vi.mocked(disableTwoFactor).mockRejectedValue(
+      new ApiError(401, 'UNAUTHORIZED', 'Sign in again.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    const codeField = screen.getByLabelText(/authenticator code or recovery code/i);
+    await user.type(codeField, '000000');
+    await user.click(screen.getByRole('button', { name: 'Turn off authenticator app' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/sign in again/i);
+    expect(codeField).not.toHaveAttribute('aria-invalid');
+    expect(document.activeElement).toContainElement(alert);
+  });
+
+  test('a refused email confirmation code is attributed to the code boxes', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+    vi.mocked(confirmEmailTwoFactor).mockRejectedValue(
+      new ApiError(400, 'TWO_FACTOR_INVALID_CODE', 'That code is not valid.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+    await user.type(await screen.findByLabelText('Email code'), '654321');
+    await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
+
+    await waitFor(() => expect(confirmEmailTwoFactor).toHaveBeenCalledWith({ code: '654321' }));
+    const firstBox = screen.getByLabelText('Email code');
+    await waitFor(() => expect(firstBox).toHaveAttribute('aria-invalid', 'true'));
+    expect(firstBox).toHaveAccessibleDescription(/that code is not valid/i);
+    expect(firstBox).toHaveFocus();
+    // Every box of the rejected entry is marked, not only the first.
+    expect(screen.getByLabelText('Email code digit 6')).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  test('a blocked email send stays form-level — no code boxes exist yet', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+    vi.mocked(enrollEmailTwoFactor).mockRejectedValue(
+      new ApiError(400, 'TWO_FACTOR_EMAIL_UNAVAILABLE', 'Email delivery is not configured.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/email delivery is not configured/i);
+    expect(document.activeElement).toContainElement(alert);
+  });
+
   test('disables the email method directly from the authenticated session', async () => {
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ emailEnabled: true, recoveryCodesRemaining: 5 }),
@@ -434,6 +562,103 @@ describe('SignInPanel — passkeys (§13.4 V4-P4)', () => {
     );
   });
 
+  test('a rejected re-auth password is attributed to the add form’s password box', async () => {
+    vi.mocked(listPasskeys).mockResolvedValue([]);
+    vi.mocked(registerPasskey).mockRejectedValue(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Add a passkey' }));
+    const keys = group('Passkeys');
+    await user.type(within(keys).getByLabelText('Passkey name'), 'New key');
+    const passwordField = within(keys).getByLabelText('Current password');
+    await user.type(passwordField, 'wrong-password');
+    await user.click(within(keys).getByRole('button', { name: 'Add passkey' }));
+
+    // The server judged what was typed into the password box (FRONTEND-09).
+    await waitFor(() => expect(passwordField).toHaveAttribute('aria-invalid', 'true'));
+    expect(passwordField).toHaveAccessibleDescription(/password is incorrect/i);
+    expect(passwordField).toHaveFocus();
+    expect(within(keys).getByLabelText('Passkey name')).not.toHaveAttribute('aria-invalid');
+  });
+
+  test('a cancelled authenticator prompt stays form-level — nothing typed was judged', async () => {
+    const { isPasskeyCancellation } = await import('../../../lib/passkeys');
+    vi.mocked(isPasskeyCancellation).mockReturnValueOnce(true);
+    vi.mocked(listPasskeys).mockResolvedValue([]);
+    vi.mocked(registerPasskey).mockRejectedValue(new Error('NotAllowedError'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Add a passkey' }));
+    const keys = group('Passkeys');
+    await user.type(within(keys).getByLabelText('Passkey name'), 'New key');
+    await user.type(within(keys).getByLabelText('Current password'), 'my-password');
+    await user.click(within(keys).getByRole('button', { name: 'Add passkey' }));
+
+    const alert = await within(keys).findByRole('alert');
+    expect(alert).toHaveTextContent(/prompt was cancelled/i);
+    expect(keys.querySelectorAll('[aria-invalid="true"]')).toHaveLength(0);
+    expect(document.activeElement).toContainElement(alert);
+  });
+
+  test('a rate limit while adding stays form-level — it judged nothing the user typed', async () => {
+    vi.mocked(listPasskeys).mockResolvedValue([]);
+    vi.mocked(registerPasskey).mockRejectedValue(new ApiError(429, 'RATE_LIMITED', 'slow down'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Add a passkey' }));
+    const keys = group('Passkeys');
+    await user.type(within(keys).getByLabelText('Passkey name'), 'New key');
+    await user.type(within(keys).getByLabelText('Current password'), 'my-password');
+    await user.click(within(keys).getByRole('button', { name: 'Add passkey' }));
+
+    const alert = await within(keys).findByRole('alert');
+    expect(alert).toHaveTextContent(/too many attempts/i);
+    expect(keys.querySelectorAll('[aria-invalid="true"]')).toHaveLength(0);
+    expect(document.activeElement).toContainElement(alert);
+  });
+
+  test('a rejected delete re-auth is attributed to that row’s password box', async () => {
+    vi.mocked(listPasskeys).mockResolvedValue([makePasskey()]);
+    vi.mocked(deletePasskey).mockRejectedValue(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    const keys = group('Passkeys');
+    const passwordField = within(keys).getByLabelText('Current password');
+    await user.type(passwordField, 'wrong-password');
+    await user.click(within(keys).getByRole('button', { name: 'Remove passkey' }));
+
+    await waitFor(() => expect(passwordField).toHaveAttribute('aria-invalid', 'true'));
+    expect(passwordField).toHaveAccessibleDescription(/password is incorrect/i);
+    expect(passwordField).toHaveFocus();
+  });
+
+  test('a refused rename stays form-level — that form submits no password to blame', async () => {
+    // The rename request carries only the name: a 401 there means the session
+    // lapsed, so blaming a password box (which this mode does not even render)
+    // would leave the message with nowhere to go.
+    vi.mocked(listPasskeys).mockResolvedValue([makePasskey()]);
+    vi.mocked(renamePasskey).mockRejectedValue(new ApiError(401, 'UNAUTHORIZED', 'nope'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Rename' }));
+    const keys = group('Passkeys');
+    const nameField = within(keys).getByLabelText('Passkey name');
+    await user.clear(nameField);
+    await user.type(nameField, 'Work laptop');
+    await user.click(within(keys).getByRole('button', { name: 'Save' }));
+
+    const alert = await within(keys).findByRole('alert');
+    expect(keys.querySelectorAll('[aria-invalid="true"]')).toHaveLength(0);
+    expect(within(keys).queryByLabelText('Current password')).not.toBeInTheDocument();
+    expect(document.activeElement).toContainElement(alert);
+  });
+
   test('an unsupported browser hides the add form and says so', async () => {
     const { browserSupportsWebAuthn } = await import('../../../lib/passkeys');
     vi.mocked(browserSupportsWebAuthn).mockReturnValueOnce(false);
@@ -442,6 +667,40 @@ describe('SignInPanel — passkeys (§13.4 V4-P4)', () => {
 
     expect(await screen.findByText(/doesn't support passkeys/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add a passkey' })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The passkey attribution table itself. The rename gate is asserted here rather
+ * than through the DOM: an ungated mapping would blame the rename form's absent
+ * password box and `useFieldErrors` would demote it back to form-level, so both
+ * versions render identically — only the mapper's own answer differs.
+ */
+describe('passkeyErrorMessage', () => {
+  // Key-returning translator: the attribution is what's under test, not the copy.
+  const t = ((key: string) => key) as unknown as Parameters<typeof passkeyErrorMessage>[0];
+
+  test('blames the password box only where a password was actually submitted', () => {
+    const rejected = new ApiError(401, 'INVALID_CREDENTIALS', 'nope');
+
+    expect(passkeyErrorMessage(t, rejected, { canBlamePassword: true })).toEqual({
+      field: 'password',
+      message: 'settings.security.passkeys.wrongPassword',
+    });
+    // Rename sends no credential, so nothing it submitted can be blamed.
+    expect(passkeyErrorMessage(t, rejected, { canBlamePassword: false }).field).toBeNull();
+  });
+
+  test('leaves every failure that judged nothing typed with the submission', () => {
+    const cases: unknown[] = [
+      new ApiError(429, 'RATE_LIMITED', 'slow down'),
+      new ApiError(409, 'PASSKEY_ALREADY_REGISTERED', 'already there'),
+      new ApiError(503, 'UNAVAILABLE', 'down'),
+      new Error('network'),
+    ];
+    for (const err of cases) {
+      expect(passkeyErrorMessage(t, err, { canBlamePassword: true }).field).toBeNull();
+    }
   });
 });
 
@@ -473,6 +732,12 @@ describe('SignInPanel — the PIN app lock', () => {
 
     expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
     expect(setPin).not.toHaveBeenCalled();
+    // Every box of the disagreeing entry is marked and the first one takes focus.
+    const confirmBox = screen.getByLabelText('Confirm PIN');
+    expect(confirmBox).toHaveAttribute('aria-invalid', 'true');
+    expect(confirmBox).toHaveAccessibleDescription(/do not match/i);
+    expect(confirmBox).toHaveFocus();
+    expect(screen.getByLabelText('PIN')).not.toHaveAttribute('aria-invalid');
   });
 
   test('changes and disables an existing PIN', async () => {

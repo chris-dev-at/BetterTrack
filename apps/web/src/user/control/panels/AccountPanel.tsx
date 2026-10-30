@@ -27,6 +27,8 @@ import { Skeleton } from '../../../ui';
 import { Button, Field, Input, Select } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { AsyncReadState } from '../../components/AsyncReadState';
+import { useFieldErrors } from '../../components/fieldErrors';
+import type { AttributedError } from '../../components/fieldErrors';
 import { Alert } from '../../components/ui';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
@@ -71,16 +73,30 @@ function clearLegacyExportToken(): void {
   }
 }
 
-/** Friendly message for the codes `POST /account/export` can return. */
-function exportErrorMessage(t: TranslateFn, err: unknown): string {
+/**
+ * Friendly message for the codes `POST /account/export` can return, plus the
+ * control each belongs to (FRONTEND-09).
+ *
+ * `INVALID_CREDENTIALS` is the one code that judged what was typed — the re-auth
+ * password box — so it is the one attribution. `TWO_FACTOR_INVALID_CODE` stays
+ * form-level on purpose even though it names a credential: this form submits
+ * `{ password }` only and renders no code box, so blaming a field would point at
+ * a control that is not mounted (the same gate `passkeyErrorMessage` applies to
+ * the rename path). A rate limit and a 5xx judged nothing typed.
+ */
+function exportErrorMessage(t: TranslateFn, err: unknown): AttributedError<'password'> {
   if (err instanceof ApiError) {
-    if (err.code === 'INVALID_CREDENTIALS') return t('settings.export.currentWrong');
-    if (err.code === 'TWO_FACTOR_INVALID_CODE') return t('settings.export.codeWrong');
+    if (err.code === 'INVALID_CREDENTIALS') {
+      return { field: 'password', message: t('settings.export.currentWrong') };
+    }
+    if (err.code === 'TWO_FACTOR_INVALID_CODE') {
+      return { field: null, message: t('settings.export.codeWrong') };
+    }
     if (err.code === 'EXPORT_RATE_LIMITED' || err.status === 429)
-      return t('settings.export.rateLimited');
-    if (err.status >= 500) return t('common.genericError');
+      return { field: null, message: t('settings.export.rateLimited') };
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
   }
-  return t('settings.export.requestFailed');
+  return { field: null, message: t('settings.export.requestFailed') };
 }
 
 /** The read-only identity rows, straight from `GET /auth/me`. */
@@ -231,7 +247,10 @@ function ExportRow() {
   const t = useT();
   const queryClient = useQueryClient();
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The export re-auth password is the only control the server judges here
+  // (FRONTEND-09). The download button's own failures share this state but are
+  // never attributable — nothing was typed to produce them.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'password'>();
   const [held, setHeld] = useState<{ jobId: string; token: string } | null>(() => {
     clearLegacyExportToken();
     return null;
@@ -252,10 +271,13 @@ function ExportRow() {
     onSuccess: (res) => {
       setHeld({ jobId: res.jobId, token: res.downloadToken });
       setPassword('');
-      setError(null);
+      clear();
       void queryClient.invalidateQueries({ queryKey: EXPORT_STATUS_KEY });
     },
-    onError: (err) => setError(exportErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = exportErrorMessage(t, err);
+      fail(attributed.field, attributed.message);
+    },
   });
 
   const current = status.data;
@@ -277,11 +299,13 @@ function ExportRow() {
       // The server-side exchange is one-time. Drop the only client-held copy as
       // soon as the browser has accepted the download.
       setHeld(null);
-      setError(null);
+      clear();
     },
     onError: (err) => {
       if (err instanceof ApiError && err.code === 'EXPORT_NOT_FOUND') setHeld(null);
-      setError(t('settings.export.downloadFailed'));
+      // A download failure belongs to the download button, not to the re-auth
+      // box — nothing was typed to cause it.
+      fail(null, t('settings.export.downloadFailed'));
     },
   });
 
@@ -307,13 +331,20 @@ function ExportRow() {
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     mutation.mutate();
   }
 
   return (
     <Row hint={t('settings.export.hint')} label={t('settings.export.title')} stack>
-      {error ? <Alert tone="error">{error}</Alert> : null}
+      {/* The alert sits outside the form (the download states render above it),
+          so `formRef` scopes the invalid-field lookup and `alertRef` gives a
+          form-level failure something to focus — same shape as `EmailMethodRow`. */}
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
 
       <AsyncReadState
         loading={status.isLoading}
@@ -331,7 +362,7 @@ function ExportRow() {
           <Button
             disabled={downloadMutation.isPending}
             onClick={() => {
-              setError(null);
+              clear();
               downloadMutation.mutate();
             }}
             size="sm"
@@ -359,8 +390,12 @@ function ExportRow() {
       ) : null}
 
       {!isPending ? (
-        <PanelForm onSubmit={onSubmit}>
-          <Field htmlFor="exportPassword" label={t('settings.export.password')}>
+        <PanelForm formRef={formRef} onSubmit={onSubmit}>
+          <Field
+            error={fieldError('password')}
+            htmlFor="exportPassword"
+            label={t('settings.export.password')}
+          >
             <Input
               autoComplete="current-password"
               id="exportPassword"

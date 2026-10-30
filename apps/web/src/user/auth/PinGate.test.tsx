@@ -128,6 +128,48 @@ test('a wrong PIN shakes the card, clears the boxes, refocuses the first (#288, 
   expect(document.activeElement).toBe(first);
 });
 
+// ── Field-level error semantics (FRONTEND-09) ────────────────────────────────
+
+test('a rejected PIN is attributed to the boxes, not just announced above them', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+  vi.mocked(api.verifyPin).mockRejectedValue(new ApiError(401, 'INVALID_PIN', 'Incorrect PIN.'));
+
+  renderAt('/portfolio');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
+
+  typeGatePin('0000');
+  await flush();
+
+  // Every box reports invalid and is described by the message, so a screen
+  // reader hears which control the failure belongs to — not only the summary.
+  const boxes = screen.getAllByRole('textbox');
+  expect(boxes).toHaveLength(4);
+  for (const box of boxes) {
+    expect(box).toHaveAttribute('aria-invalid', 'true');
+    expect(box).toHaveAccessibleDescription(/incorrect pin/i);
+  }
+  expect(boxes[0]).toHaveFocus();
+});
+
+test('a rate limit belongs to the submission — the boxes stay valid', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+  vi.mocked(api.verifyPin).mockRejectedValue(new ApiError(429, 'RATE_LIMITED', 'Slow down.'));
+
+  renderAt('/portfolio');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
+
+  typeGatePin('0000');
+  await flush();
+
+  // Nothing about the digits was wrong, so nothing is blamed on them.
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/too many attempts/i);
+  for (const box of screen.getAllByRole('textbox')) {
+    expect(box).not.toHaveAttribute('aria-invalid');
+  }
+  expect(document.activeElement).toContainElement(alert);
+});
+
 test('the lock screen is a deliberate, branded card (Part B polish, #304)', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
 

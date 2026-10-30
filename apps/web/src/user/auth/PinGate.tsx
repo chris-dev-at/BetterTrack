@@ -7,20 +7,27 @@ import type { TranslateFn } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
+import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { PinInput } from '../components/PinInput';
 import { Alert, Button, cx } from '../components/ui';
 
-/** Friendly message for the codes `POST /auth/pin/verify` can return. */
-function pinErrorMessage(t: TranslateFn, err: unknown): string {
+/**
+ * Friendly message for the codes `POST /auth/pin/verify` can return, attributed
+ * to the boxes when the PIN itself is what the server rejected (FRONTEND-09).
+ * Everything else — a dropped session, a rate limit, an outage — belongs to the
+ * submission, not to the digits the user typed.
+ */
+function pinErrorMessage(t: TranslateFn, err: unknown): AttributedError<'pin'> {
   if (err instanceof ApiError) {
     // The fallback case navigates away (the session was dropped); this message
     // only flashes if that transition hasn't rendered yet.
-    if (err.code === 'PIN_FALLBACK_LOGIN') return t('auth.pin.fallbackError');
-    if (err.code === 'INVALID_PIN') return t('auth.pin.invalidPin');
-    if (err.status === 429) return t('auth.pin.rateLimited');
-    if (err.status >= 500) return t('common.genericError');
+    if (err.code === 'PIN_FALLBACK_LOGIN')
+      return { field: null, message: t('auth.pin.fallbackError') };
+    if (err.code === 'INVALID_PIN') return { field: 'pin', message: t('auth.pin.invalidPin') };
+    if (err.status === 429) return { field: null, message: t('auth.pin.rateLimited') };
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
   }
-  return t('auth.pin.verifyFailed');
+  return { field: null, message: t('auth.pin.verifyFailed') };
 }
 
 /**
@@ -48,7 +55,7 @@ export function PinGate() {
   const { user, verifyPin, logout } = useAuth();
 
   const [pin, setPin] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'pin'>();
   const [submitting, setSubmitting] = useState(false);
   // Bumping this remounts the PinInput, which clears every box and refocuses the
   // first — the reset after a wrong PIN.
@@ -71,13 +78,14 @@ export function PinGate() {
     async (value: string) => {
       // Guard against a double-fire (auto-complete + a stray Enter/click).
       if (submittingRef.current) return;
-      setError(null);
+      clear();
       setSubmitting(true);
       try {
         // Success releases the trap via the AuthContext.
         await verifyPin({ pin: value });
       } catch (err) {
-        setError(pinErrorMessage(t, err));
+        const attributed = pinErrorMessage(t, err);
+        fail(attributed.field, attributed.message);
         setPin('');
         setAttempt((n) => n + 1);
         setShake(true);
@@ -85,7 +93,7 @@ export function PinGate() {
         setSubmitting(false);
       }
     },
-    [t, verifyPin],
+    [clear, fail, t, verifyPin],
   );
 
   // Page-wide keystroke capture (V4-P0 (a)). Digit keys land in the PIN state;
@@ -131,6 +139,7 @@ export function PinGate() {
         }}
         onAnimationEnd={() => setShake(false)}
         className={cx('bt-gate__card flex flex-col gap-6', shake && 'pin-shake')}
+        ref={formRef}
       >
         <div className="flex flex-col gap-1 text-center">
           <div className="bt-gate__brand" style={{ marginBottom: 6 }}>
@@ -144,11 +153,16 @@ export function PinGate() {
           </p>
         </div>
 
-        {error ? <Alert tone="error">{error}</Alert> : null}
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
 
         <div className="flex justify-center">
           <PinInput
             key={attempt}
+            error={fieldError('pin')}
             label={t('auth.pin.inputLabel')}
             length={PIN_LENGTH}
             value={pin}

@@ -7,15 +7,23 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
+import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { Alert, AuthCard, Button, TextField } from '../components/ui';
 
-/** Friendly message for the codes `POST /auth/change-password` can return. */
-function changeErrorMessage(t: TranslateFn, err: unknown): string {
+/** The controls a forced-change failure can be attributed to. */
+type ChangeField = 'newPassword' | 'confirmPassword';
+
+/**
+ * Friendly message for the codes `POST /auth/change-password` can return, with
+ * the field that owns it: a policy rejection belongs to the new-password box,
+ * an outage to the submission.
+ */
+function changeErrorMessage(t: TranslateFn, err: unknown): AttributedError<ChangeField> {
   if (err instanceof ApiError) {
-    if (err.code === 'WEAK_PASSWORD') return err.message;
-    if (err.status >= 500) return t('common.genericError');
+    if (err.code === 'WEAK_PASSWORD') return { field: 'newPassword', message: err.message };
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
   }
-  return t('auth.forcedPasswordChange.failed');
+  return { field: null, message: t('auth.forcedPasswordChange.failed') };
 }
 
 /**
@@ -32,14 +40,16 @@ export function ForcedPasswordChangePage() {
 
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<ChangeField>();
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     if (newPassword !== confirmPassword) {
-      setError(t('auth.forcedPasswordChange.mismatch'));
+      // The confirmation is the box that disagrees — the new password itself
+      // may well be fine.
+      fail('confirmPassword', t('auth.forcedPasswordChange.mismatch'));
       return;
     }
     setSubmitting(true);
@@ -47,7 +57,8 @@ export function ForcedPasswordChangePage() {
       // Success rotates the session and releases the trap via the AuthContext.
       await changePassword({ newPassword });
     } catch (err) {
-      setError(changeErrorMessage(t, err));
+      const attributed = changeErrorMessage(t, err);
+      fail(attributed.field, attributed.message);
     } finally {
       setSubmitting(false);
     }
@@ -55,14 +66,19 @@ export function ForcedPasswordChangePage() {
 
   return (
     <AuthCard subtitle={t('auth.forcedPasswordChange.subtitle')}>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
         <Alert tone="info">
           {user
             ? t('auth.forcedPasswordChange.signedInAs', { email: user.email })
             : t('auth.forcedPasswordChange.infoNoUser')}
         </Alert>
-        {error ? <Alert tone="error">{error}</Alert> : null}
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <TextField
+          error={fieldError('newPassword')}
           label={t('auth.forcedPasswordChange.newPasswordLabel')}
           name="newPassword"
           type="password"
@@ -75,6 +91,7 @@ export function ForcedPasswordChangePage() {
           hint={t('auth.common.minPasswordHint', { count: MIN_PASSWORD_LENGTH })}
         />
         <TextField
+          error={fieldError('confirmPassword')}
           label={t('auth.forcedPasswordChange.confirmPasswordLabel')}
           name="confirmPassword"
           type="password"
