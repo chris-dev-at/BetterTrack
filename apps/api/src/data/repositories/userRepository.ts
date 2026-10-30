@@ -10,6 +10,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   or,
   sql,
 } from 'drizzle-orm';
@@ -555,6 +556,35 @@ function createUserQueries(db: Database, options: UserRepositoryOptions = {}) {
         .select({ id: users.id, locale: users.locale })
         .from(users)
         .where(afterId === null ? undefined : gt(users.id, afterId))
+        .orderBy(asc(users.id))
+        .limit(limit);
+    },
+
+    /**
+     * One keyset page of an announcement's AUDIENCE (§6.19.3, §6.19.8): the
+     * user-kind accounts only — admins are never in an audience — and, for
+     * `existing_at_publish`, only the accounts created STRICTLY before the
+     * frozen cutoff. Account status does not change membership. Same keyset
+     * on `id` as {@link listRecipientsAfter}, same bounded pages.
+     *
+     * A published announcement always has its cutoff; a missing one (a draft,
+     * which is never walked) yields an empty audience rather than everyone.
+     */
+    async listAnnouncementAudienceAfter(
+      afterId: string | null,
+      limit: number,
+      audience: { kind: 'everyone' | 'existing_at_publish'; cutoffAt: Date | null },
+    ): Promise<Array<{ id: string; locale: string }>> {
+      if (audience.kind === 'existing_at_publish' && audience.cutoffAt === null) return [];
+      const conditions: SQL[] = [eq(users.role, 'user')];
+      if (afterId !== null) conditions.push(gt(users.id, afterId));
+      if (audience.kind === 'existing_at_publish' && audience.cutoffAt !== null) {
+        conditions.push(lt(users.createdAt, audience.cutoffAt));
+      }
+      return db
+        .select({ id: users.id, locale: users.locale })
+        .from(users)
+        .where(and(...conditions))
         .orderBy(asc(users.id))
         .limit(limit);
     },

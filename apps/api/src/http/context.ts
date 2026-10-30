@@ -53,6 +53,7 @@ import { createPortfolioSettingsRepository } from '../data/repositories/portfoli
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createAnnouncementReceiptRepository } from '../data/repositories/announcementReceiptRepository';
 import { createAdminModerationRepository } from '../data/repositories/adminModerationRepository';
 import { createAdminPeopleRepository } from '../data/repositories/adminPeopleRepository';
 import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutRepository';
@@ -264,6 +265,10 @@ import {
 import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
 import { ALL_MAPPERS } from '../services/imports/mappers';
 import { createReceiptPseudonymizer } from '../services/crypto/receiptPseudonym';
+import {
+  createUserAnnouncementService,
+  type UserAnnouncementService,
+} from '../services/announcements/userAnnouncementService';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createAudienceService } from '../services/social/audienceService';
 import {
@@ -494,6 +499,8 @@ export interface AppContext {
    * banner + inbox only; the notification matrix is not consulted.
    */
   announcements: AnnouncementService;
+  /** The user side of announcements: list, read, seen, dismiss, acknowledge, pending (§6.19). */
+  userAnnouncements: UserAnnouncementService;
   /**
    * The notification delivery core (#368): matrix resolve → inbox row / email /
    * FCM / web-push, idempotent under redelivery. In production it runs inside
@@ -1965,6 +1972,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // The user side of announcements (§6.19, contract §4): visibility is the
+  // receipt repository's SQL; acknowledgements write their audit row in their
+  // own transaction.
+  const userAnnouncements = createUserAnnouncementService({
+    receipts: createAnnouncementReceiptRepository(db),
+    audit,
+  });
+
   // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
   // the worker fires them and emits `alert.triggered` onto the durable
   // notification queue (#368), which the worker's dispatch job fans out.
@@ -2414,6 +2429,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     dataExport,
     alerts: guarded.alerts,
     announcements,
+    userAnnouncements,
     notificationDispatcher,
     digestService,
     notify,

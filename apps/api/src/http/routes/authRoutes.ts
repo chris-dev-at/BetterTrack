@@ -182,9 +182,24 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
    * — and the field stays absent from no payload, which is what lets the SPA read
    * it without a poll of its own.
    */
-  const withFreshStartNotice = async <T extends { id: string }>(payload: T): Promise<T> => {
+  const withFreshStartNotice = async <
+    T extends { id: string; role: string; createdAt: string; locale: string },
+  >(
+    payload: T,
+  ): Promise<T> => {
     const notice = await ctx.paranoidFreshStartNotice.status(payload.id);
-    return { ...payload, paranoidFreshStartPending: notice.pending };
+    // §6.19.7 / contract §4.6: what the account still owes, on every
+    // MeResponse — sessions and bearers alike, whatever the bearer gate flag
+    // says. Admin-kind accounts are never in an audience: always [].
+    const pendingAcknowledgements =
+      payload.role === 'user'
+        ? await ctx.userAnnouncements.pendingAcknowledgements({
+            id: payload.id,
+            createdAt: payload.createdAt,
+            locale: payload.locale,
+          })
+        : [];
+    return { ...payload, paranoidFreshStartPending: notice.pending, pendingAcknowledgements };
   };
 
   /**
