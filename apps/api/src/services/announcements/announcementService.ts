@@ -1,11 +1,23 @@
 import type {
   Announcement,
+  AnnouncementBearerAckGate,
   AnnouncementDeliveryState,
+  AnnouncementReceiptFilter,
+  AnnouncementReceiptRow,
+  AnnouncementReceiptState,
+  AnnouncementReceiptsResponse,
   AnnouncementSeverity,
-  CreateAnnouncementRequest,
+  AnnouncementStatsResponse,
+  CreateAnnouncementInput,
   UpdateAnnouncementRequest,
 } from '@bettertrack/contracts';
-import { ANNOUNCEMENT_NOTIFICATION_TYPE } from '@bettertrack/contracts';
+import {
+  ANNOUNCEMENT_ERROR_CODES,
+  ANNOUNCEMENT_NOTIFICATION_TYPE,
+  ANNOUNCEMENT_RECEIPTS_CSV_COLUMNS,
+  ANNOUNCEMENT_RECEIPTS_PAGE_MAX,
+  ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT,
+} from '@bettertrack/contracts';
 
 import type {
   AnnouncementRepository,
@@ -13,12 +25,25 @@ import type {
 } from '../../data/repositories/announcementRepository';
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
+import type {
+  AnnouncementReceiptRepository,
+  ReceiptCursor,
+  ReceiptLogRow,
+} from '../../data/repositories/announcementReceiptRepository';
 import type { AnnouncementRow } from '../../data/schema';
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { AuditService } from '../audit/auditService';
 import { fanOutAnnouncement } from '../notifications/announcementFanOut';
-import { inboxCopy } from './announcementContent';
+import { announcementContentSha256, inboxCopy } from './announcementContent';
+import {
+  assertAnnouncementComplete,
+  assertAnnouncementContent,
+  assertEditable,
+  assertNoLockedChange,
+  assertWindow,
+  type PatchableField,
+} from './announcementValidation';
 
 /**
  * Admin-composed in-app announcements (§13.4 V4-P5b; rebuilt by ADMIN-W7a
@@ -92,7 +117,17 @@ const AUDIT = {
    * it names the admin who clicked, their IP, and the counts they acted on.
    */
   redeliver: 'announcement.redeliver',
+  /**
+   * The operator's Publish (draft → published), §6.19.11. Named apart from
+   * {@link AUDIT.publish}, which has meant one delivery pass since #1909.
+   */
+  release: 'announcement.release',
+  archive: 'announcement.archive',
+  receiptsExport: 'announcement.receipts_export',
 } as const;
+
+/** The announcement audit vocabulary, exported for the audit console's filters. */
+export const ANNOUNCEMENT_AUDIT_ACTIONS = AUDIT;
 
 export interface AnnouncementServiceActor {
   id: string;
@@ -244,6 +279,14 @@ export interface AnnouncementServiceDeps {
    */
   users: Pick<UserRepository, 'listAnnouncementAudienceAfter'>;
   notifications: Pick<NotificationRepository, 'insert'>;
+  /** Stats and the acknowledgement log (§6.19.9). */
+  receipts?: Pick<AnnouncementReceiptRepository, 'stats' | 'listReceiptLog'>;
+  /**
+   * Where `BT_ANNOUNCEMENT_ACK_GATE_BEARER` is read at request time (Chief
+   * ruling 2026-10-30: never writable through the API). Defaults to
+   * `process.env`.
+   */
+  env?: Readonly<Record<string, string | undefined>>;
   /** Admin audit trail; every mutation lands one row. */
   audit: AuditService;
   /**
@@ -273,15 +316,30 @@ export interface AnnouncementServiceDeps {
 }
 
 export interface AnnouncementService {
-  // ── Admin CRUD (§13.4 V4-P5b) ─────────────────────────────────────────────
+  // ── Admin CRUD (§13.4 V4-P5b; lifecycle §6.19.4) ──────────────────────────
   list(): Promise<Announcement[]>;
-  create(input: CreateAnnouncementRequest, actor: AnnouncementServiceActor): Promise<Announcement>;
+  /** The bearer acknowledgement gate's deployment state, read now. */
+  bearerAckGate(): AnnouncementBearerAckGate;
+  create(input: CreateAnnouncementInput, actor: AnnouncementServiceActor): Promise<Announcement>;
   update(
     id: string,
     input: UpdateAnnouncementRequest,
     actor: AnnouncementServiceActor,
   ): Promise<Announcement>;
   remove(id: string, actor: AnnouncementServiceActor): Promise<void>;
+  publish(id: string, actor: AnnouncementServiceActor): Promise<Announcement>;
+  unpublish(id: string, actor: AnnouncementServiceActor): Promise<Announcement>;
+  archive(id: string, actor: AnnouncementServiceActor): Promise<Announcement>;
+  stats(id: string): Promise<AnnouncementStatsResponse>;
+  receipts(
+    id: string,
+    query: { state: AnnouncementReceiptFilter; cursor?: string; limit: number },
+  ): Promise<AnnouncementReceiptsResponse>;
+  receiptsCsv(
+    id: string,
+    state: AnnouncementReceiptFilter,
+    actor: AnnouncementServiceActor,
+  ): Promise<{ filename: string; csv: string }>;
   /**
    * Operator-initiated re-run of ONE announcement's fan-out (#1943), for a
    * published row still carrying failed recipients. Queues a targeted pass and
@@ -307,30 +365,30 @@ export interface AnnouncementService {
  * disagree with each other or with the job.
  *
  * Precedence, and the reason for each step:
- *  1. **expired** wins over everything. A closed window is terminal — the due
- *     predicate refuses it and the banner query hides it — so no combination of
- *     `active` and `publishedAt` can make users see it again. Saying anything
- *     else here would promise a delivery that can never happen.
- *  2. **draft** — not flagged active. Nothing shown, nothing delivered. This
- *     also covers a published announcement the operator switched back off:
- *     `deliveryState` describes what users experience NOW, and the row's
- *     `publishedAt` is still rendered beside it so the history is not lost.
- *  3. **published** — the fan-out completed and the stamp is on the row.
- *  4. **scheduled** — active, but the window has not opened. This is the state
- *     the whole issue exists for: the banner AND the inbox both wait.
- *  5. **publishing** — active, due, unstamped. The job owns it.
+ *  1. **archived** — withdrawn by an operator (§6.19.4); terminal.
+ *  2. **expired** — the window closed. Terminal for delivery: the due
+ *     predicate refuses it and users stop seeing it (for ack_required this is
+ *     the lapse).
+ *  3. **draft** — nothing shown, nothing delivered.
+ *  4. **published** — the fan-out completed and the stamp is on the row.
+ *  5. **scheduled** — published, but the window has not opened: the banner
+ *     AND the inbox both wait.
+ *  6. **publishing** — published, due, unstamped. The job owns it.
  */
 export function deriveAnnouncementDeliveryState(
-  row: Pick<AnnouncementRow, 'active' | 'startsAt' | 'endsAt' | 'publishedAt'>,
+  row: Pick<AnnouncementRow, 'lifecycle' | 'startsAt' | 'endsAt' | 'publishedAt'>,
   at: Date,
 ): AnnouncementDeliveryState {
   const now = at.getTime();
+  if (row.lifecycle === 'archived') return 'archived';
   if (row.endsAt && row.endsAt.getTime() <= now) return 'expired';
-  if (!row.active) return 'draft';
+  if (row.lifecycle === 'draft') return 'draft';
   if (row.publishedAt) return 'published';
   if (row.startsAt && row.startsAt.getTime() > now) return 'scheduled';
   return 'publishing';
 }
+
+const isoOrNull = (value: Date | null): string | null => (value ? value.toISOString() : null);
 
 function toAnnouncement(row: AnnouncementRow, at: Date): Announcement {
   return {
@@ -338,20 +396,83 @@ function toAnnouncement(row: AnnouncementRow, at: Date): Announcement {
     severity: row.severity as AnnouncementSeverity,
     titleEn: row.titleEn,
     bodyEn: row.bodyEn,
-    // Nullable since 0122 (DE optional for notice/once); this composer still
-    // requires both, so the fallback only covers rows written by a later one.
-    titleDe: row.titleDe ?? '',
-    bodyDe: row.bodyDe ?? '',
-    startsAt: row.startsAt ? row.startsAt.toISOString() : null,
-    endsAt: row.endsAt ? row.endsAt.toISOString() : null,
-    active: row.active,
-    publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    titleDe: row.titleDe,
+    bodyDe: row.bodyDe,
+    startsAt: isoOrNull(row.startsAt),
+    endsAt: isoOrNull(row.endsAt),
+    active: row.lifecycle === 'published',
+    publishedAt: isoOrNull(row.publishedAt),
     deliveryState: deriveAnnouncementDeliveryState(row, at),
     deliveredCount: row.deliveredCount,
     failedCount: row.failedCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    kind: row.kind,
+    audience: row.audience,
+    lifecycle: row.lifecycle,
+    bodyFormat: row.bodyFormat,
+    releasedAt: isoOrNull(row.releasedAt),
+    audienceCutoffAt: isoOrNull(row.audienceCutoffAt),
+    archivedAt: isoOrNull(row.archivedAt),
+    lapseRecordedAt: isoOrNull(row.lapseRecordedAt),
+    notifyByEmail: row.notifyByEmail,
+    notifyByEmailAfterDays: row.notifyByEmailAfterDays,
+    emailPassRecordedAt: isoOrNull(row.emailPassRecordedAt),
   };
+}
+
+/** One state per log row (contract §7.4): the obligation for ack_required, the visit otherwise. */
+function receiptState(kind: AnnouncementRow['kind'], r: ReceiptLogRow): AnnouncementReceiptState {
+  if (r.accountStatus === 'deleted' || r.acknowledgedAt) return 'acknowledged';
+  if (kind === 'ack_required') return r.lapsedAt ? 'lapsed' : 'pending';
+  if (r.dismissedAt) return 'dismissed';
+  return r.seenAt ? 'seen' : 'unseen';
+}
+
+function toReceiptRow(kind: AnnouncementRow['kind'], r: ReceiptLogRow): AnnouncementReceiptRow {
+  return {
+    userId: r.userId,
+    subjectToken: r.subjectToken,
+    username: r.username,
+    accountCreatedAt: isoOrNull(r.accountCreatedAt),
+    accountStatus: r.accountStatus,
+    state: receiptState(kind, r),
+    seenAt: isoOrNull(r.seenAt),
+    dismissedAt: isoOrNull(r.dismissedAt),
+    acknowledgedAt: isoOrNull(r.acknowledgedAt),
+    acknowledgedVia: r.acknowledgedVia,
+    acknowledgedLocale: r.acknowledgedLocale as 'en' | 'de' | null,
+    contentSha256: r.acknowledgedContentSha256,
+    lapsedAt: isoOrNull(r.lapsedAt),
+    lapseReason: r.lapseReason,
+  };
+}
+
+function encodeCursor(cursor: ReceiptCursor): string {
+  return Buffer.from(JSON.stringify([cursor.segment === 'live' ? 'l' : 'd', cursor.after])).toString(
+    'base64url',
+  );
+}
+
+function decodeCursor(raw: string | undefined): ReceiptCursor | null {
+  if (raw === undefined) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as unknown;
+    if (Array.isArray(parsed) && parsed.length === 2 && typeof parsed[1] === 'string') {
+      if (parsed[0] === 'l') return { segment: 'live', after: parsed[1] };
+      if (parsed[0] === 'd') return { segment: 'deleted', after: parsed[1] };
+    }
+  } catch {
+    // fall through
+  }
+  throw badRequest('The receipts cursor is not valid.', 'VALIDATION_ERROR');
+}
+
+/** One CSV cell: quoted when needed, and never a spreadsheet formula. */
+function csvCell(value: string | null): string {
+  if (value === null) return '';
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 export function createAnnouncementService(deps: AnnouncementServiceDeps): AnnouncementService {
@@ -633,21 +754,37 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       return rows.map((row) => toAnnouncement(row, at));
     },
 
+    bearerAckGate(): AnnouncementBearerAckGate {
+      const env = deps.env ?? process.env;
+      return env.BT_ANNOUNCEMENT_ACK_GATE_BEARER?.trim() === 'first_party' ? 'first_party' : 'off';
+    },
+
+    /** Always a draft; nothing is delivered or shown until publish (§6.19.4). */
     async create(input, actor): Promise<Announcement> {
-      const startsAt =
-        input.startsAt === undefined ? null : input.startsAt ? new Date(input.startsAt) : null;
-      const endsAt =
-        input.endsAt === undefined ? null : input.endsAt ? new Date(input.endsAt) : null;
-      const active = input.active ?? false;
-      const row = await repo.create({
-        severity: input.severity,
+      const startsAt = input.startsAt ? new Date(input.startsAt) : null;
+      const endsAt = input.endsAt ? new Date(input.endsAt) : null;
+      assertWindow(startsAt, endsAt, now(), false);
+      const content = {
+        kind: input.kind,
+        format: 'markdown' as const,
         titleEn: input.titleEn,
         bodyEn: input.bodyEn,
-        titleDe: input.titleDe,
-        bodyDe: input.bodyDe,
+        titleDe: input.titleDe ?? null,
+        bodyDe: input.bodyDe ?? null,
+      };
+      assertAnnouncementContent(content);
+      const row = await repo.create({
+        kind: input.kind,
+        audience: input.audience,
+        severity: input.severity,
+        titleEn: content.titleEn,
+        bodyEn: content.bodyEn,
+        titleDe: content.titleDe,
+        bodyDe: content.bodyDe,
         startsAt,
         endsAt,
-        active,
+        notifyByEmail: input.notifyByEmail,
+        notifyByEmailAfterDays: input.notifyByEmailAfterDays,
         createdBy: actor.id,
       });
       await audit.record({
@@ -656,80 +793,319 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
         targetType: 'announcement',
         targetId: row.id,
         ip: actor.ip ?? null,
-        meta: { severity: row.severity, active: row.active },
+        meta: {
+          kind: row.kind,
+          audience: row.audience,
+          severity: row.severity,
+          notifyByEmail: row.notifyByEmail,
+        },
       });
-      // Creating in the active state is a request to publish, NOT a
-      // publication (#1909): the write returns as soon as the row is durable,
-      // and `announcements.publishDue` does the walk. A window that has already
-      // opened gets a one-shot job so it still feels immediate.
-      await enqueueIfDueNow(row);
-      const refreshed = (await repo.findById(row.id)) ?? row;
-      return toAnnouncement(refreshed, now());
+      return toAnnouncement(row, now());
     },
 
+    /**
+     * Contract §7.3. A draft takes any change. After publishing: `kind`,
+     * `audience`, `startsAt` and the e-mail fields are locked; notice/once
+     * take content and `endsAt`; ack_required only `endsAt` (its text is
+     * immutable, so the log always names what was acknowledged). An ended or
+     * archived announcement takes nothing. A field sent with its current
+     * value is not a change.
+     */
     async update(id, input, actor): Promise<Announcement> {
       const before = await repo.findById(id);
       if (!before) throw announcementNotFound();
+      const at = now();
+      assertEditable(before, at);
 
-      // Reject a window that would flip start > end (repo has a CHECK too;
-      // this gives a clean 400 instead of a raw db error).
-      const nextStart =
-        input.startsAt === undefined
-          ? before.startsAt
-          : input.startsAt
-            ? new Date(input.startsAt)
-            : null;
-      const nextEnd =
-        input.endsAt === undefined ? before.endsAt : input.endsAt ? new Date(input.endsAt) : null;
-      if (nextStart && nextEnd && nextStart.getTime() > nextEnd.getTime()) {
-        throw badRequest('endsAt must be at or after startsAt.', 'INVALID_ANNOUNCEMENT_WINDOW');
-      }
-
+      const toDate = (v: string | null | undefined) => (v ? new Date(v) : null);
+      const same = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
+      const changed: PatchableField[] = [];
       const patch: UpdateAnnouncementInput = {};
-      if (input.severity !== undefined) patch.severity = input.severity;
-      if (input.titleEn !== undefined) patch.titleEn = input.titleEn;
-      if (input.bodyEn !== undefined) patch.bodyEn = input.bodyEn;
-      if (input.titleDe !== undefined) patch.titleDe = input.titleDe;
-      if (input.bodyDe !== undefined) patch.bodyDe = input.bodyDe;
-      if (input.startsAt !== undefined) patch.startsAt = nextStart;
-      if (input.endsAt !== undefined) patch.endsAt = nextEnd;
-      if (input.active !== undefined) patch.active = input.active;
+      const scalar = [
+        'kind',
+        'audience',
+        'severity',
+        'titleEn',
+        'bodyEn',
+        'titleDe',
+        'bodyDe',
+        'notifyByEmail',
+        'notifyByEmailAfterDays',
+      ] as const;
+      for (const key of scalar) {
+        const value = input[key];
+        if (value === undefined || value === before[key]) continue;
+        changed.push(key);
+        (patch as Record<string, unknown>)[key] = value;
+      }
+      for (const key of ['startsAt', 'endsAt'] as const) {
+        if (input[key] === undefined) continue;
+        const value = toDate(input[key]);
+        if (same(value, before[key])) continue;
+        changed.push(key);
+        patch[key] = value;
+      }
+      assertNoLockedChange(before, changed);
+      if (changed.length === 0) return toAnnouncement(before, at);
+
+      const kind = patch.kind ?? before.kind;
+      if (kind !== 'ack_required') {
+        // The e-mail fields belong to ack_required alone. A kind change away
+        // from it clears them unless the request set them (which the
+        // contract's schema already refuses with 400 VALIDATION_ERROR).
+        if ((patch.notifyByEmail ?? before.notifyByEmail) === true) {
+          if (input.notifyByEmail === true) {
+            throw badRequest('notifyByEmail is available for ack_required announcements only.', 'VALIDATION_ERROR', {
+              fieldErrors: { notifyByEmail: ['ack_required only'] },
+            });
+          }
+          patch.notifyByEmail = false;
+        }
+        const days = patch.notifyByEmailAfterDays ?? before.notifyByEmailAfterDays;
+        if (days !== ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT) {
+          if (input.notifyByEmailAfterDays !== undefined) {
+            throw badRequest(
+              'notifyByEmailAfterDays is available for ack_required announcements only.',
+              'VALIDATION_ERROR',
+              { fieldErrors: { notifyByEmailAfterDays: ['ack_required only'] } },
+            );
+          }
+          patch.notifyByEmailAfterDays = ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT;
+        }
+      }
+      const startsAt = patch.startsAt !== undefined ? patch.startsAt : before.startsAt;
+      const endsAt = patch.endsAt !== undefined ? patch.endsAt : before.endsAt;
+      // After publish a new end must lie in the future (or be null).
+      assertWindow(startsAt, endsAt, at, before.lifecycle !== 'draft' && changed.includes('endsAt'));
+      const contentChanged = changed.some((f) =>
+        ['kind', 'titleEn', 'bodyEn', 'titleDe', 'bodyDe'].includes(f),
+      );
+      if (contentChanged) {
+        assertAnnouncementContent({
+          kind,
+          format: before.bodyFormat,
+          titleEn: patch.titleEn ?? before.titleEn,
+          bodyEn: patch.bodyEn ?? before.bodyEn,
+          titleDe: patch.titleDe !== undefined ? patch.titleDe : before.titleDe,
+          bodyDe: patch.bodyDe !== undefined ? patch.bodyDe : before.bodyDe,
+        });
+      }
 
       const updated = await repo.update(id, patch);
       if (!updated) throw announcementNotFound();
-
-      // #1723's resumability edge is gone with the request-path publish it
-      // guarded: a publication that stopped midway is now re-driven by the
-      // sweep (`published_at IS NULL` is part of the due predicate), so no
-      // operator has to re-send a PATCH to unstick it, and no edit can trigger
-      // a re-walk of the user table as a side effect.
-      const unpublishing = input.active === false && before.active === true;
-
+      const meta: Record<string, unknown> = { fields: changed };
+      if (contentChanged && before.lifecycle !== 'draft') {
+        // §6.19.11: content edits after publish carry the hashes before/after.
+        meta.contentSha256Before = {
+          en: announcementContentSha256(before, 'en'),
+          ...(before.titleDe !== null && before.bodyDe !== null
+            ? { de: announcementContentSha256(before, 'de') }
+            : {}),
+        };
+        meta.contentSha256After = {
+          en: announcementContentSha256(updated, 'en'),
+          ...(updated.titleDe !== null && updated.bodyDe !== null
+            ? { de: announcementContentSha256(updated, 'de') }
+            : {}),
+        };
+      }
       await audit.record({
         actorId: actor.id,
         action: AUDIT.update,
         targetType: 'announcement',
         targetId: id,
         ip: actor.ip ?? null,
+        meta,
+      });
+      if (updated.lifecycle === 'published') await enqueueIfDueNow(updated);
+      return toAnnouncement(updated, now());
+    },
+
+    /** Contract §7.2: draft → published, freezing the audience cutoff. */
+    async publish(id, actor): Promise<Announcement> {
+      const before = await repo.findById(id);
+      if (!before) throw announcementNotFound();
+      if (before.lifecycle !== 'draft') {
+        throw conflict('Only a draft can be published.', ANNOUNCEMENT_ERROR_CODES.notDraft);
+      }
+      const at = now();
+      assertAnnouncementComplete(before);
+      assertAnnouncementContent({
+        kind: before.kind,
+        format: before.bodyFormat,
+        titleEn: before.titleEn,
+        bodyEn: before.bodyEn,
+        titleDe: before.titleDe,
+        bodyDe: before.bodyDe,
+      });
+      assertWindow(before.startsAt, before.endsAt, at, true);
+      const row = await repo.publish(id, actor.id, at);
+      if (!row) {
+        throw conflict('Only a draft can be published.', ANNOUNCEMENT_ERROR_CODES.notDraft);
+      }
+      const audienceSize = deps.receipts ? (await deps.receipts.stats(row, at)).audience : null;
+      await audit.record({
+        actorId: actor.id,
+        action: AUDIT.release,
+        targetType: 'announcement',
+        targetId: id,
+        ip: actor.ip ?? null,
         meta: {
-          severity: updated.severity,
-          active: updated.active,
+          kind: row.kind,
+          audience: row.audience,
+          audienceCutoffAt: isoOrNull(row.audienceCutoffAt),
+          startsAt: isoOrNull(row.startsAt),
+          endsAt: isoOrNull(row.endsAt),
+          audienceSize,
+          notifyByEmail: row.notifyByEmail,
+          notifyByEmailAfterDays: row.notifyByEmailAfterDays,
         },
       });
+      await enqueueIfDueNow(row);
+      return toAnnouncement(row, now());
+    },
 
-      if (unpublishing) {
-        await audit.record({
-          actorId: actor.id,
-          action: AUDIT.unpublish,
-          targetType: 'announcement',
-          targetId: id,
-          ip: actor.ip ?? null,
-        });
+    /** Contract §7.2: published → draft, only before the window opens. */
+    async unpublish(id, actor): Promise<Announcement> {
+      const before = await repo.findById(id);
+      if (!before) throw announcementNotFound();
+      if (before.lifecycle !== 'published') {
+        throw conflict('This announcement is not published.', ANNOUNCEMENT_ERROR_CODES.notPublished);
       }
+      const at = now();
+      const row = await repo.unpublish(id, at);
+      if (!row) {
+        throw conflict(
+          'The window has opened; archive the announcement instead.',
+          ANNOUNCEMENT_ERROR_CODES.alreadyLive,
+        );
+      }
+      await audit.record({
+        actorId: actor.id,
+        action: AUDIT.unpublish,
+        targetType: 'announcement',
+        targetId: id,
+        ip: actor.ip ?? null,
+      });
+      return toAnnouncement(row, now());
+    },
 
-      await enqueueIfDueNow(updated);
-      const refreshed = (await repo.findById(id)) ?? updated;
-      return toAnnouncement(refreshed, now());
+    /** Contract §7.2: published → archived; idempotent on an archived one. */
+    async archive(id, actor): Promise<Announcement> {
+      const outcome = await repo.archive(id, actor.id, now());
+      switch (outcome.status) {
+        case 'not-found':
+          throw announcementNotFound();
+        case 'not-published':
+          throw conflict(
+            'A draft is deleted, not archived.',
+            ANNOUNCEMENT_ERROR_CODES.notPublished,
+          );
+        case 'already-archived':
+          return toAnnouncement(outcome.row, now());
+        default:
+          await audit.record({
+            actorId: actor.id,
+            action: AUDIT.archive,
+            targetType: 'announcement',
+            targetId: id,
+            ip: actor.ip ?? null,
+            meta: { kind: outcome.row.kind, pendingAtArchive: outcome.pendingAtArchive },
+          });
+          return toAnnouncement(outcome.row, now());
+      }
+    },
+
+    async stats(id): Promise<AnnouncementStatsResponse> {
+      const row = await repo.findById(id);
+      if (!row || !deps.receipts) throw announcementNotFound();
+      const at = now();
+      const counts = await deps.receipts.stats(row, at);
+      return {
+        announcementId: row.id,
+        kind: row.kind,
+        audience: counts.audience,
+        seen: counts.seen,
+        dismissed: counts.dismissed,
+        acknowledged: counts.acknowledged,
+        acknowledgedByDeletedAccounts: counts.acknowledgedByDeletedAccounts,
+        lapsed: counts.lapsed,
+        pending:
+          row.kind === 'ack_required'
+            ? Math.max(0, counts.audience - counts.acknowledged - counts.lapsed)
+            : null,
+        lapseRecorded: row.lapseRecordedAt !== null,
+        computedAt: at.toISOString(),
+      };
+    },
+
+    async receipts(id, query): Promise<AnnouncementReceiptsResponse> {
+      const row = await repo.findById(id);
+      if (!row || !deps.receipts) throw announcementNotFound();
+      const page = await deps.receipts.listReceiptLog(
+        row,
+        query.state,
+        decodeCursor(query.cursor),
+        query.limit,
+        now(),
+      );
+      return {
+        items: page.items.map((r) => toReceiptRow(row.kind, r)),
+        nextCursor: page.next ? encodeCursor(page.next) : null,
+      };
+    },
+
+    /** Every page of the log as CSV; each download is audited (§6.19.11). */
+    async receiptsCsv(id, state, actor) {
+      const row = await repo.findById(id);
+      if (!row || !deps.receipts) throw announcementNotFound();
+      const lines = [ANNOUNCEMENT_RECEIPTS_CSV_COLUMNS.join(',')];
+      let cursor: ReceiptCursor | null = null;
+      let rows = 0;
+      const at = now();
+      do {
+        const page = await deps.receipts.listReceiptLog(
+          row,
+          state,
+          cursor,
+          ANNOUNCEMENT_RECEIPTS_PAGE_MAX,
+          at,
+        );
+        for (const item of page.items) {
+          const r = toReceiptRow(row.kind, item);
+          lines.push(
+            [
+              r.userId,
+              r.subjectToken,
+              r.username,
+              r.accountCreatedAt,
+              r.accountStatus,
+              r.state,
+              r.seenAt,
+              r.dismissedAt,
+              r.acknowledgedAt,
+              r.acknowledgedVia,
+              r.acknowledgedLocale,
+              r.contentSha256,
+              r.lapsedAt,
+              r.lapseReason,
+            ]
+              .map(csvCell)
+              .join(','),
+          );
+          rows += 1;
+        }
+        cursor = page.next;
+      } while (cursor !== null);
+      await audit.record({
+        actorId: actor.id,
+        action: AUDIT.receiptsExport,
+        targetType: 'announcement',
+        targetId: id,
+        ip: actor.ip ?? null,
+        meta: { state, rows },
+      });
+      return { filename: `announcement-${id}-receipts.csv`, csv: `${lines.join('\r\n')}\r\n` };
     },
 
     /**
@@ -838,11 +1214,17 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       };
     },
 
+    /** Drafts only (contract §7.3); anything published is archived instead. */
     async remove(id, actor): Promise<void> {
       const before = await repo.findById(id);
       if (!before) throw announcementNotFound();
-      const ok = await repo.remove(id);
-      if (!ok) throw announcementNotFound();
+      const ok = await repo.removeDraft(id);
+      if (!ok) {
+        throw conflict(
+          'A published announcement is archived, not deleted.',
+          ANNOUNCEMENT_ERROR_CODES.notDraft,
+        );
+      }
       await audit.record({
         actorId: actor.id,
         action: AUDIT.delete,

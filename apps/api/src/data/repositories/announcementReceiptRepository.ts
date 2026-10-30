@@ -1,9 +1,10 @@
-import { and, asc, eq, gt, isNotNull, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNotNull, isNull, lt, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
   announcementReceipts,
   announcements,
+  users,
   type AnnouncementReceiptRow,
   type AnnouncementRow,
 } from '../schema';
@@ -71,6 +72,63 @@ export function audienceIncludes(createdAt: Date): SQL {
     eq(announcements.audience, 'everyone'),
     gt(announcements.audienceCutoffAt, createdAt),
   ) as SQL;
+}
+
+/**
+ * Membership of `users` in an audience, as a WHERE condition on `users`:
+ * user-kind accounts only, and for `existing_at_publish` only those created
+ * strictly before the cutoff. Account status does not change membership.
+ */
+export function audienceMemberCondition(
+  audience: 'everyone' | 'existing_at_publish',
+  cutoffAt: Date | null,
+): SQL {
+  if (audience === 'everyone') return eq(users.role, 'user');
+  if (cutoffAt === null) return sql`false`;
+  return and(eq(users.role, 'user'), lt(users.createdAt, cutoffAt)) as SQL;
+}
+
+/** The cutoff a row has, or — for a draft — would have if published at `at`. */
+export function effectiveCutoff(row: AnnouncementRow, at: Date): Date {
+  if (row.audienceCutoffAt) return row.audienceCutoffAt;
+  return row.startsAt && row.startsAt.getTime() > at.getTime() ? row.startsAt : at;
+}
+
+export type ReceiptFilter =
+  | 'pending'
+  | 'acknowledged'
+  | 'lapsed'
+  | 'seen'
+  | 'dismissed'
+  | 'unseen'
+  | 'all';
+
+export interface ReceiptLogRow {
+  userId: string | null;
+  subjectToken: string | null;
+  username: string | null;
+  accountCreatedAt: Date | null;
+  accountStatus: 'active' | 'disabled' | 'deleted';
+  seenAt: Date | null;
+  dismissedAt: Date | null;
+  acknowledgedAt: Date | null;
+  acknowledgedVia: 'web_session' | 'first_party_oauth' | null;
+  acknowledgedLocale: string | null;
+  acknowledgedContentSha256: string | null;
+  lapsedAt: Date | null;
+  lapseReason: 'ended' | 'archived' | null;
+}
+
+/** Keyset position: the live-account segment by user id, then deleted rows by token. */
+export type ReceiptCursor = { segment: 'live'; after: string } | { segment: 'deleted'; after: string };
+
+export interface AnnouncementStatsRow {
+  audience: number;
+  seen: number;
+  dismissed: number;
+  acknowledged: number;
+  acknowledgedByDeletedAccounts: number;
+  lapsed: number;
 }
 
 export function windowOpenAt(at: Date): SQL {
@@ -351,6 +409,171 @@ export function createAnnouncementReceiptRepository(db: Database) {
         await onRecorded(tx, written);
         return { status: 'recorded', receipt: written };
       });
+    },
+
+    /**
+     * The log's counts (contract §7.4). Live receipts count only for accounts
+     * in the audience; pseudonymised rows of deleted accounts count ONLY in
+     * `acknowledgedByDeletedAccounts`, never in audience or acknowledged.
+     */
+    async stats(row: AnnouncementRow, at: Date): Promise<AnnouncementStatsRow> {
+      const member = audienceMemberCondition(row.audience, effectiveCutoff(row, at));
+      const [audience] = await db.select({ n: count() }).from(users).where(member);
+      const [live] = await db
+        .select({
+          seen: sql<number>`count(${announcementReceipts.seenAt})::int`,
+          dismissed: sql<number>`count(${announcementReceipts.dismissedAt})::int`,
+          acknowledged: sql<number>`count(${announcementReceipts.acknowledgedAt})::int`,
+          lapsed: sql<number>`count(${announcementReceipts.lapsedAt})::int`,
+        })
+        .from(announcementReceipts)
+        .innerJoin(users, eq(users.id, announcementReceipts.userId))
+        .where(and(eq(announcementReceipts.announcementId, row.id), member));
+      const [deleted] = await db
+        .select({ n: count() })
+        .from(announcementReceipts)
+        .where(
+          and(
+            eq(announcementReceipts.announcementId, row.id),
+            isNull(announcementReceipts.userId),
+          ),
+        );
+      return {
+        audience: Number(audience?.n ?? 0),
+        seen: live?.seen ?? 0,
+        dismissed: live?.dismissed ?? 0,
+        acknowledged: live?.acknowledged ?? 0,
+        acknowledgedByDeletedAccounts: Number(deleted?.n ?? 0),
+        lapsed: live?.lapsed ?? 0,
+      };
+    },
+
+    /**
+     * One keyset page of the acknowledgement log (contract §7.4, §7.5): every
+     * audience account (with or without a receipt) ordered by account id, then
+     * — for `acknowledged` and `all` only — the pseudonymised rows of deleted
+     * accounts ordered by their token. Returns at most `limit` rows and the
+     * cursor of the next page, or null. Never an e-mail or IP column.
+     */
+    async listReceiptLog(
+      row: AnnouncementRow,
+      filter: ReceiptFilter,
+      cursor: ReceiptCursor | null,
+      limit: number,
+      at: Date,
+    ): Promise<{ items: ReceiptLogRow[]; next: ReceiptCursor | null }> {
+      const items: ReceiptLogRow[] = [];
+      const ack = row.kind === 'ack_required';
+      const liveFilter: SQL | undefined = (() => {
+        switch (filter) {
+          case 'pending':
+            return ack
+              ? and(isNull(announcementReceipts.acknowledgedAt), isNull(announcementReceipts.lapsedAt))
+              : isNull(announcementReceipts.dismissedAt);
+          case 'acknowledged':
+            return isNotNull(announcementReceipts.acknowledgedAt);
+          case 'lapsed':
+            return isNotNull(announcementReceipts.lapsedAt);
+          case 'seen':
+            return isNotNull(announcementReceipts.seenAt);
+          case 'dismissed':
+            return isNotNull(announcementReceipts.dismissedAt);
+          case 'unseen':
+            return isNull(announcementReceipts.seenAt);
+          default:
+            return undefined;
+        }
+      })();
+
+      if (cursor === null || cursor.segment === 'live') {
+        const rows = await db
+          .select({
+            userId: users.id,
+            username: users.username,
+            accountCreatedAt: users.createdAt,
+            status: users.status,
+            ...receiptColumns,
+          })
+          .from(users)
+          .leftJoin(
+            announcementReceipts,
+            and(
+              eq(announcementReceipts.userId, users.id),
+              eq(announcementReceipts.announcementId, row.id),
+            ),
+          )
+          .where(
+            and(
+              audienceMemberCondition(row.audience, effectiveCutoff(row, at)),
+              cursor ? gt(users.id, cursor.after) : undefined,
+              liveFilter,
+            ),
+          )
+          .orderBy(asc(users.id))
+          .limit(limit + 1);
+        for (const r of rows.slice(0, limit)) {
+          items.push({
+            userId: r.userId,
+            subjectToken: null,
+            username: r.username,
+            accountCreatedAt: r.accountCreatedAt,
+            accountStatus: r.status,
+            seenAt: r.seenAt,
+            dismissedAt: r.dismissedAt,
+            acknowledgedAt: r.acknowledgedAt,
+            acknowledgedVia: r.acknowledgedVia,
+            acknowledgedLocale: r.acknowledgedLocale,
+            acknowledgedContentSha256: r.acknowledgedContentSha256,
+            lapsedAt: r.lapsedAt,
+            lapseReason: r.lapseReason,
+          });
+        }
+        if (rows.length > limit) {
+          return { items, next: { segment: 'live', after: items[items.length - 1]!.userId! } };
+        }
+      }
+
+      if (filter !== 'acknowledged' && filter !== 'all') return { items, next: null };
+      const room = limit - items.length;
+      if (room <= 0) return { items, next: { segment: 'deleted', after: '' } };
+      const deleted = await db
+        .select({
+          subjectToken: announcementReceipts.subjectToken,
+          acknowledgedAt: announcementReceipts.acknowledgedAt,
+          acknowledgedContentSha256: announcementReceipts.acknowledgedContentSha256,
+        })
+        .from(announcementReceipts)
+        .where(
+          and(
+            eq(announcementReceipts.announcementId, row.id),
+            isNull(announcementReceipts.userId),
+            cursor?.segment === 'deleted' && cursor.after !== ''
+              ? gt(announcementReceipts.subjectToken, cursor.after)
+              : undefined,
+          ),
+        )
+        .orderBy(asc(announcementReceipts.subjectToken))
+        .limit(room + 1);
+      for (const r of deleted.slice(0, room)) {
+        items.push({
+          userId: null,
+          subjectToken: r.subjectToken,
+          username: null,
+          accountCreatedAt: null,
+          accountStatus: 'deleted',
+          seenAt: null,
+          dismissedAt: null,
+          acknowledgedAt: r.acknowledgedAt,
+          acknowledgedVia: null,
+          acknowledgedLocale: null,
+          acknowledgedContentSha256: r.acknowledgedContentSha256,
+          lapsedAt: null,
+          lapseReason: null,
+        });
+      }
+      return deleted.length > room
+        ? { items, next: { segment: 'deleted', after: items[items.length - 1]!.subjectToken! } }
+        : { items, next: null };
     },
 
     /** Whether any receipt of `announcementId` records an acknowledgement. */

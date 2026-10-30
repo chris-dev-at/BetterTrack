@@ -19,6 +19,11 @@ import {
   auditQuerySchema,
   bulkUserActionRequestSchema,
   announcementListResponseSchema,
+  announcementReceiptsCsvQuerySchema,
+  announcementReceiptsQuerySchema,
+  announcementReceiptsResponseSchema,
+  announcementSchema,
+  announcementStatsResponseSchema,
   announcementRedeliverResponseSchema,
   createAnnouncementRequestSchema,
   createInviteRequestSchema,
@@ -47,7 +52,9 @@ import {
   type AuditQuery,
   type BulkUserActionRequest,
   type CreateAdminUserNoteRequest,
-  type CreateAnnouncementRequest,
+  type CreateAnnouncementInput,
+  type AnnouncementReceiptsCsvQuery,
+  type AnnouncementReceiptsQuery,
   type UpdateAccountDefaultsRequest,
   type AiTestConnectionRequest,
   type AiTestRequest,
@@ -726,15 +733,22 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     // this list gained server-derived fields (`deliveryState`, the delivery
     // counts) and an unparsed `res.json` is how a projection and its contract
     // drift apart without a test noticing.
-    res.json(announcementListResponseSchema.parse({ announcements }));
+    res.json(
+      announcementListResponseSchema.parse({
+        announcements,
+        // Read from the environment at request time; never writable here
+        // (Chief ruling 2026-10-30).
+        bearerAckGate: ctx.announcements.bearerAckGate(),
+      }),
+    );
   });
 
   router.post('/announcements', validateBody(createAnnouncementRequestSchema), async (req, res) => {
     const announcement = await ctx.announcements.create(
-      req.valid?.body as CreateAnnouncementRequest,
+      req.valid?.body as CreateAnnouncementInput,
       actorOf(req),
     );
-    res.status(201).json(announcement);
+    res.status(201).json(announcementSchema.parse(announcement));
   });
 
   router.patch(
@@ -748,7 +762,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
         req.valid?.body as UpdateAnnouncementRequest,
         actorOf(req),
       );
-      res.json(announcement);
+      res.json(announcementSchema.parse(announcement));
     },
   );
 
@@ -757,6 +771,53 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     await ctx.announcements.remove(id, actorOf(req));
     res.status(204).send();
   });
+
+  // Lifecycle transitions (§6.19.4, contract §7.2). No body; each answers the
+  // Announcement. Every refusal is the contract's 409/400.
+  for (const transition of ['publish', 'unpublish', 'archive'] as const) {
+    router.post(
+      `/announcements/:id/${transition}`,
+      validateParams(idParamSchema),
+      async (req, res) => {
+        const { id } = req.valid?.params as { id: string };
+        const announcement = await ctx.announcements[transition](id, actorOf(req));
+        res.json(announcementSchema.parse(announcement));
+      },
+    );
+  }
+
+  // The acknowledgement log (contract §7.4, §7.5). No e-mail, no IP column.
+  router.get('/announcements/:id/stats', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    res.json(announcementStatsResponseSchema.parse(await ctx.announcements.stats(id)));
+  });
+
+  router.get(
+    '/announcements/:id/receipts',
+    validateParams(idParamSchema),
+    validateQuery(announcementReceiptsQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const query = req.valid?.query as AnnouncementReceiptsQuery;
+      res.json(announcementReceiptsResponseSchema.parse(await ctx.announcements.receipts(id, query)));
+    },
+  );
+
+  // Registered as a separate literal path: `receipts.csv` is not `:id/receipts`.
+  router.get(
+    '/announcements/:id/receipts.csv',
+    validateParams(idParamSchema),
+    validateQuery(announcementReceiptsCsvQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { state } = req.valid?.query as AnnouncementReceiptsCsvQuery;
+      const { filename, csv } = await ctx.announcements.receiptsCsv(id, state, actorOf(req));
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(csv);
+    },
+  );
 
   // Re-run one announcement's fan-out for the recipients it missed (ADMIN-W7c,
   // #1943). The console showed a published announcement standing at "N failed"

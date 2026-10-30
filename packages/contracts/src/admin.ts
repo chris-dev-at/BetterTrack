@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
 import {
+  ANNOUNCEMENT_LONG_BODY_MAX_CHARS,
   announcementBodyFormatSchema,
   announcementContentLocaleSchema,
   announcementKindSchema,
@@ -1434,6 +1435,8 @@ export const ANNOUNCEMENT_DELIVERY_STATES = [
   'publishing',
   'published',
   'expired',
+  // §6.19.4: withdrawn by an operator (for ack_required, the manual lapse).
+  'archived',
 ] as const;
 export const announcementDeliveryStateSchema = z.enum(ANNOUNCEMENT_DELIVERY_STATES);
 export type AnnouncementDeliveryState = z.infer<typeof announcementDeliveryStateSchema>;
@@ -1446,23 +1449,23 @@ export const announcementSchema = z
     /** English title/body — always required (§13.4 EN + DE binding rule). */
     titleEn: z.string(),
     bodyEn: z.string(),
-    /** German title/body — always required (§13.4 EN + DE binding rule). */
-    titleDe: z.string(),
-    bodyDe: z.string(),
     /**
-     * Active window (both inclusive): the banner and the fan-out gate honor
-     * this window and hide the announcement before start / after end. NULL
-     * start = start immediately; NULL end = no auto-off. Nothing about time
-     * is inferred from `createdAt` — the window is explicit.
+     * German title/body — optional for notice/once (English is shown), required
+     * at publish for ack_required (§6.19.6). Null when absent.
+     */
+    titleDe: z.string().nullable(),
+    bodyDe: z.string().nullable(),
+    /**
+     * The window `[startsAt, endsAt)`, half-open (§6.19.3): NULL start = from
+     * publication, NULL end = no end. For ack_required a set `endsAt` is the
+     * instant the obligation lapses.
      */
     startsAt: z.string().datetime().nullable(),
     endsAt: z.string().datetime().nullable(),
     /**
-     * The active flag the admin toggles: `false` hides it entirely, even inside
-     * the window (a dry-run save). `true` ARMS the announcement — it does not
-     * send it (#1909). The `announcements.publishDue` job fans one inbox row
-     * out to every user once the window has opened, idempotently per recipient
-     * via the shared eventKey below. Saving never delivers anything.
+     * Derived and read-only since §6.19 (dated 2026-10-29): `true` exactly
+     * while `lifecycle` is `published`. Change it with publish / unpublish /
+     * archive.
      */
     active: z.boolean(),
     /** When the fan-out completed. NULL until the publish job stamps it. */
@@ -1485,92 +1488,143 @@ export const announcementSchema = z
     failedCount: z.number().int().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
-    // ── §6.19 (contract §7.1). Optional until the lifecycle routes replace
-    // `active` (§6.19.14 T2-A, second PR); a current server sends them all.
-    kind: announcementKindSchema.optional(),
-    audience: announcementAudienceSchema.optional(),
-    lifecycle: announcementLifecycleSchema.optional(),
-    bodyFormat: announcementBodyFormatSchema.optional(),
+    // ── §6.19 (contract §7.1) ───────────────────────────────────────────
+    kind: announcementKindSchema,
+    audience: announcementAudienceSchema,
+    lifecycle: announcementLifecycleSchema,
+    bodyFormat: announcementBodyFormatSchema,
     /** When an operator published it; null for drafts. */
-    releasedAt: z.string().datetime().nullable().optional(),
+    releasedAt: z.string().datetime().nullable(),
     /** The frozen `existing_at_publish` cutoff; null for drafts. */
-    audienceCutoffAt: z.string().datetime().nullable().optional(),
-    archivedAt: z.string().datetime().nullable().optional(),
+    audienceCutoffAt: z.string().datetime().nullable(),
+    archivedAt: z.string().datetime().nullable(),
     /** When the lapse pass completed (`ack_required` only). */
-    lapseRecordedAt: z.string().datetime().nullable().optional(),
+    lapseRecordedAt: z.string().datetime().nullable(),
     /** "Also notify by e-mail" — `true` only on `ack_required`. */
-    notifyByEmail: z.boolean().optional(),
-    notifyByEmailAfterDays: announcementNotifyEmailAfterDaysSchema.optional(),
+    notifyByEmail: z.boolean(),
+    /** Days after the window opened before that one e-mail (0 = at window open). */
+    notifyByEmailAfterDays: announcementNotifyEmailAfterDaysSchema,
     /** When the e-mail pass completed; null otherwise. Read-only. */
-    emailPassRecordedAt: z.string().datetime().nullable().optional(),
+    emailPassRecordedAt: z.string().datetime().nullable(),
   })
   .strict();
 export type Announcement = z.infer<typeof announcementSchema>;
 
+/**
+ * The bearer acknowledgement gate's deployment state (Chief ruling
+ * 2026-10-30): `BT_ANNOUNCEMENT_ACK_GATE_BEARER`, read from the environment at
+ * request time and never writable through the API. Ships `off`; only the
+ * owner flips it to `first_party` on the production host.
+ */
+export const ANNOUNCEMENT_BEARER_ACK_GATE_STATES = ['off', 'first_party'] as const;
+export const announcementBearerAckGateSchema = z.enum(ANNOUNCEMENT_BEARER_ACK_GATE_STATES);
+export type AnnouncementBearerAckGate = z.infer<typeof announcementBearerAckGateSchema>;
+
 /** `GET /admin/announcements` — every announcement, newest first. */
 export const announcementListResponseSchema = z
-  .object({ announcements: z.array(announcementSchema) })
+  .object({
+    announcements: z.array(announcementSchema),
+    /** Read-only status line for the console (optional for older servers). */
+    bearerAckGate: announcementBearerAckGateSchema.optional(),
+  })
   .strict();
 export type AnnouncementListResponse = z.infer<typeof announcementListResponseSchema>;
 
+const announcementTitleSchema = z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX);
 /**
- * `POST /admin/announcements` — create a new (possibly inactive) announcement.
- * EN and DE title/body are ALL required (§13.4 binding — every user-facing
- * string ships with both keys).
- *
- * The request persists and returns; it never walks the user table (#1909). The
- * `announcements.publishDue` job owns delivery.
+ * The schema bounds the longest legal body (`once` / `ack_required`); the
+ * server applies the kind's own limit (2000 for `notice`) and the markdown
+ * grammar on every save (`400 ANNOUNCEMENT_BODY_INVALID`).
+ */
+const announcementBodyTextSchema = z.string().trim().min(1).max(ANNOUNCEMENT_LONG_BODY_MAX_CHARS);
+
+/** The e-mail toggle and its delay belong to ack_required alone (contract §7.3). */
+function refineEmailFields(
+  d: { kind?: string; notifyByEmail?: boolean; notifyByEmailAfterDays?: number },
+  ctx: z.RefinementCtx,
+): void {
+  if (d.kind === undefined || d.kind === 'ack_required') return;
+  if (d.notifyByEmail === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['notifyByEmail'],
+      message: 'notifyByEmail is available for ack_required announcements only.',
+    });
+  }
+  if (
+    d.notifyByEmailAfterDays !== undefined &&
+    d.notifyByEmailAfterDays !== ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['notifyByEmailAfterDays'],
+      message: 'notifyByEmailAfterDays is available for ack_required announcements only.',
+    });
+  }
+}
+
+/**
+ * `POST /admin/announcements` — always creates a DRAFT (contract §7.3). The
+ * `active` request field is removed (dated 2026-10-29): publish with
+ * `POST /admin/announcements/:id/publish`. DE is optional here and required at
+ * publish for ack_required. The request persists and returns; it never walks
+ * the user table (#1909).
  */
 export const createAnnouncementRequestSchema = z
   .object({
+    kind: announcementKindSchema.default('notice'),
+    audience: announcementAudienceSchema.default('everyone'),
     severity: announcementSeveritySchema,
-    titleEn: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX),
-    bodyEn: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX),
-    titleDe: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX),
-    bodyDe: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX),
+    titleEn: announcementTitleSchema,
+    bodyEn: announcementBodyTextSchema,
+    titleDe: announcementTitleSchema.nullable().optional(),
+    bodyDe: announcementBodyTextSchema.nullable().optional(),
     startsAt: z.string().datetime().nullable().optional(),
     endsAt: z.string().datetime().nullable().optional(),
-    /** Defaults to `false`; the admin flips it on separately to publish. */
-    active: z.boolean().optional(),
+    notifyByEmail: z.boolean().default(false),
+    notifyByEmailAfterDays: announcementNotifyEmailAfterDaysSchema.default(
+      ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT,
+    ),
   })
   .strict()
+  .superRefine(refineEmailFields)
   .refine(
     (d) =>
       !d.startsAt || !d.endsAt || new Date(d.startsAt).getTime() <= new Date(d.endsAt).getTime(),
     { message: 'endsAt must be at or after startsAt.', path: ['endsAt'] },
   );
-export type CreateAnnouncementRequest = z.infer<typeof createAnnouncementRequestSchema>;
+export type CreateAnnouncementRequest = z.input<typeof createAnnouncementRequestSchema>;
+export type CreateAnnouncementInput = z.output<typeof createAnnouncementRequestSchema>;
 
 /**
- * `PATCH /admin/announcements/:id` — partial update. At least one field
- * required; unknown fields rejected. Saving never fans out on the request
- * path (#1909): the publish job picks the row up once its window has opened,
- * and a re-publish is a no-op per recipient via the shared eventKey.
+ * `PATCH /admin/announcements/:id` — the create fields, partial (contract
+ * §7.3); `active` removed (dated 2026-10-29). A draft takes any change. After
+ * publishing, `kind`, `audience`, `startsAt`, `notifyByEmail` and
+ * `notifyByEmailAfterDays` are locked; notice/once still take content and
+ * `endsAt`; ack_required takes only `endsAt` (`409 ANNOUNCEMENT_FIELD_LOCKED`
+ * with `details.fields`). Sending a locked field with its CURRENT value is not
+ * a change and is accepted. After `endsAt` only archive is accepted
+ * (`409 ANNOUNCEMENT_ENDED`).
  */
 export const updateAnnouncementRequestSchema = z
   .object({
+    kind: announcementKindSchema.optional(),
+    audience: announcementAudienceSchema.optional(),
     severity: announcementSeveritySchema.optional(),
-    titleEn: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX).optional(),
-    bodyEn: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX).optional(),
-    titleDe: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX).optional(),
-    bodyDe: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX).optional(),
+    titleEn: announcementTitleSchema.optional(),
+    bodyEn: announcementBodyTextSchema.optional(),
+    titleDe: announcementTitleSchema.nullable().optional(),
+    bodyDe: announcementBodyTextSchema.nullable().optional(),
     startsAt: z.string().datetime().nullable().optional(),
     endsAt: z.string().datetime().nullable().optional(),
-    active: z.boolean().optional(),
+    notifyByEmail: z.boolean().optional(),
+    notifyByEmailAfterDays: announcementNotifyEmailAfterDaysSchema.optional(),
   })
   .strict()
-  .refine(
-    (d) =>
-      d.severity !== undefined ||
-      d.titleEn !== undefined ||
-      d.bodyEn !== undefined ||
-      d.titleDe !== undefined ||
-      d.bodyDe !== undefined ||
-      d.startsAt !== undefined ||
-      d.endsAt !== undefined ||
-      d.active !== undefined,
-    { message: 'Provide at least one field to update.' },
-  );
+  .superRefine(refineEmailFields)
+  .refine((d) => Object.values(d).some((value) => value !== undefined), {
+    message: 'Provide at least one field to update.',
+  });
 export type UpdateAnnouncementRequest = z.infer<typeof updateAnnouncementRequestSchema>;
 
 /**

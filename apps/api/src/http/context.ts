@@ -1966,6 +1966,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Delivery is banner + inbox only — the notification matrix is not consulted.
   const announcements = createAnnouncementService({
     repo: createAnnouncementRepository(db),
+    receipts: createAnnouncementReceiptRepository(db),
     users: userRepo,
     notifications: notificationRepo,
     audit,
