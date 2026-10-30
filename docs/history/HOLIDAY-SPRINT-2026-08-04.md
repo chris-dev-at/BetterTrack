@@ -188,7 +188,7 @@ pattern.
 - Worktree: **`/private/tmp/bt-dev-stack-20260804`**, detached at `aee03a6c` (#1055) —
   the commit the mobile board ticked as the live dev backend.
 - API on **`:3000`**, vite on **`:6771`** (the trusted origin).
-- The demo login password is now **`myrandompass`** (used by `.dev-shot.mjs` /
+- The demo login password is now **`[redacted 2026-10-30]`** (used by `.dev-shot.mjs` /
   `.ux-shot.mjs` in the Desktop checkout).
 
 **Credential vault**
