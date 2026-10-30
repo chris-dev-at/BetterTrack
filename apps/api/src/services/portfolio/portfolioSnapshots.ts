@@ -333,6 +333,23 @@ function persistWriteFloor(
   return candidates.reduce((a, b) => (a < b ? a : b));
 }
 
+/**
+ * Which persist-time refusals this build's snapshot writer carries (issue
+ * #1729). `1` = both of them: the degraded-run refusal (an FX probe that failed
+ * as `unavailable` persists nothing and keeps `dirty_from`) and the
+ * vanished-holding guard ({@link findVanishedHoldings}, a run that would drop a
+ * still-held asset persists nothing).
+ *
+ * This is a CONTRACT with the one-off FX hole repair (`fxHoleRepair.ts`): the
+ * repair deletes stored rows and recomputes them, which is only safe while both
+ * refusals stand — on a writer without them, a recompute during an FX blip
+ * rewrites the whole invalidated range without the currency, widening a
+ * two-day hole into weeks. The repair refuses to run below
+ * `FX_HOLE_REPAIR_MIN_GUARD_VERSION`. Lower this (or delete it) in the same
+ * change that weakens either refusal; never raise it without adding a guard.
+ */
+export const SNAPSHOT_PERSIST_GUARD_VERSION = 1;
+
 /** A held asset a computation dropped — see {@link findVanishedHoldings}. */
 export interface VanishedHolding {
   assetId: string;

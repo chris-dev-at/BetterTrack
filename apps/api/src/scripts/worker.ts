@@ -59,7 +59,9 @@ import {
   createDeferredDeliveryJob,
   createQueueRegistry,
   createSnapshotsBackfillJob,
+  createSnapshotsFxHoleRepairJob,
   createSnapshotsRecomputeJob,
+  enqueueFxHoleRepair,
   createUsageRollupJob,
   createEarningsReminderJob,
   createDividendEventsScanJob,
@@ -653,6 +655,19 @@ const definitions = assembleRegisteredJobDefinitions({
   createSnapshotsBackfillJob: bindParanoidJob(createSnapshotsBackfillJob({ snapshots }), {
     mode: 'serviceFiltered',
   }),
+  // Issue #1729: the one-off FX hole repair. Same snapshot service as the two
+  // jobs above, so its invalidate/recompute carry the paranoid locks and the
+  // persist-time refusals; the scan itself skips server-invisible portfolios.
+  createSnapshotsFxHoleRepairJob: bindParanoidJob(
+    createSnapshotsFxHoleRepairJob({
+      snapshotRepo: createPortfolioSnapshotRepository(db),
+      transactionRepo,
+      snapshots,
+      isParanoidPortfolio: isBlockedPortfolio,
+      audit,
+    }),
+    { mode: 'serviceFiltered' },
+  ),
   createUsageRollupJob: createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
@@ -839,6 +854,14 @@ const scheduled = await registerSchedules(registry, definitions);
 // only turns green after a BullMQ worker consumes it and writes the canonical
 // Redis marker; the repeatable schedule keeps that proof fresh thereafter.
 await registry.enqueue(heartbeatJob.name, {});
+// Issue #1729: the one-off FX hole repair, under its deterministic job id —
+// every boot after the first coalesces into the retained finished job. Best
+// effort: a repair that cannot be queued must never stop the worker booting.
+try {
+  await enqueueFxHoleRepair(registry);
+} catch (err) {
+  logger.error({ err }, 'snapshots.repairFxHoles enqueue failed; the next boot retries');
+}
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
 
 let shuttingDown = false;

@@ -200,6 +200,17 @@ export const AuditAction = {
   WebhookUpdated: 'webhook.updated',
   WebhookDeleted: 'webhook.deleted',
   WebhookAutoDisabled: 'webhook.auto_disabled',
+  /**
+   * The one-off FX hole repair (issue #1729, `services/portfolio/fxHoleRepair.ts`).
+   * System rows — no actor, no target id — so the operator can read the repair's
+   * outcome in the admin audit log without database access. `enumerated` carries
+   * the counts found BEFORE anything was touched, `completed` the outcome, and
+   * `skipped` a run the fix-present gate refused. Counts and one ISO day only:
+   * no portfolio, user or asset id is copied into the 400-day audit trail.
+   */
+  SnapshotFxHoleRepairEnumerated: 'snapshots.fx_hole_repair_enumerated',
+  SnapshotFxHoleRepairCompleted: 'snapshots.fx_hole_repair_completed',
+  SnapshotFxHoleRepairSkipped: 'snapshots.fx_hole_repair_skipped',
 } as const;
 
 /**
