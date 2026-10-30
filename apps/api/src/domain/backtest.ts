@@ -106,10 +106,10 @@
  * "no longer listed" from "no data today".
  */
 
-import type { CurrencyConverter, PricePoint } from './holdings';
+import type { CurrencyConverter, PricePoint } from '@bettertrack/domain/holdings';
 
 // Re-exported so callers can type backtest inputs without reaching into holdings.
-export type { CurrencyConverter, PricePoint } from './holdings';
+export type { CurrencyConverter, PricePoint } from '@bettertrack/domain/holdings';
 
 // ---------------------------------------------------------------------------
 // Constants

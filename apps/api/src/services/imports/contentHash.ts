@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { ImportRowKind } from '@bettertrack/contracts';
 
-import { floorCents } from '../../domain/cashLedger';
+import { floorCents } from '@bettertrack/domain/cashLedger';
 
 /**
  * Content-hash dedupe for broker imports (PROJECTPLAN.md §13.4 V4-P8): the spec

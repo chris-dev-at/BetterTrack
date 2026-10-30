@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { CASH_SYSTEM_TAGS } from '@bettertrack/contracts';
 
 import { SYSTEM_TAG_FOR_KIND } from '../../services/cash/cashAutoTag';
-import type { CashMovementKind } from '../../domain/cashLedger';
+import type { CashMovementKind } from '@bettertrack/domain/cashLedger';
 import { applyCashRulesAtBookTime } from './cashRuleTagStamp';
 
 /**

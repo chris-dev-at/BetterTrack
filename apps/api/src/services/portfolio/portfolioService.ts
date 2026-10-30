@@ -78,7 +78,7 @@ import {
   spendableAsOf,
   type CashTransferLegs,
   type SourcedCashMovement,
-} from '../../domain/cashLedger';
+} from '@bettertrack/domain/cashLedger';
 import {
   deriveHoldings,
   netFlowsOverTime,
@@ -90,8 +90,8 @@ import {
   type Holding,
   type HoldingAssetInput,
   type Transaction as DomainTransaction,
-} from '../../domain/holdings';
-import { modifiedDietzReturn } from '../../domain/seriesStats';
+} from '@bettertrack/domain/holdings';
+import { modifiedDietzReturn } from '@bettertrack/domain/seriesStats';
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';

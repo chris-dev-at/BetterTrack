@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AT_AS_CUSTOM_PARAMS, TAX_COUNTRY_AT, TAX_COUNTRY_DE, TAX_COUNTRY_FI } from '../domain/tax';
+import { AT_AS_CUSTOM_PARAMS, TAX_COUNTRY_AT, TAX_COUNTRY_DE, TAX_COUNTRY_FI } from '@bettertrack/domain/tax';
 import { settleLiveYears, type LiveRegime, type LiveYearRowView } from '../services/tax/livingYear';
 import {
   categoryOfBuilder,

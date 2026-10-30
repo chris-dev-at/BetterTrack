@@ -17,7 +17,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
-import { resolvePortfolioSetting } from '../../domain/settingsScope';
+import { resolvePortfolioSetting } from '@bettertrack/domain/settingsScope';
 import type { PortfolioSettingsRepository } from '../../data/repositories/portfolioSettingsRepository';
 import type {
   CashMovementRecord,
@@ -45,7 +45,7 @@ import {
   projectCashLedgerBySource,
   floorCents,
   type SourcedCashMovement,
-} from '../../domain/cashLedger';
+} from '@bettertrack/domain/cashLedger';
 import {
   dePotCategoryForAssetType,
   manualTaxEur,
@@ -63,7 +63,7 @@ import {
   type SupportedTaxCountry,
   type TaxableTransaction,
   type TaxMovementSpec,
-} from '../../domain/tax';
+} from '@bettertrack/domain/tax';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import {
   deEventsByYear,

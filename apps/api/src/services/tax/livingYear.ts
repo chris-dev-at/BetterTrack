@@ -24,7 +24,7 @@ import {
   type NewAtEvent,
   type SellRealizationEur,
   type SupportedTaxCountry,
-} from '../../domain/tax';
+} from '@bettertrack/domain/tax';
 
 /**
  * Living-year tax derivation (#1399). Every Vienna tax year is re-derived in

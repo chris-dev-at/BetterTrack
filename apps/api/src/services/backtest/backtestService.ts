@@ -34,7 +34,7 @@ import {
   type BacktestResult,
   type BacktestStats,
 } from '../../domain/backtest';
-import { compareSeriesStats } from '../../domain/seriesStats';
+import { compareSeriesStats } from '@bettertrack/domain/seriesStats';
 import { ApiError, notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';

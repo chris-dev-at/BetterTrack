@@ -24,7 +24,7 @@ import {
   externalCashFlowsForTwr,
   netWorthSeries,
   type SourcedCashMovement,
-} from '../../domain/cashLedger';
+} from '@bettertrack/domain/cashLedger';
 import {
   costBasisOverTime,
   dailyCloseSeries,
@@ -35,7 +35,7 @@ import {
   type Transaction as DomainTransaction,
   type ValueOverTimeAsset,
   type ValuePoint,
-} from '../../domain/holdings';
+} from '@bettertrack/domain/holdings';
 import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { CurrencyService } from '../currency/currencyService';
