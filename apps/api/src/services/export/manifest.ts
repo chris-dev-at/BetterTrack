@@ -196,6 +196,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   oauth_auth_codes: skipped('Single-use OAuth authorization codes (transient secrets).'),
   oauth_access_tokens: skipped('Short-lived OAuth access-token hashes (transient secrets).'),
   oauth_refresh_tokens: skipped('Rotating OAuth refresh-token hashes (transient secrets).'),
+  oauth_token_families: skipped(
+    'Per-install OAuth token lineage (revocation unit for the skipped token rows above) — credential bookkeeping, not user data.',
+  ),
   idempotency_keys: skipped('Transient request-idempotency replay cache (~48 h retention).'),
   telegram_links: skipped(
     'Ephemeral Telegram bot chat-link relationship (opaque chat id + short-lived code).',
@@ -583,6 +586,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   external_identities: 'server',
   oauth_clients: 'server',
   oauth_grants: 'server',
+  oauth_token_families: 'server',
   oauth_auth_codes: 'server',
   oauth_access_tokens: 'server',
   oauth_refresh_tokens: 'server',

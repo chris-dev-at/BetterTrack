@@ -27,6 +27,7 @@ import {
   type OAuthDenyRequest,
   type OAuthDenyResponse,
   type OAuthGrantSummary,
+  type OAuthRevokeRequest,
   type OAuthTokenRequest,
   type OAuthTokenResponse,
 } from '@bettertrack/contracts';
@@ -49,6 +50,7 @@ import {
   parseBearerScopeDeniedMeta,
   type AuditService,
   type BearerScopeDenialReason,
+  type OAuthTokenFamilyRevokeReason,
 } from '../audit/auditService';
 import { decryptSecret, encryptSecret, type SecretBoxKeyring } from '../crypto/secretBox';
 import { hashToken, sha256Base64Url } from '../crypto/tokens';
@@ -62,7 +64,13 @@ import {
 export interface OAuthPrincipal {
   user: UserRow;
   grantId: string;
-  /** The individual access-token row; the grant is the revocation unit. */
+  /**
+   * The access token's per-install token family — the unit a bearer logout,
+   * RFC 7009 revoke or refresh reuse revokes (§16 2026-10-29). Null for a
+   * legacy row minted by pre-family code: its family is the grant.
+   */
+  familyId: string | null;
+  /** The individual access-token row; the grant/family is the revocation unit. */
   accessTokenId: string;
   /** Absolute access-token deadline used to terminate an idle socket on time. */
   expiresAt: Date;
@@ -133,6 +141,25 @@ export interface OAuthService {
   }): Promise<OAuthClientSummary>;
   listGrants(userId: string, currentGrantId: string | null): Promise<OAuthGrantSummary[]>;
   revokeGrant(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
+  /**
+   * Bearer `POST /auth/logout`: revoke the presenting access token's OWN token
+   * family (reason `logout`) — every other install on the grant keeps working.
+   * A legacy NULL-family token falls back to the pre-family grant-wide revoke.
+   * Idempotent: an already-revoked family or grant is a silent no-op.
+   */
+  revokeOwnFamily(input: {
+    userId: string;
+    grantId: string;
+    familyId: string | null;
+    ip?: string | null;
+  }): Promise<void>;
+  /**
+   * RFC 7009 `POST /oauth/revoke`: client-authenticated like `/oauth/token`
+   * (INVALID_CLIENT otherwise); revokes the presented token's family (reason
+   * `revoke_endpoint`). An unknown, foreign-client or already-dead token is a
+   * silent success — the endpoint never reveals which tokens exist.
+   */
+  revokeToken(input: { body: OAuthRevokeRequest; ip?: string | null }): Promise<void>;
   /** Administrative suspension: revoke grants and invalidate pending auth codes. */
   revokeAllForUser(userId: string): Promise<void>;
   /** Consent-screen data: validates the authorize request, plain-language scopes. */
@@ -358,6 +385,29 @@ function clampToAllowed(
   return consented.filter((s) => scopeSatisfies(allowed, s));
 }
 
+/** `existing` followed by every scope of `additions` it lacks, order preserved. */
+function unionScopes(
+  existing: readonly ApiKeyScope[],
+  additions: readonly ApiKeyScope[],
+): ApiKeyScope[] {
+  const merged = [...existing];
+  const seen = new Set<string>(existing);
+  for (const scope of additions) {
+    if (!seen.has(scope)) {
+      seen.add(scope);
+      merged.push(scope);
+    }
+  }
+  return merged;
+}
+
+/** Order-insensitive equality of two scope lists (both duplicate-free). */
+function sameScopeSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const set = new Set(right);
+  return left.every((scope) => set.has(scope));
+}
+
 /**
  * The ONE refusal both token exchanges give when {@link clampToAllowed} leaves
  * the effective set EMPTY — the app was narrowed to nothing, or to a set
@@ -387,10 +437,21 @@ function emptyEffectiveScope(): ApiError {
  * refreshes — returns the identical successor pair (with `expires_in` and
  * `scope` recomputed), as long as that successor has not itself been rotated and the
  * same client authenticates. Any other reuse — past the window, or of an older
- * token in the chain — is treated as theft and revokes the whole grant (one
- * grant per client+user; per-install token families are a later change). A
- * concurrent loser never revokes: it either receives the winner's pair or a
- * plain INVALID_GRANT.
+ * token in the chain — is treated as theft and revokes the token's FAMILY (RFC
+ * 9700 §4.14.2), not the grant. A concurrent loser never revokes: it either
+ * receives the winner's pair or a plain INVALID_GRANT.
+ *
+ * Token families (§16 2026-10-29, migration 0119). One grant per client+user
+ * serves every install of the app, so the grant is too coarse a unit for
+ * anything one install does. Every `authorization_code` exchange starts a new
+ * family on the (reused) grant, rotation inherits it, and refresh reuse, a
+ * bearer logout and RFC 7009 revocation revoke only that family — its refresh
+ * tokens refuse, its access tokens stop authenticating, its sockets drop. The
+ * grant stays the unit for Settings revoke, client deletion, suspension and an
+ * emptied scope ceiling. A token row with `family_id IS NULL` (minted by the
+ * pre-family code during the rollout) belongs to the legacy family that IS the
+ * grant: it is live while the grant is, and revoking it is grant-wide — the
+ * exact pre-family semantics, so both code versions coexist during a deploy.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   const { repo, audit, redis, userRepo, events, logger, recordEncryption } = deps;
@@ -509,6 +570,125 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         }),
       ),
     );
+  }
+
+  /** Audit a revocation whose security effect already committed; never fails the caller. */
+  async function recordCommittedRevocation(
+    input: Parameters<AuditService['record']>[0],
+    context: { userId: string; grantId: string; familyId?: string },
+  ): Promise<void> {
+    try {
+      await audit.record(input);
+    } catch (err) {
+      // Mirrors `retireEmptyScopeGrant`: the revocation is ALREADY committed,
+      // so only its record failed; surfacing a 500 would tell a logging-out
+      // install its logout failed when it did not. A lost row is an audit gap,
+      // said explicitly at the one level this service's logger is wired for.
+      logger?.warn(
+        { err, ...context, action: input.action },
+        'oauth revocation AUDIT GAP: credential revoked but audit write failed',
+      );
+    }
+  }
+
+  /**
+   * Post-commit fan-out for revoked token families: per family, the realtime
+   * invalidation narrowed to that family's sockets, then the
+   * `oauth.token_family_revoked` audit row. IDEMPOTENCY KEY: the family id —
+   * callers pass only rows the repository's `revoked_at IS NULL` claim actually
+   * returned, so each family is announced and audited exactly once.
+   */
+  async function announceFamilyRevocations(input: {
+    userId: string;
+    grantId: string;
+    familyIds: readonly string[];
+    reason: OAuthTokenFamilyRevokeReason;
+    clientId: string | null;
+    ip: string | null;
+  }): Promise<void> {
+    for (const familyId of input.familyIds) {
+      await publishInvalidation({
+        userId: input.userId,
+        kind: 'oauth',
+        credentialId: input.grantId,
+        exceptCredentialId: null,
+        familyId,
+      });
+      await recordCommittedRevocation(
+        {
+          actorId: input.userId,
+          action: AuditAction.OAuthTokenFamilyRevoked,
+          targetType: 'oauth_grant',
+          targetId: input.grantId,
+          ip: input.ip,
+          meta: {
+            ...(input.clientId ? { clientId: input.clientId } : {}),
+            familyId,
+            reason: input.reason,
+          },
+        },
+        { userId: input.userId, grantId: input.grantId, familyId },
+      );
+    }
+  }
+
+  /**
+   * Revoke ONE install's token family (the grant and its other families stay
+   * live), or — for a legacy NULL-family token, whose family IS the grant —
+   * the grant itself, exactly as the pre-family code did. Ownership is checked
+   * in the repository (`userId` must own `grantId`, which must own the family).
+   * Idempotent: a family or grant that is already revoked is a silent no-op.
+   */
+  async function revokeTokenFamily(input: {
+    userId: string;
+    grantId: string;
+    familyId: string | null;
+    reason: OAuthTokenFamilyRevokeReason;
+    clientId: string | null;
+    ip: string | null;
+  }): Promise<void> {
+    if (input.familyId === null) {
+      const revoked = await repo.revokeGrant(input.userId, input.grantId);
+      if (!revoked) return;
+      await publishInvalidation({
+        userId: input.userId,
+        kind: 'oauth',
+        credentialId: input.grantId,
+        exceptCredentialId: null,
+      });
+      await recordCommittedRevocation(
+        {
+          actorId: input.userId,
+          action: AuditAction.OAuthGrantRevoked,
+          targetType: 'oauth_grant',
+          targetId: input.grantId,
+          ip: input.ip,
+          meta: {
+            ...(input.clientId ? { clientId: input.clientId } : {}),
+            reason: input.reason,
+            legacyFamily: true,
+          },
+        },
+        { userId: input.userId, grantId: input.grantId },
+      );
+      return;
+    }
+    const revoked = await repo.revokeFamily({
+      userId: input.userId,
+      grantId: input.grantId,
+      familyId: input.familyId,
+      reason: input.reason,
+      at: now(),
+    });
+    if (!revoked) return;
+    await announceFamilyRevocations({
+      userId: input.userId,
+      grantId: input.grantId,
+      familyIds: [revoked.id],
+      reason: input.reason,
+      clientId: input.clientId,
+      ip: input.ip,
+    });
   }
 
   /** Shared authorize-request validation for the consent read, approve and deny paths. */
@@ -711,16 +891,19 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   function issueTokenPair(
     store: OAuthTokenStore,
     grantId: string,
+    familyId: string,
     scopes: ApiKeyScope[],
   ): Promise<OAuthTokenResponse> {
     const pair = prepareTokenPair(scopes);
     return Promise.all([
       store.createAccessToken({
         grantId,
+        familyId,
         ...pair.accessToken,
       }),
       store.createRefreshToken({
         grantId,
+        familyId,
         ...pair.refreshToken,
       }),
     ]).then(() => pair.response);
@@ -987,6 +1170,50 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       });
     },
 
+    revokeOwnFamily({ userId, grantId, familyId, ip }) {
+      return revokeTokenFamily({
+        userId,
+        grantId,
+        familyId,
+        reason: 'logout',
+        clientId: null,
+        ip: ip ?? null,
+      });
+    },
+
+    async revokeToken({ body, ip }) {
+      // Client authentication first, exactly like /oauth/token: a wrong secret
+      // or unknown client is the one non-200 answer (INVALID_CLIENT).
+      const client = await authenticateClient({
+        clientId: body.client_id,
+        clientSecret: body.client_secret,
+      });
+      // `token_type_hint` is only a hint (RFC 7009 §2.1); the prefix decides,
+      // so a wrong hint can never make the lookup miss a real token.
+      const kind = body.token.startsWith(OAUTH_ACCESS_TOKEN_PREFIX)
+        ? 'access'
+        : body.token.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)
+          ? 'refresh'
+          : null;
+      // RFC 7009 §2.2: an invalid token is answered 200 like a revoked one.
+      if (!kind) return;
+      const found = await repo.findTokenForRevocation({
+        kind,
+        tokenHash: hashToken(body.token),
+        clientRowId: client.id,
+      });
+      // Unknown, or issued to another client: nothing revoked, same 200.
+      if (!found) return;
+      await revokeTokenFamily({
+        userId: found.userId,
+        grantId: found.grantId,
+        familyId: found.familyId,
+        reason: 'revoke_endpoint',
+        clientId: client.clientId,
+        ip: ip ?? null,
+      });
+    },
+
     async revokeAllForUser(userId) {
       await repo.revokeAllForUser(userId);
       await publishInvalidation({
@@ -1116,6 +1343,8 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return {
         user: found.user,
         grantId: found.grant.id,
+        // A revoked family never reaches here (the lookup rejects it).
+        familyId: found.token.familyId,
         accessTokenId: found.token.id,
         expiresAt: found.token.expiresAt,
         scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client.scopes),
@@ -1127,18 +1356,27 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       // A real API process always provides the user repository. A deliberately
       // minimal construction must never accidentally keep a socket authorized.
       if (!userRepo || expiresAt.getTime() <= now().getTime()) return null;
-      const [user, grants] = await Promise.all([
+      const [user, grants, tokenFamily] = await Promise.all([
         userRepo.findById(userId),
         repo.listGrantsForUser(userId),
+        repo.findAccessTokenFamilyState(accessTokenId),
       ]);
       if (!user || user.status !== 'active') return null;
       const active = grants.find(({ grant }) => grant.id === grantId);
       if (!active) return null;
+      // ── token families (§16 2026-10-29): the access row must still exist on
+      // this grant and its family must be live — a family revoked while its
+      // invalidation event was lost still closes the socket here. A legacy
+      // NULL-family row is live exactly while the grant is (checked above).
+      if (!tokenFamily || tokenFamily.grantId !== grantId || tokenFamily.familyRevoked) {
+        return null;
+      }
       // Keep this specific access token's ceiling: a later grant/client edit
       // may reduce it, but revalidation must never broaden its original grant.
       return {
         user,
         grantId,
+        familyId: tokenFamily.familyId,
         accessTokenId,
         expiresAt,
         scopes: clampToAllowed(scopes, active.client.scopes),
@@ -1237,7 +1475,18 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         let grantId: string;
         if (existing) {
           grantId = existing.id;
-          await exchange.updateGrantScopes(existing.id, scopes);
+          // Scope UNION on re-login (§16 2026-10-29): the grant serves every
+          // install, so a narrower consent from one install must not strip a
+          // scope another install still relies on — narrowing is Settings →
+          // revoke. The stored set stays clamped to the app's current ceiling
+          // and write⇒read-closed; the grant row is locked FOR UPDATE, so a
+          // concurrent first-party reconcile cannot lose its additions here.
+          const merged = withImpliedReadScopes(
+            clampToAllowed(unionScopes(existing.scopes as ApiKeyScope[], scopes), client.scopes),
+          );
+          if (!sameScopeSet(merged, existing.scopes)) {
+            await exchange.updateGrantScopes(existing.id, merged);
+          }
         } else {
           const grant = await exchange.createGrant({
             clientId: client.id,
@@ -1246,21 +1495,43 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           });
           grantId = grant.id;
         }
+        // Every code exchange is a NEW install-level token family. With an
+        // `instance_id`, the same install's previous live family on this grant
+        // is retired first (reason `relogin`) — under the grant lock, so the
+        // live (grant, instance) unique index can never race.
+        const instanceId = body.instance_id ?? null;
+        const retired = instanceId
+          ? await exchange.retireInstanceFamilies({ grantId, instanceId, at: now() })
+          : [];
+        const family = await exchange.createFamily({ grantId, instanceId });
         return {
-          tokens: await issueTokenPair(exchange, grantId, scopes),
+          // The code's token carries THIS consent's scopes; a later refresh
+          // mints from the (union) grant, capped by the app's current ceiling.
+          tokens: await issueTokenPair(exchange, grantId, family.id, scopes),
           grantId,
+          familyId: family.id,
+          retiredFamilyIds: retired.map((row) => row.id),
           userId: exchange.code.userId,
           scopes,
         };
       },
     );
+    // After commit: the retired families' sockets drop and each is audited once.
+    await announceFamilyRevocations({
+      userId: issued.userId,
+      grantId: issued.grantId,
+      familyIds: issued.retiredFamilyIds,
+      reason: 'relogin',
+      clientId: client.clientId,
+      ip,
+    });
     await audit.record({
       actorId: issued.userId,
       action: AuditAction.OAuthTokenIssued,
       targetType: 'oauth_grant',
       targetId: issued.grantId,
       ip,
-      meta: { clientId: client.clientId, scopes: issued.scopes },
+      meta: { clientId: client.clientId, scopes: issued.scopes, familyId: issued.familyId },
     });
     return issued.tokens;
   }
@@ -1277,7 +1548,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     if (!found || found.grant.clientId !== client.id || found.user.status !== 'active') {
       throw badRequest('Invalid refresh token.', 'INVALID_GRANT');
     }
-    if (found.grant.revokedAt) {
+    // A revoked FAMILY answers exactly like a revoked grant: from this
+    // install's point of view its authorization is gone (§16 2026-10-29).
+    if (found.grant.revokedAt || found.family?.revokedAt) {
       throw badRequest('This authorization has been revoked.', 'INVALID_GRANT');
     }
     // Clamp to the app's current allowed scopes so a refresh never re-broadens a
@@ -1308,13 +1581,17 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       }
       if (grace.kind === 'reuse') {
         // Reuse past the window, or of an older token in the chain, is treated
-        // as a compromise: revoke the whole grant (RFC 6819 §5.2.2.3) and reject.
-        await repo.revokeGrant(found.grant.userId, found.grant.id);
-        await publishInvalidation({
+        // as a compromise (RFC 6819 §5.2.2.3) — of THIS install's chain: revoke
+        // its token family, not the grant (RFC 9700 §4.14.2), so every other
+        // install keeps working. A legacy NULL-family chain still revokes the
+        // grant, which is what its family is.
+        await revokeTokenFamily({
           userId: found.grant.userId,
-          kind: 'oauth',
-          credentialId: found.grant.id,
-          exceptCredentialId: null,
+          grantId: found.grant.id,
+          familyId: found.token.familyId,
+          reason: 'refresh_reuse',
+          clientId: client.clientId,
+          ip,
         });
       }
       // `unavailable`: inside the window, with no sign of reuse, but the pair
@@ -1342,6 +1619,8 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     const rotation = await repo.rotateRefreshToken({
       tokenId: found.token.id,
       grantId: found.grant.id,
+      // The successor pair stays in this install's family (§16 2026-10-29).
+      familyId: found.token.familyId,
       rotatedAt: pair.issuedAt,
       accessToken: pair.accessToken,
       refreshToken: pair.refreshToken,

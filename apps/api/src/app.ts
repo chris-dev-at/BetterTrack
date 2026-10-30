@@ -207,7 +207,9 @@ export function createApp(ctx: AppContext) {
   // The OAuth token endpoint is machine-to-machine (a partner backend, no cookie
   // and no bearer): mount it BEFORE the CSRF guard so it stays public, but AFTER
   // the general limiter so it is still rate-limited (by IP for anonymous callers).
-  // Non-`/token` paths fall through to the session chain + the consent router.
+  // RFC 7009 `/revoke` rides the same rail and limiter (§16 2026-10-29); every
+  // other path (bar the public client-logo bytes) falls through to the session
+  // chain + the consent router.
   app.use('/api/v1/oauth', createOAuthPublicRouter(ctx));
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);

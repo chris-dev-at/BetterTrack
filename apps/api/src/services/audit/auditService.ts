@@ -179,6 +179,13 @@ export const AuditAction = {
    * `meta.via` is `replay` (re-presented later) or `concurrent` (lost a race).
    */
   OAuthTokenRefreshReplayedInGrace: 'oauth.token_refresh_replayed_in_grace',
+  /**
+   * ONE install's token family was revoked while its grant stays active
+   * (§16 2026-10-29, migration 0119). `meta.reason` is one of
+   * {@link OAUTH_TOKEN_FAMILY_REVOKE_REASONS}; `meta.familyId` names the family.
+   * Grant-wide revocations keep writing `oauth.grant_revoked`.
+   */
+  OAuthTokenFamilyRevoked: 'oauth.token_family_revoked',
   // Admin Problems page (§13.5 V5-P2, the Sentry replacement).
   ProblemResolved: 'problem.resolved',
   ProblemReopened: 'problem.reopened',
@@ -410,6 +417,27 @@ export function parseBearerScopeDenialReason(
     `${writer}: refused to audit a bearer scope denial — reason:${describeMetaIssues(parsed.error)}`,
   );
 }
+
+/**
+ * Why one OAuth token family was revoked, recorded as `meta.reason` on every
+ * `oauth.token_family_revoked` row AND stored in
+ * `oauth_token_families.revoked_reason` (whose CHECK pins this exact list —
+ * adding a reason needs a migration):
+ *  - `refresh_reuse`   — a consumed refresh token re-presented beyond the grace
+ *                        rule (RFC 9700 §4.14.2: revoke the family, not the grant);
+ *  - `logout`          — the install's own bearer `POST /auth/logout`;
+ *  - `revoke_endpoint` — RFC 7009 `POST /oauth/revoke` with one of its tokens;
+ *  - `relogin`         — a new code exchange carried the same `instance_id` on
+ *                        the same grant, retiring that install's previous family.
+ * The concurrent-refresh loser never revokes (PR #2065), so it has no reason.
+ */
+export const OAUTH_TOKEN_FAMILY_REVOKE_REASONS = [
+  'refresh_reuse',
+  'logout',
+  'revoke_endpoint',
+  'relogin',
+] as const;
+export type OAuthTokenFamilyRevokeReason = (typeof OAUTH_TOKEN_FAMILY_REVOKE_REASONS)[number];
 
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;

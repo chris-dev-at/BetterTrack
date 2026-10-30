@@ -449,6 +449,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           scopes: oauthPrincipal.scopes,
           kind: 'oauth',
           firstParty: oauthPrincipal.firstParty,
+          familyId: oauthPrincipal.familyId,
           securityGeneration: oauthPrincipal.user.securityGeneration,
         };
         next();

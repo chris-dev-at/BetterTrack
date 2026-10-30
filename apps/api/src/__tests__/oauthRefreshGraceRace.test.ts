@@ -160,6 +160,8 @@ function rotationInput(
   return {
     tokenId,
     grantId,
+    // `seedRefreshToken` writes a legacy (NULL-family) row, as the pre-0119 code did.
+    familyId: null,
     rotatedAt,
     accessToken: {
       tokenHash: hashToken(`bto_loser_${randomUUID()}`),
