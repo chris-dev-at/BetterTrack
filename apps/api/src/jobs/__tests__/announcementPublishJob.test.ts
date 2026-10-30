@@ -96,6 +96,8 @@ interface Built {
   inserts: string[];
 }
 
+const EVERYONE = { kind: 'everyone', cutoffAt: null } as const;
+
 function build(
   clock: () => Date,
   options: {
@@ -103,7 +105,7 @@ function build(
       input: Parameters<ReturnType<typeof createNotificationRepository>['insert']>[0],
       real: ReturnType<typeof createNotificationRepository>,
     ) => Promise<string | null>;
-    users?: Pick<UserRepository, 'listRecipientsAfter'>;
+    users?: Pick<UserRepository, 'listAnnouncementAudienceAfter'>;
     fanOutPageSize?: number;
     /** Replace the recorder with a real transport (the job-id dedupe proof). */
     enqueuePublish?: (request: AnnouncementPublishRequest) => Promise<AnnouncementPublishEnqueued>;
@@ -187,7 +189,8 @@ async function noticeCount(userId: string, eventKey: string): Promise<number> {
  * guessed from the number of `seedUser` calls.
  */
 async function recipientCount(): Promise<number> {
-  return (await createUserRepository(db).listRecipientsAfter(null, 500)).length;
+  // The audience of an `everyone` announcement: user-kind accounts only (§6.19.8).
+  return (await createUserRepository(db).listAnnouncementAudienceAfter(null, 500, EVERYONE)).length;
 }
 
 /** Every `announcement.publish` audit row for one announcement. */
@@ -376,11 +379,11 @@ describe('announcements.publishDue — idempotency (§9)', () => {
     // throws — the faithful shape of "the worker died with the walk half done",
     // since a per-recipient failure is caught and a page read is not.
     let pages = 0;
-    const dying: Pick<UserRepository, 'listRecipientsAfter'> = {
-      listRecipientsAfter: async (cursor, limit) => {
+    const dying: Pick<UserRepository, 'listAnnouncementAudienceAfter'> = {
+      listAnnouncementAudienceAfter: async (cursor, limit, audience) => {
         pages += 1;
         if (pages === 2) throw new Error('worker died mid-walk');
-        return users.listRecipientsAfter(cursor, limit);
+        return users.listAnnouncementAudienceAfter(cursor, limit, audience);
       },
     };
     const crashing = build(now, { users: dying, fanOutPageSize: 1 });
@@ -393,7 +396,7 @@ describe('announcements.publishDue — idempotency (§9)', () => {
     // still due. That is the whole point of walking before claiming.
     const recipients = await recipientCount();
     const deliveredAfterCrash = await Promise.all(
-      (await createUserRepository(db).listRecipientsAfter(null, 500)).map((r) =>
+      (await createUserRepository(db).listAnnouncementAudienceAfter(null, 500, EVERYONE)).map((r) =>
         noticeCount(r.id, key),
       ),
     );

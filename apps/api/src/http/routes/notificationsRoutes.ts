@@ -28,6 +28,7 @@ import {
 
 import { forbidden } from '../../errors';
 import type { AcknowledgementChannel } from '../../services/announcements/userAnnouncementService';
+import { recordBearerScopeDenied } from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -183,8 +184,19 @@ export function createNotificationsRouter(ctx: AppContext): Router {
       } else if (req.apiKey.kind === 'oauth' && req.apiKey.firstParty) {
         channel = { via: 'first_party_oauth', grantId: req.apiKey.id };
       } else {
+        // Router-local twin of the global first-party-only rail (#1951): the
+        // same answer, written to the same audited denial trail, so a remount
+        // or a policy-table change can neither open this route nor refuse on
+        // it silently.
+        await recordBearerScopeDenied(
+          ctx,
+          req,
+          'notifications:write',
+          'first-party-only',
+          `/notifications${req.path}`,
+        );
         throw forbidden(
-          'Acknowledging requires the web app or the official app.',
+          'This endpoint is available to first-party OAuth clients only.',
           'API_KEY_FORBIDDEN',
         );
       }

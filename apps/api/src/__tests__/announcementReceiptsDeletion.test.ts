@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import * as schema from '../data/schema';
 import { newId } from '../data/ids';
+import { createAnnouncementReceiptRepository } from '../data/repositories/announcementReceiptRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createReceiptPseudonymizer } from '../services/crypto/receiptPseudonym';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -400,7 +401,7 @@ describe('receipts on the existing banner routes (0122 rename)', () => {
 
     // Someone dismisses it; switching it off now archives (it was seen).
     const user = await harness.seedUser({ email: 'seer@bt.test', username: 'seer' });
-    await harness.ctx.announcements.dismiss(user.id, id);
+    await createAnnouncementReceiptRepository(harness.db).markDismissed(user.id, id, new Date());
     await adminAgent
       .patch(`/api/v1/admin/announcements/${id}`)
       .set(...XRW)
