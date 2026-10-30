@@ -318,7 +318,7 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     const entry = audits.find((a) => a.action === 'user.deleted' && a.targetId === user.id);
     expect(entry).toBeDefined();
     expect(entry!.actorId).toBeNull();
-    expect(entry!.meta).toEqual({ via: 'self' });
+    expect(entry!.meta).toEqual({ via: 'self', acknowledgementsKept: 0 });
     expect(JSON.stringify(entry!.meta)).not.toContain(user.username);
   });
 

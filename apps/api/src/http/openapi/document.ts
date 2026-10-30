@@ -109,6 +109,20 @@ const VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION = {
     'a plain reported line, which is what it was before the affordance existed.',
 };
 
+// Third instance: the announcement `bodyDoc` tree (contract §3.2) recurses
+// through `bodyInlineSchema`, a ZodLazy. Documented as an object whose exact,
+// closed shape the contract file specifies; the server only ever emits trees its
+// own parser built, and every client renders it as text nodes.
+const BODY_INLINE_DOCUMENTATION = {
+  type: 'object' as const,
+  additionalProperties: true,
+  description:
+    'One inline node of an announcement body (docs/announcements-contract.md §3.2): ' +
+    '{t:"text",v} · {t:"br"} · {t:"strong",c} · {t:"em",c} · {t:"code",v} · {t:"link",href,c}, ' +
+    'where c is an array of inline nodes. Documented as an object because OpenAPI 3.0 here ' +
+    'cannot express the recursive union; render every string as a text node, never as markup.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -140,6 +154,7 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
     contracts.vaultImportRowKindUndecidedSchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION,
   ],
+  [contracts.bodyInlineSchema as unknown as HintableSchema, BODY_INLINE_DOCUMENTATION],
 ];
 
 function withVaultJsonDocumentation<T>(generate: () => T): T {
@@ -572,6 +587,8 @@ const componentSchemas = {
   AnnouncementRedeliverResponse: contracts.announcementRedeliverResponseSchema,
   ActiveAnnouncement: contracts.activeAnnouncementSchema,
   ActiveAnnouncementListResponse: contracts.activeAnnouncementListResponseSchema,
+  UserAnnouncement: contracts.userAnnouncementSchema,
+  AcknowledgeAnnouncementResponse: contracts.acknowledgeAnnouncementResponseSchema,
 
   // Analytics (§13.3 V3-P9)
   AnalyticsSeriesResponse: contracts.analyticsSeriesResponseSchema,
@@ -973,6 +990,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/me',
     tag: 'Auth',
     summary: 'The signed-in user.',
+    description:
+      '`pendingAcknowledgements` (announcements §6.19, contract §4.6) lists the ack_required announcements still owed, oldest first; `[]` when nothing is owed and for admin accounts. Each `title` honours the request’s `Accept-Language`: the first listed language the announcement has (q-values respected), else the account’s stored locale when the announcement has it, else the announcement’s first available locale (English). An older server omits the field: read absence as "unknown", never as "nothing owed".',
     status: 200,
     response: R.MeResponse,
   },
@@ -4487,24 +4506,92 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.OkResponse,
   },
-  // Announcements banner (§13.4 V4-P5b)
+  // Announcements (§13.4 V4-P5b; §6.19, docs/announcements-contract.md §4)
   {
     method: 'get',
     path: '/notifications/announcements',
     tag: 'Notifications',
     summary:
-      'Currently active announcements the caller has not dismissed, rendered in their locale (banner list).',
+      'The caller’s open announcements: published, window open ([startsAt, endsAt)), caller in the audience — minus dismissed notice/once and acknowledged ack_required items.',
+    description:
+      'Order: ack_required first (oldest obligation first), then once, then notice (each newest first); at most 50, unpaginated. `locale` (en/de) overrides the stored locale for this read; each item names the `contentLocale` it was rendered in. Render `bodyDoc`, never `body`, as text nodes. Clients ignore unknown response fields.',
+    query: contracts.userAnnouncementQuerySchema,
     status: 200,
     response: R.ActiveAnnouncementListResponse,
+  },
+  {
+    method: 'get',
+    path: '/notifications/announcements/{id}',
+    tag: 'Notifications',
+    summary:
+      'One announcement the caller may read — ended and archived ones included — with the caller’s receipt.',
+    description:
+      'The inbox deep-link and the "what did I acknowledge" view. Drafts, not-yet-open announcements, announcements outside the caller’s audience and unknown ids all answer the same 404 ANNOUNCEMENT_NOT_FOUND.',
+    params: contracts.announcementIdParamSchema,
+    query: contracts.userAnnouncementQuerySchema,
+    status: 200,
+    response: R.UserAnnouncement,
+    errorResponses: { 404: 'Not visible to the caller (indistinguishable from unknown).' },
+    errorCodes: [contracts.ANNOUNCEMENT_ERROR_CODES.notFound],
+  },
+  {
+    method: 'post',
+    path: '/notifications/announcements/{id}/seen',
+    tag: 'Notifications',
+    summary:
+      'Record that a client showed the item. Idempotent, first write wins: a repeat never moves seenAt.',
+    params: contracts.announcementIdParamSchema,
+    status: 200,
+    response: R.OkResponse,
+    errorResponses: { 404: 'Not in the caller’s current list.' },
+    errorCodes: [contracts.ANNOUNCEMENT_ERROR_CODES.notFound],
   },
   {
     method: 'post',
     path: '/notifications/announcements/{id}/dismiss',
     tag: 'Notifications',
-    summary: 'Dismiss one announcement for the caller (idempotent; per user AND per announcement).',
+    summary:
+      'Dismiss a notice or once item for the caller (idempotent; also stamps seenAt when still empty).',
+    description:
+      'An ack_required item cannot be dismissed (409 ANNOUNCEMENT_NOT_DISMISSIBLE); an id that is not in the caller’s current list answers 404 ANNOUNCEMENT_NOT_FOUND.',
     params: contracts.announcementIdParamSchema,
     status: 200,
     response: R.OkResponse,
+    errorResponses: {
+      404: 'Not in the caller’s current list.',
+      409: 'An ack_required item is acknowledged, never dismissed.',
+    },
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notDismissible,
+    ],
+  },
+  {
+    method: 'post',
+    path: '/notifications/announcements/{id}/acknowledge',
+    tag: 'Notifications',
+    summary:
+      'Acknowledge an ack_required announcement with the locale and contentSha256 of the text shown. Idempotent: a repeat returns the ORIGINAL acknowledgement.',
+    description:
+      'First-party only: a cookie session or a first-party OAuth token; a personal API key or a third-party token holding notifications:write gets 403 API_KEY_FORBIDDEN (audited). Evaluated in order: 404 not visible → 409 ANNOUNCEMENT_NOT_ACKNOWLEDGEABLE (not ack_required) → 200 with the original when already acknowledged → 409 ANNOUNCEMENT_NOT_PENDING (ended, archived or lapsed) → 400 ANNOUNCEMENT_LOCALE_UNAVAILABLE → 409 ANNOUNCEMENT_CONTENT_CHANGED (hash of that locale’s current text differs) → recorded. No Idempotency-Key needed.',
+    params: contracts.announcementIdParamSchema,
+    body: contracts.acknowledgeAnnouncementRequestSchema,
+    status: 200,
+    response: R.AcknowledgeAnnouncementResponse,
+    errorResponses: {
+      400: 'The locale is not available for this announcement.',
+      403: 'A personal API key or a third-party token (first-party only).',
+      404: 'Not visible to the caller.',
+      409: 'Not acknowledgeable, no longer pending, or the content changed.',
+    },
+    errorCodes: [
+      contracts.ANNOUNCEMENT_ERROR_CODES.notFound,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notAcknowledgeable,
+      contracts.ANNOUNCEMENT_ERROR_CODES.notPending,
+      contracts.ANNOUNCEMENT_ERROR_CODES.localeUnavailable,
+      contracts.ANNOUNCEMENT_ERROR_CODES.contentChanged,
+      'API_KEY_FORBIDDEN',
+    ],
   },
 
   // Price alerts (§14, V3-P10)

@@ -21,6 +21,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   varchar,
@@ -3146,13 +3147,41 @@ export const oauthRefreshTokens = pgTable(
  *
  * Delivery is banner + inbox only — no email/push/Telegram/Discord routing goes
  * through the notification matrix. Dismissal is per-user (see
- * {@link announcementDismissals}); a newly published announcement re-appears
- * for every user even if they dismissed a prior one.
+ * {@link announcementReceipts}); a newly published announcement re-appears
+ * for every user even if they dismissed a prior one. §6.19 (0122) adds kinds,
+ * an audience, the draft → published → archived lifecycle and the opt-in
+ * e-mail of `ack_required`.
  */
 export const announcementSeverityEnum = pgEnum('announcement_severity', [
   'info',
   'warning',
   'critical',
+]);
+
+/** §6.19.2 — `notice` banner · `once` card · `ack_required` blocking acknowledgement. */
+export const announcementKindEnum = pgEnum('announcement_kind', ['notice', 'once', 'ack_required']);
+/** §6.19.3 — immutable after publish. */
+export const announcementAudienceEnum = pgEnum('announcement_audience', [
+  'everyone',
+  'existing_at_publish',
+]);
+/** §6.19.4 — `active` is derived from this and written in lockstep for one release. */
+export const announcementLifecycleEnum = pgEnum('announcement_lifecycle', [
+  'draft',
+  'published',
+  'archived',
+]);
+/** §6.19.6 — legacy rows are `plain`; new rows default to the markdown subset. */
+export const announcementBodyFormatEnum = pgEnum('announcement_body_format', ['plain', 'markdown']);
+/** §6.19.5 — the channel an acknowledgement came through (first-party only). */
+export const announcementAckViaEnum = pgEnum('announcement_ack_via', [
+  'web_session',
+  'first_party_oauth',
+]);
+/** §6.19.3 — why an `ack_required` obligation lapsed. */
+export const announcementLapseReasonEnum = pgEnum('announcement_lapse_reason', [
+  'ended',
+  'archived',
 ]);
 
 export const announcements = pgTable(
@@ -3165,8 +3194,10 @@ export const announcements = pgTable(
     // renders the matching pair. EN is the source-of-truth fallback.
     titleEn: text('title_en').notNull(),
     bodyEn: text('body_en').notNull(),
-    titleDe: text('title_de').notNull(),
-    bodyDe: text('body_de').notNull(),
+    // DE is optional for notice/once (EN shown) and required at publish for
+    // ack_required (§6.19.6) — the column itself is nullable since 0122.
+    titleDe: text('title_de'),
+    bodyDe: text('body_de'),
     startsAt: timestamp('starts_at', { withTimezone: true }),
     endsAt: timestamp('ends_at', { withTimezone: true }),
     active: boolean('active').notNull().default(false),
@@ -3195,6 +3226,30 @@ export const announcements = pgTable(
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    // ── §6.19 (0122) ──────────────────────────────────────────────────────
+    kind: announcementKindEnum('kind').notNull().default('notice'),
+    audience: announcementAudienceEnum('audience').notNull().default('everyone'),
+    lifecycle: announcementLifecycleEnum('lifecycle').notNull().default('draft'),
+    bodyFormat: announcementBodyFormatEnum('body_format').notNull().default('markdown'),
+    /** When an operator pressed Publish (not the fan-out's `published_at`). */
+    releasedAt: timestamp('released_at', { withTimezone: true }),
+    releasedBy: uuid('released_by').references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * The frozen `existing_at_publish` cutoff, GREATEST(publish instant,
+     * starts_at), stamped at publish and never moved (Chief ruling 2026-10-29).
+     * Membership is `users.created_at < audience_cutoff_at`.
+     */
+    audienceCutoffAt: timestamp('audience_cutoff_at', { withTimezone: true }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedBy: uuid('archived_by').references(() => users.id, { onDelete: 'set null' }),
+    /** The `announcements.lapseDue` per-announcement claim (`ack_required` only). */
+    lapseRecordedAt: timestamp('lapse_recorded_at', { withTimezone: true }),
+    /** "Also notify by e-mail" (`ack_required` only; Chief ruling 2026-10-29). */
+    notifyByEmail: boolean('notify_by_email').notNull().default(false),
+    /** Days after the window opened (0 = at window open; Chief ruling 2026-10-30). */
+    notifyByEmailAfterDays: integer('notify_by_email_after_days').notNull().default(7),
+    /** The `announcements.emailDue` per-announcement claim. */
+    emailPassRecordedAt: timestamp('email_pass_recorded_at', { withTimezone: true }),
   },
   (t) => [
     index('announcements_active_window_idx').on(t.active, t.startsAt, t.endsAt),
@@ -3204,34 +3259,133 @@ export const announcements = pgTable(
     ),
 
     index('announcements_created_by_idx').on(t.createdBy),
+    index('announcements_released_by_idx').on(t.releasedBy),
+    index('announcements_archived_by_idx').on(t.archivedBy),
+    index('announcements_lifecycle_kind_window_idx').on(t.lifecycle, t.kind, t.startsAt, t.endsAt),
+    check(
+      'announcements_lifecycle_released',
+      sql`(${t.lifecycle} = 'draft') = (${t.releasedAt} IS NULL)`,
+    ),
+    check(
+      'announcements_lifecycle_cutoff',
+      sql`(${t.lifecycle} = 'draft') = (${t.audienceCutoffAt} IS NULL)`,
+    ),
+    check(
+      'announcements_lifecycle_archived',
+      sql`(${t.lifecycle} = 'archived') = (${t.archivedAt} IS NOT NULL)`,
+    ),
+    check(
+      'announcements_lapse_ack_only',
+      sql`${t.lapseRecordedAt} IS NULL OR ${t.kind} = 'ack_required'`,
+    ),
+    check(
+      'announcements_notify_email_ack_only',
+      sql`NOT ${t.notifyByEmail} OR ${t.kind} = 'ack_required'`,
+    ),
+    check(
+      'announcements_notify_email_after_days_range',
+      sql`${t.notifyByEmailAfterDays} BETWEEN 0 AND 365`,
+    ),
+    check(
+      'announcements_notify_email_after_days_ack_only',
+      sql`${t.kind} = 'ack_required' OR ${t.notifyByEmailAfterDays} = 7`,
+    ),
+    check(
+      'announcements_email_pass_needs_toggle',
+      sql`${t.emailPassRecordedAt} IS NULL OR ${t.notifyByEmail}`,
+    ),
   ],
 );
 
 /**
- * Per-user announcement dismissal (§13.4 V4-P5b). One row per (user × announcement);
- * a dismissed row stops appearing in the user's banner list forever. Idempotent by
- * PK (a repeat dismissal is a no-op). Cascades away with the user OR with the
- * announcement — a deleted announcement is gone; its dismissal history is not load
- * bearing. Rows are the audit trail: created_at doubles as the dismiss timestamp.
+ * Per-user announcement receipts (§6.19.5; `announcement_dismissals` before
+ * 0122): one row per (user × announcement) recording seen, dismissed,
+ * acknowledged and lapsed — the acknowledgement log. Writes are idempotent by
+ * construction: an upsert on `announcement_receipts_user_announcement_uq`
+ * that COALESCEs each instant, so the first write wins.
+ *
+ * Neither foreign key cascades (Chief ruling 2026-10-29). `userRepository.remove`
+ * deletes an account's un-acknowledged receipts and PSEUDONYMISES the
+ * acknowledged ones in the deletion's own transaction (`user_id` NULL,
+ * `subject_token` = HMAC-SHA256 of the former id); any deletion path that skips
+ * that step is refused by the RESTRICT key instead of losing evidence. A
+ * published announcement is never deleted, so its receipts are kept as long as
+ * it exists (Chief ruling 2026-10-30).
  */
-export const announcementDismissals = pgTable(
-  'announcement_dismissals',
+export const announcementReceipts = pgTable(
+  'announcement_receipts',
   {
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`)
+      .$defaultFn(newId),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'restrict' }),
     announcementId: uuid('announcement_id')
       .notNull()
-      .references(() => announcements.id, { onDelete: 'cascade' }),
-    dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+      .references(() => announcements.id, { onDelete: 'restrict' }),
+    seenAt: timestamp('seen_at', { withTimezone: true }),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    acknowledgedVia: announcementAckViaEnum('acknowledged_via'),
+    /** The OAuth grant, no FK: the evidence must outlive a revoked grant. */
+    acknowledgedGrantId: uuid('acknowledged_grant_id'),
+    acknowledgedLocale: text('acknowledged_locale'),
+    acknowledgedContentSha256: text('acknowledged_content_sha256'),
+    lapsedAt: timestamp('lapsed_at', { withTimezone: true }),
+    lapseReason: announcementLapseReasonEnum('lapse_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    subjectToken: text('subject_token'),
+    subjectKeyId: text('subject_key_id'),
+    pseudonymizedAt: timestamp('pseudonymized_at', { withTimezone: true }),
   },
   (t) => [
-    primaryKey({
-      name: 'announcement_dismissals_pk',
-      columns: [t.userId, t.announcementId],
-    }),
-
-    index('announcement_dismissals_announcement_id_idx').on(t.announcementId),
+    unique('announcement_receipts_user_announcement_uq').on(t.userId, t.announcementId),
+    index('announcement_receipts_announcement_id_idx').on(t.announcementId),
+    check(
+      'announcement_receipts_has_state',
+      sql`${t.seenAt} IS NOT NULL OR ${t.dismissedAt} IS NOT NULL OR ${t.acknowledgedAt} IS NOT NULL OR ${t.lapsedAt} IS NOT NULL`,
+    ),
+    check(
+      'announcement_receipts_ack_xor_lapse',
+      sql`${t.acknowledgedAt} IS NULL OR ${t.lapsedAt} IS NULL`,
+    ),
+    check(
+      'announcement_receipts_lapse_complete',
+      sql`(${t.lapsedAt} IS NULL) = (${t.lapseReason} IS NULL)`,
+    ),
+    check(
+      'announcement_receipts_pseudonym_token',
+      sql`(${t.userId} IS NULL) = (${t.subjectToken} IS NOT NULL)`,
+    ),
+    check(
+      'announcement_receipts_pseudonym_key',
+      sql`(${t.userId} IS NULL) = (${t.subjectKeyId} IS NOT NULL)`,
+    ),
+    check(
+      'announcement_receipts_pseudonym_at',
+      sql`(${t.userId} IS NULL) = (${t.pseudonymizedAt} IS NOT NULL)`,
+    ),
+    check(
+      'announcement_receipts_live_ack_complete',
+      sql`${t.userId} IS NULL OR (((${t.acknowledgedAt} IS NULL) = (${t.acknowledgedVia} IS NULL)) AND ((${t.acknowledgedAt} IS NULL) = (${t.acknowledgedLocale} IS NULL)) AND ((${t.acknowledgedAt} IS NULL) = (${t.acknowledgedContentSha256} IS NULL)))`,
+    ),
+    check(
+      'announcement_receipts_pseudonym_shape',
+      sql`${t.userId} IS NOT NULL OR (${t.acknowledgedAt} IS NOT NULL AND ${t.acknowledgedContentSha256} IS NOT NULL AND ${t.acknowledgedVia} IS NULL AND ${t.acknowledgedGrantId} IS NULL AND ${t.acknowledgedLocale} IS NULL AND ${t.seenAt} IS NULL AND ${t.dismissedAt} IS NULL AND ${t.lapsedAt} IS NULL AND ${t.lapseReason} IS NULL)`,
+    ),
+    check(
+      'announcement_receipts_ack_locale_known',
+      sql`${t.acknowledgedLocale} IS NULL OR ${t.acknowledgedLocale} IN ('en', 'de')`,
+    ),
+    check(
+      'announcement_receipts_sha256_hex',
+      sql`${t.acknowledgedContentSha256} IS NULL OR ${t.acknowledgedContentSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      'announcement_receipts_subject_token_hex',
+      sql`${t.subjectToken} IS NULL OR ${t.subjectToken} ~ '^[0-9a-f]{64}$'`,
+    ),
   ],
 );
 
@@ -3239,7 +3393,7 @@ export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type AnnouncementRow = typeof announcements.$inferSelect;
 export type NewAnnouncementRow = typeof announcements.$inferInsert;
-export type AnnouncementDismissalRow = typeof announcementDismissals.$inferSelect;
+export type AnnouncementReceiptRow = typeof announcementReceipts.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type ApiKeyTierRow = typeof apiKeyTiers.$inferSelect;
 export type NewApiKeyTierRow = typeof apiKeyTiers.$inferInsert;
@@ -5185,10 +5339,16 @@ export const schema = {
   idempotencyKeys,
   exportJobs,
   announcements,
-  announcementDismissals,
+  announcementReceipts,
   telegramLinks,
   discordWebhooks,
   announcementSeverityEnum,
+  announcementKindEnum,
+  announcementAudienceEnum,
+  announcementLifecycleEnum,
+  announcementBodyFormatEnum,
+  announcementAckViaEnum,
+  announcementLapseReasonEnum,
   exportJobStatusEnum,
 
   importBatches,

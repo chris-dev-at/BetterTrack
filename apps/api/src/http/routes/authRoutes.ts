@@ -55,6 +55,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
+import { parseAcceptLanguage } from '../../services/announcements/announcementContent';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -182,9 +183,26 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
    * — and the field stays absent from no payload, which is what lets the SPA read
    * it without a poll of its own.
    */
-  const withFreshStartNotice = async <T extends { id: string }>(payload: T): Promise<T> => {
+  const withFreshStartNotice = async <
+    T extends { id: string; role: string; createdAt: string; locale: string },
+  >(
+    req: Request,
+    payload: T,
+  ): Promise<T> => {
     const notice = await ctx.paranoidFreshStartNotice.status(payload.id);
-    return { ...payload, paranoidFreshStartPending: notice.pending };
+    // §6.19.7 / contract §4.6: what the account still owes, on every
+    // MeResponse — sessions and bearers alike, whatever the bearer gate flag
+    // says. Admin-kind accounts are never in an audience: always [].
+    // Titles honour the request's Accept-Language (first locale the
+    // announcement has), then the stored locale, then English.
+    const pendingAcknowledgements =
+      payload.role === 'user'
+        ? await ctx.userAnnouncements.pendingAcknowledgements(
+            { id: payload.id, createdAt: payload.createdAt, locale: payload.locale },
+            parseAcceptLanguage(req.get('accept-language')),
+          )
+        : [];
+    return { ...payload, paranoidFreshStartPending: notice.pending, pendingAcknowledgements };
   };
 
   /**
@@ -226,7 +244,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       return;
     }
     await applySessionCookie(res, result.sessionId, result.persistent);
-    res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
+    res.json(await withFreshStartNotice(req, toMeResponseFromRow(result.user)));
   });
 
   // ── Login 2FA challenge (§6.1, §13.2 V2-P5) ─────────────────────────────────
@@ -250,7 +268,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       // Stamped here too: a 2FA account completes login through THIS handler, so
       // without it the §17 fresh-start notice would wait for the first `/auth/me`
       // instead of appearing at login as §17 step 3 describes.
-      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
     },
   );
 
@@ -291,7 +309,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // The global enforcePasswordChange guard (mounted on /api/v1) blocks
   // mustChangePassword users here before this handler runs.
   router.get('/me', requireAuth, async (req, res) => {
-    res.json(await withFreshStartNotice(toMeResponse(req.authUser!)));
+    res.json(await withFreshStartNotice(req, toMeResponse(req.authUser!)));
   });
 
   // Read-only view of the caller's *own* current session (§6.11 Security):
@@ -363,7 +381,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         req.ip,
       );
       if (req.sessionId) clearSessionCookie(res, ctx.config);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
     },
   );
 
@@ -374,7 +392,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // owning session and `account:security` bearer use the same handler.
   router.post('/first-run/complete', requireAuth, async (req, res) => {
     const user = await ctx.auth.completeFirstRun(req.authUser!.id);
-    res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+    res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
   });
 
   // ── Fresh-start notice after the §17 wipe (PARANOID E9) ────────────────────
@@ -401,7 +419,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // `paranoidV1WipeService`, which has no route at all).
   router.post('/fresh-start-notice/acknowledge', requireAuth, async (req, res) => {
     await ctx.paranoidFreshStartNotice.acknowledge(req.authUser!.id);
-    res.json(await withFreshStartNotice(toMeResponse(req.authUser!)));
+    res.json(await withFreshStartNotice(req, toMeResponse(req.authUser!)));
   });
 
   // ── PIN gate (§6.1, §8, #361) ──────────────────────────────────────────────
@@ -439,7 +457,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       // flavour (persistent Max-Age vs browser-session) — PIN verify never
       // changes persistence (V4-P2b).
       await applySessionCookie(res, req.sessionId!, req.sessionPersistent ?? true);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
     },
   );
 
@@ -458,14 +476,14 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     async (req, res) => {
       const body = req.valid?.body as SetPinRequest;
       const user = await ctx.auth.setPin(req.authUser!.id, body.pin, req.ip);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
     },
   );
 
   // Disable the PIN.
   router.delete('/pin', requireAuth, async (req, res) => {
     const user = await ctx.auth.disablePin(req.authUser!.id, req.ip);
-    res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+    res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
   });
 
   // Set (or clear with null) the AFK auto-lock idle timeout (§6.1, §13.2 V2-P2).
@@ -477,7 +495,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     async (req, res) => {
       const body = req.valid?.body as SetPinLockRequest;
       const user = await ctx.auth.setPinLockIdleMinutes(req.authUser!.id, body.idleMinutes, req.ip);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
     },
   );
 
@@ -511,7 +529,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       // persistent one); refresh the long-lived device cookie so the memory stays.
       await applySessionCookie(res, result.sessionId, false);
       if (deviceId) setRememberedDeviceCookie(res, ctx.config, deviceId);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(result.user)));
     },
   );
 
@@ -760,7 +778,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       const body = req.valid?.body as PasskeyLoginVerifyRequest;
       const { user, sessionId, persistent } = await ctx.passkeys.finishLogin(body, req.ip);
       await applySessionCookie(res, sessionId, persistent);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(user)));
     },
   );
 
@@ -839,7 +857,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         return;
       }
       await applySessionCookie(res, result.sessionId, result.persistent);
-      res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
+      res.json(await withFreshStartNotice(req, toMeResponseFromRow(result.user)));
     },
   );
 

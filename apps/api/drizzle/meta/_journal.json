@@ -834,6 +834,13 @@
       "when": 1793308966000,
       "tag": "0118_oauth_refresh_grace",
       "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1793400000000,
+      "tag": "0122_announcements_v2",
+      "breakpoints": true
     }
   ]
 }

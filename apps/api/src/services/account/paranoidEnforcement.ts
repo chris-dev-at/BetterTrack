@@ -930,6 +930,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'Announcement delivery is global product communication, not portfolio data.',
   ),
   serviceExemption(
+    'userAnnouncements',
+    ['*'],
+    'kept',
+    'Reading, dismissing and acknowledging announcements is account-level product communication; the acknowledgement gate applies to vault owners like anyone (§6.19.5).',
+  ),
+  serviceExemption(
     'notificationDispatcher',
     ['*'],
     'kept',

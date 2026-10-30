@@ -217,6 +217,7 @@ function buildInertContext(): AppContext {
     dataExport: inertService('dataExport'),
     alerts: inertService('alerts'),
     announcements: inertService('announcements'),
+    userAnnouncements: inertService('userAnnouncements'),
     notificationDispatcher: inertService('notificationDispatcher'),
     digestService: inertService('digestService'),
     notify: inertService('notify'),

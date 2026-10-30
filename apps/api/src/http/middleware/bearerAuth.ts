@@ -219,6 +219,17 @@ export const OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST = [
   { method: 'DELETE', path: '/settings/oauth-grants/{id}' },
 ] as const satisfies readonly BearerRoute[];
 
+/**
+ * Acknowledging an announcement (§6.19, contract §4) — first-party only: a
+ * person confirms in the web app or the official app, never automation. A
+ * personal API key or a partner token holding `notifications:write` is refused
+ * with `API_KEY_FORBIDDEN` and audited (`first-party-only`), Chief ruling
+ * 2026-10-29. Everything else under `/notifications` keeps its scope pair.
+ */
+export const ANNOUNCEMENT_ACKNOWLEDGE_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'POST', path: '/notifications/announcements/{id}/acknowledge' },
+] as const satisfies readonly BearerRoute[];
+
 function normalizedRouteSegments(path: string): string[] {
   return normalizeRoutePath(path).split('/').filter(Boolean);
 }
@@ -989,6 +1000,24 @@ function resolvePolicy(
   // PUT/DELETE under /cash continues to require cash:write.
   if (path === '/cash/rules/preview' || path === '/cash/rules/preview/') {
     return { kind: 'scope', read: 'cash:read', write: 'cash:read' };
+  }
+  // Announcement acknowledgement (§6.19): the notifications scope pair, AND a
+  // first-party OAuth client. Resolved before the `/notifications` module row,
+  // which would otherwise admit any key holding the scope.
+  if (
+    routeAllowlistAccepts(
+      ANNOUNCEMENT_ACKNOWLEDGE_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+  ) {
+    return {
+      kind: 'scope',
+      read: 'notifications:read',
+      write: 'notifications:write',
+      firstPartyOnly: true,
+    };
   }
   // Notification preferences live under /settings but belong to the notifications
   // scope (#361), checked before the coarse `/settings` → social catch-all.

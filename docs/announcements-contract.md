@@ -2,7 +2,7 @@
 
 **This file is THE specification** for every client that shows announcements or honours the acknowledgement gate: the web app, the mobile app, and any future client. It was written on 2026-10-29 from the owner directive of that date (`PROJECTPLAN.md` §6.19, §16 2026-10-29). §6.19 carries the product design, the data model and the build lanes and points here for everything on the wire; where the two disagree on a wire detail, this file wins.
 
-**Status: DESIGN.** Everything marked NEW below is not live until the lanes of §6.19.14 merge; each lane updates this file in the PR that ships its part, and the mobile board announces it. Everything marked KEPT is live today and stays byte-identical.
+**Status: DESIGN.** Everything marked NEW below is not live until the lanes of §6.19.14 merge; each lane updates this file in the PR that ships its part, and the mobile board announces it. Everything marked KEPT is live today and stays byte-identical. T2-A's first PR (#2094) ships the data model, the §3 shared types, the §4 user endpoints, `MeResponse.pendingAcknowledgements` (§4.6) and the §6 inbox changes; the gate (§5) and the admin endpoints (§7) follow.
 
 Conventions are the API's (§8): base `/api/v1`, JSON, camelCase, errors `{ "error": { "code", "message", "details"? } }`, instants are RFC 3339 UTC strings, ids are UUID strings. **Clients ignore unknown response fields**, and each enum below says what a client does with a value it does not know. Cookie-session callers send `X-Requested-With: BetterTrack` on every state-changing request (§10); bearer callers send `Authorization: Bearer <token>` and need no CSRF header.
 
@@ -121,13 +121,13 @@ SHA-256, lowercase hex, over the UTF-8 bytes of `bt-announcement-v1`, LF, `kind`
 
 ### 3.6 `PendingAcknowledgement`
 
-| Field      | Type                                    | Meaning                                                           |
-| ---------- | --------------------------------------- | ----------------------------------------------------------------- |
-| `id`       | string (uuid)                           | The announcement.                                                 |
-| `severity` | `"info"` or `"warning"` or `"critical"` |                                                                   |
-| `title`    | string                                  | In the caller's stored locale (English fallback).                 |
-| `startsAt` | string (instant) or null                |                                                                   |
-| `endsAt`   | string (instant) or null                | `null` = binding until acknowledged; otherwise the lapse instant. |
+| Field      | Type                                    | Meaning                                                             |
+| ---------- | --------------------------------------- | ------------------------------------------------------------------- |
+| `id`       | string (uuid)                           | The announcement.                                                   |
+| `severity` | `"info"` or `"warning"` or `"critical"` |                                                                     |
+| `title`    | string                                  | Locale chosen per §4.6 (`Accept-Language`, stored locale, English). |
+| `startsAt` | string (instant) or null                |                                                                     |
+| `endsAt`   | string (instant) or null                | `null` = binding until acknowledged; otherwise the lapse instant.   |
 
 Arrays of it are ordered oldest obligation first — the order in which a client presents them.
 
@@ -203,6 +203,8 @@ Every `MeResponse` the server emits — `GET /auth/me` and every sign-in or acco
 ```text
 "pendingAcknowledgements": PendingAcknowledgement[]   [] when nothing is owed
 ```
+
+Each item's `title` honours the request's `Accept-Language` (no query parameter): the first listed language the announcement has, q-values respected; else the caller's stored locale when the announcement has it; else the announcement's first available locale (English). Live since T2-A (#2094).
 
 Optional in the schema only: an older server omits it, and a client reads absence as "unknown" (show nothing, rely on the gate's `403`), never as "nothing owed". It is present for bearer callers too, independently of the bearer flag (§5.4), so an app can show its dialog before the flag is ever turned on. Admin-kind sessions get `[]`.
 
@@ -287,7 +289,7 @@ Deliberately **not** exempt: `POST /notifications/announcements/{id}/dismiss` (n
 | `off` (default) | None. Bearer requests are never refused for a pending acknowledgement. |
 | `first_party`   | First-party OAuth tokens (the mobile app) only.                        |
 
-No value gates a personal API key or a third-party (partner) OAuth token (Chief ruling 2026-10-29): automation is never blocked by an announcement, and people acknowledge in the web app or the first-party app. Any other value fails the boot. Whatever the value: cookie sessions are always gated; `pendingAcknowledgements` is on every `MeResponse`; §4 works for bearers under its scopes; acknowledging stays first-party only. Production keeps `off` until the mobile app ships the dialog (§9).
+No value gates a personal API key or a third-party (partner) OAuth token (Chief ruling 2026-10-29): automation is never blocked by an announcement, and people acknowledge in the web app or the first-party app. Any other value fails the boot. Whatever the value: cookie sessions are always gated; `pendingAcknowledgements` is on every `MeResponse`; §4 works for bearers under its scopes; acknowledging stays first-party only. **Who flips it, and when** (Chief ruling 2026-10-30 relaying the owner): `BT_ANNOUNCEMENT_ACK_GATE_BEARER` ships OFF and stays OFF by default; flipping it to `first_party` is an OWNER action on the production host's env file (nobody else can touch it), with the documented precondition "the announcements API is live AND every first-party install the owner cares about runs app build 152 or later" — NO calendar date. The admin console shows the current value read-only (`bearerAckGate` on `GET /admin/announcements`); the API can never write it.
 
 ### 5.5 Precedence
 

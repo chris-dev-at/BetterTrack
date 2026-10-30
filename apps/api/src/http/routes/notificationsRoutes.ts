@@ -1,7 +1,12 @@
 import { Router } from 'express';
 
 import {
+  acknowledgeAnnouncementRequestSchema,
+  activeAnnouncementListResponseSchema,
+  acknowledgeAnnouncementResponseSchema,
   announcementIdParamSchema,
+  userAnnouncementQuerySchema,
+  userAnnouncementSchema,
   deleteDeviceRequestSchema,
   markReadRequestSchema,
   notificationBulkDeleteQuerySchema,
@@ -10,15 +15,20 @@ import {
   registerDeviceRequestSchema,
   webPushSubscribeRequestSchema,
   webPushUnsubscribeRequestSchema,
+  type AcknowledgeAnnouncementRequest,
   type DeleteDeviceRequest,
   type MarkReadRequest,
   type NotificationBulkDeleteQuery,
   type NotificationListQuery,
   type RegisterDeviceRequest,
+  type UserAnnouncementQuery,
   type WebPushSubscribeRequest,
   type WebPushUnsubscribeRequest,
 } from '@bettertrack/contracts';
 
+import { forbidden } from '../../errors';
+import type { AcknowledgementChannel } from '../../services/announcements/userAnnouncementService';
+import { recordBearerScopeDenied } from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -102,31 +112,92 @@ export function createNotificationsRouter(ctx: AppContext): Router {
     res.json({ ok: true });
   });
 
-  // ── Announcements banner (§13.4 V4-P5b) ─────────────────────────────────────
+  // ── Announcements (§13.4 V4-P5b; extended by §6.19, contract §4) ────────────
   // Registered BEFORE the `:id` param routes below so `/announcements/…`
-  // never resolves as `/:id/…`. Delivery of the fan-out inbox row itself
-  // stays the admin service's job — this router only serves the banner list
-  // and the per-user dismissal.
+  // never resolves as `/:id/…`. Every per-id route answers the same 404 for
+  // an unknown id, a draft, a not-yet-open window and an announcement outside
+  // the caller's audience — indistinguishable by design.
 
-  // GET /notifications/announcements — active-for-me set, rendered in the
-  // viewer's stored locale (EN fallback via resolveEmailLocale).
-  router.get('/announcements', async (req, res) => {
-    const announcements = await ctx.announcements.listActiveForUser(
-      req.authUser!.id,
-      req.authUser!.locale,
-    );
-    res.json({ announcements });
+  // GET /notifications/announcements[?locale=] — the caller's open list.
+  router.get('/announcements', validateQuery(userAnnouncementQuerySchema), async (req, res) => {
+    const { locale } = req.valid?.query as UserAnnouncementQuery;
+    const announcements = await ctx.userAnnouncements.list(req.authUser!, locale);
+    res.json(activeAnnouncementListResponseSchema.parse({ announcements }));
   });
 
-  // POST /notifications/announcements/:id/dismiss — per-user dismissal.
-  // Idempotent; a foreign/unknown id 404s (indistinguishable, no IDOR).
+  // GET /notifications/announcements/:id[?locale=] — one item, ended and
+  // archived ones included (the inbox deep-link, "what did I acknowledge").
+  router.get(
+    '/announcements/:id',
+    validateParams(announcementIdParamSchema),
+    validateQuery(userAnnouncementQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { locale } = req.valid?.query as UserAnnouncementQuery;
+      const announcement = await ctx.userAnnouncements.get(id, req.authUser!, locale);
+      res.json(userAnnouncementSchema.parse(announcement));
+    },
+  );
+
+  // POST /notifications/announcements/:id/seen — first write wins.
+  router.post(
+    '/announcements/:id/seen',
+    validateParams(announcementIdParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      await ctx.userAnnouncements.seen(id, req.authUser!);
+      res.json({ ok: true });
+    },
+  );
+
+  // POST /notifications/announcements/:id/dismiss — notice/once only (409 for
+  // ack_required); idempotent.
   router.post(
     '/announcements/:id/dismiss',
     validateParams(announcementIdParamSchema),
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
-      await ctx.announcements.dismiss(req.authUser!.id, id);
+      await ctx.userAnnouncements.dismiss(id, req.authUser!);
       res.json({ ok: true });
+    },
+  );
+
+  // POST /notifications/announcements/:id/acknowledge — a person confirms,
+  // never automation: a cookie session or a first-party OAuth token. The
+  // bearer policy already refused (and audited) a personal key or a partner
+  // token with `API_KEY_FORBIDDEN`; the check below is the route's own
+  // default-deny, so a policy-table change can never open this to them.
+  router.post(
+    '/announcements/:id/acknowledge',
+    validateParams(announcementIdParamSchema),
+    validateBody(acknowledgeAnnouncementRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const body = req.valid?.body as AcknowledgeAnnouncementRequest;
+      let channel: AcknowledgementChannel;
+      if (!req.apiKey) {
+        channel = { via: 'web_session' };
+      } else if (req.apiKey.kind === 'oauth' && req.apiKey.firstParty) {
+        channel = { via: 'first_party_oauth', grantId: req.apiKey.id };
+      } else {
+        // Router-local twin of the global first-party-only rail (#1951): the
+        // same answer, written to the same audited denial trail, so a remount
+        // or a policy-table change can neither open this route nor refuse on
+        // it silently.
+        await recordBearerScopeDenied(
+          ctx,
+          req,
+          'notifications:write',
+          'first-party-only',
+          `/notifications${req.path}`,
+        );
+        throw forbidden(
+          'This endpoint is available to first-party OAuth clients only.',
+          'API_KEY_FORBIDDEN',
+        );
+      }
+      const result = await ctx.userAnnouncements.acknowledge(id, req.authUser!, body, channel);
+      res.json(acknowledgeAnnouncementResponseSchema.parse(result));
     },
   );
 

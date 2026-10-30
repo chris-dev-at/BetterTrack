@@ -1,5 +1,4 @@
 import type {
-  ActiveAnnouncement,
   Announcement,
   AnnouncementDeliveryState,
   AnnouncementSeverity,
@@ -18,8 +17,8 @@ import type { AnnouncementRow } from '../../data/schema';
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { AuditService } from '../audit/auditService';
-import { resolveEmailLocale, type EmailLocale } from '../email/emailI18n';
 import { fanOutAnnouncement } from '../notifications/announcementFanOut';
+import { inboxCopy } from './announcementContent';
 
 /**
  * Admin-composed in-app announcements (§13.4 V4-P5b; rebuilt by ADMIN-W7a
@@ -239,7 +238,11 @@ export interface AnnouncementSweepResult {
 
 export interface AnnouncementServiceDeps {
   repo: AnnouncementRepository;
-  users: Pick<UserRepository, 'listRecipientsAfter'>;
+  /**
+   * The audience walk (§6.19.8): user-kind accounts in the announcement's
+   * audience only, keyset-paged. Admins never get a row.
+   */
+  users: Pick<UserRepository, 'listAnnouncementAudienceAfter'>;
   notifications: Pick<NotificationRepository, 'insert'>;
   /** Admin audit trail; every mutation lands one row. */
   audit: AuditService;
@@ -294,12 +297,6 @@ export interface AnnouncementService {
     attempt?: number,
     actorId?: string,
   ): Promise<AnnouncementPublishOutcome>;
-  // ── User surface ──────────────────────────────────────────────────────────
-  listActiveForUser(
-    userId: string,
-    userLocale: string | null | undefined,
-  ): Promise<ActiveAnnouncement[]>;
-  dismiss(userId: string, announcementId: string): Promise<void>;
 }
 
 /**
@@ -341,8 +338,10 @@ function toAnnouncement(row: AnnouncementRow, at: Date): Announcement {
     severity: row.severity as AnnouncementSeverity,
     titleEn: row.titleEn,
     bodyEn: row.bodyEn,
-    titleDe: row.titleDe,
-    bodyDe: row.bodyDe,
+    // Nullable since 0122 (DE optional for notice/once); this composer still
+    // requires both, so the fallback only covers rows written by a later one.
+    titleDe: row.titleDe ?? '',
+    bodyDe: row.bodyDe ?? '',
     startsAt: row.startsAt ? row.startsAt.toISOString() : null,
     endsAt: row.endsAt ? row.endsAt.toISOString() : null,
     active: row.active,
@@ -353,16 +352,6 @@ function toAnnouncement(row: AnnouncementRow, at: Date): Announcement {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
-}
-
-/** Render the announcement in one locale (EN fallback for any unknown code). */
-function renderForLocale(
-  row: AnnouncementRow,
-  locale: EmailLocale,
-): { title: string; body: string } {
-  return locale === 'de'
-    ? { title: row.titleDe, body: row.bodyDe }
-    : { title: row.titleEn, body: row.bodyEn };
 }
 
 export function createAnnouncementService(deps: AnnouncementServiceDeps): AnnouncementService {
@@ -416,20 +405,28 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
     actorId?: string,
   ): Promise<AnnouncementPublishOutcome> {
     const eventKey = announcementEventKey(row.id);
+    // The walk covers the announcement's AUDIENCE only (§6.19.8): user-kind
+    // accounts, and for `existing_at_publish` those created strictly before
+    // the frozen cutoff. The audience is immutable once published, so every
+    // pass of one announcement walks the same set.
+    const audience = { kind: row.audience, cutoffAt: row.audienceCutoffAt };
     const result = await fanOutAnnouncement({
-      users,
+      users: {
+        listRecipientsAfter: (afterId, limit) =>
+          users.listAnnouncementAudienceAfter(afterId, limit, audience),
+      },
       notifications,
       type: ANNOUNCEMENT_NOTIFICATION_TYPE,
       eventKey,
-      copy: {
-        en: { title: row.titleEn, body: row.bodyEn },
-        de: { title: row.titleDe, body: row.bodyDe },
-      },
+      // The plain-text projection (contract §6): the whole body for `notice`,
+      // an excerpt for `once` / `ack_required` (read in full through the
+      // per-id route). Never markup.
+      copy: { en: inboxCopy(row, 'en'), de: inboxCopy(row, 'de') },
       // The deep-link routes off announcementId so the bell click surfaces the
       // banner-linked content (`NotificationBell.notificationLink` maps
       // `account.notice` to /settings/notifications by default; a payload with
       // `announcementId` lets a future landing surface deep-link precisely).
-      payload: { notice: 'announcement', announcementId: row.id },
+      payload: { notice: 'announcement', announcementId: row.id, announcementKind: row.kind },
       ...(deps.fanOutPageSize !== undefined ? { pageSize: deps.fanOutPageSize } : {}),
       logger,
     });
@@ -557,7 +554,7 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
     row: AnnouncementRow,
     at: Date,
   ): 'due' | 'inactive' | 'scheduled' | 'expired' | 'already-published' {
-    if (!row.active) return 'inactive';
+    if (row.lifecycle !== 'published') return 'inactive';
     if (row.endsAt && row.endsAt.getTime() <= at.getTime()) return 'expired';
     if (row.publishedAt !== null) return 'already-published';
     if (row.startsAt && row.startsAt.getTime() > at.getTime()) return 'scheduled';
@@ -611,7 +608,7 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
     row: AnnouncementRow,
     at: Date,
   ): 'ready' | 'nothing-failed' | 'not-published' | 'inactive' | 'expired' {
-    if (!row.active) return 'inactive';
+    if (row.lifecycle !== 'published') return 'inactive';
     if (row.endsAt && row.endsAt.getTime() <= at.getTime()) return 'expired';
     if (row.publishedAt === null) return 'not-published';
     if (!row.failedCount) return 'nothing-failed';
@@ -883,27 +880,6 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
 
     publishAnnouncement(id, attempt = 0, actorId?: string): Promise<AnnouncementPublishOutcome> {
       return publishOne(id, attempt, actorId);
-    },
-
-    async listActiveForUser(userId, userLocale): Promise<ActiveAnnouncement[]> {
-      const rows = await repo.listActiveForUser(userId, now());
-      const locale = resolveEmailLocale(userLocale);
-      return rows.map((row) => {
-        const rendered = renderForLocale(row, locale);
-        return {
-          id: row.id,
-          severity: row.severity as AnnouncementSeverity,
-          title: rendered.title,
-          body: rendered.body,
-          publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
-        };
-      });
-    },
-
-    async dismiss(userId, announcementId): Promise<void> {
-      const row = await repo.findById(announcementId);
-      if (!row) throw announcementNotFound();
-      await repo.dismissForUser(userId, announcementId);
     },
   };
 }

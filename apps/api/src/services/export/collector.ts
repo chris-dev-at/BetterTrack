@@ -4,7 +4,7 @@ import { count, eq, inArray, or } from 'drizzle-orm';
 import type { Database } from '../../data/db';
 import {
   alerts,
-  announcementDismissals,
+  announcementReceipts,
   apiKeys,
   assets,
   cashBudgets,
@@ -135,6 +135,29 @@ function sanitize(
  * denylisting also fails closed: a future admin-side column added to the table
  * without touching this file stays out of the ZIP by default.
  */
+/**
+ * The account's own announcement receipts (§6.19.5) — what the person saw,
+ * dismissed, acknowledged (with the locale and the hash of the exact text) and
+ * what lapsed. Projected, not `select()`: the pseudonym columns are NULL on
+ * every live row anyway, and the OAuth grant id is an internal handle, so a
+ * future column stays out of the ZIP until someone decides it belongs there.
+ */
+const ANNOUNCEMENT_RECEIPT_EXPORT_COLUMNS = {
+  id: announcementReceipts.id,
+  userId: announcementReceipts.userId,
+  announcementId: announcementReceipts.announcementId,
+  seenAt: announcementReceipts.seenAt,
+  dismissedAt: announcementReceipts.dismissedAt,
+  acknowledgedAt: announcementReceipts.acknowledgedAt,
+  acknowledgedVia: announcementReceipts.acknowledgedVia,
+  acknowledgedLocale: announcementReceipts.acknowledgedLocale,
+  acknowledgedContentSha256: announcementReceipts.acknowledgedContentSha256,
+  lapsedAt: announcementReceipts.lapsedAt,
+  lapseReason: announcementReceipts.lapseReason,
+  createdAt: announcementReceipts.createdAt,
+  updatedAt: announcementReceipts.updatedAt,
+};
+
 const FEEDBACK_EXPORT_COLUMNS = {
   id: feedback.id,
   userId: feedback.userId,
@@ -360,7 +383,7 @@ export async function collectUserExport(
     itemFollowRows,
     chatConversationRows,
     chatMessageRows,
-    announcementDismissalRows,
+    announcementReceiptRows,
     transactionRows,
     cashSourceRows,
     dividendRows,
@@ -419,7 +442,10 @@ export async function collectUserExport(
       .where(or(eq(chatConversations.userA, userId), eq(chatConversations.userB, userId))),
     // A user's OWN authored messages only — never the partner's content.
     db.select().from(chatMessages).where(eq(chatMessages.senderId, userId)),
-    db.select().from(announcementDismissals).where(eq(announcementDismissals.userId, userId)),
+    db
+      .select(ANNOUNCEMENT_RECEIPT_EXPORT_COLUMNS)
+      .from(announcementReceipts)
+      .where(eq(announcementReceipts.userId, userId)),
     inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(transactions).where(inArray(transactions.portfolioId, ids)),
     ),
@@ -548,7 +574,7 @@ export async function collectUserExport(
     itemFollows: sanitize(itemFollowRows),
     chatConversations: sanitize(chatConversationRows),
     chatMessages: sanitize(chatMessageRows),
-    announcementDismissals: sanitize(announcementDismissalRows),
+    announcementReceipts: sanitize(announcementReceiptRows),
     customAssets: sanitize(customAssetFull),
     customAssetPriceHistory: sanitize(customAssetPriceRows),
     expenseCategories: sanitize(expenseCategoryRows),

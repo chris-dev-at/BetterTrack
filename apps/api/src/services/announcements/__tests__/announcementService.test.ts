@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CreateAnnouncementRequest } from '@bettertrack/contracts';
 
+import { createAnnouncementReceiptRepository } from '../../../data/repositories/announcementReceiptRepository';
 import { createAnnouncementRepository } from '../../../data/repositories/announcementRepository';
 import { createNotificationRepository } from '../../../data/repositories/notificationRepository';
 import { createUserRepository } from '../../../data/repositories/userRepository';
@@ -104,18 +105,21 @@ describe('AnnouncementService — active window', () => {
     expect(created.active).toBe(true);
 
     // Before window: hidden for every user.
-    const beforeStart = await service.listActiveForUser(alice.id, 'en');
+    // Visibility moved to the receipt repository (§6.19); the window is the same.
+    const receipts = createAnnouncementReceiptRepository(harness.db);
+    const viewer = { id: alice.id, createdAt: new Date(0) };
+    const beforeStart = await receipts.listOpenForViewer(viewer, now);
     expect(beforeStart).toHaveLength(0);
 
     // Inside window: visible, rendered EN.
     now = new Date('2026-06-15T12:00:00.000Z');
-    const inside = await service.listActiveForUser(alice.id, 'en');
+    const inside = await receipts.listOpenForViewer(viewer, now);
     expect(inside).toHaveLength(1);
-    expect(inside[0]!.title).toBe(BASE_BODY.titleEn);
+    expect(inside[0]!.row.titleEn).toBe(BASE_BODY.titleEn);
 
     // After window: hidden again.
     now = new Date('2026-07-15T12:00:00.000Z');
-    const afterEnd = await service.listActiveForUser(alice.id, 'en');
+    const afterEnd = await receipts.listOpenForViewer(viewer, now);
     expect(afterEnd).toHaveLength(0);
   });
 

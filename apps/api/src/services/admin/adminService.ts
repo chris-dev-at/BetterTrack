@@ -1085,6 +1085,7 @@ export function createAdminService(deps: AdminServiceDeps) {
           return { target: lockedTarget, statusChanged: changed, moderationId: recordId };
         },
       );
+      let acknowledgementsKept = 0;
       try {
         await sessions.destroyAllForUser(target.id);
         await removeRememberedDeviceBindings(redis, target.id);
@@ -1093,14 +1094,17 @@ export function createAdminService(deps: AdminServiceDeps) {
         // the row delete cascades their copy away (V5-P7 M4), so the chain
         // survives.
         await mirror.handleAccountDeletion(target.id);
-        await userRepo.withSerializedAdminMutation(async (repo) => {
+        const removal = await userRepo.withSerializedAdminMutation(async (repo) => {
           const reserved = await repo.findByIdForUpdate(target.id);
           if (!reserved) throw notFound('User not found.', 'USER_NOT_FOUND');
           // A concurrent enable between reservation and cascade must re-pass the
           // same invariant before this transaction removes the row.
           await ensureActiveAdminRemains(repo, reserved, false);
-          await repo.remove(reserved.id);
+          // Pseudonymises the acknowledged announcement receipts in this same
+          // transaction (§6.19.5) — the count lands on the audit row below.
+          return repo.remove(reserved.id);
         });
+        acknowledgementsKept = removal.acknowledgementsKept;
       } catch (error) {
         // The reservation above is a real, durable suspension: the account is
         // locked out and stays that way for retry. Record it before re-raising —
@@ -1136,7 +1140,7 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetType: 'user',
         targetId: target.id,
         ip: actor.ip,
-        meta: { via: 'admin' },
+        meta: { via: 'admin', acknowledgementsKept },
       });
       // Pair the pre-delete sweep with a full scan after durable deletion. This
       // also catches a writer whose new reverse-index membership was erased by
