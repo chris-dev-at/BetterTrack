@@ -15,6 +15,7 @@ import {
   type PortfolioSnapshotService,
   type VanishedHolding,
 } from './portfolioSnapshots';
+import { daysBefore } from './portfolioService';
 
 /**
  * One-off repair of the FX-probe history holes (issue #1729).
@@ -31,11 +32,12 @@ import {
  *  1. Gate ({@link checkFxHoleRepairGate}): refuse to run unless this build's
  *     snapshot writer carries both persist-time refusals.
  *  2. Enumerate, read-only: for every non-vaulted portfolio with stored rows,
- *     the earliest stored day on which an asset that an EARLIER row carries,
- *     and that the CURRENT transactions still hold, is missing
+ *     the earliest stored day on which an asset the CURRENT transactions hold,
+ *     and that the engine valued on some other stored day, is missing
  *     ({@link earliestFxHole} — the writer's own {@link findVanishedHoldings}
- *     walk, anchored at each asset's first keyed row). The counts are recorded
- *     as `snapshots.fx_hole_repair_enumerated` BEFORE anything is touched.
+ *     holding walk, but NOT its anchor: the holes the guard cannot see are
+ *     found too). The counts are recorded as
+ *     `snapshots.fx_hole_repair_enumerated` BEFORE anything is touched.
  *  3. Repair, per hit: the service's own `invalidate(portfolioId, earliestHole)`
  *     — the dirty marker (never later than an existing one: `least()`), then
  *     the delete of the rows from that day, under the portfolio's paranoid
@@ -43,8 +45,11 @@ import {
  *     persist path. A recompute the guards refuse writes nothing and leaves the
  *     marker for the nightly roll; it is counted `refused`, never `repaired`.
  *  4. Verify and record: `repaired` only when the state is clean AND a re-scan
- *     of the stored rows finds no hole; the outcome is recorded as
- *     `snapshots.fx_hole_repair_completed`.
+ *     of the stored rows — with the assets found missing counted as usable —
+ *     finds no hole. A recompute that persisted WITHOUT them (possible only for
+ *     a hole the guard cannot see, during a spurious 404) is re-invalidated at
+ *     once and counted `refused`, so the nightly roll rewrites it. The outcome
+ *     is recorded as `snapshots.fx_hole_repair_completed`.
  *
  * **Idempotent.** A repaired portfolio has no hole left, so a second run finds
  * nothing and records zeros. A crash mid-run leaves every portfolio either
@@ -84,7 +89,7 @@ const AUDIT_TARGET_TYPE = 'snapshot_repair';
 
 /** A portfolio's earliest frozen hole and the holdings missing on it. */
 export interface FxHole {
-  /** The earliest stored day missing a held, previously keyed asset. */
+  /** The earliest stored day missing a held, usable asset. */
   day: string;
   /** One entry per vanished asset (its first such day), as the guard reports them. */
   vanished: VanishedHolding[];
@@ -96,41 +101,42 @@ const byDate = (a: { date: string }, b: { date: string }) =>
 /**
  * The earliest FX hole in a portfolio's stored rows, or null.
  *
- * A hole is a stored row on which an asset is missing although (a) an EARLIER
- * row carries it and (b) the current transactions hold it on that day. That is
- * exactly the persist-time guard's question, so the walk IS the guard: each
- * asset is checked by {@link findVanishedHoldings} with the first row that
- * carries it as the anchor and every later row as the "written" rows. Using the
- * guard's own holding walk (not a re-derivation) keeps the two agreeing: a
- * position fully sold before the missing day, or one whose transactions were
- * deleted, is no hole — its value is 0 with or without the key — and the
- * recompute the repair triggers will not be refused for it either.
+ * A hole is a stored row on day D that is missing an asset although (a) the
+ * CURRENT transactions hold it on D and (b) the asset is usable — the engine
+ * valued it on at least one other stored day of this portfolio (it is keyed in
+ * some row, earlier OR later), or it is in `knownUsable`.
+ *
+ * Deliberately NOT anchored on an earlier row, unlike the persist guard: the
+ * guard only sees assets the row before its write floor carries, so two hole
+ * shapes slip past it and must still be found here — (1) a nightly run whose
+ * heal floor is exactly an asset's first buy day, and (2) a first computation,
+ * backdated buy or import in a currency the portfolio held nothing else of,
+ * which leaves every day older than the heal window without the asset while
+ * the later rows carry it. Both have no earlier row carrying the asset.
+ *
+ * The holding walk itself is still the guard's ({@link findVanishedHoldings}),
+ * fed a synthetic anchor dated before every row that "carries" every usable
+ * asset, so each one is checked on every stored row: a position fully sold
+ * before the missing day, or one whose transactions were deleted, is no hole —
+ * its value is 0 with or without the key.
  */
 export function earliestFxHole(
   rows: readonly Pick<SnapshotRowRecord, 'date' | 'assetValues'>[],
   txns: readonly Pick<TransactionRecord, 'assetId' | 'side' | 'quantity' | 'executedAt'>[],
+  knownUsable: Iterable<string> = [],
 ): FxHole | null {
   const sorted = [...rows].sort(byDate);
-  // Group assets by the first row that keys them, so one guard call covers
-  // every asset sharing an anchor.
-  const anchors = new Map<number, Record<string, number>>();
-  const seen = new Set<string>();
-  sorted.forEach((row, index) => {
-    for (const [assetId, value] of Object.entries(row.assetValues)) {
-      if (seen.has(assetId)) continue;
-      seen.add(assetId);
-      const bucket = anchors.get(index) ?? {};
-      bucket[assetId] = value;
-      anchors.set(index, bucket);
-    }
-  });
-
-  const vanished: VanishedHolding[] = [];
-  for (const [index, assetValues] of anchors) {
-    const anchor = sorted[index];
-    if (anchor === undefined) continue;
-    vanished.push(...findVanishedHoldings({ date: anchor.date, assetValues }, sorted, txns));
+  const first = sorted[0];
+  if (first === undefined) return null;
+  const usable: Record<string, number> = {};
+  for (const assetId of knownUsable) usable[assetId] = 0;
+  for (const row of sorted) {
+    for (const assetId of Object.keys(row.assetValues)) usable[assetId] = 0;
   }
+  if (Object.keys(usable).length === 0) return null;
+
+  const beforeEveryRow = { date: daysBefore(first.date, 1), assetValues: usable };
+  const vanished = findVanishedHoldings(beforeEveryRow, sorted, txns);
   if (vanished.length === 0) return null;
   vanished.sort((a, b) => byDate({ date: a.day }, { date: b.day }));
   return { day: vanished[0]!.day, vanished };
@@ -251,9 +257,13 @@ export interface FxHoleRepairReport extends FxHoleEnumeration {
   reason?: 'fix_absent';
   /** Hole gone from the stored rows and the state clean. */
   repaired: number;
-  /** The guarded recompute persisted nothing; the marker stays for the nightly roll. */
+  /**
+   * The recompute did not bring the missing asset back — the guards refused to
+   * persist, or it persisted without the asset and was re-marked dirty. Either
+   * way the marker is down and the nightly roll rewrites the range.
+   */
   refused: number;
-  /** The invalidation or the recompute threw, or a hole survived a clean persist. */
+  /** The recompute threw; the marker stays for the nightly roll. */
   failed: number;
   /** Holes that could not even be MARKED dirty — the only ones the nightly cannot heal. */
   unmarked: number;
@@ -323,12 +333,15 @@ export async function runFxHoleRepair(deps: FxHoleRepairDeps): Promise<FxHoleRep
   }
 
   /** The current earliest hole of one portfolio, read from durable state. */
-  async function scan(portfolioId: string): Promise<FxHole | null> {
+  async function scan(
+    portfolioId: string,
+    knownUsable: Iterable<string> = [],
+  ): Promise<FxHole | null> {
     const [rows, txns] = await Promise.all([
       snapshotRepo.listForPortfolio(portfolioId),
       transactionRepo.listForPortfolio(portfolioId),
     ]);
-    return earliestFxHole(rows, txns);
+    return earliestFxHole(rows, txns, knownUsable);
   }
 
   // ── Pass 1: enumerate, read-only ────────────────────────────────────────────
@@ -426,13 +439,35 @@ export async function runFxHoleRepair(deps: FxHoleRepairDeps): Promise<FxHoleRep
     if (await deps.isParanoidPortfolio?.(portfolioId)) return 'skipped';
     const state = await snapshotRepo.getState(portfolioId);
     if (state !== null && state.dirtyFrom !== null) return 'refused';
-    const remaining = await scan(portfolioId);
+    // The assets found missing stay "usable" for the re-scan even if no row
+    // carries them any more: a recompute that persisted WITHOUT them — the
+    // guard is blind to a hole with no earlier row carrying the asset, e.g.
+    // during a spurious negative-cached 404 — must not read as repaired.
+    const missing = hit.hole.vanished.map((v) => v.assetId);
+    const remaining = await scan(portfolioId, missing);
     if (remaining === null) return 'repaired';
+    const again = remaining.day < from ? remaining.day : from;
     logger.warn(
-      { event: 'repair.hole_survived', runId, portfolioId, from, remaining: remaining.day },
-      'fx hole repair: a hole survived a clean persist',
+      {
+        event: 'repair.persisted_without_asset',
+        runId,
+        portfolioId,
+        from,
+        remaining: remaining.day,
+        vanished: remaining.vanished.slice(0, 5),
+      },
+      'fx hole repair: the recompute persisted without a held asset; re-marking it dirty',
     );
-    return 'failed';
+    try {
+      await snapshots.invalidate(portfolioId, again);
+    } catch (err) {
+      logger.warn(
+        { err, event: 'repair.invalidate_failed', runId, portfolioId, from: again },
+        'fx hole repair: could not re-mark a portfolio dirty',
+      );
+      return 'unmarked';
+    }
+    return 'refused';
   }
 
   let repaired = 0;

@@ -364,12 +364,38 @@ describe('earliestFxHole', () => {
     });
   });
 
-  it('reports nothing for an asset no stored row ever carried (no anchor to compare)', () => {
+  it('finds a hole that no EARLIER row can anchor: the asset is only keyed on later rows (shapes 1 and 2)', () => {
+    // A first computation / backdated buy in a currency the portfolio held
+    // nothing else of, persisted while the probe failed, then healed only
+    // inside the nightly window: the older days never carried the asset. The
+    // persist guard's anchor cannot see this; the repair must.
+    const rows: Row[] = [
+      { date: '2026-08-01', assetValues: { a: 1 } },
+      { date: '2026-08-02', assetValues: { a: 1 } },
+      { date: '2026-08-03', assetValues: { a: 1, b: 2 } },
+    ];
+    expect(earliestFxHole(rows, [buy('a', '2026-07-30'), buy('b', '2026-07-30')])).toEqual({
+      day: '2026-08-01',
+      vanished: [{ assetId: 'b', day: '2026-08-01' }],
+    });
+    // The same rows with b bought only on 08-03 are no hole at all.
+    expect(earliestFxHole(rows, [buy('a', '2026-07-30'), buy('b', '2026-08-03')])).toBeNull();
+  });
+
+  it('needs evidence that an asset is usable: never keyed anywhere is no hole unless known usable', () => {
     const rows: Row[] = [
       { date: '2026-08-01', assetValues: { a: 1 } },
       { date: '2026-08-02', assetValues: { a: 1 } },
     ];
-    expect(earliestFxHole(rows, [buy('a', '2026-07-30'), buy('z', '2026-07-30')])).toBeNull();
+    const txns = [buy('a', '2026-07-30'), buy('z', '2026-07-30')];
+    // A currency with no market is legitimately absent from every row.
+    expect(earliestFxHole(rows, txns)).toBeNull();
+    // The repair's re-scan passes the assets it found missing as known usable,
+    // so a recompute that dropped them from EVERY row is not read as healed.
+    expect(earliestFxHole(rows, txns, ['z'])).toEqual({
+      day: '2026-08-01',
+      vanished: [{ assetId: 'z', day: '2026-08-01' }],
+    });
   });
 
   it('takes the minimum across assets, whatever order the rows arrive in', () => {
@@ -389,8 +415,8 @@ describe('earliestFxHole', () => {
 });
 
 describe('checkFxHoleRepairGate', () => {
-  it('passes on this build: guard version 1 and the real guard', () => {
-    expect(SNAPSHOT_PERSIST_GUARD_VERSION).toBe(1);
+  it('passes on this build: guard version 2 and the real guard', () => {
+    expect(SNAPSHOT_PERSIST_GUARD_VERSION).toBe(2);
     expect(checkFxHoleRepairGate()).toEqual({ ok: true });
   });
 
@@ -554,6 +580,72 @@ describe('snapshots.repairFxHoles', () => {
       earliestHoleDay: null,
     });
     expect(second[1]!.meta).toMatchObject({ repaired: 0, refused: 0, failed: 0 });
+  });
+
+  it('repairs a hole with no earlier row carrying the asset (shape 2): every day older than the heal window', async () => {
+    const db = await makeDb();
+    const { assets, holed } = await seedHoledEstate(db);
+    // Shape 2 on top: the USD position missing from EVERY day older than the
+    // 35-day window, so no stored row before the hole carries it.
+    await freezeHole(
+      db,
+      holed,
+      assets,
+      Array.from({ length: 10 }, (_, i) => -45 + i),
+    );
+    const { log } = capturingLogger();
+
+    await createSnapshotsFxHoleRepairJob(repairDeps(db, snapshotService(db, 'ok', log))).handler(
+      makeJob(),
+      makeCtx(log),
+    );
+
+    const [enumerated, completed] = await repairAudit(db);
+    expect(enumerated?.meta).toMatchObject({
+      portfoliosWithHoles: 1,
+      earliestHoleDay: dayOffset(-45),
+    });
+    expect(completed?.meta).toMatchObject({ repaired: 1, refused: 0, failed: 0 });
+    const rows = await rowsOf(db, holed);
+    expect(rows).toHaveLength(45);
+    for (const row of rows) expect(usdOf(row, assets.usdId)).toBeCloseTo(480, 9);
+    expect((await stateOf(db, holed))?.dirtyFrom ?? null).toBeNull();
+  });
+
+  it('does not count a shape-2 recompute that persisted WITHOUT the asset as repaired: it re-marks it dirty for the nightly', async () => {
+    // With no earlier row carrying USD, a replayed 404 is invisible to the
+    // persist guard, so the recompute persists every day without USD. The
+    // verification must catch that, put the marker back, and say `refused`.
+    const db = await makeDb();
+    const { assets, holed } = await seedHoledEstate(db);
+    await freezeHole(
+      db,
+      holed,
+      assets,
+      Array.from({ length: 10 }, (_, i) => -45 + i),
+    );
+    const { log, lines } = capturingLogger();
+
+    await createSnapshotsFxHoleRepairJob(
+      repairDeps(db, snapshotService(db, 'not_found', log)),
+    ).handler(makeJob(), makeCtx(log));
+
+    const completed = (await repairAudit(db)).find(
+      (r) => r.action === 'snapshots.fx_hole_repair_completed',
+    );
+    expect(completed?.meta).toMatchObject({ repaired: 0, refused: 1, failed: 0, unmarked: 0 });
+    expect(lines.some((l) => l.fields.event === 'repair.persisted_without_asset')).toBe(true);
+    expect((await stateOf(db, holed))?.dirtyFrom).toBe(dayOffset(-45));
+    expect(await rowsOf(db, holed)).toEqual([]);
+
+    // The next healthy nightly rewrites the whole history with USD.
+    await createSnapshotsBackfillJob({
+      snapshots: snapshotService(db, 'ok', log),
+      now: () => Date.parse(`${dayOffset(0)}T01:30:00.000Z`),
+    }).handler(makeJob() as never, makeCtx(log));
+    const healed = await rowsOf(db, holed);
+    expect(healed).toHaveLength(45);
+    for (const row of healed) expect(usdOf(row, assets.usdId)).toBeCloseTo(480, 9);
   });
 
   it.each<[FxMode, string]>([

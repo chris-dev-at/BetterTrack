@@ -652,10 +652,18 @@ rewrite the whole range without the currency, and a two-day hole would become we
 **What it does**, per non-vaulted portfolio with stored rows:
 
 1. **Enumerate (read-only).** Find the earliest stored day on which an asset is
-   missing although an earlier row carries it and the current transactions still
-   hold it. This is the persist guard's own holding walk, so a position sold before
-   that day is not a hole. Vaulted portfolios and paranoid owners' portfolios are
-   never read, only counted.
+   missing although the current transactions hold it on that day and the engine
+   valued it on some other stored day of the portfolio (earlier **or** later). It
+   uses the persist guard's holding walk, so a position sold before that day is not
+   a hole. It deliberately does not use the guard's anchor, so it also finds the two
+   hole shapes the guard cannot see:
+   - a nightly run whose heal floor is exactly an asset's first buy day;
+   - a first computation, backdated buy or import in a currency the portfolio held
+     nothing else of. That leaves every day older than the heal window without the
+     asset.
+
+   Vaulted portfolios and paranoid owners' portfolios are never read, only counted.
+
 2. **Record** `snapshots.fx_hole_repair_enumerated` with the pre-repair counts. This
    happens before anything is written.
 3. **Repair.** Run the service's own `invalidate(portfolio, earliestHole)`: the marker
@@ -665,7 +673,10 @@ rewrite the whole range without the currency, and a two-day hole would become we
    page and per portfolio.
 4. **Verify and record** `snapshots.fx_hole_repair_completed`. A portfolio counts as
    `repaired` only if its state is clean and a re-scan of its stored rows finds no
-   hole.
+   hole. The re-scan still treats the assets it found missing as usable. If the
+   recompute persisted without them, it is re-marked dirty at once and counted as
+   `refused` (log: `repair.persisted_without_asset`). That can only happen for a hole
+   the guard cannot see, during a spurious 404.
 
 **Reading the outcome without database access.** Open the admin console, go to
 **Security & API → Audit log**, and type `snapshots.` into **Action**. The direct link
@@ -682,17 +693,17 @@ portfolio, user or asset id. The worker log has the same numbers as `repair.enum
 and `repair.completed`, plus one `repair.portfolio` line per repaired portfolio, with
 its id, the day it was repaired from, and its outcome.
 
-**If `refused > 0`:** the guarded recompute persisted nothing for those portfolios.
-FX was unavailable, or the run would have dropped a held asset. Their marker stays
-down, so every read already serves the correct live engine, and the next nightly
-`snapshots.backfill` with healthy FX rewrites them. Look in the worker log for the
+**If `refused > 0`:** the recompute did not bring the missing asset back for those
+portfolios. Either the guards refused to persist it (FX was unavailable, or the run
+would have dropped a held asset), or it persisted without the asset and was
+re-marked dirty. Their marker stays down, so every read already serves the live
+engine, and the next nightly `snapshots.backfill` with healthy FX rewrites them. Look in the worker log for the
 `repair.portfolio` lines with `outcome: refused`, and for the refusal `warn` that came
 just before each of them (see above). If the cause is transient, nothing needs doing.
 If it is a currency that is gone for good, follow the "gone for good" paragraph above.
 
-**If `failed > 0`:** the recompute threw, or a hole survived a clean persist. The
-marker is down, so the nightly retries. Look for `repair.recompute_failed` or
-`repair.hole_survived` in the log.
+**If `failed > 0`:** the recompute threw. The marker is down, so the nightly
+retries. Look for `repair.recompute_failed` in the log.
 
 **If `unmarked > 0` or `scanFailed > 0`:** the job could not read a portfolio, or
 could not mark its hole. Nothing else will heal those, so the job throws after

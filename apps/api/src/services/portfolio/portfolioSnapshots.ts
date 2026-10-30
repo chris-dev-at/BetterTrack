@@ -334,11 +334,32 @@ function persistWriteFloor(
 }
 
 /**
+ * What the vanished-holding guard compares a computation against: the anchor
+ * (the last row the persist leaves in place) and, when one survives, the stored
+ * row AT the write floor that the persist is about to overwrite. An asset keyed
+ * in either must stay keyed on every written row on which it is held. Dated at
+ * the anchor (or the day before the floor without one), so the guard checks
+ * every written row from the floor on. Null when there is nothing to compare.
+ */
+function guardReference(
+  anchor: Pick<SnapshotRowRecord, 'date' | 'assetValues'> | null,
+  atFloor: Pick<SnapshotRowRecord, 'date' | 'assetValues'> | null,
+  floor: string | null,
+): Pick<SnapshotRowRecord, 'date' | 'assetValues'> | null {
+  if (atFloor === null || floor === null) return anchor;
+  return {
+    date: anchor?.date ?? daysBefore(floor, 1),
+    assetValues: { ...atFloor.assetValues, ...(anchor?.assetValues ?? {}) },
+  };
+}
+
+/**
  * Which persist-time refusals this build's snapshot writer carries (issue
  * #1729). `1` = both of them: the degraded-run refusal (an FX probe that failed
  * as `unavailable` persists nothing and keeps `dirty_from`) and the
  * vanished-holding guard ({@link findVanishedHoldings}, a run that would drop a
- * still-held asset persists nothing).
+ * still-held asset persists nothing). `2` = the guard also compares against
+ * the stored row at the write floor ({@link guardReference}).
  *
  * This is a CONTRACT with the one-off FX hole repair (`fxHoleRepair.ts`): the
  * repair deletes stored rows and recomputes them, which is only safe while both
@@ -348,7 +369,7 @@ function persistWriteFloor(
  * `FX_HOLE_REPAIR_MIN_GUARD_VERSION`. Lower this (or delete it) in the same
  * change that weakens either refusal; never raise it without adding a guard.
  */
-export const SNAPSHOT_PERSIST_GUARD_VERSION = 1;
+export const SNAPSHOT_PERSIST_GUARD_VERSION = 2;
 
 /** A held asset a computation dropped — see {@link findVanishedHoldings}. */
 export interface VanishedHolding {
@@ -840,15 +861,25 @@ export function createPortfolioSnapshotService(
       return { applied: false, reason: 'degraded' };
     }
     const rows = buildRows(artifacts);
-    const anchor = await snapshotRepo.lastRowBefore(portfolioId, persistWriteFloor(seen, healFrom));
-    if (anchor !== null) {
-      const vanished = findVanishedHoldings(anchor, rows, artifacts.txns);
+    const floor = persistWriteFloor(seen, healFrom);
+    const anchor = await snapshotRepo.lastRowBefore(portfolioId, floor);
+    // The row stored AT the floor, if one survives — the nightly heal case,
+    // where nothing invalidated it and this persist is about to overwrite it.
+    // Without it, an asset first bought exactly on the heal floor is in no
+    // anchor key, and a replayed 404 would freeze that day without it (#1729
+    // review, shape 1). Same soundness as the anchor: read after the state the
+    // compare-and-set fences on, and every writer of rows moves that state.
+    const atFloor = floor === null ? null : await snapshotRepo.rowOn(portfolioId, floor);
+    const reference = guardReference(anchor, atFloor, floor);
+    if (reference !== null) {
+      const vanished = findVanishedHoldings(reference, rows, artifacts.txns);
       if (vanished.length > 0) {
         logger?.warn(
           {
             portfolioId,
             guard: 'vanished_holding',
-            anchorDay: anchor.date,
+            anchorDay: anchor?.date ?? null,
+            floorRowDay: atFloor?.date ?? null,
             vanishedCount: vanished.length,
             // Bounded: the first few are what an operator needs to start from.
             vanished: vanished.slice(0, 5),

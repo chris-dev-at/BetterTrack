@@ -248,6 +248,26 @@ export function createPortfolioSnapshotRepository(db: Database) {
       return row ? toRowRecord(row) : null;
     },
 
+    /**
+     * The stored row of exactly `day`, or null — the persist guard's second
+     * reference (`portfolioSnapshots.ts`, #1729 review): the row a nightly heal
+     * is about to overwrite at its floor. A primary-key read: one row.
+     */
+    async rowOn(portfolioId: string, day: string): Promise<SnapshotRowRecord | null> {
+      const rows = await db
+        .select()
+        .from(portfolioDailySnapshots)
+        .where(
+          and(
+            eq(portfolioDailySnapshots.portfolioId, portfolioId),
+            eq(portfolioDailySnapshots.date, day),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      return row ? toRowRecord(row) : null;
+    },
+
     async getState(portfolioId: string): Promise<SnapshotStateRecord | null> {
       const rows = await db
         .select(stateSelection)
