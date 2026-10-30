@@ -11,6 +11,7 @@ import {
   createOAuthClientResponseSchema,
   oauthGrantListResponseSchema,
   oauthTokenResponseSchema,
+  withoutOAuthFirstPartyOnlyScopes,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
@@ -24,6 +25,10 @@ import {
   seedFirstPartyClients,
 } from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import {
+  simulateThirdPartyCeilingRegression,
+  storeAsPreRuleThirdPartyApp,
+} from './thirdPartyCeilingRegression';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const THIRD_PARTY_REDIRECT = 'https://third-party.example/callback';
@@ -159,6 +164,13 @@ async function mintFirstPartyToken(
   return { token: issued.token, grantId: issued.grantId, user, agent };
 }
 
+/**
+ * A grant on an app the user registered — genuinely third-party. A third-party
+ * app can no longer hold `account:security` (OpSec R-05), so a request for it
+ * builds the only state that still could: an app and grant stored before the
+ * rule, plus a simulated regression of the ceiling for this one grant. That
+ * keeps the grant routes' own first-party-only rail pinned BEHIND the ceiling.
+ */
 async function mintThirdPartyToken(
   scopes: readonly ApiKeyScope[],
   existing?: { user: TestUser; agent: Agent },
@@ -170,13 +182,15 @@ async function mintThirdPartyToken(
 }> {
   const user = existing?.user ?? (await seedFreshUser());
   const agent = existing?.agent ?? (await login(user));
+  const ordinary = withoutOAuthFirstPartyOnlyScopes(scopes);
+  const registrable: readonly ApiKeyScope[] = ordinary.length > 0 ? ordinary : ['market:read'];
   const registered = await agent
     .post('/api/v1/settings/oauth-clients')
     .set(...XRW)
     .send({
       name: 'Throwaway third party',
       redirectUris: [THIRD_PARTY_REDIRECT],
-      scopes,
+      scopes: registrable,
       public: true,
     });
   expect(registered.status, JSON.stringify(registered.body)).toBe(201);
@@ -186,10 +200,18 @@ async function mintThirdPartyToken(
     userId: user.id,
     clientId: client.clientId,
     redirectUri: THIRD_PARTY_REDIRECT,
-    scopes,
+    scopes: registrable,
   });
   // This is the real row created by the public registration flow, not a mocked flag.
   expect(issued.firstParty).toBe(false);
+  if (ordinary.length !== scopes.length) {
+    await storeAsPreRuleThirdPartyApp(harness, {
+      clientId: client.clientId,
+      grantId: issued.grantId,
+      scopes,
+    });
+    simulateThirdPartyCeilingRegression(harness, { grantId: issued.grantId, scopes });
+  }
   return { token: issued.token, grantId: issued.grantId, user, agent };
 }
 

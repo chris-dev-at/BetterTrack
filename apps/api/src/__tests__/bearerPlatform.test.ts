@@ -146,8 +146,16 @@ function pkce(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-/** Seed a fresh user, register a public PKCE client they own, and mint a delegated token. */
-async function mintOAuthToken(scopes: string[]): Promise<{
+/**
+ * Seed a fresh user and mint a delegated token: by default through a public
+ * PKCE client the user registers (a THIRD-party app), or with `firstParty`
+ * through the seeded official mobile app. Only the latter can carry the
+ * first-party-only scopes `account:security` / `vault:sync` (OpSec R-05).
+ */
+async function mintOAuthToken(
+  scopes: string[],
+  options: { firstParty?: boolean } = {},
+): Promise<{
   token: string;
   userId: string;
   grantId: string;
@@ -157,16 +165,31 @@ async function mintOAuthToken(scopes: string[]): Promise<{
 }> {
   const user = await seedFreshUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
-  const reg = await agent
-    .post('/api/v1/settings/oauth-clients')
-    .set(...XRW)
-    .send({ name: 'MobileTest', redirectUris: [REDIRECT], scopes, public: true });
-  expect(reg.status, JSON.stringify(reg.body)).toBe(201);
-  const clientRow = createOAuthClientResponseSchema.parse(reg.body).client;
-  const clientId = clientRow.clientId;
+  let clientId: string;
   // The internal client UUID lets the grant lookup below scope by (user, client)
   // instead of by user alone — see the block that fetches `grantRows`.
-  const clientRowId = clientRow.id;
+  let clientRowId: string;
+  let redirectUri = REDIRECT;
+  if (options.firstParty) {
+    const mobile = FIRST_PARTY_CLIENTS.find(
+      (client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+    )!;
+    await seedFirstPartyClients(createOAuthRepository(harness.db));
+    const seeded = await createOAuthRepository(harness.db).findClientByClientId(mobile.clientId);
+    expect(seeded?.isFirstParty).toBe(true);
+    clientId = mobile.clientId;
+    clientRowId = seeded!.id;
+    redirectUri = mobile.redirectUris[0]!;
+  } else {
+    const reg = await agent
+      .post('/api/v1/settings/oauth-clients')
+      .set(...XRW)
+      .send({ name: 'MobileTest', redirectUris: [REDIRECT], scopes, public: true });
+    expect(reg.status, JSON.stringify(reg.body)).toBe(201);
+    const clientRow = createOAuthClientResponseSchema.parse(reg.body).client;
+    clientId = clientRow.clientId;
+    clientRowId = clientRow.id;
+  }
 
   const { verifier, challenge } = pkce();
   const approve = await agent
@@ -174,7 +197,7 @@ async function mintOAuthToken(scopes: string[]): Promise<{
     .set(...XRW)
     .send({
       client_id: clientId,
-      redirect_uri: REDIRECT,
+      redirect_uri: redirectUri,
       scope: scopes.join(' '),
       code_challenge: challenge,
       code_challenge_method: 'S256',
@@ -186,7 +209,7 @@ async function mintOAuthToken(scopes: string[]): Promise<{
   const tokenRes = await request(harness.app).post('/api/v1/oauth/token').send({
     grant_type: 'authorization_code',
     code,
-    redirect_uri: REDIRECT,
+    redirect_uri: redirectUri,
     client_id: clientId,
     code_verifier: verifier,
   });
@@ -667,13 +690,15 @@ describe('[PARANOID-E2] bearer scope authorization precedes vault membership', (
 });
 
 describe('#1324 account:security parity for native account state', () => {
+  // The OAuth arm is the official first-party app: account:security is
+  // first-party-only for OAuth (OpSec R-05), so no third-party app can hold it.
   it.each(['personal', 'oauth'] as const)(
     'serves all seven widened routes to a scoped %s bearer',
     async (kind) => {
       const principal =
         kind === 'personal'
           ? await mintKey([ACCOUNT_SECURITY_SCOPE])
-          : await mintOAuthToken([ACCOUNT_SECURITY_SCOPE]);
+          : await mintOAuthToken([ACCOUNT_SECURITY_SCOPE], { firstParty: true });
       expect(principal.token.startsWith(kind === 'personal' ? 'btk_' : 'bto_')).toBe(true);
 
       await exerciseWidenedAccountSecuritySurface(principal);
@@ -2140,10 +2165,15 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
     },
   );
 
+  // Minted through the official first-party app: a third-party app can no
+  // longer hold either scope (OpSec R-05), and the trusted app is the stronger
+  // case — even it stays out of the owning-browser-session transitions.
   it.each(SESSION_ONLY)(
     'a delegated OAuth token holding account:security gets 403 API_KEY_FORBIDDEN: $name',
     async (row) => {
-      const { token } = await mintOAuthToken(['account:security', 'vault:sync']);
+      const { token } = await mintOAuthToken(['account:security', 'vault:sync'], {
+        firstParty: true,
+      });
       const res = await call(token, row);
       expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
       expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');

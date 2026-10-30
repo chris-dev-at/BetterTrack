@@ -163,6 +163,12 @@ export interface ScopePickerProps {
    * the admin app and must stay app-agnostic.
    */
   paranoid?: boolean;
+  /**
+   * Scopes this picker must never offer. A module whose every scope is listed
+   * is dropped entirely — e.g. the first-party-only scopes on third-party OAuth
+   * app registration (OpSec R-05), which the API refuses anyway.
+   */
+  excludeScopes?: readonly ApiKeyScope[];
 }
 
 /** One module row: label + info-point + read/write (or combined) toggles. */
@@ -276,16 +282,17 @@ export function ScopePicker({
   defaultOpen = false,
   legend,
   paranoid = false,
+  excludeScopes = [],
 }: ScopePickerProps) {
   const t = useT();
-  const modules = paranoid
-    ? SCOPE_MODULES.filter(
-        (module) =>
-          ![module.read, module.write, module.combined].some(
-            (scope) => scope != null && isParanoidBlockedScope(scope),
-          ),
-      )
-    : SCOPE_MODULES;
+  const excluded = new Set<ApiKeyScope>(excludeScopes);
+  const modules = SCOPE_MODULES.filter((module) => {
+    const moduleScopes = [module.read, module.write, module.combined].filter(
+      (scope): scope is ApiKeyScope => scope != null,
+    );
+    if (paranoid && moduleScopes.some(isParanoidBlockedScope)) return false;
+    return !moduleScopes.every((scope) => excluded.has(scope));
+  });
   const visibleScopes = paranoid
     ? new Set([...scopes].filter((scope) => !isParanoidBlockedScope(scope)))
     : scopes;

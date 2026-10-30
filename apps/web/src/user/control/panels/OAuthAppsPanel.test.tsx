@@ -64,6 +64,20 @@ describe('OAuthAppsPanel', () => {
     expect(listOAuthClients).toHaveBeenCalledTimes(2);
   });
 
+  test('never offers the first-party-only scopes for a user-registered app (OpSec R-05)', async () => {
+    renderPanel();
+    await screen.findByLabelText('App name');
+    const registerForm = screen.getByRole('button', { name: 'Register app' }).closest('form')!;
+    for (const name of [/account security · access/i, /vault sync · access/i]) {
+      expect(within(registerForm).queryByRole('checkbox', { name })).not.toBeInTheDocument();
+    }
+    // Every other module is still offered.
+    expect(
+      within(registerForm).getByRole('checkbox', { name: /portfolio · read/i }),
+    ).toBeInTheDocument();
+    expect(within(registerForm).getAllByRole('checkbox', { name: / · /i })).toHaveLength(19);
+  });
+
   test('registers an OAuth app and shows the one-time client secret', async () => {
     vi.mocked(createOAuthClient).mockResolvedValue(CREATED_CLIENT);
     const user = userEvent.setup();

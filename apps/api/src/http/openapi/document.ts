@@ -691,6 +691,7 @@ const componentSchemas = {
 
   // OAuth apps (§6.13, V2-P12)
   CreateOAuthClientRequest: contracts.createOAuthClientRequestSchema,
+  CreateThirdPartyOAuthClientRequest: contracts.createThirdPartyOAuthClientRequestSchema,
   UpdateOAuthClientRequest: contracts.updateOAuthClientRequestSchema,
   OAuthClientSummary: contracts.oauthClientSummarySchema,
   OAuthClientListResponse: contracts.oauthClientListResponseSchema,
@@ -889,6 +890,10 @@ interface EndpointDef {
  */
 const EXPENSE_AREA_RETIRED_CODE = 'EXPENSE_AREA_RETIRED';
 
+/** Who may reach the account-lifecycle routes with a bearer (OpSec R-05). */
+const ACCOUNT_LIFECYCLE_BEARER_NOTE =
+  'Bearer access needs account:security, which personal API keys and official first-party apps can hold; third-party OAuth apps never can and are refused.';
+
 const endpoints: EndpointDef[] = [
   // Meta (§5)
   {
@@ -1036,6 +1041,7 @@ const endpoints: EndpointDef[] = [
     tag: 'Auth',
     summary:
       'Delete the account irreversibly (typed username confirmation + password or fresh 2FA). Revokes every session and credential; chat messages anonymize for the partner.',
+    description: ACCOUNT_LIFECYCLE_BEARER_NOTE,
     body: R.DeleteAccountRequest,
     status: 200,
     response: R.OkResponse,
@@ -1046,6 +1052,7 @@ const endpoints: EndpointDef[] = [
     tag: 'Account',
     summary:
       'Request a data export (re-auth + 1/day). Returns the job id and the raw download token once; only its hash is stored.',
+    description: ACCOUNT_LIFECYCLE_BEARER_NOTE,
     body: R.ExportRequest,
     status: 200,
     response: R.ExportRequestResponse,
@@ -1093,6 +1100,7 @@ const endpoints: EndpointDef[] = [
     path: '/account/export',
     tag: 'Account',
     summary: 'The caller’s latest export job status (no secret).',
+    description: ACCOUNT_LIFECYCLE_BEARER_NOTE,
     status: 200,
     response: R.ExportStatusResponse,
   },
@@ -1102,6 +1110,7 @@ const endpoints: EndpointDef[] = [
     tag: 'Account',
     summary:
       'Consume a one-time token from the request body and download the ready export zip; foreign, expired, or replayed tokens 404.',
+    description: ACCOUNT_LIFECYCLE_BEARER_NOTE,
     body: R.ExportDownloadRequest,
     status: 200,
   },
@@ -4802,7 +4811,9 @@ const endpoints: EndpointDef[] = [
     tag: 'Settings',
     summary:
       'Register an OAuth app; the client_secret is returned exactly once (null for public clients).',
-    body: R.CreateOAuthClientRequest,
+    description:
+      'A user-registered app is third-party: account:security and vault:sync are reserved for official first-party apps and refused here.',
+    body: R.CreateThirdPartyOAuthClientRequest,
     status: 201,
     response: R.CreateOAuthClientResponse,
   },

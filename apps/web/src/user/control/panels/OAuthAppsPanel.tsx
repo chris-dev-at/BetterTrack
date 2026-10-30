@@ -4,6 +4,7 @@ import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  OAUTH_FIRST_PARTY_ONLY_SCOPES,
   withImpliedReadScopes,
   type ApiKeyScope,
   type CreateOAuthClientRequest,
@@ -263,11 +264,13 @@ function RegisterOAuthClientForm({
           real constraint: these are the words the consent screen shows users.
           `paranoid` drops the module this account can never grant, so a client
           cannot be registered with a scope that would only show up struck
-          through in its own row. */}
+          through in its own row. `excludeScopes` drops the first-party-only
+          modules a user-registered app can never hold (OpSec R-05). */}
       <div className="flex flex-col gap-1.5">
         <PanelNote>{t('settings.api.oauth.scopesHint')}</PanelNote>
         <ScopePicker
           collapsible
+          excludeScopes={OAUTH_FIRST_PARTY_ONLY_SCOPES}
           legend={t('settings.api.scopesLegend')}
           onChange={setScopes}
           paranoid={paranoid}

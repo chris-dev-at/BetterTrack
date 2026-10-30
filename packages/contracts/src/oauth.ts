@@ -74,8 +74,10 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   // #1860 — the scope also carries the §15 vault control plane, existing-passkey
   // management and first-party grant revocation, all of them destructive and a
   // vault deletion irreversibly so (§6.16: seed phrase only, no escrow).
+  // OpSec R-05 — and, through the `/account` module row, the full data export
+  // and account deletion. First-party-only for OAuth apps (see below).
   'account:security':
-    "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault",
+    "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault, permanently deleting a vault, exporting all your data and permanently deleting your account",
   // #405 — plain-language consent copy for the price-alerts scopes.
   'alerts:read': 'View your price alerts',
   'alerts:write': 'Create, edit, re-arm and delete your price alerts',
@@ -96,6 +98,40 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'feedback:write': 'Send feedback, feature requests and bug reports on your behalf',
   'feedback:read': 'View your feedback submissions and their status',
 };
+
+// ── First-party-only scopes (OpSec R-05) ────────────────────────────────────
+/**
+ * Scopes only an official FIRST-party OAuth app (admin-registered, e.g.
+ * BetterTrackMobile) can hold. `account:security` reaches every sign-in factor,
+ * the full data export and account deletion; `vault:sync` reaches the
+ * client-encrypted vault. A user-registered (third-party) app can neither
+ * register for nor be granted either: the registration schema below refuses
+ * them, and the API clamps every third-party app's ceiling to exclude them at
+ * authorize, token and request time, so an app row stored before this rule
+ * simply stops conferring them (no data migration).
+ *
+ * Personal API keys are deliberately not covered: whether they keep this reach
+ * is an open owner decision (OpSec R-05), so their behaviour is unchanged.
+ */
+export const OAUTH_FIRST_PARTY_ONLY_SCOPES = [
+  'account:security',
+  'vault:sync',
+] as const satisfies readonly ApiKeyScope[];
+export type OAuthFirstPartyOnlyScope = (typeof OAUTH_FIRST_PARTY_ONLY_SCOPES)[number];
+
+const OAUTH_FIRST_PARTY_ONLY_SCOPE_SET: ReadonlySet<string> = new Set(
+  OAUTH_FIRST_PARTY_ONLY_SCOPES,
+);
+
+/** Whether `scope` is one only an official first-party OAuth app may hold. */
+export function isOAuthFirstPartyOnlyScope(scope: string): scope is OAuthFirstPartyOnlyScope {
+  return OAUTH_FIRST_PARTY_ONLY_SCOPE_SET.has(scope);
+}
+
+/** A THIRD-party app's ceiling: `scopes` minus every first-party-only scope, order kept. */
+export function withoutOAuthFirstPartyOnlyScopes<T extends string>(scopes: readonly T[]): T[] {
+  return scopes.filter((scope) => !isOAuthFirstPartyOnlyScope(scope));
+}
 
 // ── Consent-copy truthfulness census (#1860) ────────────────────────────────
 /** One bearer route template (method + `{param}` path) named by a claim. */
@@ -195,6 +231,24 @@ export const OAUTH_SCOPE_CAPABILITY_CLAIMS = [
     reason: "A first-party grant can kill a sibling app's tokens immediately.",
   },
   {
+    id: 'account-security.export-data',
+    scope: 'account:security',
+    routes: [
+      { method: 'POST', path: '/account/export' },
+      { method: 'POST', path: '/account/export/download' },
+    ],
+    enPhrase: 'exporting all your data',
+    reason:
+      'The export archive holds every portfolio, transaction and account record (OpSec R-05).',
+  },
+  {
+    id: 'account-security.delete-account',
+    scope: 'account:security',
+    routes: [{ method: 'DELETE', path: '/account' }],
+    enPhrase: 'permanently deleting your account',
+    reason: 'Account deletion is irreversible and removes every portfolio and credential.',
+  },
+  {
     id: 'portfolio.tax-regime',
     scope: 'portfolio:write',
     routes: [{ method: 'PATCH', path: '/settings/taxes' }],
@@ -246,7 +300,7 @@ export const oauthRedirectUriSchema = z
       'Redirect URI must be https, http loopback, or a custom-scheme deep link (no fragment).',
   });
 
-// ── Client registration (Settings → API Access, "OAuth apps") ───────────────
+// ── Client registration (Settings → API Access, "OAuth apps"; admin first-party) ──
 /**
  * Optional app icon shown on the consent screen for a THIRD-party app (an
  * https image URL). First-party apps render the BetterTrack mark instead, so it
@@ -286,6 +340,21 @@ export const createOAuthClientRequestSchema = z
   })
   .strict();
 export type CreateOAuthClientRequest = z.infer<typeof createOAuthClientRequestSchema>;
+
+/** A scope a user-registered (third-party) app may list: anything but the first-party-only set. */
+export const thirdPartyOAuthScopeSchema = apiKeyScopeSchema.exclude(OAUTH_FIRST_PARTY_ONLY_SCOPES);
+
+/**
+ * `POST /settings/oauth-clients` — a user registering a THIRD-party app. The
+ * same shape as {@link createOAuthClientRequestSchema}, which stays the admin
+ * first-party form, minus {@link OAUTH_FIRST_PARTY_ONLY_SCOPES} (OpSec R-05).
+ */
+export const createThirdPartyOAuthClientRequestSchema = createOAuthClientRequestSchema.extend({
+  scopes: z.array(thirdPartyOAuthScopeSchema).min(1).max(thirdPartyOAuthScopeSchema.options.length),
+});
+export type CreateThirdPartyOAuthClientRequest = z.infer<
+  typeof createThirdPartyOAuthClientRequestSchema
+>;
 
 /**
  * `PATCH /admin/oauth-clients/:id` — edit an existing (first-party) app: its
