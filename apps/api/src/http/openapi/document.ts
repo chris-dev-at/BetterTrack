@@ -1159,6 +1159,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/fresh-start-notice/acknowledge',
     tag: 'Auth',
     summary: 'Acknowledge the one-time paranoid fresh-start notice (§17, idempotent, set-once).',
+    description:
+      'Available to an owning session or a bearer holding account:security (this POST only; every other method on the path stays session-only). Stamps the caller’s own wipe receipt — there is no id in the payload — and a replay never moves the timestamp. Returns the refreshed session payload with paranoidFreshStartPending false. A bearer without account:security gets 403 INSUFFICIENT_SCOPE.',
     status: 200,
     response: R.MeResponse,
   },
@@ -2665,8 +2667,15 @@ const endpoints: EndpointDef[] = [
     path: '/portfolios/{portfolioId}',
     tag: 'Portfolios',
     summary: 'Permanently delete a portfolio and all its data (rejects the only active one).',
+    description:
+      'A plain portfolio whose move into a vault is still in progress (its encrypted document is staged in the vault and the capture window is open) is refused with 409 VAULT_MOVE_IN_PENDING and nothing is deleted; error.details.portfolioIds names it. The refusal lapses with the capture window. An expired capture is inert: its staged documents are released in the same commit as the delete.',
     params: contracts.portfolioIdParamSchema,
     status: 204,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_NOT_FOUND).',
+      409: 'A move of this portfolio into a vault is still in progress (VAULT_MOVE_IN_PENDING).',
+    },
+    errorCodes: [contracts.PER_VAULT_ERROR_CODES.deleteMoveInPending],
   },
   {
     method: 'get',
@@ -3343,7 +3352,9 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/standing-orders/{id}/resume',
     tag: 'Standing orders',
-    summary: 'Resume a paused standing order (fires from the current period onward).',
+    summary: 'Resume a paused standing order (no back-fill of periods that elapsed while paused).',
+    description:
+      "Resume a paused order with no back-fill: a period whose anchor day fell before the resume day (Europe/Vienna) is never booked; the next booking is the first anchor on or after the resume day — an anchor on the resume day still books at the next 07:00 scan; a daily order resumed after that day's scan first books the following day. Resuming an order that is already active changes nothing.",
     params: contracts.standingOrderIdParamSchema,
     status: 200,
     response: R.StandingOrder,
@@ -5123,11 +5134,16 @@ const endpoints: EndpointDef[] = [
     summary:
       'Delete an unreferenced vault only after in-request password, TOTP, or recovery-code step-up.',
     description:
-      'Available to an owning session or a bearer holding account:security. The same in-body step-up applies to both. Deletion refuses while a portfolio references the vault or while its signed-purge retirement gate remains live.',
+      'Available to an owning session or a bearer holding account:security. The same in-body step-up applies to both, and every refusal below is disclosed only after it succeeds. Deletion refuses while a portfolio references the vault (VAULT_REFERENCED_BY_PORTFOLIO), while its signed-purge retirement gate remains live (VAULT_RETIREMENT_PENDING), or while a portfolio move-in has staged its document here and its capture window is still open (VAULT_MOVE_IN_PENDING, with error.details.portfolioIds; it lapses with that window). An expired capture bound to the vault is inert and is unbound in the same commit as the delete.',
     params: contracts.vaultIdParamSchema,
     body: R.DeleteVaultRequest,
     status: 200,
     response: R.DeleteVaultResponse,
+    errorResponses: {
+      404: 'No such caller-owned vault (VAULT_NOT_FOUND).',
+      409: 'A member portfolio, a pending retirement, or an in-progress move-in blocks the delete (VAULT_REFERENCED_BY_PORTFOLIO / VAULT_RETIREMENT_PENDING / VAULT_MOVE_IN_PENDING).',
+    },
+    errorCodes: contracts.PER_VAULT_DELETE_ERROR_CODES,
   },
   {
     method: 'get',
@@ -5308,9 +5324,10 @@ const endpoints: EndpointDef[] = [
     noStore: true,
     errorResponses: {
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
-      409: 'The portfolio is already vaulted or cannot currently be captured.',
+      409: 'The portfolio is already vaulted or cannot currently be captured (PORTFOLIO_ALREADY_VAULTED; PORTFOLIO_VAULT_TRANSITION_CONFLICT is retryable; PORTFOLIO_VAULT_CAPTURE_BINDING_INVALID is terminal).',
       429: 'The dedicated vault-transition rate limit was exceeded.',
     },
+    errorCodes: contracts.PORTFOLIO_VAULT_REVISION_ERROR_CODES,
   },
   {
     method: 'get',

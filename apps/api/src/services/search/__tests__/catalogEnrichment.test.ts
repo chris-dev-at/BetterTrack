@@ -1,11 +1,13 @@
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AssetMeta, AssetRef, CachedResult } from '@bettertrack/contracts';
 
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import * as schema from '../../../data/schema';
+import { createBackfillScheduler, QUEUE_NAMES, type BackfillScheduler } from '../../../jobs';
+import { createBullmqAddCapture } from '../../../testing/bullmqAddCapture';
 import { createTestApp } from '../../../testing/createTestApp';
 import {
   createRecordingBackfill,
@@ -35,6 +37,8 @@ import {
 async function makeEnrichment(
   controls: StubMarketDataControls = {},
   timeouts: { runTimeoutMs?: number; settleTimeoutMs?: number } = {},
+  /** Replaces the recording fake — e.g. one that fails, or the production scheduler. */
+  backfillOverride?: BackfillScheduler,
 ) {
   const h = await createTestApp({ marketData: createStubMarketData() });
   const marketData = createStubMarketData(controls);
@@ -46,7 +50,7 @@ async function makeEnrichment(
   const enrichment = createCatalogEnrichment({
     marketData,
     assetRepo,
-    backfill,
+    backfill: backfillOverride ?? backfill,
     redis,
     logger: h.ctx.logger,
     ...timeouts,
@@ -708,5 +712,79 @@ describe('catalogEnrichment — authoritative currency (#1875)', () => {
     // …and exactly the resolved ones were stored resolved; the rest keep the
     // placeholder for their badge until a later enrichment resolves them.
     expect(rows.filter((row) => row.currency === 'EUR')).toHaveLength(ENRICH_MAX_CURRENCY_LOOKUPS);
+  });
+});
+
+/**
+ * #1184: every production backfill enqueue threw (`Custom Id cannot contain :`),
+ * and because the throw escaped the per-hit loop into the whole-run catch, the
+ * first NEW row of a run was the last one written — every later hit of that
+ * search was never upserted. Two independent properties are pinned here: an
+ * enqueue failure costs only its own row's backfill, and the production
+ * scheduler's id is one BullMQ accepts (validated by BullMQ itself, not a fake).
+ */
+describe('catalogEnrichment — backfill enqueue failures (#1184)', () => {
+  const BRK_REFS = ['BRK-A', 'BRK-B', 'BRKR'] as const;
+  const brkHits = () => [
+    providerHit({ providerRef: 'BRK-A', symbol: 'BRK-A', name: 'Berkshire Hathaway A' }),
+    providerHit({ providerRef: 'BRK-B', symbol: 'BRK-B', name: 'Berkshire Hathaway B' }),
+    providerHit({ providerRef: 'BRKR', symbol: 'BRKR', name: 'Bruker Corporation' }),
+  ];
+
+  it('a failed enqueue costs only its own backfill — every later hit is still upserted and enqueued', async () => {
+    const attempted: string[] = [];
+    const failingFirst: BackfillScheduler = {
+      async enqueue(assetId) {
+        attempted.push(assetId);
+        if (attempted.length === 1) throw new Error('Custom Id cannot contain :');
+      },
+    };
+    const { h, assetRepo, enrichment } = await makeEnrichment(
+      { search: brkHits },
+      {},
+      failingFirst,
+    );
+    const warn = vi.spyOn(h.ctx.logger, 'warn');
+
+    await enrichment.request('brk');
+    await enrichment.settled();
+
+    for (const ref of BRK_REFS) {
+      expect(await assetRepo.findGlobal('yahoo', ref)).not.toBeNull();
+    }
+    // The rows after the failing one still got their backfill asked for.
+    expect(attempted).toHaveLength(BRK_REFS.length);
+    // The failure is logged against its asset, not as a lost run.
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ assetId: attempted[0] }),
+      expect.stringContaining('backfill'),
+    );
+    expect(warn).not.toHaveBeenCalledWith(expect.anything(), 'catalog enrichment failed');
+  });
+
+  it('enriches a query containing ":" end to end through the production scheduler', async () => {
+    const bull = createBullmqAddCapture([QUEUE_NAMES.pricesBackfill]);
+    try {
+      const { assetRepo, enrichment } = await makeEnrichment(
+        { search: brkHits },
+        {},
+        createBackfillScheduler(bull.registry),
+      );
+
+      await expect(enrichment.request('brk:b')).resolves.toBe(true);
+      await enrichment.settled();
+
+      const rows = await Promise.all(BRK_REFS.map((ref) => assetRepo.findGlobal('yahoo', ref)));
+      for (const row of rows) expect(row).not.toBeNull();
+      // One accepted job per new row, each carrying its asset…
+      expect(bull.added).toHaveLength(BRK_REFS.length);
+      expect(bull.added.map((add) => add.data)).toEqual(
+        expect.arrayContaining(rows.map((row) => ({ assetId: row!.id }))),
+      );
+      // …under an id BullMQ took, with no ':' anywhere in it.
+      for (const add of bull.added) expect(add.jobId).not.toContain(':');
+    } finally {
+      await bull.close();
+    }
   });
 });

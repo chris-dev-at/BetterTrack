@@ -41,6 +41,7 @@ import {
   CASH_MOVEMENTS_DEFAULT_LIMIT,
   customAssetCategorySchema,
   editableCashMovementKindSchema,
+  PER_VAULT_ERROR_CODES,
 } from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
@@ -1731,8 +1732,22 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Hard-delete the row; the FK graph cascades transactions, cash sources +
       // movements and dividends away in one statement. A concurrent delete that
       // raced us to gone → treat as already deleted (404), so a second call 404s.
-      const deleted = await portfolioRepo.deletePortfolio(userId, portfolioId);
-      if (!deleted) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      const deleted = await portfolioRepo.deletePortfolio(
+        userId,
+        portfolioId,
+        () => new Date(now()),
+      );
+      if (deleted.status === 'not_found') {
+        throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      }
+      // #1610: the same fail-closed, self-resolving refusal as a vault delete.
+      if (deleted.status === 'move_in_pending') {
+        throw conflict(
+          'This portfolio is being moved into a vault. Finish that move, or wait a few minutes for it to lapse, then delete the portfolio.',
+          PER_VAULT_ERROR_CODES.deleteMoveInPending,
+          { portfolioIds: deleted.portfolioIds },
+        );
+      }
       // Clear the polymorphic sharing audience (+ members + public links) — it
       // carries no FK to the portfolio, so the cascade never reaches it. Mirrors
       // conglomerate/watchlist deletion; hygiene only, as the authorization joins

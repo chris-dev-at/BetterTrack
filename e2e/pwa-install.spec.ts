@@ -183,7 +183,14 @@ test.describe('installable PWA', () => {
       await expect(page.getByTestId('standalone-back')).toHaveCount(0);
 
       // One real in-app navigation, and the affordance appears.
-      await page.locator('.bt-rail-item__link[href="/assets"]').first().click();
+      // Through whichever primary nav this project paints: the desktop rail, or
+      // the bottom bar on mobile-chromium, where the rail is `hidden` and a
+      // rail-only locator waited out the whole test budget.
+      await page
+        .locator('.bt-rail-item__link[href="/assets"], .bt-bottombar a[href="/assets"]')
+        .filter({ visible: true })
+        .first()
+        .click();
       await expect(page).toHaveURL(/\/assets$/);
       const back = page.getByTestId('standalone-back');
       await expect(back).toBeVisible();

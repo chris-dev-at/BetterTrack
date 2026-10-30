@@ -1740,6 +1740,107 @@ export async function completePendingPortfolioVaultMoveOut(
   });
 }
 
+/**
+ * #1610: can this capture binding still complete a move-in? A bound capture is
+ * LIVE while its window is open: the vault roster then counts the staged
+ * document as required (`expectedDocs`), CAS still serves and accepts it, and
+ * the commit can still consume it. Past `captureExpiresAt` every one of those
+ * readers refuses it, so the binding is inert. Callers sample `now` only after
+ * every row lock is held.
+ */
+export function isLiveCaptureBinding(
+  state: Pick<
+    PortfolioVaultTransitionStateRow,
+    'captureVaultId' | 'captureRevision' | 'captureExpiresAt'
+  >,
+  now: Date,
+): boolean {
+  return (
+    state.captureVaultId !== null &&
+    state.captureRevision !== null &&
+    state.captureExpiresAt !== null &&
+    state.captureExpiresAt.getTime() > now.getTime()
+  );
+}
+
+/**
+ * Where an owner's capture binding points, resolved in E1's lock order (the
+ * caller has not locked the portfolio or transition row yet). `owned` means the
+ * vault row is now held FOR UPDATE by the caller. `missing` means no vault row
+ * with that id exists for ANY account: its blobs, history, candidates and
+ * retirement rows all cascaded with it, so nothing keyed to it survives and the
+ * binding is inert (#1610: the row a pre-fix vault deletion left behind).
+ * `foreign` means the row exists under another account; no conforming writer
+ * produces that, and the caller must not touch it.
+ */
+export type CaptureBindingVault = 'none' | 'owned' | 'missing' | 'foreign';
+
+export async function lockCaptureBindingVault(
+  tx: Database,
+  userId: string,
+  captureVaultId: string | null,
+): Promise<CaptureBindingVault> {
+  if (!captureVaultId) return 'none';
+  const [owned] = await tx
+    .select({ id: vaults.id })
+    .from(vaults)
+    .where(and(eq(vaults.id, captureVaultId), eq(vaults.userId, userId)))
+    .for('update');
+  if (owned) return 'owned';
+  // Existence only: never locked, and never disclosed beyond the caller's own
+  // owner-scoped refusal or no-op.
+  const [elsewhere] = await tx
+    .select({ id: vaults.id })
+    .from(vaults)
+    .where(eq(vaults.id, captureVaultId));
+  return elsewhere ? 'foreign' : 'missing';
+}
+
+/**
+ * Remove one plain portfolio's uncommitted prospective documents from the
+ * owner's vault its capture is bound to. The caller holds that vault row FOR
+ * UPDATE (`lockCaptureBindingVault` returned `owned`), then the portfolio and
+ * transition rows. Bounded history is retained: it may be the move-out safety
+ * copy and contains ciphertext only.
+ */
+export async function releaseProspectiveDocuments(
+  tx: Database,
+  input: { userId: string; portfolioId: string; vaultId: string; now: Date },
+): Promise<void> {
+  await tx
+    .delete(vaultBlobs)
+    .where(and(eq(vaultBlobs.vaultId, input.vaultId), eq(vaultBlobs.docId, input.portfolioId)));
+  await tx
+    .delete(vaultServerCandidates)
+    .where(
+      and(
+        eq(vaultServerCandidates.vaultId, input.vaultId),
+        eq(vaultServerCandidates.docId, input.portfolioId),
+      ),
+    );
+  // Removing a required prospective document changes the exact roster. Never
+  // leave the old vault attestation claiming that reduced set was read back
+  // from every configured medium.
+  await tx
+    .update(vaults)
+    .set({
+      mediaAttestedAt: null,
+      mediaAttestedDriveConnectionId: null,
+      updatedAt: input.now,
+    })
+    .where(and(eq(vaults.id, input.vaultId), eq(vaults.userId, input.userId)));
+}
+
+export type BeginPortfolioVaultCaptureResult =
+  | 'ok'
+  | 'not_found'
+  | 'already_vaulted'
+  | 'finalization_pending'
+  /** A concurrent staging write bound the capture while locks were acquired; retryable. */
+  | 'binding_changed'
+  /** Bound to a vault row another account owns; terminal, nothing was mutated. */
+  | 'capture_binding_invalid';
+
 /** Open/renew the short E4 staging window after a repeatable-read digest. */
 export async function beginPortfolioVaultCapture(input: {
   db: Database;
@@ -1748,15 +1849,17 @@ export async function beginPortfolioVaultCapture(input: {
   revision: string;
   now: Date;
   expiresAt: Date;
-}): Promise<'ok' | 'not_found' | 'already_vaulted' | 'finalization_pending'> {
+}): Promise<BeginPortfolioVaultCaptureResult> {
   return input.db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
     // Capture renewal can remove a previously staged active document. Take the
     // same account privacy lock as the commit path, then preserve E1's lock
     // order (account -> vault -> portfolio -> transition state). The initial
-    // unlocked state read only discovers which vault row must be locked; the
-    // account lock prevents a conforming transition/blob writer from changing
-    // that binding underneath us.
+    // unlocked, owner-scoped state read only discovers which vault row must be
+    // locked. Every writer that can move an EXISTING binding (renewal, commit,
+    // vault deletion) holds that vault row; a first-time bind by a staging CAS
+    // (null -> vault) is the one change the account lock does not exclude, and
+    // the locked re-read below refuses it as a retryable conflict.
     const [owner] = await tx
       .select({ id: users.id })
       .from(users)
@@ -1766,17 +1869,17 @@ export async function beginPortfolioVaultCapture(input: {
     const [priorBinding] = await tx
       .select({ captureVaultId: portfolioVaultTransitionStates.captureVaultId })
       .from(portfolioVaultTransitionStates)
-      .where(eq(portfolioVaultTransitionStates.portfolioId, input.portfolioId));
-    if (priorBinding?.captureVaultId) {
-      const [lockedPriorVault] = await tx
-        .select({ id: vaults.id })
-        .from(vaults)
-        .where(and(eq(vaults.id, priorBinding.captureVaultId), eq(vaults.userId, input.userId)))
-        .for('update');
-      if (!lockedPriorVault) {
-        throw new Error('portfolio vault capture is bound to a foreign or missing vault');
-      }
-    }
+      .where(
+        and(
+          eq(portfolioVaultTransitionStates.portfolioId, input.portfolioId),
+          eq(portfolioVaultTransitionStates.userId, input.userId),
+        ),
+      );
+    const priorVault = await lockCaptureBindingVault(
+      tx,
+      input.userId,
+      priorBinding?.captureVaultId ?? null,
+    );
     const [portfolio] = await tx
       .select()
       .from(portfolios)
@@ -1791,39 +1894,21 @@ export async function beginPortfolioVaultCapture(input: {
       .for('update');
     if (prior?.moveOutPostCommitPending) return 'finalization_pending';
     if ((prior?.captureVaultId ?? null) !== (priorBinding?.captureVaultId ?? null)) {
-      throw new Error('portfolio vault capture binding changed while acquiring locks');
+      return 'binding_changed';
     }
-    if (prior?.captureVaultId) {
-      // Only an uncommitted prospective live row is removed. Bounded history is
-      // retained: it may be the move-out safety copy and contains ciphertext only.
-      await tx
-        .delete(vaultBlobs)
-        .where(
-          and(
-            eq(vaultBlobs.vaultId, prior.captureVaultId),
-            eq(vaultBlobs.docId, input.portfolioId),
-          ),
-        );
-      await tx
-        .delete(vaultServerCandidates)
-        .where(
-          and(
-            eq(vaultServerCandidates.vaultId, prior.captureVaultId),
-            eq(vaultServerCandidates.docId, input.portfolioId),
-          ),
-        );
-      // Removing a required prospective document changes the exact roster.
-      // Never leave the old vault attestation claiming that reduced set was
-      // read back from every configured medium.
-      await tx
-        .update(vaults)
-        .set({
-          mediaAttestedAt: null,
-          mediaAttestedDriveConnectionId: null,
-          updatedAt: input.now,
-        })
-        .where(and(eq(vaults.id, prior.captureVaultId), eq(vaults.userId, input.userId)));
+    // Fail closed on a binding no conforming writer can produce: the renewal
+    // would otherwise delete that vault's rows at this document address.
+    if (priorVault === 'foreign') return 'capture_binding_invalid';
+    if (prior?.captureVaultId && priorVault === 'owned') {
+      await releaseProspectiveDocuments(tx, {
+        userId: input.userId,
+        portfolioId: input.portfolioId,
+        vaultId: prior.captureVaultId,
+        now: input.now,
+      });
     }
+    // `missing`: the vault and every row keyed to it are already gone, so the
+    // renewal below (which clears the binding) is the whole repair (#1610).
     await tx
       .insert(portfolioVaultTransitionStates)
       .values({

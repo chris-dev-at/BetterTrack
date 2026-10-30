@@ -96,7 +96,8 @@ export type PortfolioVaultTransitionFailure =
   | 'RESTORE_SOLVENCY'
   | 'RESTORE_PROVENANCE'
   | 'POSSESSION_PROOF_INVALID'
-  | 'CAPTURE_UNSERVABLE';
+  | 'CAPTURE_UNSERVABLE'
+  | 'CAPTURE_BINDING_INVALID';
 
 export class PortfolioVaultTransitionError extends Error {
   constructor(
@@ -162,6 +163,10 @@ export const PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS = {
   CAPTURE_UNSERVABLE: {
     status: 409,
     code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureUnservable,
+  },
+  CAPTURE_BINDING_INVALID: {
+    status: 409,
+    code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureBindingInvalid,
   },
   RESTORE_SOLVENCY: {
     status: 400,
@@ -442,6 +447,18 @@ export function createPortfolioVaultTransitionService(
       }
       if (opened === 'finalization_pending') {
         fail('TRANSITION_CONFLICT', 'The preceding portfolio move-out is still finalizing.');
+      }
+      if (opened === 'binding_changed') {
+        fail(
+          'TRANSITION_CONFLICT',
+          'Another step of this portfolio move changed its capture at the same time. Try again.',
+        );
+      }
+      if (opened === 'capture_binding_invalid') {
+        fail(
+          'CAPTURE_BINDING_INVALID',
+          'This portfolio capture is bound to a vault this account does not hold, so it cannot be renewed.',
+        );
       }
       return portfolioVaultRevisionResponseSchema.parse({
         portfolioDataRevision: revision,

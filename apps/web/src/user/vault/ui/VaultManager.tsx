@@ -53,6 +53,7 @@ import {
   vaultStateTone,
 } from '../vaultStateAffordance';
 import { vaultRetryTimeLabel } from './retryTime';
+import { stepUpFailureCopy } from './stepUpFailureCopy';
 import { StepUpCredentialFields } from './StepUpCredentialFields';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
@@ -413,7 +414,16 @@ function VaultManagerRow({
       setErrorKey(
         error instanceof ApiError && error.code === PER_VAULT_ERROR_CODES.deleteReferenced
           ? 'vault.manager.deleteReferenced'
-          : 'vault.manager.deleteError',
+          : // A 429 says nothing about whether THIS entry was right: the attempt
+            // that trips the throttle was judged (and was wrong), but a correct
+            // credential typed during the cooldown is neither judged nor counted.
+            // So it reads as a wait, never a refusal — see {@link stepUpFailureCopy}
+            // for the server behaviour and why the copy names no limiter. The
+            // entry is deliberately left in place.
+            stepUpFailureCopy(error, {
+              refused: 'vault.manager.deleteError',
+              throttled: 'vault.manager.deleteThrottled',
+            }),
       );
     } finally {
       setWorking(false);

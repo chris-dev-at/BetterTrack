@@ -4,7 +4,15 @@ import type { VaultConfig, VaultMediaList } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { driverError, isDriverErrorCode } from '../driverError';
-import { driveConnections, portfolios, users, vaultRetirements, vaults } from '../schema';
+import {
+  driveConnections,
+  portfolioVaultTransitionStates,
+  portfolios,
+  users,
+  vaultRetirements,
+  vaults,
+} from '../schema';
+import { isLiveCaptureBinding } from './portfolioVaultTransitionRepository';
 
 export type VaultCreateResult =
   | { status: 'ok'; vault: VaultConfig }
@@ -22,7 +30,9 @@ export type VaultDeleteResult =
   | { status: 'ok' }
   | { status: 'not_found' }
   | { status: 'referenced' }
-  | { status: 'retirement_pending' };
+  | { status: 'retirement_pending' }
+  /** #1610: a live portfolio capture has staged its move-in into this vault. */
+  | { status: 'move_in_pending'; portfolioIds: string[] };
 
 export interface VaultDeleteLockedAuth {
   passwordHash: string;
@@ -49,6 +59,8 @@ export interface VaultRepository {
     userId: string;
     vaultId: string;
     verifyStepUp: (auth: VaultDeleteLockedAuth, tx: Database) => Promise<void>;
+    /** Capture-window clock, sampled only after every row lock is held. */
+    now?: () => Date;
   }): Promise<VaultDeleteResult>;
 }
 
@@ -256,9 +268,86 @@ export function createVaultRepository(db: Database): VaultRepository {
             .from(portfolios)
             .where(eq(portfolios.vaultId, input.vaultId));
 
+          // #1610: `capture_vault_id` has no FK by design (the transition
+          // receipts must outlive a vault), so nothing in the schema stops this
+          // delete from orphaning a capture binding. Every writer that can bind
+          // a capture to this vault (staging CAS, Drive candidate staging) or
+          // move an existing binding (renewal, move-in commit) holds this vault
+          // row, which is locked above, so this owner-scoped discovery read is
+          // the complete set. Lock order stays E1's: account -> vault ->
+          // portfolio -> transition state. Another account's row is never read
+          // here; it cannot block or be rewritten by this owner's delete.
+          const discovered = await tx
+            .select({ portfolioId: portfolioVaultTransitionStates.portfolioId })
+            .from(portfolioVaultTransitionStates)
+            .where(
+              and(
+                eq(portfolioVaultTransitionStates.userId, input.userId),
+                eq(portfolioVaultTransitionStates.captureVaultId, input.vaultId),
+              ),
+            );
+          const boundPortfolioIds = discovered.map(({ portfolioId }) => portfolioId).sort();
+          let bound: Array<typeof portfolioVaultTransitionStates.$inferSelect> = [];
+          if (boundPortfolioIds.length > 0) {
+            await tx
+              .select({ id: portfolios.id })
+              .from(portfolios)
+              .where(
+                and(eq(portfolios.userId, input.userId), inArray(portfolios.id, boundPortfolioIds)),
+              )
+              .orderBy(asc(portfolios.id))
+              .for('update');
+            bound = await tx
+              .select()
+              .from(portfolioVaultTransitionStates)
+              .where(
+                and(
+                  eq(portfolioVaultTransitionStates.userId, input.userId),
+                  eq(portfolioVaultTransitionStates.captureVaultId, input.vaultId),
+                  inArray(portfolioVaultTransitionStates.portfolioId, boundPortfolioIds),
+                ),
+              )
+              .orderBy(asc(portfolioVaultTransitionStates.portfolioId))
+              .for('update');
+          }
+          const lockedAt = (input.now ?? (() => new Date()))();
+          const inFlight = bound
+            .filter((state) => isLiveCaptureBinding(state, lockedAt))
+            .map(({ portfolioId }) => portfolioId);
+
           // Resolve and disclose blockers only after §15 step-up succeeds.
           if (retirement) return { status: 'retirement_pending' as const };
           if (Number(members?.value ?? 0) > 0) return { status: 'referenced' as const };
+          // Fail closed while a move-in can still consume this vault: deleting
+          // it would cascade the staged document out from under that capture.
+          if (inFlight.length > 0) {
+            return { status: 'move_in_pending' as const, portfolioIds: inFlight };
+          }
+          // Every remaining binding is expired and therefore inert (no reader
+          // admits it). Drop it in the same commit as the vault, so no pointer
+          // to a deleted vault ever survives. The prospective documents
+          // themselves cascade with the vault row; the lapsed revision/window
+          // pair is left as it is (only the dangling pointer goes).
+          if (bound.length > 0) {
+            await tx
+              .update(portfolioVaultTransitionStates)
+              .set({
+                captureVaultId: null,
+                captureMediaAttestedAt: null,
+                captureMediaAttestedDriveConnectionId: null,
+                updatedAt: lockedAt,
+              })
+              .where(
+                and(
+                  eq(portfolioVaultTransitionStates.userId, input.userId),
+                  eq(portfolioVaultTransitionStates.captureVaultId, input.vaultId),
+                  inArray(
+                    portfolioVaultTransitionStates.portfolioId,
+                    bound.map(({ portfolioId }) => portfolioId),
+                  ),
+                ),
+              );
+          }
           await tx
             .delete(vaults)
             .where(and(eq(vaults.id, input.vaultId), eq(vaults.userId, input.userId)));
