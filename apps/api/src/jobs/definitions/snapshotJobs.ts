@@ -27,11 +27,14 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * failure throws at the end so BullMQ retries and — on exhausted attempts —
  * dead-letters it (§9).
  *
- * A DEGRADED portfolio (issue #1729: FX unavailable, so the run persisted
- * nothing and the dirty marker stayed) is deliberately not a failure — nothing
- * threw, reads stay correct, and retrying the sweep would not help while the
- * provider is down. It is logged at `warn` instead, so a sustained FX outage is
- * visible rather than inferable from row staleness.
+ * A DEGRADED portfolio (issue #1729: FX unavailable, or a recomputed run that
+ * would have dropped a still-held asset — so the run persisted nothing and any
+ * dirty marker stayed) is deliberately not a failure — nothing threw, reads
+ * stay correct, and retrying the sweep would not help while the provider is
+ * down. It is logged at `warn` instead, so a sustained FX outage is visible
+ * rather than inferable from row staleness. Refusing is what keeps the heal
+ * window honest: a persisted degraded run rewrites [run−35, run−1] without the
+ * asset, and its oldest day is never rewritten again.
  */
 
 /** Stable scheduler id + cron for the nightly snapshot roll (§9-style, in code). */
@@ -108,7 +111,7 @@ export function createSnapshotsBackfillJob(
       if (degraded.length > 0) {
         ctx.logger.warn(
           { total, degraded: degraded.length, firstDegraded: degraded[0] },
-          'snapshots.backfill: portfolios left unpersisted by unavailable FX',
+          'snapshots.backfill: portfolios left unpersisted by unavailable FX or a vanished holding',
         );
       }
       ctx.logger.info(

@@ -600,6 +600,35 @@ apply therefore runs the engine once and re-persists.
 > back to the engine instead of serving a gap. No recompute needs enqueuing: the
 > read path refills lazily and the nightly roll picks the portfolio up anyway.
 
+## Snapshot runs refused for a missing currency (#1729)
+
+The snapshot writer refuses to persist a run that is missing a currency, because a
+persisted run rewrites the nightly heal window `[run−35, run−1]` and its oldest day is
+never rewritten again. Two refusals, both logged at `warn` and both counted in the
+nightly line `snapshots.backfill: portfolios left unpersisted by unavailable FX or a
+vanished holding` (`degraded`, `firstDegraded`):
+
+- `snapshot persist skipped: FX unavailable, engine run degraded` — the FX probe for a
+  held currency failed transiently (outage past the stale window).
+- `snapshot persist refused: a held asset vanished from the recomputed rows` — fields
+  `guard: 'vanished_holding'`, `anchorDay`, `vanished: [{ assetId, day }]`. The last
+  row the run would keep carries an asset the transactions still hold, and the new
+  rows dropped it, whatever the FX classification said (a spurious 404 replayed from
+  the negative cache is the known cause).
+
+Either way nothing is written, any `dirty_from` marker stays, reads keep serving the
+live engine, and the next run after FX recovers rewrites the range. Nothing to do
+while the cause is transient. If a held currency is gone **for good** (its
+`EUR{ccy}=X` pair is retired), the portfolio stays uncached until its history is
+invalidated from that asset's first transaction day (the two statements in the
+section above, with that day): the run then has no kept row carrying the asset and
+persists without it.
+
+Rows that pre-#1729 builds persisted with the hole are listed by the read-only
+queries in `apps/api/src/scripts/sql/enumerate-fx-holes.sql` (Q2 is the per-portfolio
+worklist with `earliest_hole`). Repair them only on a build that carries the guard —
+refilling on an older build can widen the hole.
+
 ## Market-data provider failover
 
 BetterTrack uses Yahoo as its primary market-data provider. The optional v5

@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, inArray, isNull, min, notExists, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, isNull, lt, min, notExists, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -197,6 +197,33 @@ export function createPortfolioSnapshotRepository(db: Database) {
         .where(eq(portfolioDailySnapshots.portfolioId, portfolioId))
         .orderBy(asc(portfolioDailySnapshots.date));
       return rows.map(toRowRecord);
+    },
+
+    /**
+     * The latest persisted row strictly before `beforeDay` (the latest row of
+     * all when `beforeDay` is null), or null when there is none — the anchor
+     * the persist-time vanished-holding guard compares a computation against
+     * (`portfolioSnapshots.ts`, issue #1729). A primary-key range read: one row.
+     */
+    async lastRowBefore(
+      portfolioId: string,
+      beforeDay: string | null,
+    ): Promise<SnapshotRowRecord | null> {
+      const rows = await db
+        .select()
+        .from(portfolioDailySnapshots)
+        .where(
+          beforeDay === null
+            ? eq(portfolioDailySnapshots.portfolioId, portfolioId)
+            : and(
+                eq(portfolioDailySnapshots.portfolioId, portfolioId),
+                lt(portfolioDailySnapshots.date, beforeDay),
+              ),
+        )
+        .orderBy(desc(portfolioDailySnapshots.date))
+        .limit(1);
+      const row = rows[0];
+      return row ? toRowRecord(row) : null;
     },
 
     async getState(portfolioId: string): Promise<SnapshotStateRecord | null> {
