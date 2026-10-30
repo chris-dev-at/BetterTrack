@@ -1,0 +1,7 @@
+# Maintenance ledger
+
+What was removed, simplified or fixed by the maintainer program, why, and which guard protects it.
+
+| Date       | PR    | Item                        | Kind | Why                                                                                                                                                                                         | Guard                                                                                                                                                                                                            |
+| ---------- | ----- | --------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-30 | #2084 | B2 UTC-day pre-fill (#2082) | fix  | Four dialogs (transaction, cash, custom investment, value point) pre-filled the UTC day, so between 00:00 and ~02:00 Vienna the default date was yesterday; now `displayZoneDay()` (#1792). | Fake-clock tests at 00:30 Vienna (and 12:00) in `TransactionDialog.test.tsx`, `CashDialog.test.tsx`, `CustomInvestmentDialog.test.tsx`, `ValuePointEditor.test.tsx`; DST/midnight cases in `lib/format.test.ts`. |
