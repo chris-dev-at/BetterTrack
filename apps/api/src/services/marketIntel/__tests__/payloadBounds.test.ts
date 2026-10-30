@@ -72,6 +72,10 @@ function serviceWith(controls: {
     assetRepo,
     intelRepo,
     enabled: true,
+    // Every fixture series starts on 2000-01-01; the dividend forward calendar
+    // drops events already behind the display day (A3), so the clock sits just
+    // before the series for the "upcoming" fixtures to stay upcoming.
+    now: () => Date.UTC(1999, 11, 31, 12),
   });
 }
 

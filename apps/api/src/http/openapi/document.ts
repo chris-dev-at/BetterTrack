@@ -8,6 +8,7 @@ import * as contracts from '@bettertrack/contracts';
 import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
+import { BODY_PARSER_ERROR_CODES } from '../bodyLimits';
 import { openApiPathTemplateAcceptsBearer } from '../middleware/bearerAuth';
 import { pathRequiresAdminTwoFactorSetup, pathRequiresPasswordChange } from '../middleware/session';
 
@@ -2002,6 +2003,9 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAccountDefaultsRequest,
     status: 200,
     response: R.AccountDefaultsResponse,
+    // `adminService` refuses a notification default for a channel the
+    // deployment's kill-switch has turned off (400).
+    errorCodes: ['CHANNEL_DEACTIVATED'],
   },
   {
     method: 'get',
@@ -2530,6 +2534,8 @@ const endpoints: EndpointDef[] = [
     path: '/assets/{id}/intel/dividends',
     tag: 'Assets',
     summary: 'Dividend history, upcoming ex/pay dates and forward yield.',
+    description:
+      '`upcoming` carries only events with at least one ex/pay date on or after today (the Europe/Vienna display day); an event whose dates are all behind us is dropped from it (`history` is the provider’s own payout record, which already carries that payout). An ex-but-unpaid event stays upcoming until its pay date has passed.',
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.DividendsResponse,
@@ -5504,6 +5510,44 @@ const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
   content: jsonContent(R.ApiError),
 });
 
+/**
+ * True for an operation whose request body the GLOBAL JSON parser reads, and so
+ * can refuse with the `bodyLimits.ts` vocabulary: one that declares a JSON body
+ * (whatever its method — `DELETE /drive-connections/{connectionId}` has one). A
+ * bodyless operation has nothing for a client to malform.
+ */
+function takesJsonBody(endpoint: EndpointDef): boolean {
+  return (
+    endpoint.body !== undefined &&
+    (endpoint.bodyContentType === undefined || endpoint.bodyContentType === 'application/json')
+  );
+}
+
+/**
+ * True for the octet-stream vault writes. Their raw parser (`vaultRoutes.ts`)
+ * translates only an oversized body, into their own VAULT_TOO_LARGE; every other
+ * parser failure (an unknown Content-Encoding, an aborted upload) falls through
+ * to the shared normaliser as 415 UNSUPPORTED_MEDIA_TYPE or 400 MALFORMED_BODY.
+ * So they carry the parser vocabulary minus PAYLOAD_TOO_LARGE, whose 413 their
+ * own code owns.
+ */
+function takesRawBody(endpoint: EndpointDef): boolean {
+  return endpoint.body !== undefined && endpoint.bodyContentType === 'application/octet-stream';
+}
+const RAW_BODY_PARSER_ERROR_CODES = BODY_PARSER_ERROR_CODES.filter(
+  (code) => code !== 'PAYLOAD_TOO_LARGE',
+);
+
+/**
+ * Codes a route emits that its endpoint row cannot carry by itself because one
+ * guard answers for a whole path family. `settingsRoutes.ts` refuses every
+ * `/settings/telegram*` and `/settings/discord*` operation with 404
+ * CHANNEL_DEACTIVATED while the global channel kill-switch is off (§13.5 V5-P0).
+ */
+const CHANNEL_DEACTIVATED_CODE = 'CHANNEL_DEACTIVATED';
+const pathIsKillSwitchedChannel = (path: string): boolean =>
+  /^\/settings\/(?:telegram|discord)(?:\/|$)/.test(path);
+
 function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
   return [
     ...(endpoint.public ? [] : [contracts.AUTH_ERROR_CODES.unauthenticated]),
@@ -5513,6 +5557,9 @@ function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
     ...(pathRequiresAdminTwoFactorSetup(endpoint.path, endpoint.method)
       ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
       : []),
+    ...(takesJsonBody(endpoint) ? BODY_PARSER_ERROR_CODES : []),
+    ...(takesRawBody(endpoint) ? RAW_BODY_PARSER_ERROR_CODES : []),
+    ...(pathIsKillSwitchedChannel(endpoint.path) ? [CHANNEL_DEACTIVATED_CODE] : []),
     ...(endpoint.errorCodes ?? []),
   ].filter((code, index, all) => all.indexOf(code) === index);
 }
@@ -5589,6 +5636,21 @@ for (const ep of endpoints) {
     // No content member: RFC 9110 §15.4.5 forbids a 304 body, so the response
     // carries only the same validators the 200 would have sent.
     responses['304'] = { description: ep.notModified, ...successHeaders };
+  }
+  // The global body parser's refusals (`bodyLimits.ts`), so every code in
+  // BODY_PARSER_ERROR_CODES has a status to live under; 400 MALFORMED_BODY rides
+  // the 400 above. An endpoint's own `errorResponses` below still wins.
+  if (takesJsonBody(ep)) {
+    responses['413'] = errorResponse(
+      'The request body exceeds the size limit (PAYLOAD_TOO_LARGE).',
+      errorHeaders,
+    );
+  }
+  if (takesJsonBody(ep) || takesRawBody(ep)) {
+    responses['415'] = errorResponse(
+      'The request body uses an unsupported charset or content encoding (UNSUPPORTED_MEDIA_TYPE).',
+      errorHeaders,
+    );
   }
   for (const [status, description] of Object.entries(ep.errorResponses ?? {})) {
     responses[status] = errorResponse(description, errorHeaders);
