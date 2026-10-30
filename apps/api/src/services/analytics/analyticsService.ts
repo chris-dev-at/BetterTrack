@@ -21,7 +21,7 @@ import {
   toPerformanceSeries,
   type Deflator,
   type StatSeriesPoint,
-} from '../../domain/seriesStats';
+} from '@bettertrack/domain/seriesStats';
 import { badRequest, notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import type { BacktestService } from '../backtest/backtestService';

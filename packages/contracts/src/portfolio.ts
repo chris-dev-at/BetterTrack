@@ -7,7 +7,7 @@ import { mirrorMemberRoleSchema, mirrorRowInfoSchema, mirrorSyncStateSchema } fr
  * Portfolio + custom-asset contracts (PROJECTPLAN.md §6.9, §8).
  *
  * Transactions are the source of truth; holdings and the value-over-time series
- * are *derived* (never stored) by `apps/api/src/domain/holdings`. Every wire
+ * are *derived* (never stored) by `@bettertrack/domain/holdings`. Every wire
  * shape the portfolio surface speaks is defined once here so the API and the web
  * client derive their types from the same source. Money values cross the wire as
  * plain `number`s at full precision — display rounding lives in the client

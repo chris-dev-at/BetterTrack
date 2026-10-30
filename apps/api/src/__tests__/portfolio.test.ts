@@ -15,7 +15,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
-import { cashBalance, externalCashFlowsForTwr } from '../domain/cashLedger';
+import { cashBalance, externalCashFlowsForTwr } from '@bettertrack/domain/cashLedger';
 import { TARGET_POINTS } from '../services/portfolio/portfolioIntraday';
 import { createRecordingBackfill, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';

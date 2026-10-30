@@ -7,7 +7,7 @@ import {
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
   type CustomTaxParams,
-} from '../../../domain/tax';
+} from '@bettertrack/domain/tax';
 import {
   isDerivableDividend,
   isDerivableSell,

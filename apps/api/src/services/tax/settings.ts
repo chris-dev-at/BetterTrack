@@ -8,13 +8,13 @@ import {
 } from '@bettertrack/contracts';
 
 import type { UserTaxSettingsRecord } from '../../data/repositories/taxRepository';
-import { resolvePortfolioSetting } from '../../domain/settingsScope';
+import { resolvePortfolioSetting } from '@bettertrack/domain/settingsScope';
 import {
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
   type CustomTaxParams,
-} from '../../domain/tax';
+} from '@bettertrack/domain/tax';
 
 /** The generic portfolio-setting key used by the tax scoping cascade. */
 export const PORTFOLIO_SETTING_KEY_TAX = 'tax';

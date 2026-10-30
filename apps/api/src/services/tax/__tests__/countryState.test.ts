@@ -12,7 +12,7 @@ import {
   TaxRowClassificationError,
   type CustomTaxParams,
   type DeTaxableEvent,
-} from '../../../domain/tax';
+} from '@bettertrack/domain/tax';
 import {
   deEventsByYear,
   deYearStateForYear,

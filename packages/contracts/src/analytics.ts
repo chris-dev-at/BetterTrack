@@ -9,7 +9,7 @@ import { CUSTOM_ASSET_CATEGORIES, portfolioAssetSchema } from './portfolio';
  * The Portfolio → Analytics page's configurable main graph + contribution
  * table speak these shapes. Defined once so the API validates against them and
  * the web client derives its types from the same source. The response mirrors
- * the pure domain in `apps/api/src/domain/seriesStats.ts` (per-series
+ * the pure domain in `packages/domain/src/seriesStats.ts` (per-series
  * `stats` over a value series) plus the assembled per-asset `contributions`.
  *
  * The endpoint is a READ (`GET`, `portfolio:read`): the graph configuration —

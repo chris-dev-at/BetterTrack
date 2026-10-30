@@ -1,6 +1,6 @@
 import type { CashSystemTagKey } from '@bettertrack/contracts';
 
-import type { CashMovementKind } from '../../domain/cashLedger';
+import type { CashMovementKind } from '@bettertrack/domain/cashLedger';
 
 /**
  * AUTO-TAGGING — the engine stamping a movement's app-owned tag when it books it

@@ -18,7 +18,7 @@ import {
   InsufficientCashError,
   projectCashLedgerBySource,
   type SourcedCashMovement,
-} from '../../domain/cashLedger';
+} from '@bettertrack/domain/cashLedger';
 import {
   dePotCategoryForAssetType,
   floorCents,
@@ -27,7 +27,7 @@ import {
   type CostBasisStrategy,
   type SellRealizationEur,
   type TaxableTransaction,
-} from '../../domain/tax';
+} from '@bettertrack/domain/tax';
 import {
   heldForYear,
   liveDerivableYears,

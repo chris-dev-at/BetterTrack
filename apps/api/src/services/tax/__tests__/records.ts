@@ -9,7 +9,7 @@ import {
   type DePotCategory,
   type SellRealizationEur,
   type TaxableTransaction,
-} from '../../../domain/tax';
+} from '@bettertrack/domain/tax';
 
 /**
  * Row/movement fixture builders shared by the service-layer tax-engine unit

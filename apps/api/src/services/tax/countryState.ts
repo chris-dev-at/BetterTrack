@@ -17,7 +17,7 @@ import {
   type SupportedTaxCountry,
   type TaxRowEngine,
   type TaxRowEngineFacts,
-} from '../../domain/tax';
+} from '@bettertrack/domain/tax';
 import type { LiveRegime } from './livingYear';
 
 /**

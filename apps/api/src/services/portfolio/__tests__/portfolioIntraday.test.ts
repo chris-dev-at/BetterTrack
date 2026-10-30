@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { QTY_EPSILON, type FlowPoint, type ValuePoint } from '../../../domain/holdings';
+import { QTY_EPSILON, type FlowPoint, type ValuePoint } from '@bettertrack/domain/holdings';
 import {
   anchorlessAssetDays,
   assetDayKey,

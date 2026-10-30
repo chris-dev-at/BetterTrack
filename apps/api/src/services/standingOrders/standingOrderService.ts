@@ -8,7 +8,7 @@ import {
   type UpdateStandingOrderRequest,
 } from '@bettertrack/contracts';
 
-import { floorCents } from '../../domain/cashLedger';
+import { floorCents } from '@bettertrack/domain/cashLedger';
 import type { Database } from '../../data/db';
 import type { AssetRepository } from '../../data/repositories/assetRepository';
 import type {

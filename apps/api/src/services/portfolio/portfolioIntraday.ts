@@ -12,8 +12,8 @@ import {
   VALUE_EPSILON,
   type FlowPoint,
   type ValuePoint,
-} from '../../domain/holdings';
-import { modifiedDietz, type DietzFlow } from '../../domain/seriesStats';
+} from '@bettertrack/domain/holdings';
+import { modifiedDietz, type DietzFlow } from '@bettertrack/domain/seriesStats';
 import { buildIntradayBucketPrices } from './intradayBucketPrices';
 
 /**

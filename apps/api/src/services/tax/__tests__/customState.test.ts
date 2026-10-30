@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AT_AS_CUSTOM_PARAMS } from '../../../domain/tax';
+import { AT_AS_CUSTOM_PARAMS } from '@bettertrack/domain/tax';
 import { isCustomFifoSell } from '../customState';
 import { txRecord } from './records';
 
