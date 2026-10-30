@@ -341,8 +341,10 @@ function toAnnouncement(row: AnnouncementRow, at: Date): Announcement {
     severity: row.severity as AnnouncementSeverity,
     titleEn: row.titleEn,
     bodyEn: row.bodyEn,
-    titleDe: row.titleDe,
-    bodyDe: row.bodyDe,
+    // Nullable since 0122 (DE optional for notice/once); this composer still
+    // requires both, so the fallback only covers rows written by a later one.
+    titleDe: row.titleDe ?? '',
+    bodyDe: row.bodyDe ?? '',
     startsAt: row.startsAt ? row.startsAt.toISOString() : null,
     endsAt: row.endsAt ? row.endsAt.toISOString() : null,
     active: row.active,
@@ -361,7 +363,7 @@ function renderForLocale(
   locale: EmailLocale,
 ): { title: string; body: string } {
   return locale === 'de'
-    ? { title: row.titleDe, body: row.bodyDe }
+    ? { title: row.titleDe ?? row.titleEn, body: row.bodyDe ?? row.bodyEn }
     : { title: row.titleEn, body: row.bodyEn };
 }
 
@@ -423,7 +425,7 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       eventKey,
       copy: {
         en: { title: row.titleEn, body: row.bodyEn },
-        de: { title: row.titleDe, body: row.bodyDe },
+        de: { title: row.titleDe ?? row.titleEn, body: row.bodyDe ?? row.bodyEn },
       },
       // The deep-link routes off announcementId so the bell click surfaces the
       // banner-linked content (`NotificationBell.notificationLink` maps

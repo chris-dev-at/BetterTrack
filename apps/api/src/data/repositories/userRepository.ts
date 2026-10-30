@@ -1,8 +1,23 @@
-import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
+import type { ReceiptPseudonymizer } from '../../services/crypto/receiptPseudonym';
 import type { Database } from '../db';
-import { adminUserFlags, users, type UserRow } from '../schema';
+import { adminUserFlags, announcementReceipts, users, type UserRow } from '../schema';
 
 /**
  * Filter + order + window for the admin People list (#1406 W2). Every field is
@@ -47,11 +62,28 @@ export interface CreateUserInput {
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
+export interface UserRepositoryOptions {
+  /**
+   * Pseudonymises an account's acknowledged announcement receipts when the
+   * account is deleted (§6.19.5). The app context and the test harness always
+   * pass one; a script that never deletes accounts may omit it — and if such a
+   * script ever does delete an account holding an acknowledgement, the delete
+   * refuses instead of losing the evidence.
+   */
+  receiptPseudonymizer?: ReceiptPseudonymizer;
+}
+
+/** What deleting an account kept (the `user.deleted` audit row carries it). */
+export interface UserRemovalResult {
+  /** Acknowledged announcement receipts pseudonymised and kept as evidence. */
+  acknowledgementsKept: number;
+}
+
 /**
  * All user SQL lives here (PROJECTPLAN.md §4.3). Email is normalised to
  * lowercase; username lookups are case-insensitive.
  */
-function createUserQueries(db: Database) {
+function createUserQueries(db: Database, options: UserRepositoryOptions = {}) {
   return {
     async findById(id: string): Promise<UserRow | undefined> {
       const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1);
@@ -411,8 +443,80 @@ function createUserQueries(db: Database) {
       return row;
     },
 
-    async remove(id: string): Promise<void> {
-      await db.delete(users).where(eq(users.id, id));
+    /**
+     * Delete one account, keeping its acknowledgement evidence pseudonymised
+     * (§6.19.5, contract §7.5; Chief ruling 2026-10-29). ONE transaction, in
+     * this order:
+     *
+     *  0. lock the `users` row, so an acknowledgement racing this delete
+     *     either commits first (and is pseudonymised below) or fails on the
+     *     foreign key once the row is gone — never left half-handled;
+     *  1. delete the receipts WITHOUT an acknowledgement (seen, dismissed,
+     *     lapsed — none of them is evidence of anything the person agreed to);
+     *  2. pseudonymise the rest: `subject_token` = HMAC-SHA256 of the user id
+     *     under the derived key, `subject_key_id`, `pseudonymized_at`, both
+     *     timestamps reset to that instant, and every column that could point
+     *     back at the person set NULL. What survives is exactly the
+     *     announcement, `acknowledged_at`, the content hash and the token;
+     *  3. delete the `users` row — the receipts' RESTRICT key would refuse it
+     *     if step 1 or 2 had left a live receipt behind.
+     *
+     * Both deletion paths (self-service `accountDeletionService`, the admin
+     * `deleteUser`) end here. Nested inside the admin's serialized
+     * transaction this runs as a savepoint of that transaction.
+     */
+    async remove(id: string): Promise<UserRemovalResult> {
+      return db.transaction(async (txRaw) => {
+        const tx = txRaw as unknown as Database;
+        await tx.select({ id: users.id }).from(users).where(eq(users.id, id)).for('update');
+        await tx
+          .delete(announcementReceipts)
+          .where(
+            and(eq(announcementReceipts.userId, id), isNull(announcementReceipts.acknowledgedAt)),
+          );
+        const acknowledged = await tx
+          .select({ id: announcementReceipts.id })
+          .from(announcementReceipts)
+          .where(
+            and(
+              eq(announcementReceipts.userId, id),
+              isNotNull(announcementReceipts.acknowledgedAt),
+            ),
+          );
+        if (acknowledged.length > 0) {
+          const pseudonymizer = options.receiptPseudonymizer;
+          if (!pseudonymizer) {
+            throw new Error(
+              'account deletion refused: acknowledged announcement receipts need the receipt pseudonymizer',
+            );
+          }
+          await tx
+            .update(announcementReceipts)
+            .set({
+              userId: null,
+              subjectToken: pseudonymizer.token(id),
+              subjectKeyId: pseudonymizer.keyId,
+              pseudonymizedAt: sql`now()`,
+              createdAt: sql`now()`,
+              updatedAt: sql`now()`,
+              acknowledgedVia: null,
+              acknowledgedGrantId: null,
+              acknowledgedLocale: null,
+              seenAt: null,
+              dismissedAt: null,
+              lapsedAt: null,
+              lapseReason: null,
+            })
+            .where(
+              and(
+                eq(announcementReceipts.userId, id),
+                isNotNull(announcementReceipts.acknowledgedAt),
+              ),
+            );
+        }
+        await tx.delete(users).where(eq(users.id, id));
+        return { acknowledgementsKept: acknowledged.length };
+      });
     },
 
     async list(search?: string): Promise<UserRow[]> {
@@ -536,8 +640,8 @@ function createUserQueries(db: Database) {
 
 type UserQueries = ReturnType<typeof createUserQueries>;
 
-export function createUserRepository(db: Database) {
-  const queries = createUserQueries(db);
+export function createUserRepository(db: Database, options: UserRepositoryOptions = {}) {
+  const queries = createUserQueries(db, options);
   return {
     ...queries,
 
@@ -568,7 +672,7 @@ export function createUserRepository(db: Database) {
           .where(and(eq(users.role, 'admin'), eq(users.status, 'active')))
           .orderBy(users.id)
           .for('update');
-        return mutation(createUserQueries(transaction), transaction);
+        return mutation(createUserQueries(transaction, options), transaction);
       });
     },
   };

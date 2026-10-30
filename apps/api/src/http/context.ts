@@ -263,6 +263,7 @@ import {
 } from '../services/standingOrders/standingOrderService';
 import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
 import { ALL_MAPPERS } from '../services/imports/mappers';
+import { createReceiptPseudonymizer } from '../services/crypto/receiptPseudonym';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createAudienceService } from '../services/social/audienceService';
 import {
@@ -742,7 +743,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // stays unconditional either way.
   const observability = initObservability(config, logger, { serverName: 'api' });
 
-  const userRepo = createUserRepository(db);
+  // Account deletion pseudonymises acknowledged announcement receipts with a
+  // key derived from the active record-encryption key (§6.19.5).
+  const userRepo = createUserRepository(db, {
+    receiptPseudonymizer: createReceiptPseudonymizer(config.recordEncryption.active),
+  });
   // Cross-table reads + operator notes behind the People 360 tabs (#1406 W2).
   const adminPeopleRepo = createAdminPeopleRepository(db);
   const adminModerationRepo = createAdminModerationRepository(db);
