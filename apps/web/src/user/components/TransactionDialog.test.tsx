@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { Transaction, TransactionInput } from '@bettertrack/contracts';
 
@@ -1374,5 +1374,27 @@ describe('TransactionDialog — manual default prefill (V5-P4c)', () => {
     await sellWithPrice(user);
     const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
     expect(taxInput).toHaveValue(null);
+  });
+});
+
+describe('TransactionDialog — the default date is the display-zone day (#2082 B2, #1792)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('at 00:30 Vienna it pre-fills the Vienna day, not the UTC day (still yesterday)', async () => {
+    // 2026-07-16 00:30 CEST is 2026-07-15T22:30Z — the UTC day is the 15th.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-15T22:30:00.000Z'));
+    // No injected `today` — the dialog reads the wall clock, as in the browser.
+    renderDialog({ today: undefined });
+    expect(await screen.findByLabelText(/date for btc/i)).toHaveValue('2026-07-16');
+  });
+
+  test('at 12:00 Vienna the default is the same day it always was', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+    renderDialog({ today: undefined });
+    expect(await screen.findByLabelText(/date for btc/i)).toHaveValue('2026-07-15');
   });
 });

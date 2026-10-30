@@ -4,6 +4,7 @@ import type { CashMovementKind, CashPreviewResponse, CashSource } from '@bettert
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
+import { displayZoneDay } from '../../lib/format';
 import { useDebounce } from '../hooks/useDebounce';
 import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { Dialog } from '../components/Dialog';
@@ -40,9 +41,10 @@ export interface CashDialogProps {
   today?: string;
 }
 
+/** Today in the display zone (#1792), not the UTC day — see `displayZoneDay`. */
 function isoToday(today?: string): string {
   if (today) return today;
-  return new Date().toISOString().slice(0, 10);
+  return displayZoneDay();
 }
 
 /**
