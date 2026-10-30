@@ -17,6 +17,7 @@ import {
   ANNOUNCEMENT_MANUAL_PUBLISH_ATTEMPT,
   ANNOUNCEMENT_REDELIVER_DEDUPE_WINDOW_MS,
   type AnnouncementPublishRequest,
+  type AnnouncementService,
 } from '../announcementService';
 
 /**
@@ -82,8 +83,17 @@ const BASE_BODY: CreateAnnouncementRequest = {
   bodyEn: 'Test body EN',
   titleDe: 'Test-Titel DE',
   bodyDe: 'Test-Text DE',
-  active: true,
 };
+
+/** A draft, then Publish — `active` is no longer a create field (§6.19.4). */
+async function createLive(
+  service: AnnouncementService,
+  body: CreateAnnouncementRequest,
+  actor: { id: string; ip?: string | null },
+) {
+  const draft = await service.create(body, actor);
+  return service.publish(draft.id, actor);
+}
 
 describe('AnnouncementService — active window', () => {
   it('honors an explicit start/end window under a fixed clock', async () => {
@@ -94,7 +104,8 @@ describe('AnnouncementService — active window', () => {
     let now = new Date('2026-01-01T00:00:00.000Z');
     const { service } = buildService(() => now);
 
-    const created = await service.create(
+    const created = await createLive(
+      service,
       {
         ...BASE_BODY,
         startsAt: '2026-06-01T00:00:00.000Z',
@@ -103,6 +114,7 @@ describe('AnnouncementService — active window', () => {
       { id: admin.id, ip: null },
     );
     expect(created.active).toBe(true);
+    expect(created.lifecycle).toBe('published');
 
     // Before window: hidden for every user.
     // Visibility moved to the receipt repository (§6.19); the window is the same.
@@ -149,7 +161,7 @@ describe('AnnouncementService — active window', () => {
  * on Monday — while the composer's own helper text said the opposite.
  */
 describe('AnnouncementService — a write never delivers (#1909)', () => {
-  it('a FUTURE startsAt with active:true sends no notification at save time', async () => {
+  it('publishing with a FUTURE startsAt sends no notification at save time', async () => {
     const admin = await harness.seedAdmin();
     const alice = await harness.seedUser({ email: 'sched@bt.test', username: 'scheduleduser' });
 
@@ -157,8 +169,9 @@ describe('AnnouncementService — a write never delivers (#1909)', () => {
     const enqueued: AnnouncementPublishRequest[] = [];
     const { service, notifications } = buildService(now, { enqueued });
 
-    const created = await service.create(
-      { ...BASE_BODY, active: true, startsAt: '2026-01-05T09:00:00.000Z' },
+    const created = await createLive(
+      service,
+      { ...BASE_BODY, startsAt: '2026-01-05T09:00:00.000Z' },
       { id: admin.id },
     );
 
@@ -181,8 +194,9 @@ describe('AnnouncementService — a write never delivers (#1909)', () => {
     const enqueued: AnnouncementPublishRequest[] = [];
     const { service, notifications } = buildService(now, { enqueued });
 
-    const created = await service.create(
-      { ...BASE_BODY, active: true, startsAt: '2026-01-01T00:00:00.000Z' },
+    const created = await createLive(
+      service,
+      { ...BASE_BODY, startsAt: '2026-01-01T00:00:00.000Z' },
       { id: admin.id },
     );
 
@@ -196,17 +210,17 @@ describe('AnnouncementService — a write never delivers (#1909)', () => {
     expect(enqueued).toEqual([{ announcementId: created.id, attempt: 0 }]);
   });
 
-  it('flipping active on later hands the same open-window announcement over once', async () => {
+  it('publishing a draft later hands the same open-window announcement over once', async () => {
     const admin = await harness.seedAdmin();
     const now = () => new Date('2026-01-10T00:00:00.000Z');
     const enqueued: AnnouncementPublishRequest[] = [];
     const { service } = buildService(now, { enqueued });
 
-    const created = await service.create({ ...BASE_BODY, active: false }, { id: admin.id });
+    const created = await service.create({ ...BASE_BODY }, { id: admin.id });
     expect(created.deliveryState).toBe('draft');
     expect(enqueued).toHaveLength(0);
 
-    const activated = await service.update(created.id, { active: true }, { id: admin.id });
+    const activated = await service.publish(created.id, { id: admin.id });
     expect(activated.deliveryState).toBe('publishing');
     expect(enqueued).toEqual([{ announcementId: created.id, attempt: 0 }]);
   });
@@ -217,12 +231,11 @@ describe('AnnouncementService — a write never delivers (#1909)', () => {
     const enqueued: AnnouncementPublishRequest[] = [];
     const { service, repo } = buildService(now, { enqueued });
 
-    // Composed inactive with a window that closed months ago, then activated —
-    // the exact sequence an operator performs when they "re-use" an old notice.
+    // Composed with a window that closed months ago — the exact draft an
+    // operator has when they "re-use" an old notice.
     const created = await service.create(
       {
         ...BASE_BODY,
-        active: false,
         startsAt: '2026-01-01T00:00:00.000Z',
         endsAt: '2026-01-31T00:00:00.000Z',
       },
@@ -230,8 +243,11 @@ describe('AnnouncementService — a write never delivers (#1909)', () => {
     );
     expect(created.deliveryState).toBe('expired');
 
-    const reactivated = await service.update(created.id, { active: true }, { id: admin.id });
-    expect(reactivated.deliveryState).toBe('expired');
+    // §6.19.4: Publish refuses an end at or before now — nothing is armed.
+    await expect(service.publish(created.id, { id: admin.id })).rejects.toMatchObject({
+      statusCode: 400,
+      code: 'INVALID_ANNOUNCEMENT_WINDOW',
+    });
     expect(enqueued).toHaveLength(0);
 
     // And the sweep refuses it too — the due predicate, not just the enqueue.
@@ -251,20 +267,21 @@ describe('deriveAnnouncementDeliveryState', () => {
   const future = new Date('2026-06-01T00:00:00.000Z');
 
   it.each([
-    ['draft', { active: false, startsAt: null, endsAt: null, publishedAt: null }],
-    ['scheduled', { active: true, startsAt: future, endsAt: null, publishedAt: null }],
-    ['publishing', { active: true, startsAt: past, endsAt: null, publishedAt: null }],
-    ['publishing', { active: true, startsAt: null, endsAt: null, publishedAt: null }],
-    ['published', { active: true, startsAt: past, endsAt: future, publishedAt: past }],
-    ['expired', { active: true, startsAt: past, endsAt: past, publishedAt: past }],
-    // A closed window outranks everything: the job refuses it and the banner
-    // hides it, so no other reading would be honest.
-    ['expired', { active: true, startsAt: null, endsAt: past, publishedAt: null }],
-    ['expired', { active: false, startsAt: null, endsAt: past, publishedAt: null }],
-    // Switched back off after a publication: users see nothing now, and the
-    // row's own publishedAt still carries the history beside it.
-    ['draft', { active: false, startsAt: past, endsAt: future, publishedAt: past }],
-  ])('is %s', (expected, row) => {
+    ['draft', { lifecycle: 'draft', startsAt: null, endsAt: null, publishedAt: null }],
+    ['scheduled', { lifecycle: 'published', startsAt: future, endsAt: null, publishedAt: null }],
+    ['publishing', { lifecycle: 'published', startsAt: past, endsAt: null, publishedAt: null }],
+    ['publishing', { lifecycle: 'published', startsAt: null, endsAt: null, publishedAt: null }],
+    ['published', { lifecycle: 'published', startsAt: past, endsAt: future, publishedAt: past }],
+    ['expired', { lifecycle: 'published', startsAt: past, endsAt: past, publishedAt: past }],
+    // A closed window outranks everything but an archive: the job refuses it
+    // and users stop seeing it, so no other reading would be honest.
+    ['expired', { lifecycle: 'published', startsAt: null, endsAt: past, publishedAt: null }],
+    ['expired', { lifecycle: 'draft', startsAt: null, endsAt: past, publishedAt: null }],
+    // §6.19.4: withdrawn by an operator — terminal, whatever its window says;
+    // the row's own publishedAt still carries the history beside it.
+    ['archived', { lifecycle: 'archived', startsAt: past, endsAt: future, publishedAt: past }],
+    ['archived', { lifecycle: 'archived', startsAt: null, endsAt: past, publishedAt: past }],
+  ] as const)('is %s', (expected, row) => {
     expect(deriveAnnouncementDeliveryState(row, at)).toBe(expected);
   });
 });
@@ -294,16 +311,17 @@ describe('AnnouncementService — redelivering a partial publication (#1943)', (
     const enqueued: AnnouncementPublishRequest[] = [];
     const { service, repo } = buildService(() => at, { enqueued });
 
-    const off = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
+    const off = await createLive(service, { ...BASE_BODY }, { id: admin.id });
     await publishWithOneFailure(repo, off.id, at);
-    await service.update(off.id, { active: false }, { id: admin.id });
+    await service.archive(off.id, { id: admin.id });
     await expect(service.redeliver(off.id, { id: admin.id })).rejects.toMatchObject({
       statusCode: 409,
       code: 'ANNOUNCEMENT_NOT_REDELIVERABLE',
     });
 
-    const closed = await service.create(
-      { ...BASE_BODY, active: true, endsAt: '2026-09-01T00:00:00.000Z' },
+    const closed = await createLive(
+      service,
+      { ...BASE_BODY, endsAt: '2026-09-01T00:00:00.000Z' },
       { id: admin.id },
     );
     await publishWithOneFailure(repo, closed.id, at);
@@ -328,7 +346,7 @@ describe('AnnouncementService — redelivering a partial publication (#1943)', (
     // exactly as the API context builds it when the queue is unavailable.
     const { service, repo } = buildService(() => at);
 
-    const row = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
+    const row = await createLive(service, { ...BASE_BODY }, { id: admin.id });
     await publishWithOneFailure(repo, row.id, at);
 
     // The sweep does not stand behind this one: `publishDue` takes UNSTAMPED
@@ -353,7 +371,7 @@ describe('AnnouncementService — redelivering a partial publication (#1943)', (
     const enqueued: AnnouncementPublishRequest[] = [];
     const { service, repo, notifications } = buildService(() => at, { enqueued });
 
-    const row = await service.create({ ...BASE_BODY, active: true }, { id: admin.id });
+    const row = await createLive(service, { ...BASE_BODY }, { id: admin.id });
     await publishWithOneFailure(repo, row.id, at);
 
     const accepted = await service.redeliver(row.id, { id: admin.id, ip: '10.9.9.9' });

@@ -76,18 +76,32 @@ async function publishDue() {
   return harness.ctx.announcements.publishDue();
 }
 
-async function createViaAdmin(
-  agent: ReturnType<typeof request.agent>,
-  body: CreateAnnouncementRequest,
-) {
+/**
+ * These suites predate §6.19, where `active: true` on a create meant "armed".
+ * The lifecycle replaced it (§6.19.4): a create is always a draft and Publish
+ * is its own transition. This helper keeps the suites' intent — `active`
+ * (default true) means "create, then publish" — and answers with the create's
+ * status and the announcement as it stands after the publish attempt. A
+ * publish the server refuses (a window that already closed) leaves the draft.
+ */
+type LegacyCreate = CreateAnnouncementRequest & { active?: boolean };
+
+async function createViaAdmin(agent: ReturnType<typeof request.agent>, body: LegacyCreate) {
+  const { active = true, ...create } = body;
   const res = await agent
     .post('/api/v1/admin/announcements')
     .set(...XRW)
-    .send(body);
-  return res;
+    .send(create);
+  if (res.status !== 201 || !active) return res;
+  const published = await agent
+    .post(`/api/v1/admin/announcements/${res.body.id as string}/publish`)
+    .set(...XRW);
+  return published.status === 200
+    ? Object.assign(res, { body: published.body as unknown })
+    : res;
 }
 
-const BASE_BODY: CreateAnnouncementRequest = {
+const BASE_BODY: LegacyCreate = {
   severity: 'warning',
   titleEn: 'Scheduled maintenance',
   bodyEn: 'BetterTrack will be briefly unavailable at 22:00 UTC for upgrades.',
@@ -115,19 +129,33 @@ describe('announcements — admin CRUD', () => {
     expect(anon.status).toBe(404);
   });
 
-  it('requires EN + DE title/body — missing DE fields → 400 (§13.4 binding)', async () => {
+  it('DE is optional for a notice and required at publish for ack_required (§6.19.6)', async () => {
     const admin = await harness.seedAdmin();
     const agent = await harness.loginAdmin(admin);
-    const res = await agent
+    const notice = await agent
       .post('/api/v1/admin/announcements')
       .set(...XRW)
-      .send({
-        severity: 'info',
-        titleEn: 'Hello',
-        bodyEn: 'Body',
-        // titleDe/bodyDe omitted
-      });
-    expect(res.status).toBe(400);
+      .send({ severity: 'info', titleEn: 'Hello', bodyEn: 'Body' });
+    expect(notice.status).toBe(201);
+    expect(notice.body).toMatchObject({ titleDe: null, bodyDe: null, lifecycle: 'draft' });
+    await agent
+      .post(`/api/v1/admin/announcements/${notice.body.id as string}/publish`)
+      .set(...XRW)
+      .expect(200);
+
+    const ack = await agent
+      .post('/api/v1/admin/announcements')
+      .set(...XRW)
+      .send({ kind: 'ack_required', severity: 'info', titleEn: 'Terms', bodyEn: 'Read.' });
+    expect(ack.status).toBe(201);
+    const refused = await agent
+      .post(`/api/v1/admin/announcements/${ack.body.id as string}/publish`)
+      .set(...XRW);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatchObject({
+      code: 'ANNOUNCEMENT_INCOMPLETE',
+      details: { missing: ['titleDe', 'bodyDe'] },
+    });
   });
 
   it('creates + updates + deletes an announcement; every mutation is audit-logged', async () => {
@@ -218,17 +246,14 @@ describe('announcements — publishing fans an inbox row out to every user', () 
       body: BASE_BODY.bodyDe,
     });
 
-    // Re-publish (toggle off → on, then another sweep) is a per-user no-op: the
-    // row is stamped, so it is not due, and the shared eventKey would collapse
-    // it even if it were.
+    // Another sweep — and one after an archive — is a per-user no-op: the row
+    // is stamped, so it is not due, and the shared eventKey would collapse it
+    // even if it were.
+    expect(await publishDue()).toMatchObject({ due: 0, published: 0, inserted: 0 });
     await adminAgent
-      .patch(`/api/v1/admin/announcements/${announcement.id}`)
+      .post(`/api/v1/admin/announcements/${announcement.id}/archive`)
       .set(...XRW)
-      .send({ active: false });
-    await adminAgent
-      .patch(`/api/v1/admin/announcements/${announcement.id}`)
-      .set(...XRW)
-      .send({ active: true });
+      .expect(200);
     expect(await publishDue()).toMatchObject({ due: 0, published: 0, inserted: 0 });
 
     const enInbox2 = await enAgent.get('/api/v1/notifications');
@@ -307,9 +332,8 @@ describe('announcements — the write path never fans out', () => {
     expect(enqueued).toHaveLength(0);
 
     const patched = await adminAgent
-      .patch(`/api/v1/admin/announcements/${draft.id}`)
-      .set(...XRW)
-      .send({ active: true });
+      .post(`/api/v1/admin/announcements/${draft.id}/publish`)
+      .set(...XRW);
     expect(patched.status).toBe(200);
     const activated = announcementSchema.parse(patched.body);
     expect(activated.deliveryState).toBe('publishing');

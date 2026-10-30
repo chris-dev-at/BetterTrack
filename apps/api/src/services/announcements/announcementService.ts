@@ -8,7 +8,7 @@ import type {
   AnnouncementReceiptsResponse,
   AnnouncementSeverity,
   AnnouncementStatsResponse,
-  CreateAnnouncementInput,
+  CreateAnnouncementRequest,
   UpdateAnnouncementRequest,
 } from '@bettertrack/contracts';
 import {
@@ -320,7 +320,7 @@ export interface AnnouncementService {
   list(): Promise<Announcement[]>;
   /** The bearer acknowledgement gate's deployment state, read now. */
   bearerAckGate(): AnnouncementBearerAckGate;
-  create(input: CreateAnnouncementInput, actor: AnnouncementServiceActor): Promise<Announcement>;
+  create(input: CreateAnnouncementRequest, actor: AnnouncementServiceActor): Promise<Announcement>;
   update(
     id: string,
     input: UpdateAnnouncementRequest,
@@ -761,11 +761,27 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
 
     /** Always a draft; nothing is delivered or shown until publish (§6.19.4). */
     async create(input, actor): Promise<Announcement> {
+      const kind = input.kind ?? 'notice';
+      const notifyByEmail = input.notifyByEmail ?? false;
+      const notifyByEmailAfterDays =
+        input.notifyByEmailAfterDays ?? ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT;
+      if (
+        kind !== 'ack_required' &&
+        (notifyByEmail || notifyByEmailAfterDays !== ANNOUNCEMENT_NOTIFY_EMAIL_AFTER_DAYS_DEFAULT)
+      ) {
+        // The route's schema refuses this first; the service holds the line
+        // for any other caller (the DB CHECK is the last one).
+        throw badRequest('The e-mail fields are available for ack_required only.', 'VALIDATION_ERROR', {
+          fieldErrors: notifyByEmail
+            ? { notifyByEmail: ['ack_required only'] }
+            : { notifyByEmailAfterDays: ['ack_required only'] },
+        });
+      }
       const startsAt = input.startsAt ? new Date(input.startsAt) : null;
       const endsAt = input.endsAt ? new Date(input.endsAt) : null;
       assertWindow(startsAt, endsAt, now(), false);
       const content = {
-        kind: input.kind,
+        kind,
         format: 'markdown' as const,
         titleEn: input.titleEn,
         bodyEn: input.bodyEn,
@@ -774,8 +790,8 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
       };
       assertAnnouncementContent(content);
       const row = await repo.create({
-        kind: input.kind,
-        audience: input.audience,
+        kind,
+        audience: input.audience ?? 'everyone',
         severity: input.severity,
         titleEn: content.titleEn,
         bodyEn: content.bodyEn,
@@ -783,8 +799,8 @@ export function createAnnouncementService(deps: AnnouncementServiceDeps): Announ
         bodyDe: content.bodyDe,
         startsAt,
         endsAt,
-        notifyByEmail: input.notifyByEmail,
-        notifyByEmailAfterDays: input.notifyByEmailAfterDays,
+        notifyByEmail,
+        notifyByEmailAfterDays,
         createdBy: actor.id,
       });
       await audit.record({

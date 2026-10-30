@@ -61,6 +61,17 @@ const announcement: Announcement = {
   failedCount: null,
   createdAt: '2026-09-01T00:00:00.000Z',
   updatedAt: '2026-09-01T00:00:00.000Z',
+  kind: 'notice',
+  audience: 'everyone',
+  lifecycle: 'published',
+  bodyFormat: 'plain',
+  releasedAt: '2026-07-30T09:00:00.000Z',
+  audienceCutoffAt: '2026-07-30T09:00:00.000Z',
+  archivedAt: null,
+  lapseRecordedAt: null,
+  notifyByEmail: false,
+  notifyByEmailAfterDays: 7,
+  emailPassRecordedAt: null,
 };
 
 const invite: AdminInvite = {

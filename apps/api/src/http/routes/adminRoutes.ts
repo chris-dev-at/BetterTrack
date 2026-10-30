@@ -52,7 +52,7 @@ import {
   type AuditQuery,
   type BulkUserActionRequest,
   type CreateAdminUserNoteRequest,
-  type CreateAnnouncementInput,
+  type CreateAnnouncementRequest,
   type AnnouncementReceiptsCsvQuery,
   type AnnouncementReceiptsQuery,
   type UpdateAccountDefaultsRequest,
@@ -745,7 +745,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   router.post('/announcements', validateBody(createAnnouncementRequestSchema), async (req, res) => {
     const announcement = await ctx.announcements.create(
-      req.valid?.body as CreateAnnouncementInput,
+      req.valid?.body as CreateAnnouncementRequest,
       actorOf(req),
     );
     res.status(201).json(announcementSchema.parse(announcement));

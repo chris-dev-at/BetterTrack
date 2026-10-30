@@ -168,7 +168,7 @@ describe('announcement admin wire (contract §7)', () => {
 
   it('notifyByEmailAfterDays is an integer 0–365', () => {
     const base = announcementSchema.shape;
-    const days = base.notifyByEmailAfterDays.unwrap();
+    const days = base.notifyByEmailAfterDays;
     expect(days.safeParse(0).success).toBe(true);
     expect(days.safeParse(365).success).toBe(true);
     expect(days.safeParse(366).success).toBe(false);

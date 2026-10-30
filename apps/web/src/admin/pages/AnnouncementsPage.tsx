@@ -100,6 +100,7 @@ const STATE_TONE: Record<AnnouncementDeliveryState, Tone> = {
   publishing: 'amber',
   published: 'green',
   expired: 'neutral',
+  archived: 'neutral',
 };
 
 /**
@@ -217,8 +218,8 @@ function fromAnnouncement(row: Announcement): ComposerState {
     severity: row.severity,
     titleEn: row.titleEn,
     bodyEn: row.bodyEn,
-    titleDe: row.titleDe,
-    bodyDe: row.bodyDe,
+    titleDe: row.titleDe ?? '',
+    bodyDe: row.bodyDe ?? '',
     startsAt: toInputDateTime(row.startsAt),
     endsAt: toInputDateTime(row.endsAt),
     active: row.active,
@@ -238,6 +239,10 @@ function stateDetail(row: Announcement, t: TranslateFn): string {
       });
     case 'expired':
       return t('admin.announcements.state.expiredDetail', { date: formatDateTime(row.endsAt) });
+    case 'archived':
+      return t('admin.announcements.state.archivedDetail', {
+        date: formatDateTime(row.archivedAt),
+      });
     case 'publishing':
       return t('admin.announcements.state.publishingDetail');
     default:
@@ -303,9 +308,18 @@ export function AnnouncementsPage() {
           bodyDe: composer.bodyDe.trim(),
           startsAt,
           endsAt,
-          active: composer.active,
         };
-        await api.updateAnnouncement(composer.id, patch);
+        // §6.19 interim (the UI lane rebuilds this composer): the old Active
+        // checkbox now maps onto the lifecycle transitions.
+        const updated = await api.updateAnnouncement(composer.id, patch);
+        if (composer.active && updated.lifecycle === 'draft') {
+          await api.transitionAnnouncement(composer.id, 'publish');
+        } else if (!composer.active && updated.lifecycle === 'published') {
+          await api.transitionAnnouncement(
+            composer.id,
+            updated.deliveryState === 'scheduled' ? 'unpublish' : 'archive',
+          );
+        }
         setSaved(t('admin.announcements.composer.updated'));
       } else {
         const created = await api.createAnnouncement({
@@ -316,8 +330,9 @@ export function AnnouncementsPage() {
           bodyDe: composer.bodyDe.trim(),
           startsAt: startsAt ?? undefined,
           endsAt: endsAt ?? undefined,
-          active: composer.active,
-        });
+        }).then((draft) =>
+          composer.active ? api.transitionAnnouncement(draft.id, 'publish') : draft,
+        );
         // The confirmation reports what the SERVER decided, not what the form
         // hoped: "created and published" was the old lie on a row nothing had
         // delivered yet.
@@ -343,7 +358,10 @@ export function AnnouncementsPage() {
     setRowError(null);
     setBusyId(row.id);
     try {
-      await api.updateAnnouncement(row.id, { active: !row.active });
+      await api.transitionAnnouncement(
+        row.id,
+        !row.active ? 'publish' : row.deliveryState === 'scheduled' ? 'unpublish' : 'archive',
+      );
       announcements.reload();
     } catch (err) {
       if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
@@ -710,7 +728,7 @@ export function AnnouncementsPage() {
                   ? 'admin.confirmations.redeliverAnnouncement.descriptionOne'
                   : 'admin.confirmations.redeliverAnnouncement.description',
                 {
-                  name: locale === 'de' ? redelivering.titleDe : redelivering.titleEn,
+                  name: locale === 'de' ? (redelivering.titleDe ?? redelivering.titleEn) : redelivering.titleEn,
                   failed: redelivering.failedCount ?? 0,
                 },
               )}
@@ -746,7 +764,7 @@ export function AnnouncementsPage() {
           <div className="flex flex-col gap-4">
             <p className="text-[13px] text-neutral-400">
               {t('admin.confirmations.deleteAnnouncement.description', {
-                name: locale === 'de' ? deleting.titleDe : deleting.titleEn,
+                name: locale === 'de' ? (deleting.titleDe ?? deleting.titleEn) : deleting.titleEn,
               })}
             </p>
             {rowError ? <Alert tone="error">{rowError}</Alert> : null}
