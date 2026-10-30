@@ -113,10 +113,10 @@ function refusedCredential(): Response {
 }
 
 /**
- * #2028 — the OTHER §15 answer these dialogs can get: the 429 emitted by the
- * per-account progressive step-up throttle AND by the module's route limiter,
- * indistinguishably. `Retry-After` is present because the server sends it; no
- * surface is allowed to render it (see the §15 gate at the bottom of this file).
+ * #2028 — the OTHER §15 answer these dialogs can get: a 429, from either the
+ * per-account progressive step-up throttle or the module's route limiter.
+ * `Retry-After` is present because the route limiter sends it; no surface
+ * renders it (see the consistency gate at the bottom of this file).
  */
 function throttled(): Response {
   return new Response(
@@ -126,6 +126,18 @@ function throttled(): Response {
       headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
     },
   );
+}
+
+/**
+ * A 429 WITHOUT the JSON envelope — what an edge or proxy limiter answers
+ * (production TLS terminates at Cloudflare). `apiRequest` parses it to code
+ * `UNKNOWN`, so only the status says it is a throttle.
+ */
+function bareThrottled(): Response {
+  return new Response('<html><body>429 Too Many Requests</body></html>', {
+    status: 429,
+    headers: { 'Content-Type': 'text/html' },
+  });
 }
 
 /**
@@ -434,8 +446,10 @@ describe('a wrong §15 step-up credential never logs the user out', () => {
 /**
  * #2028 — the SAME four dialogs, answering the other §15 refusal. Before this
  * change every one of them rendered its credential-refusal line for a 429, so
- * an owner holding a CORRECT password was told it was wrong and re-entered it,
- * driving the per-account progressive throttle deeper on every attempt.
+ * an owner holding a CORRECT password was told it was wrong. (Re-entering it
+ * during the cooldown does not deepen the throttle — every verifier peeks
+ * before it verifies — but the owner is still told a lie about their
+ * credential.)
  *
  * Each case asserts both halves: the throttle line is shown AND the refusal
  * line is not. Asserting only the first would pass on a dialog that stacked the
@@ -465,6 +479,29 @@ describe('a throttled §15 step-up says "wait", never "wrong credential"', () =>
       expect(screen.queryByText(REFUSAL_COPY.delete)).not.toBeInTheDocument();
       expect(screen.getByLabelText('Account confirmation')).toBeInTheDocument();
       expect(seenPath).toBe('/control/privacy');
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('delete vault: an envelope-less 429 from an edge limiter is a wait too', async () => {
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({
+        'GET /api/v1/vaults': () => json({ vaults: [VAULT] }),
+        [`DELETE /api/v1/vaults/${VAULT_ID}`]: bareThrottled,
+      });
+      const user = userEvent.setup();
+      renderIn(<VaultManager operations={{ provision: vi.fn(), fetchHeader: vi.fn() }} />);
+
+      await user.click(await screen.findByRole('button', { name: 'Delete' }));
+      await user.type(screen.getByLabelText('Account confirmation'), 'the-correct-password');
+      await user.click(screen.getByRole('button', { name: 'Delete empty vault' }));
+
+      expect(await screen.findByText(THROTTLE_COPY.delete)).toBeInTheDocument();
+      expect(screen.queryByText(REFUSAL_COPY.delete)).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Account confirmation')).toBeInTheDocument();
       expectSessionIntact(policy);
     } finally {
       dispose();
@@ -624,14 +661,16 @@ describe('a throttled §15 step-up says "wait", never "wrong credential"', () =>
 });
 
 /**
- * §15's actual requirement, stated over the catalogs rather than over one
- * render: the per-account progressive throttle and the route limiter must be
- * INDISTINGUISHABLE in copy, because naming which one fired discloses whether
- * the credential path was reached at all.
+ * The copy rule, stated over the catalogs rather than over one render: the
+ * throttle strings name no limiter, window, countdown or factor, and all five
+ * say the same thing for whichever limiter fired.
  *
- * So no throttle string may name a limiter, a window, a countdown or the factor
- * that was being checked — and all five say the same thing, in the same words,
- * for whichever limiter fired.
+ * This is a CONSISTENCY choice with `ConnectionsPanel` (#1999), not a §15
+ * secrecy property — §15 asks only for generic text on a credential failure,
+ * and the two limiters are already distinguishable on the wire (see
+ * {@link stepUpFailureCopy}). The gate keeps the four dialogs and the panel
+ * saying one thing, so a future server change that makes the two 429s
+ * identical does not find the UI already leaking the difference.
  */
 describe('the §15 throttle copy discloses nothing about which limiter fired', () => {
   const THROTTLE_KEYS = [

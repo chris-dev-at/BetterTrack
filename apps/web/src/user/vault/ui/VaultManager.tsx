@@ -414,11 +414,12 @@ function VaultManagerRow({
       setErrorKey(
         error instanceof ApiError && error.code === PER_VAULT_ERROR_CODES.deleteReferenced
           ? 'vault.manager.deleteReferenced'
-          : // A 429 never reached the credential (or never got judged on it), so
-            // it is a wait rather than a refusal — see {@link stepUpFailureCopy}
-            // for why the two must read differently and why neither may name the
-            // limiter. The entry is deliberately left in place: unlike a refusal,
-            // a throttle says nothing about whether what was typed is wrong.
+          : // A 429 says nothing about whether THIS entry was right: the attempt
+            // that trips the throttle was judged (and was wrong), but a correct
+            // credential typed during the cooldown is neither judged nor counted.
+            // So it reads as a wait, never a refusal — see {@link stepUpFailureCopy}
+            // for the server behaviour and why the copy names no limiter. The
+            // entry is deliberately left in place.
             stepUpFailureCopy(error, {
               refused: 'vault.manager.deleteError',
               throttled: 'vault.manager.deleteThrottled',

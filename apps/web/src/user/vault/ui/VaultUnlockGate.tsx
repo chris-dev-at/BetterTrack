@@ -215,8 +215,9 @@ function StuckFold({
   // The key the failure renders, not a bare flag: the §15 throttle's 429 must
   // not reach the owner in the words of a refused password (#2028 — see
   // {@link stepUpFailureCopy}). This fold is the one place a stuck owner CAN
-  // still act, so telling them to re-type a credential that was never judged is
-  // how they drive the progressive throttle deeper while locked out.
+  // still act, so telling them a correct password is wrong — when the server
+  // did not judge it during the cooldown — sends them hunting for a password
+  // they already have.
   const [failureKey, setFailureKey] = useState<string | null>(null);
   const confirmed =
     username != null && typed.trim().toLowerCase() === username.trim().toLowerCase();
