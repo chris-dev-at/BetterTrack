@@ -55,6 +55,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
+import type { SignOutEverywhereCredential } from '../../services/auth/authService';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -344,14 +345,21 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // "Sign out everywhere": log out every other device — every other session AND
-  // every official first-party app grant (§16 2026-10-29) — keeping the caller
-  // signed in on this session, or on its own grant when the caller is an OAuth
-  // bearer (the mobile app). `req.apiKey.id` IS the grant id for an OAuth
-  // principal; a personal key or a cookie session keeps no grant.
+  // "Sign out everywhere": log out every other device — every other session,
+  // and (§16 2026-10-29) every official first-party app grant — keeping the
+  // caller signed in on this session, or on its own grant when the caller is an
+  // official app's OAuth bearer (`req.apiKey.id` IS the grant id then). Grant
+  // revocation stays first-party-OAuth-only, as on `DELETE
+  // /settings/oauth-grants/{id}`: a personal key or a third-party app holding
+  // `account:security` revokes sessions only (review B1).
   router.post('/sessions/revoke-others', requireAuth, async (req, res) => {
+    const credential: SignOutEverywhereCredential = !req.apiKey
+      ? { kind: 'session' }
+      : req.apiKey.kind === 'oauth' && req.apiKey.firstParty
+        ? { kind: 'first_party_oauth', grantId: req.apiKey.id }
+        : { kind: 'delegated_bearer' };
     const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null, {
-      oauthGrantId: req.apiKey?.kind === 'oauth' ? req.apiKey.id : null,
+      credential,
       ip: req.ip,
     });
     res.json({ revoked });

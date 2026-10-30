@@ -1560,6 +1560,8 @@ describe('refresh-token rotation', () => {
   async function issueFirstPartyPair(scopes: string[] = ['portfolio:read']): Promise<{
     clientId: string;
     first: ReturnType<typeof oauthTokenResponseSchema.parse>;
+    user: { id: string; email: string; password: string };
+    agent: Agent;
   }> {
     const { clientId } = await registerFirstPartyClient({ scopes, public: true });
     const tag = randomBytes(4).toString('hex');
@@ -1584,7 +1586,7 @@ describe('refresh-token rotation', () => {
       code_verifier: verifier,
     });
     expect(res.status).toBe(200);
-    return { clientId, first: oauthTokenResponseSchema.parse(res.body) };
+    return { clientId, first: oauthTokenResponseSchema.parse(res.body), user, agent };
   }
 
   /** A public client authenticates by `client_id` alone. */
@@ -1714,6 +1716,82 @@ describe('refresh-token rotation', () => {
     expect(await graceAudits()).toHaveLength(0);
   });
 
+  // Review S1 (the reviewer's probe, adopted): the first-use stamp must not
+  // ride the 60 s per-grant `oauth:touched:` lastUsed throttle. Moving it into
+  // that branch leaves the successor's first use unrecorded whenever the
+  // predecessor was used less than a minute earlier — the normal case — and a
+  // replay would then be re-served a pair somebody is using.
+  it('first-party: the first-use stamp is independent of the per-grant lastUsed throttle', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    // The install uses its CURRENT access token: this arms the per-grant
+    // `oauth:touched:<grantId>` Redis throttle (EX 60, real time)…
+    await useAccessToken(first.access_token);
+    const next = await rotatePublic(clientId, first.refresh_token);
+    // …and uses the successor seconds later, while that throttle is still armed.
+    await useAccessToken(next.access_token);
+    expect((await accessRow(next.access_token)).firstUsedAt).toBeInstanceOf(Date);
+
+    // A re-send of the consumed token past the strict window meets a USED
+    // pair: theft detection, never the 24 h re-serve.
+    advance(10 * 60);
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeInstanceOf(Date);
+    expect(await revocationAudits(grant.id)).toEqual([
+      { clientId, reason: 'refresh_reuse', evidence: 'successor_access_used' },
+    ]);
+  });
+
+  // Review S3: a revoked grant's sealed pair can never be served again, so it
+  // must not sit at rest (or in the nightly dump) for the rest of its 24 h.
+  // Every revoke path nulls it in the revoking transaction.
+  describe('every revoke path clears the sealed pairs of the grant it ends', () => {
+    async function rotatedFirstPartyInstall() {
+      const install = await issueFirstPartyPair();
+      const next = await rotatePublic(install.clientId, install.first.refresh_token);
+      expect((await refreshRow(install.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+      return { ...install, next, grant: await grantFor(install.first.refresh_token) };
+    }
+
+    it('Settings → Authorized apps (revokeGrant)', async () => {
+      const install = await rotatedFirstPartyInstall();
+      await install.agent
+        .delete(`/api/v1/settings/oauth-grants/${install.grant.id}`)
+        .set(...XRW)
+        .expect(204);
+      expect((await refreshRow(install.first.refresh_token)).successorEnvelope).toBeNull();
+    });
+
+    it('theft detection (the reuse revoke)', async () => {
+      const install = await rotatedFirstPartyInstall();
+      await useAccessToken(install.next.access_token);
+      // Still inside the first-party 24 h window, so the read path keeps it…
+      advance(10 * 60);
+      expectInvalidGrant(await refreshPublic(install.clientId, install.first.refresh_token));
+      // …and only the revoke can have taken it.
+      expect((await refreshRow(install.first.refresh_token)).successorEnvelope).toBeNull();
+    });
+
+    it('a credential event (password change)', async () => {
+      const install = await rotatedFirstPartyInstall();
+      await install.agent
+        .post('/api/v1/auth/change-password')
+        .set(...XRW)
+        .send({ currentPassword: install.user.password, newPassword: 'Str0ng-New-Passw0rd!' })
+        .expect(200);
+      expect((await refreshRow(install.first.refresh_token)).successorEnvelope).toBeNull();
+    });
+
+    it('administrative suspension (revokeAllForUser)', async () => {
+      const install = await rotatedFirstPartyInstall();
+      const bystander = await rotatedFirstPartyInstall();
+      await createOAuthRepository(harness.db).revokeAllForUser(install.user.id);
+      expect((await refreshRow(install.first.refresh_token)).successorEnvelope).toBeNull();
+      // Another user's live pair is untouched.
+      expect((await refreshRow(bystander.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+    });
+  });
+
   it('first-party: once the successor REFRESH token was rotated, a replay revokes (successor_rotated)', async () => {
     const { clientId, first } = await issueFirstPartyPair();
     const second = await rotatePublic(clientId, first.refresh_token);
@@ -1806,7 +1884,7 @@ describe('refresh-token rotation', () => {
     const grant = await grantFor(first.refresh_token);
     expect(grant.revokedAt).toBeInstanceOf(Date);
     expect(await revocationAudits(grant.id)).toEqual([
-      { clientId, reason: 'refresh_reuse', evidence: 'window_passed' },
+      { clientId, reason: 'refresh_reuse', evidence: 'legacy_envelope' },
     ]);
   });
 

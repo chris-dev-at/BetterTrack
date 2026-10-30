@@ -247,6 +247,32 @@ export interface OAuthCredentialEventRevocation {
 const successorTokens = alias(oauthRefreshTokens, 'successor_tokens');
 
 /**
+ * Null every sealed successor pair under the given grants — one statement, run
+ * in the revoking transaction by every revoke path. A revoked grant's pair can
+ * never be served again (the re-serve and every token lookup require an active
+ * grant), so keeping it at rest — and in the nightly dump — for the rest of its
+ * window (up to 24 h for a first-party app) is pure residue. Idempotent: the
+ * `successor_envelope IS NOT NULL` guard makes a replay a no-op.
+ */
+async function clearGrantEnvelopes(
+  executor: Pick<Database, 'update'>,
+  grantIds: string[] | SQL,
+): Promise<void> {
+  if (Array.isArray(grantIds) && grantIds.length === 0) return;
+  await executor
+    .update(oauthRefreshTokens)
+    .set({ successorEnvelope: null })
+    .where(
+      and(
+        Array.isArray(grantIds)
+          ? inArray(oauthRefreshTokens.grantId, grantIds)
+          : sql`${oauthRefreshTokens.grantId} IN ${grantIds}`,
+        isNotNull(oauthRefreshTokens.successorEnvelope),
+      ),
+    );
+}
+
+/**
  * Read one refresh token with its grant, user and successor, enforcing the
  * envelope-lifetime rule on the way: a row whose re-serve window has passed
  * loses its `successor_envelope` on this very read (and the caller never sees
@@ -627,18 +653,23 @@ export function createOAuthRepository(db: Database) {
      * every token lookup requires the grant to be active.
      */
     async revokeGrant(userId: string, id: string): Promise<OAuthGrantRow | undefined> {
-      const [row] = await db
-        .update(oauthGrants)
-        .set({ revokedAt: new Date() })
-        .where(
-          and(
-            eq(oauthGrants.id, id),
-            eq(oauthGrants.userId, userId),
-            isNull(oauthGrants.revokedAt),
-          ),
-        )
-        .returning();
-      return row;
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [row] = await executor
+          .update(oauthGrants)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(oauthGrants.id, id),
+              eq(oauthGrants.userId, userId),
+              isNull(oauthGrants.revokedAt),
+            ),
+          )
+          .returning();
+        // Its sealed pairs go with it (review S3, §16 2026-10-29).
+        if (row) await clearGrantEnvelopes(executor, [row.id]);
+        return row;
+      });
     },
 
     /**
@@ -656,6 +687,12 @@ export function createOAuthRepository(db: Database) {
         .update(oauthAuthCodes)
         .set({ consumedAt: invalidatedAt })
         .where(and(eq(oauthAuthCodes.userId, userId), isNull(oauthAuthCodes.consumedAt)));
+      // Every grant of the user is revoked now, so every sealed pair under
+      // them goes (review S3). Runs after the revoke, so a retry converges.
+      await clearGrantEnvelopes(
+        db,
+        sql`(SELECT ${oauthGrants.id} FROM ${oauthGrants} WHERE ${oauthGrants.userId} = ${userId} AND ${oauthGrants.revokedAt} IS NOT NULL)`,
+      );
     },
 
     /**
@@ -718,6 +755,11 @@ export function createOAuthRepository(db: Database) {
           )
           .returning({ id: oauthGrants.id, clientRowId: oauthGrants.clientId });
         if (revoked.length === 0) return [];
+        // Their sealed pairs go in the same transaction (review S3).
+        await clearGrantEnvelopes(
+          executor,
+          revoked.map((grant) => grant.id),
+        );
 
         const clients = await executor
           .select({ id: oauthClients.id, clientId: oauthClients.clientId })

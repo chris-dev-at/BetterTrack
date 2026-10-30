@@ -213,8 +213,10 @@ export type OAuthCredentialRevocationReason =
  * `meta.evidence` of an `oauth.grant_revoked` row with `reason: refresh_reuse` —
  * which check of the re-serve rule the re-presented refresh token failed:
  *  - `window_passed`         — consumed longer ago than the client's window
- *                              (60 s third-party; 24 h first-party, or 60 s for
- *                              a pair sealed before first-use tracking existed);
+ *                              (60 s third-party; 24 h first-party);
+ *  - `legacy_envelope`       — first-party, past the strict window, but the pair
+ *                              was sealed before first-use tracking existed
+ *                              (envelope v1), so "never used" cannot be proven;
  *  - `successor_rotated`     — its successor has itself been rotated: the token
  *                              is a grandparent (or older) in the chain;
  *  - `no_successor`          — consumed with no successor recorded (rotated
@@ -227,6 +229,7 @@ export type OAuthCredentialRevocationReason =
  */
 export type OAuthRefreshReuseEvidence =
   | 'window_passed'
+  | 'legacy_envelope'
   | 'successor_rotated'
   | 'no_successor'
   | 'successor_access_used';
@@ -738,7 +741,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // Past the strict window only the first-party unused-successor rule can
     // serve, and only for a pair whose first use would have been recorded.
     const extended = elapsedMs > REFRESH_GRACE_MS;
-    if (extended && sealed.v !== 2) return { kind: 'reuse', evidence: 'window_passed' };
+    if (extended && sealed.v !== 2) return { kind: 'reuse', evidence: 'legacy_envelope' };
     // Joins through the grant (revoked ⇒ absent) and the user, so this is also
     // the freshest grant/user check before anything leaves the server.
     const access = await repo.findAccessTokenByHash(hashToken(sealed.accessToken));
@@ -1179,15 +1182,27 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           }),
         ),
       );
+      // The revoke above is fail-closed (it propagates). The audit trail
+      // after it is not: the grants are already revoked, so a failed row is
+      // logged loudly and the loop continues — a 500 here would lose the
+      // remaining rows for good (a retry revokes nothing more) and skip the
+      // caller's own password audit and the admin temp-password e-mail.
       for (const { grantId, clientId } of revoked) {
-        await audit.record({
-          actorId: actorId ?? userId,
-          action: AuditAction.OAuthGrantRevoked,
-          targetType: 'oauth_grant',
-          targetId: grantId,
-          ip: ip ?? null,
-          meta: source ? { clientId, reason, source } : { clientId, reason },
-        });
+        try {
+          await audit.record({
+            actorId: actorId ?? userId,
+            action: AuditAction.OAuthGrantRevoked,
+            targetType: 'oauth_grant',
+            targetId: grantId,
+            ip: ip ?? null,
+            meta: source ? { clientId, reason, source } : { clientId, reason },
+          });
+        } catch (err) {
+          logger?.warn(
+            { err, userId, grantId, reason },
+            'oauth credential-event grant revocation AUDIT GAP: grant revoked but audit write failed',
+          );
+        }
       }
       return revoked.length;
     },

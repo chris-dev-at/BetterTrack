@@ -100,6 +100,23 @@ export interface AuthServiceDeps {
   oauthGrants: Pick<OAuthService, 'revokeGrantsForCredentialEvent'>;
 }
 
+/**
+ * Who issued "sign out everywhere" (`POST /auth/sessions/revoke-others`), as
+ * far as OAuth grants are concerned (§16 2026-10-29, review B1). Grant
+ * revocation is first-party-OAuth-only everywhere else on the bearer surface
+ * (`DELETE /settings/oauth-grants/{id}` refuses personal keys and third-party
+ * apps), so this route keeps the same boundary:
+ *  - `session`           — a browser: every first-party grant is revoked;
+ *  - `first_party_oauth` — an official app's bearer: every first-party grant
+ *                          EXCEPT its own (`grantId`) is revoked;
+ *  - `delegated_bearer`  — a personal API key or a third-party app holding
+ *                          `account:security`: sessions only, never a grant.
+ */
+export type SignOutEverywhereCredential =
+  | { kind: 'session' }
+  | { kind: 'first_party_oauth'; grantId: string }
+  | { kind: 'delegated_bearer' };
+
 export interface LoginInput {
   identifier: string;
   password: string;
@@ -384,16 +401,18 @@ export interface AuthService {
   ): Promise<{ revoked: boolean; wasCurrent: boolean }>;
   /**
    * "Sign out everywhere" (V3-P11a; widened §16 2026-10-29): revoke every
-   * session of the caller EXCEPT the current one, AND every OAuth grant of an
-   * official first-party app EXCEPT the caller's own (`caller.oauthGrantId`,
-   * set when the caller is itself a first-party OAuth bearer). Third-party
-   * grants are untouched. Returns how many SESSIONS were revoked (the wire
-   * count is unchanged). The caller stays signed in either way.
+   * session of the caller EXCEPT the current one, AND — only for a browser
+   * session or an official first-party app's bearer — every OAuth grant of an
+   * official first-party app EXCEPT the caller's own (see
+   * {@link SignOutEverywhereCredential}). Third-party grants are untouched; a
+   * personal key or third-party bearer revokes sessions only. Returns how many
+   * SESSIONS were revoked (the wire count is unchanged). The caller stays
+   * signed in either way.
    */
   revokeOtherSessions(
     userId: string,
     currentSessionId: string | null,
-    caller: { oauthGrantId: string | null; ip?: string | null },
+    caller: { credential: SignOutEverywhereCredential; ip?: string | null },
   ): Promise<number>;
 }
 
@@ -2004,16 +2023,23 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const revoked = await sessions.revokeOthersForUser(userId, currentSessionId);
       if (revoked > 0) await invalidateAllSessions(userId, currentSessionId);
       // Sign-out-everywhere reaches the official apps too, keeping the caller's
-      // own grant (its "keep me signed in" promise). Until per-install token
-      // families land, one grant serves every phone of the account, so a call
-      // made FROM a phone keeps every phone on that shared grant signed in.
-      await oauthGrants.revokeGrantsForCredentialEvent({
-        userId,
-        reason: 'sign_out_everywhere',
-        firstPartyOnly: true,
-        exceptGrantId: caller.oauthGrantId,
-        ip: caller.ip ?? null,
-      });
+      // own grant (its "keep me signed in" promise) — but only when a browser
+      // or an official app asks. A personal key or a third-party app holding
+      // `account:security` signs SESSIONS out and never a grant: grant
+      // revocation is first-party-OAuth-only on the whole bearer surface
+      // (review B1). Until per-install token families land, one grant serves
+      // every phone of the account, so a call made FROM a phone keeps every
+      // phone on that shared grant signed in.
+      const { credential } = caller;
+      if (credential.kind !== 'delegated_bearer') {
+        await oauthGrants.revokeGrantsForCredentialEvent({
+          userId,
+          reason: 'sign_out_everywhere',
+          firstPartyOnly: true,
+          exceptGrantId: credential.kind === 'first_party_oauth' ? credential.grantId : null,
+          ip: caller.ip ?? null,
+        });
+      }
       return revoked;
     },
   };

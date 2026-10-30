@@ -918,6 +918,97 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
     expect(await grantRevocations(mobile.user.id)).toHaveLength(2);
   });
 
+  // Review B1: grant revocation stays first-party-OAuth-only (bearerAuth's
+  // grant-management carve-out). A personal key or a third-party app holding
+  // `account:security` may sign the user's SESSIONS out, never a grant.
+  it('sign out everywhere from a PERSONAL KEY revokes sessions only — never a grant', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const minted = await mobile.agent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'Automation', scopes: ['account:security'] });
+    expect(minted.status, JSON.stringify(minted.body)).toBe(201);
+    const key = createApiKeyResponseSchema.parse(minted.body).token;
+
+    // The same key is refused direct grant revocation…
+    const direct = await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${mobile.grantId}`)
+      .set(bearer(key));
+    expect(direct.status).toBe(403);
+
+    // …and cannot reach the grant through sign-out-everywhere either.
+    const out = await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(key));
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+    expect(out.body).toEqual({ revoked: 1 });
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(401);
+    expect(await grantRevokedAt(mobile.grantId)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);
+    expect(await grantRevocations(mobile.user.id)).toEqual([]);
+  });
+
+  it('sign out everywhere from a THIRD-PARTY app revokes sessions only — never a first-party grant', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['account:security'], mobile);
+
+    const direct = await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${mobile.grantId}`)
+      .set(bearer(partner.token));
+    expect(direct.status).toBe(403);
+
+    const out = await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(partner.token));
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+    expect(out.body).toEqual({ revoked: 1 });
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(401);
+    expect(await grantRevokedAt(mobile.grantId)).toBeNull();
+    expect(await grantRevokedAt(partner.grantId)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);
+    expect(await grantRevocations(mobile.user.id)).toEqual([]);
+  });
+
+  // Review S2: the revoke is fail-closed, its audit trail is not. An audit
+  // write that fails after the revoke committed must not turn the credential
+  // change into a 500, nor skip the remaining grants' rows.
+  it('an audit write failing after the revoke committed is logged and the rest continues', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const record = vi.fn(async (input: { action: string; targetId?: string | null }) => {
+      if (input.action === AuditAction.OAuthGrantRevoked && record.mock.calls.length === 1) {
+        throw new Error('audit store unavailable');
+      }
+    });
+    const warn = vi.fn();
+    const service = createOAuthService({
+      repo: createOAuthRepository(harness.db),
+      audit: { record } as unknown as Parameters<typeof createOAuthService>[0]['audit'],
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+      logger: { warn },
+    });
+
+    await expect(
+      service.revokeGrantsForCredentialEvent({
+        userId: mobile.user.id,
+        reason: 'password_change',
+        firstPartyOnly: false,
+        exceptGrantId: null,
+      }),
+    ).resolves.toBe(2);
+
+    // Both grants are revoked; the second row was still attempted after the
+    // first failed, and the gap is logged loudly.
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error), userId: mobile.user.id }),
+      'oauth credential-event grant revocation AUDIT GAP: grant revoked but audit write failed',
+    );
+  });
+
   it('sign out everywhere also consumes pending first-party authorization codes', async () => {
     const user = await seedFreshUser();
     const agent = await login(user);
