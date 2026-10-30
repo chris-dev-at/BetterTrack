@@ -480,6 +480,15 @@ describe('#361 route × scope matrix', () => {
       path: `/feedback/${MISSING_ID}`,
       scope: 'feedback:write',
     },
+    // Owner directive 2026-10-29: the edit-while-new PATCH is a write — a
+    // `feedback:read` grant must never be able to rewrite submitted text.
+    {
+      name: 'own feedback edit',
+      method: 'patch',
+      path: `/feedback/${MISSING_ID}`,
+      scope: 'feedback:write',
+      body: { message: 'Bearer matrix edit' },
+    },
     {
       name: 'feedback thread',
       method: 'get',

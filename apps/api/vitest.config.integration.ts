@@ -62,6 +62,15 @@ export default defineConfig({
       // faithfully (measured), so this is belt-and-braces rather than a known
       // gap; it runs here so the Bind path is the one under test too.
       'src/data/repositories/__tests__/feedbackLifecycleRankOrder.test.ts',
+      // Owner directive 2026-10-29: the submitter edit is a locked
+      // read-modify-write whose race case (an edit against an in-flight triage)
+      // only discriminates where two sessions genuinely overlap — PGlite has
+      // one, so there it passes with or without the row lock. The admin
+      // workflow suite proves the `from`/`to` filter's `AT TIME ZONE` SQL with
+      // bound casts (a DST day included) and the reply written inside the
+      // status transaction — the #1443 PGlite-vs-postgres-js class again.
+      'src/__tests__/feedbackEdit.test.ts',
+      'src/__tests__/adminFeedbackWorkflow.test.ts',
       // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).

@@ -490,6 +490,12 @@ const componentSchemas = {
   CreateFeedbackRequest: contracts.createFeedbackRequestSchema,
   CreateFeedbackResponse: contracts.createFeedbackResponseSchema,
   MyFeedbackResponse: contracts.myFeedbackResponseSchema,
+  // Owner directive 2026-10-29: edit while `new`, admin counts and bulk actions.
+  UpdateMyFeedbackRequest: contracts.updateMyFeedbackRequestSchema,
+  MyFeedbackSubmission: contracts.myFeedbackSubmissionSchema,
+  AdminFeedbackCountsResponse: contracts.adminFeedbackCountsResponseSchema,
+  AdminFeedbackBulkRequest: contracts.adminFeedbackBulkRequestSchema,
+  AdminFeedbackBulkResponse: contracts.adminFeedbackBulkResponseSchema,
   FeedbackThreadResponse: contracts.feedbackThreadResponseSchema,
   SendFeedbackMessageRequest: contracts.sendFeedbackMessageRequestSchema,
   SendFeedbackMessageResponse: contracts.sendFeedbackMessageResponseSchema,
@@ -2215,9 +2221,32 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback',
     tag: 'Admin',
     summary: 'Category-priority inbox for authenticated web and native feedback.',
-    query: contracts.adminFeedbackListQuerySchema,
+    // `.innerType()`: the date-range refinement wraps the object, and query
+    // parameters are generated from the object's shape (as for /admin/audit).
+    query: contracts.adminFeedbackListQuerySchema.innerType(),
     status: 200,
     response: R.AdminFeedbackListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/feedback/counts',
+    tag: 'Admin',
+    summary:
+      'Zero-filled feedback counts per status and per category, scoped by the inbox filters.',
+    query: contracts.adminFeedbackCountsQuerySchema.innerType(),
+    status: 200,
+    response: R.AdminFeedbackCountsResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/feedback/bulk',
+    tag: 'Admin',
+    summary:
+      'Apply one status/archive/unarchive action to up to 100 submissions, with a per-row result.',
+    errorCodes: contracts.FEEDBACK_STATUS_ERROR_CODES,
+    body: R.AdminFeedbackBulkRequest,
+    status: 200,
+    response: R.AdminFeedbackBulkResponse,
   },
   {
     method: 'get',
@@ -3223,6 +3252,17 @@ const endpoints: EndpointDef[] = [
     summary: 'Hide one caller-owned submission while retaining an admin-visible tombstone.',
     params: contracts.idParamSchema,
     status: 204,
+  },
+  {
+    method: 'patch',
+    path: '/feedback/{id}',
+    tag: 'Feedback',
+    summary: 'Edit one caller-owned submission while it is still new.',
+    errorCodes: contracts.FEEDBACK_EDIT_ERROR_CODES,
+    params: contracts.idParamSchema,
+    body: R.UpdateMyFeedbackRequest,
+    status: 200,
+    response: R.MyFeedbackSubmission,
   },
   {
     method: 'post',

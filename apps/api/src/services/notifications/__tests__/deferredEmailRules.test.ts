@@ -10,7 +10,12 @@ import type { Database } from '../../../data/db';
 import { emailLog, notificationDigestQueue, notificationSettings } from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createAuditService } from '../../audit/auditService';
-import { createEmailService, type EmailService } from '../../email/emailService';
+import {
+  createEmailService,
+  deferredNotificationUrl,
+  feedbackSubmissionUrl,
+  type EmailService,
+} from '../../email/emailService';
 import type { MailTransport, OutgoingMail } from '../../email/transport';
 import { createDigestService, type DigestService } from '../digestService';
 import type { PushMessage } from '../fcm';
@@ -370,5 +375,80 @@ describe('deferred email — log row and deep link (#1816)', () => {
     expect(rows[0]!.template).toBe('deferred');
     expect(rows[0]!.status).toBe('sent');
     expect(rows[0]!.subject).toBe(mail.subject);
+  });
+});
+
+/**
+ * Owner directive 2026-10-29: a feedback e-mail opens THE submission it is
+ * about. The bare `/control/feedback` panel it used to link cannot show one, so
+ * the link was a dead end on both the instant and the quiet-hours path.
+ */
+describe('feedback e-mail — deep link to the submission (2026-10-29)', () => {
+  const FEEDBACK_ID = '00000000-0000-7000-8000-00000000f00d';
+  const MESSAGE_ID = '00000000-0000-7000-8000-00000000beef';
+  const LINK = `/control/feedback?submission=${FEEDBACK_ID}`;
+
+  const events = (userId: string) =>
+    [
+      {
+        type: 'feedback.status_changed' as const,
+        userId,
+        feedbackId: FEEDBACK_ID,
+        status: 'triaged' as const,
+        lastStatusChangeAt: OCCURRED_AT,
+        occurredAt: OCCURRED_AT,
+      },
+      {
+        type: 'feedback.reply_created' as const,
+        userId,
+        feedbackId: FEEDBACK_ID,
+        messageId: MESSAGE_ID,
+        occurredAt: OCCURRED_AT,
+      },
+    ] as const;
+
+  it('links the instant e-mail of both feedback types to the submission', async () => {
+    const user = await harness.seedUser({ email: 'fb-instant@bt.test', username: 'fbinstant' });
+    await enableEmailFor(user.id, 'feedback.status_changed', 'feedback.reply_created');
+
+    for (const event of events(user.id)) await makeDispatcher().dispatch(event);
+
+    expect(transport.sent).toHaveLength(2);
+    for (const mail of transport.sent) {
+      expect(mail.html ?? '').toContain(LINK);
+      expect(mail.text ?? '').toContain(LINK);
+    }
+  });
+
+  it('keeps the submission deep link through the quiet-hours release', async () => {
+    const user = await harness.seedUser({ email: 'fb-deferred@bt.test', username: 'fbdeferred' });
+    await enableEmailFor(user.id, 'feedback.status_changed', 'feedback.reply_created');
+    await enableQuietHours(user.id);
+
+    for (const event of events(user.id)) await makeDispatcher().dispatch(event);
+    expect(transport.sent).toHaveLength(0);
+
+    clock = AFTER_WINDOW;
+    await makeDigestService().deliverDeferred();
+    expect(transport.sent).toHaveLength(2);
+    for (const mail of transport.sent) {
+      expect(mail.html ?? '').toContain(LINK);
+      expect(mail.text ?? '').toContain(LINK);
+    }
+  });
+
+  it('degrades a queue row without an id to the panel, never to a broken link', () => {
+    for (const type of ['feedback.status_changed', 'feedback.reply_created']) {
+      expect(deferredNotificationUrl('https://app.test/', type, { feedbackId: FEEDBACK_ID })).toBe(
+        `https://app.test${LINK}`,
+      );
+      expect(deferredNotificationUrl('https://app.test', type, null)).toBe(
+        'https://app.test/control/feedback',
+      );
+    }
+    // The id is a path-safe query value even if a queue row were ever tampered with.
+    expect(feedbackSubmissionUrl('https://app.test', 'a&b=c')).toBe(
+      'https://app.test/control/feedback?submission=a%26b%3Dc',
+    );
   });
 });

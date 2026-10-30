@@ -6,9 +6,11 @@ import {
   feedbackThreadQuerySchema,
   idParamSchema,
   sendFeedbackMessageRequestSchema,
+  updateMyFeedbackRequestSchema,
   type CreateFeedbackRequest,
   type FeedbackThreadQuery,
   type SendFeedbackMessageRequest,
+  type UpdateMyFeedbackRequest,
 } from '@bettertrack/contracts';
 
 import { badRequest, notFound } from '../../errors';
@@ -49,6 +51,29 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
         throw notFound('Feedback not found.');
       }
       res.status(204).send();
+    },
+  );
+
+  router.patch(
+    '/:id',
+    // Owner directive 2026-10-29: an edit is a cheap owner-scoped single-row
+    // UPDATE like the tombstone above, so it rides the same 60/h conversation
+    // budget rather than the five-per-hour capture rail — fixing a typo must
+    // not spend the allowance for filing something new.
+    limiters.feedbackThread,
+    validateParams(idParamSchema),
+    validateBody(updateMyFeedbackRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const updated = await ctx.feedback.editMine(
+        req.authUser!.id,
+        id,
+        req.valid?.body as UpdateMyFeedbackRequest,
+      );
+      // Missing, foreign and tombstoned rows are one indistinguishable 404;
+      // a live own row past `new` is the service's 409 FEEDBACK_NOT_EDITABLE.
+      if (!updated) throw notFound('Feedback not found.');
+      res.json(updated);
     },
   );
 

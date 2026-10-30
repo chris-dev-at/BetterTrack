@@ -1027,6 +1027,7 @@ export function createNotificationDispatcher(
         await email.sendFeedbackNotification({
           to,
           userId,
+          feedbackId: event.feedbackId,
           title: rendered.title,
           body: rendered.body,
           locale,

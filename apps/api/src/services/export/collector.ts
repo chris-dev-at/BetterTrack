@@ -148,6 +148,9 @@ const FEEDBACK_EXPORT_COLUMNS = {
   shippedVersion: feedback.shippedVersion,
   submitterLastReadAt: feedback.submitterLastReadAt,
   deletedByUserAt: feedback.deletedByUserAt,
+  // The submitter's own edit stamp (2026-10-29): shown on `/feedback/mine`, so
+  // it belongs in their copy — unlike the admin-workspace columns above.
+  editedAt: feedback.editedAt,
   createdAt: feedback.createdAt,
   updatedAt: feedback.updatedAt,
 } as const;
