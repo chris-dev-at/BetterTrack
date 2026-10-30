@@ -36,6 +36,7 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SessionService } from '../sessions/sessionService';
+import { authorizeReturnTo } from './authorizeReturnTo';
 import type { GoogleClaims, GoogleTokenVerifier } from './googleVerifier';
 import { GOOGLE_LINK_ACCOUNT_NAMESPACE } from './loginThrottle';
 
@@ -86,12 +87,28 @@ interface RegisterTicket {
   email: string;
   emailVerified: boolean;
   name?: string;
+  /**
+   * Minted inside an OAuth authorize flow (owner directive 2026-10-29). The
+   * account the connected form creates then gets an EPHEMERAL session, exactly
+   * like `POST /auth/register` with `oauthRegistration` (§16 2026-08-07 (5)) —
+   * decided here, server-side, never by the submitting page.
+   */
+  oauthFlow?: true;
 }
 
 /** The flow context bound to a `state` value across the Google round-trip. */
 interface StateContext {
   /** Present ⇒ an authenticated "link Google to my account" flow, not a sign-in. */
   linkUserId?: string;
+  /**
+   * Present ⇒ a sign-in started inside the app's OAuth authorize flow: the
+   * pending `/oauth/authorize?…` request to land back on (owner directive
+   * 2026-10-29). Validated before it is stored and again when it is read back;
+   * bound to this single-use `state`, which is itself bound to the browser by
+   * the signed `bt_goog_state` cookie — so a foreign browser cannot plant one.
+   * Never set together with `linkUserId`.
+   */
+  returnTo?: string;
 }
 
 /** Hashed-at-rest native LINK ticket; neither raw state component is persisted. */
@@ -105,6 +122,12 @@ interface MobileLinkTicketRecord {
 export interface StartInput {
   /** When set, this is a LINK flow for the already-signed-in user (from Settings). */
   linkUserId?: string | null;
+  /**
+   * The pending OAuth authorize request to return to after an anonymous sign-in
+   * (owner directive 2026-10-29). Must pass {@link authorizeReturnTo}; ignored
+   * for a LINK flow, whose landing is the fixed Settings page.
+   */
+  returnTo?: string | null;
 }
 
 export interface MobileLinkStartResult {
@@ -130,12 +153,19 @@ type AuthenticatedResult = {
   persistent: boolean;
 };
 
+/**
+ * `returnTo` on the sign-in outcomes: the validated pending OAuth authorize
+ * request the flow was started from (owner directive 2026-10-29), so the route
+ * lands the browser back INTO it — on success, on the connected register form,
+ * and on a failure alike. Absent for an ordinary web sign-in and for every LINK
+ * flow.
+ */
 export type GoogleCallbackResult =
-  | AuthenticatedResult
+  | (AuthenticatedResult & { returnTo?: string })
   | { status: 'linked'; userId: string }
   /** A brand-new identity: land the browser on the connected register form with this ticket. */
-  | { status: 'register'; ticket: string }
-  | { status: 'error'; code: string; intent: 'login' | 'link' };
+  | { status: 'register'; ticket: string; returnTo?: string }
+  | { status: 'error'; code: string; intent: 'login' | 'link'; returnTo?: string };
 
 /** Outcome of submitting the connected register form (`POST /auth/google/register`). */
 export type GoogleRegisterResult = AuthenticatedResult | { status: 'pending' };
@@ -221,6 +251,16 @@ export interface GoogleAuthService {
     suppliedRedirectUri?: unknown;
     ip?: string | null;
   }): Promise<MobileLinkCallbackResult>;
+  /**
+   * The provider answered with an error (the user denied consent, or Google
+   * failed) before any code exists. Validates and SPENDS the `state` exactly as
+   * {@link handleCallback} would, and returns the sign-in flow's validated
+   * `returnTo` (or `null`) so the failure can still land back in the pending
+   * OAuth authorize request. Never verifies anything and never mints a session.
+   */
+  abandonCallback(input: { state?: string; cookieState?: string }): Promise<{
+    returnTo: string | null;
+  }>;
   /** Validate `state`, verify the code, and resolve to sign-in / link / register. */
   handleCallback(input: {
     state?: string;
@@ -371,16 +411,24 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
    * (`via: google`) plus the admin-login marker. Device label, session-manager
    * listing and the login-throttle namespace all flow from `sessions.create` +
    * this audit exactly as they do for a password login. A Google sign-in is a
-   * normal web login, so the session is persistent.
+   * normal web login, so the session is persistent — EXCEPT inside the app's
+   * OAuth authorize flow (`oauthFlow`), where it is ephemeral by the §399 §A
+   * rule (§16 2026-07-11): the Custom-Tab browser shares cookies with the
+   * phone's browser and must not keep a persistent web session that silently
+   * re-authorizes after an app logout. Privilege-reducing only.
    */
-  async function signInUser(user: UserRow, ip?: string | null): Promise<AuthenticatedResult> {
+  async function signInUser(
+    user: UserRow,
+    ip?: string | null,
+    { oauthFlow = false }: { oauthFlow?: boolean } = {},
+  ): Promise<AuthenticatedResult> {
     // Authoritative gate (#400): the Google callback must never mint an admin
     // session — there is no second-factor step here. Still reachable e.g. for an
     // account linked as a user and later promoted to admin (resolveSignIn step 1);
     // the verified-email and Settings-link paths refuse earlier, before they
     // mutate. See {@link assertNotAdmin}.
     assertNotAdmin(user);
-    const persistent = true;
+    const persistent = !oauthFlow;
     const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
       method: 'google',
     });
@@ -392,7 +440,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       targetType: 'user',
       targetId: user.id,
       ip,
-      meta: { via: 'google' },
+      meta: oauthFlow ? { via: 'google', flow: 'oauth_authorize' } : { via: 'google' },
     });
     if (user.role === 'admin') {
       await audit.record({
@@ -407,13 +455,14 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
   }
 
   /** Park verified claims in a fresh single-use ticket; return its opaque reference. */
-  async function createRegisterTicket(claims: GoogleClaims): Promise<string> {
+  async function createRegisterTicket(claims: GoogleClaims, oauthFlow: boolean): Promise<string> {
     const ticket = randomBytes(32).toString('base64url');
     const payload: RegisterTicket = {
       sub: claims.sub,
       email: normalizeEmail(claims.email),
       emailVerified: claims.emailVerified,
       ...(claims.name ? { name: claims.name } : {}),
+      ...(oauthFlow ? { oauthFlow: true as const } : {}),
     };
     await redis.set(
       registerTicketKey(ticket),
@@ -437,10 +486,21 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
 
   async function buildAuthorizeUrl({
     linkUserId,
+    returnTo,
   }: StartInput): Promise<{ url: string; state: string }> {
-    const state = randomBytes(32).toString('base64url');
     const context: StateContext = {};
-    if (linkUserId) context.linkUserId = linkUserId;
+    if (linkUserId) {
+      context.linkUserId = linkUserId;
+    } else if (returnTo !== undefined && returnTo !== null) {
+      // Defence in depth: the route already refused an unsafe value, but the
+      // service is the layer that STORES it, so it re-checks rather than trusts.
+      const safe = authorizeReturnTo(returnTo);
+      if (safe === null) {
+        throw badRequest('Invalid sign-in return target.', 'GOOGLE_RETURN_TO_INVALID');
+      }
+      context.returnTo = safe;
+    }
+    const state = randomBytes(32).toString('base64url');
     await redis.set(stateKey(state), JSON.stringify(context), 'EX', STATE_TTL_SECONDS);
 
     const params = new URLSearchParams({
@@ -723,13 +783,18 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     });
     // Single-use: burn the ticket only now that the account exists.
     await redis.del(registerTicketKey(ticket));
-    return signInUser(user, ip);
+    return signInUser(user, ip, { oauthFlow: claims.oauthFlow === true });
   }
 
-  /** Resolution order: existing identity → verified-email link → register (§13.4). */
+  /**
+   * Resolution order: existing identity → verified-email link → register (§13.4).
+   * `oauthFlow` (a sign-in started inside the app's OAuth authorize flow) only
+   * changes the persistence of what is minted — never who is resolved.
+   */
   async function resolveSignIn(
     claims: GoogleClaims,
-    ip?: string | null,
+    ip: string | null | undefined,
+    oauthFlow: boolean,
   ): Promise<GoogleCallbackResult> {
     // 1. Existing (provider, sub) → sign in.
     const identity = await identityRepo.findByProviderSubject(GOOGLE_PROVIDER, claims.sub);
@@ -744,7 +809,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       ) {
         await identityRepo.updateEmail(identity.id, claims.email, claims.emailVerified);
       }
-      return signInUser(user, ip);
+      return signInUser(user, ip, { oauthFlow });
     }
 
     // 2. Verified-email match → link + sign in. An UNVERIFIED email never links.
@@ -775,7 +840,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
             meta: { provider: GOOGLE_PROVIDER, via: 'verified_email' },
           });
         }
-        return signInUser(existing, ip);
+        return signInUser(existing, ip, { oauthFlow });
       }
     }
 
@@ -788,7 +853,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     if (mode === 'closed') {
       throw forbidden('Self-serve registration is disabled.', 'REGISTRATION_CLOSED');
     }
-    const ticket = await createRegisterTicket(claims);
+    const ticket = await createRegisterTicket(claims, oauthFlow);
     return { status: 'register', ticket };
   }
 
@@ -913,6 +978,42 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     }
   }
 
+  /**
+   * Enforce `state` FIRST (§13.4 V4-P4b acceptance) and spend it. Two gates,
+   * both required: the query `state` must equal the signed browser cookie set at
+   * `start` (login-CSRF — a planted state fails because the victim's browser
+   * lacks its cookie), AND it must resolve a live single-use Redis entry. The
+   * entry is spent with the same atomic GET+DEL script the native link ticket
+   * uses, so of two concurrent callbacks carrying one state exactly one gets
+   * the context (the idempotency key is the `state` itself). `null` ⇒ reject.
+   */
+  async function consumeState(
+    state: string | undefined,
+    cookieState: string | undefined,
+  ): Promise<StateContext | null> {
+    if (!state || !cookieState || state !== cookieState) return null;
+    const rawState = (await redis.eval(CONSUME_MOBILE_LINK_TICKET_SCRIPT, 1, stateKey(state))) as
+      | string
+      | null;
+    if (!rawState) return null;
+    try {
+      const parsed = JSON.parse(rawState) as unknown;
+      return parsed && typeof parsed === 'object' ? (parsed as StateContext) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * The validated authorize request a sign-in flow carries, or `null`. A LINK
+   * flow never carries one, and a stored value is re-validated on the way out —
+   * the redirect is built from it, so it is never trusted just for being ours.
+   */
+  function returnToOf(context: StateContext): string | null {
+    if (context.linkUserId) return null;
+    return authorizeReturnTo(context.returnTo);
+  }
+
   return {
     isEnabled: () => config.google.enabled,
 
@@ -926,25 +1027,15 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
 
     async handleCallback({ state, cookieState, code, ip }) {
       // Enforce `state` FIRST (§13.4 V4-P4b acceptance): a missing/mismatched
-      // state is rejected before any token exchange or account action. Two gates,
-      // both required: the query `state` must equal the signed browser cookie set
-      // at `start` (login-CSRF — a planted state fails because the victim's
-      // browser lacks its cookie), AND it must resolve a live single-use Redis
-      // entry (read then delete so a state can't be replayed).
-      if (!state || !cookieState || state !== cookieState) {
-        return { status: 'error', code: 'GOOGLE_STATE_INVALID', intent: 'login' };
-      }
-      const rawState = await redis.get(stateKey(state));
-      if (rawState) await redis.del(stateKey(state));
-      if (!rawState) return { status: 'error', code: 'GOOGLE_STATE_INVALID', intent: 'login' };
-
-      let context: StateContext = {};
-      try {
-        context = JSON.parse(rawState) as StateContext;
-      } catch {
-        context = {};
-      }
+      // state is rejected before any token exchange or account action — both
+      // gates (browser cookie + live single-use Redis entry) in consumeState.
+      const context = await consumeState(state, cookieState);
+      if (!context) return { status: 'error', code: 'GOOGLE_STATE_INVALID', intent: 'login' };
       const intent: 'login' | 'link' = context.linkUserId ? 'link' : 'login';
+      const returnTo = returnToOf(context);
+      // Spread onto every sign-in outcome so the route can land each one back
+      // INTO the pending authorize request (owner directive 2026-10-29).
+      const carry = returnTo ? { returnTo } : {};
 
       try {
         if (!code) throw badRequest('Google verification failed.', 'GOOGLE_VERIFY_FAILED');
@@ -956,14 +1047,22 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
           throw badRequest('Google verification failed.', 'GOOGLE_VERIFY_FAILED');
         }
         if (context.linkUserId) return await linkToUser(context.linkUserId, claims, ip);
-        return await resolveSignIn(claims, ip);
+        const result = await resolveSignIn(claims, ip, returnTo !== null);
+        return result.status === 'authenticated' || result.status === 'register'
+          ? { ...result, ...carry }
+          : result;
       } catch (err) {
         const code = err instanceof ApiError ? err.code : 'GOOGLE_FAILED';
         if (!(err instanceof ApiError)) {
           logger.error({ err }, 'google callback failed unexpectedly');
         }
-        return { status: 'error', code, intent };
+        return { status: 'error', code, intent, ...carry };
       }
+    },
+
+    async abandonCallback({ state, cookieState }) {
+      const context = await consumeState(state, cookieState);
+      return { returnTo: context ? returnToOf(context) : null };
     },
 
     async peekRegisterTicket(ticket) {

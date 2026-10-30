@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type {
   AnalyticsContributionRow,
@@ -73,7 +73,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { getAnalyticsSeries } from '../../../lib/analyticsApi';
 import { listConglomerates } from '../../../lib/conglomerateApi';
-import { DISCREET_MASK, formatDate, setDiscreetMode } from '../../../lib/format';
+import { DISCREET_MASK, displayZoneDay, formatDate, setDiscreetMode } from '../../../lib/format';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
 import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AnalyticsPage } from './AnalyticsPage';
@@ -712,16 +712,15 @@ describe('AnalyticsPage — paranoid account', () => {
   } as unknown as PortfolioResponse;
 
   // The default range preset is the last 12 months of the REAL clock, so the
-  // window has to be anchored to today or every point filters out.
-  const localDay = (daysAgo: number): string => {
-    const d = new Date();
-    d.setDate(d.getDate() - daysAgo);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-      d.getDate(),
-    ).padStart(2, '0')}`;
+  // window has to be anchored to today — the display-zone today the page itself
+  // ends the window on (#2082 B2) — or every point filters out.
+  const zoneDay = (daysAgo: number): string => {
+    const d = new Date(`${displayZoneDay()}T00:00:00.000Z`);
+    d.setUTCDate(d.getUTCDate() - daysAgo);
+    return d.toISOString().slice(0, 10);
   };
-  const WINDOW_START = localDay(30);
-  const WINDOW_END = localDay(0);
+  const WINDOW_START = zoneDay(30);
+  const WINDOW_END = zoneDay(0);
 
   const PARANOID_HISTORY = {
     range: '1Y' as const,
@@ -781,7 +780,7 @@ describe('AnalyticsPage — paranoid account', () => {
     // would zero every stat and flatten the whole perf curve.
     vi.mocked(getPortfolioHistory).mockResolvedValue({
       ...PARANOID_HISTORY,
-      points: [{ date: localDay(45), valueEur: 0 }, ...PARANOID_HISTORY.points],
+      points: [{ date: zoneDay(45), valueEur: 0 }, ...PARANOID_HISTORY.points],
     } as unknown as Awaited<ReturnType<typeof getPortfolioHistory>>);
 
     const user = userEvent.setup();
@@ -798,5 +797,46 @@ describe('AnalyticsPage — paranoid account', () => {
       expect(points.map((point) => point.time)).toEqual([WINDOW_START, WINDOW_END]);
       expect(points[1]!.value).toBeCloseTo(20, 6);
     });
+  });
+});
+
+describe('AnalyticsPage — the preset window ends on the display-zone day (#2082 B2, #1792)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  // The page used the BROWSER-LOCAL day. Pin the host zone to one that is
+  // behind Vienna, so the old code is wrong on any machine (a Vienna-zoned
+  // host would otherwise agree with Vienna by accident).
+  function at(instant: string): void {
+    vi.stubEnv('TZ', 'America/New_York');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(instant));
+  }
+
+  test('at 00:30 Vienna the default 1-year window ends on the Vienna day', async () => {
+    // 2026-07-16 00:30 CEST = 2026-07-15T22:30Z = 18:30 on the 15th in New York.
+    at('2026-07-15T22:30:00.000Z');
+    renderPage();
+    await waitFor(() =>
+      expect(vi.mocked(getAnalyticsSeries)).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ from: '2025-07-16', to: '2026-07-16' }),
+        expect.anything(),
+      ),
+    );
+  });
+
+  test('at 12:00 Vienna the window is the same day it always was', async () => {
+    at('2026-07-15T10:00:00.000Z');
+    renderPage();
+    await waitFor(() =>
+      expect(vi.mocked(getAnalyticsSeries)).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ from: '2025-07-15', to: '2026-07-15' }),
+        expect.anything(),
+      ),
+    );
   });
 });

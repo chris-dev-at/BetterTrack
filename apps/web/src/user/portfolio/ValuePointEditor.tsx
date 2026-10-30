@@ -10,6 +10,7 @@ import {
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { displayZoneDay } from '../../lib/format';
 import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
@@ -48,9 +49,10 @@ function nextKey(): string {
   return `vp-${rowSeq}`;
 }
 
+/** Today in the display zone (#1792), not the UTC day — see `displayZoneDay`. */
 function isoToday(today?: string): string {
   if (today) return today;
-  return new Date().toISOString().slice(0, 10);
+  return displayZoneDay();
 }
 
 function toEditRows(points: ValuePoint[]): EditRow[] {

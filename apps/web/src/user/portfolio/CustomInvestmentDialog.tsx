@@ -7,6 +7,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { displayZoneDay } from '../../lib/format';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
 import { customCategoryLabels } from './customCategories';
@@ -20,9 +21,10 @@ export interface CustomInvestmentDialogProps {
   today?: string;
 }
 
+/** Today in the display zone (#1792), not the UTC day — see `displayZoneDay`. */
 function isoToday(today?: string): string {
   if (today) return today;
-  return new Date().toISOString().slice(0, 10);
+  return displayZoneDay();
 }
 
 /**
