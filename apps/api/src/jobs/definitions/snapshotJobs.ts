@@ -4,6 +4,7 @@ import {
   type FxHoleRepairDeps,
 } from '../../services/portfolio/fxHoleRepair';
 import type { PortfolioSnapshotService } from '../../services/portfolio/portfolioSnapshots';
+import { QUEUE_JOB_OPTIONS } from '../options';
 import type { QueueRegistry } from '../queues';
 import { QUEUE_NAMES, type JobDefinition, type JobRunSummary } from '../types';
 
@@ -148,7 +149,9 @@ export type SnapshotFxHoleRepairJobDeps = Omit<FxHoleRepairDeps, 'logger' | 'att
  *
  * Throws only when the run could not do the part nothing else will: read a
  * portfolio (`scanFailed`) or mark its hole dirty (`unmarked`). That engages
- * the §9 retry → dead-letter path, which puts a persistent failure on the admin
+ * the retry → dead-letter path (this queue's own ladder, five attempts 1-8
+ * minutes apart, because a permanently failed job keeps the fixed id and later
+ * boots never re-add it), which puts a persistent failure on the admin
  * Problems page. A recompute that was refused or threw is NOT retried here: its
  * marker is already down, so every read and the nightly roll heal it.
  *
@@ -159,6 +162,8 @@ export function createSnapshotsFxHoleRepairJob(
 ): JobDefinition<'snapshots.repairFxHoles'> {
   return {
     name: QUEUE_NAMES.snapshotsRepairFxHoles,
+    // Five attempts, 1-8 minutes apart: a permanent failure burns the fixed id.
+    jobOptions: QUEUE_JOB_OPTIONS[QUEUE_NAMES.snapshotsRepairFxHoles],
     async handler(job, ctx): Promise<JobRunSummary> {
       const report = await runFxHoleRepair({
         ...deps,
