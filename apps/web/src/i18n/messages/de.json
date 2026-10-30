@@ -7233,7 +7233,8 @@
         "enabled": "Die Zwei-Faktor-Authentifizierung ist aktiv.",
         "passwordLabel": "Dein Kontopasswort",
         "passwordHint": "Zum Aktivieren der Zwei-Faktor-Anmeldung brauchen wir zuerst dein Passwort.",
-        "wrongPassword": "Dieses Passwort ist falsch."
+        "wrongPassword": "Dieses Passwort ist falsch.",
+        "passwordContinue": "Einrichtungscode anzeigen"
       },
       "recoveryCodes": {
         "description": "Bewahre sie sicher auf. Jeder Code meldet dich einmal an, falls du deine App verlierst.",

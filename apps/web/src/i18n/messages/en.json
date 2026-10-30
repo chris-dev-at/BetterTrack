@@ -7233,7 +7233,8 @@
         "enabled": "Two-factor authentication is on.",
         "passwordLabel": "Your account password",
         "passwordHint": "Turning on two-factor sign-in needs your password first.",
-        "wrongPassword": "That password is incorrect."
+        "wrongPassword": "That password is incorrect.",
+        "passwordContinue": "Show setup code"
       },
       "recoveryCodes": {
         "description": "Keep these somewhere safe. Each one signs you in once if you lose your app.",

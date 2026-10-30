@@ -246,7 +246,9 @@ export function SecurityStep({ report }: FirstRunStepProps) {
             onClick={startTotp}
             disabled={enroll.isPending || password.length === 0}
           >
-            {enroll.isPending ? t('common.loading') : t('common.continue')}
+            {enroll.isPending
+              ? t('common.loading')
+              : t('firstrun.security.twoFactor.passwordContinue')}
           </Button>
           {backToRows}
         </div>
