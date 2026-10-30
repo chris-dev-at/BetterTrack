@@ -270,13 +270,51 @@ test('the mirrored Sign-in box returns to the authorize request, not to a bare /
   expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', AUTHORIZE);
 });
 
-test('Google sign-up is hidden inside the OAuth flow — its round-trip would drop the continuation', async () => {
+// Owner directive 2026-10-29 supersedes the 2026-08-07 hide: Google is offered
+// inside the OAuth flow and carries the continuation through its round trip.
+test('Google sign-up inside the OAuth flow carries the authorize request through the round trip', async () => {
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
-  vi.mocked(api.googleStartUrl).mockReturnValue('http://api.test/api/v1/auth/google/start');
+  vi.mocked(api.googleStartUrl).mockImplementation((returnTo?: string | null) =>
+    returnTo
+      ? `http://api.test/api/v1/auth/google/start?returnTo=${encodeURIComponent(returnTo)}`
+      : 'http://api.test/api/v1/auth/google/start',
+  );
   renderAt(REGISTER_WITH_CONTINUATION);
 
   await waitForColdStart(() => screen.getByLabelText('Email'));
-  expect(screen.queryByRole('link', { name: 'Continue with Google' })).not.toBeInTheDocument();
+  // The `screen=register` hint is already stripped from the continuation, so
+  // a failed round trip cannot bounce the login straight back onto this form.
+  expect(await screen.findByRole('link', { name: 'Continue with Google' })).toHaveAttribute(
+    'href',
+    `http://api.test/api/v1/auth/google/start?returnTo=${encodeURIComponent(AUTHORIZE)}`,
+  );
+});
+
+test('a Google-connected sign-up inside the OAuth flow continues into consent — never the webapp', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
+  vi.mocked(api.getGoogleRegisterTicket).mockResolvedValue({
+    email: 'jane@bettertrack.test',
+    name: 'Jane',
+  });
+  vi.mocked(api.googleRegister).mockResolvedValue(newUser);
+  const u = userEvent.setup();
+  // Where the API's Google callback lands a brand-new identity started here.
+  renderAt(`/register?google=connected&returnTo=${encodeURIComponent(AUTHORIZE)}`);
+
+  expect(
+    await waitForColdStart(() => screen.getByText(/Connected to Google as jane@bettertrack.test/)),
+  ).toBeInTheDocument();
+  await u.clear(screen.getByLabelText('Username'));
+  await u.type(screen.getByLabelText('Username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-pass-1');
+  await u.click(screen.getByRole('button', { name: 'Create account' }));
+
+  expect(await screen.findByText('BetterTrackMobile')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
+  expect(api.googleRegister).toHaveBeenCalledWith(
+    expect.objectContaining({ username: 'jane', password: 'jane-strong-pass-1' }),
+  );
 });
 
 // ── The guard, seen from the page ────────────────────────────────────────────
@@ -308,4 +346,15 @@ test.each([
     locale: 'en',
   });
   expect(oauthApi.getAuthorizationDetails).not.toHaveBeenCalled();
+});
+
+test('a repeated returnTo is refused outright, even when the first value is the authorize request', async () => {
+  setMode('open');
+  renderAt(
+    `/register?returnTo=${encodeURIComponent(AUTHORIZE)}&returnTo=${encodeURIComponent('//evil')}`,
+  );
+
+  await waitForColdStart(() => screen.getByLabelText('Email'));
+  // Ambiguous ⇒ no continuation: the ordinary register surface, nothing carried.
+  expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
 });

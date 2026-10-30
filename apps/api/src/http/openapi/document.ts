@@ -1424,8 +1424,11 @@ const endpoints: EndpointDef[] = [
     path: '/auth/google/start',
     tag: 'Auth',
     summary:
-      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; anonymous is a sign-in/registration. 404 when Google is not configured.',
+      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; anonymous is a sign-in/registration. An optional `returnTo` — a pending same-origin `/oauth/authorize?…` request, nothing else — is bound to the state so the callback lands back inside that authorize flow; an unsafe value refuses the flow (redirect to the login page’s Google error). 404 when Google is not configured.',
     public: true,
+    query: z.object({
+      returnTo: z.string().optional(),
+    }),
     status: 302,
   },
   {

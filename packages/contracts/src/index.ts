@@ -22,6 +22,7 @@ export * from './settings';
 export * from './alerts';
 export * from './apiKeys';
 export * from './oauth';
+export * from './oauthContinuation';
 export * from './realtime';
 export * from './problems';
 export * from './ops';

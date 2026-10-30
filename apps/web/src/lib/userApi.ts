@@ -687,9 +687,16 @@ export async function getRegistrationInfo(
  * (a live session turns it into a "link" flow; an invite token rides along for
  * invite-token registration). Returns the absolute URL to assign to
  * `window.location`, so cookies + the top-level redirect back from Google behave.
+ *
+ * `returnTo` — a pending `/oauth/authorize?…` request (owner directive
+ * 2026-10-29). The API re-validates it, binds it to the Google `state` it
+ * issues, and lands the browser back on it after the callback, so a Google
+ * sign-in started inside the app's authorize flow completes that flow. Callers
+ * pass only a value that already passed `safeAuthorizeContinuation`.
  */
-export function googleStartUrl(): string {
-  return `${apiBaseUrl()}/auth/google/start`;
+export function googleStartUrl(returnTo?: string | null): string {
+  const base = `${apiBaseUrl()}/auth/google/start`;
+  return returnTo ? `${base}?returnTo=${encodeURIComponent(returnTo)}` : base;
 }
 
 /**
