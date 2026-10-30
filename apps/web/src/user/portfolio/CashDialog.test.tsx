@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { ApiError } from '../../lib/apiClient';
 
@@ -318,5 +318,38 @@ describe('CashDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Withdraw cash' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/Insufficient cash balance/i);
+  });
+});
+
+describe('CashDialog — the default date is the display-zone day (#2082 B2, #1792)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('at 00:30 Vienna it pre-fills the Vienna day, not the UTC day (still yesterday)', async () => {
+    // 2026-07-16 00:30 CEST is 2026-07-15T22:30Z — the UTC day is the 15th.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-15T22:30:00.000Z'));
+    vi.mocked(portfolioApi.depositCash).mockResolvedValue({
+      movement: { id: 'm-midnight' },
+    } as Awaited<ReturnType<typeof portfolioApi.depositCash>>);
+    const user = userEvent.setup();
+    renderDialog('deposit', { today: undefined });
+
+    expect(screen.getByLabelText('Date')).toHaveValue('2026-07-16');
+
+    // The wire is unchanged: a same-day movement still leaves `executedAt` to
+    // the server's clock.
+    await user.type(screen.getByLabelText('Amount'), '25');
+    await user.click(screen.getByRole('button', { name: 'Deposit cash' }));
+    await waitFor(() => expect(portfolioApi.depositCash).toHaveBeenCalled());
+    expect(vi.mocked(portfolioApi.depositCash).mock.calls[0]![1]).not.toHaveProperty('executedAt');
+  });
+
+  test('at 12:00 Vienna the default is the same day it always was', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
+    renderDialog('deposit', { today: undefined });
+    expect(screen.getByLabelText('Date')).toHaveValue('2026-07-15');
   });
 });
