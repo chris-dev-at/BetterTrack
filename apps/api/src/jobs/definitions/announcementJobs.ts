@@ -1,3 +1,4 @@
+import { customJobId } from '../jobIds';
 import type { QueueRegistry } from '../queues';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
@@ -115,7 +116,7 @@ export const ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
  *  • **a coarse time bucket** — the queue's defaults keep the last 1000
  *    COMPLETED jobs (`DEFAULT_JOB_OPTIONS.removeOnComplete`), and BullMQ refuses
  *    to re-add an id that is still sitting in that set. A bare
- *    `ann:<id>:<attempt>` would therefore work exactly once per announcement
+ *    `<id>-<attempt>` would therefore work exactly once per announcement
  *    and then silently refuse every later publish of it — an operator who
  *    deactivates an announcement and switches it back on next week would get no
  *    targeted pass at all. Bucketing by
@@ -130,7 +131,11 @@ export function announcementPublishJobId(
   windowMs: number = ANNOUNCEMENT_PUBLISH_DEDUPE_WINDOW_MS,
 ): string {
   const bucket = Math.floor(at / windowMs);
-  return `${QUEUE_NAMES.announcementsPublishDue}:${announcementId}:${attempt}:${bucket}`;
+  // `announcements.publishDue-<id>-<attempt>-<bucket>`. Never ':'-joined
+  // (#1184): BullMQ refuses a custom id with ':' in it (`Custom Id cannot
+  // contain :`), so the ':'-joined form threw on every add — the "publish now"
+  // pass, the bounded retry and every manual redelivery alike.
+  return customJobId(QUEUE_NAMES.announcementsPublishDue, announcementId, attempt, bucket);
 }
 
 /**

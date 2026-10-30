@@ -35,6 +35,7 @@ const ONE_YEAR_SALARY_TOTAL = '6,000.00 €';
 async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }> {
   let analyticsRequests = 0;
   let dividendProjectionRequests = 0;
+  const dividendProjectionUrls: string[] = [];
 
   await page.clock.setFixedTime(FORECAST_NOW);
 
@@ -74,14 +75,23 @@ async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }
     },
   );
 
-  await page.route('**/api/v1/assets/portfolio/dividend-projection', async (route) => {
+  // Since #1693 the Forecast reads the projection scoped to the shown portfolio
+  // (`?portfolioId=`); a query-less glob never matches that URL.
+  await page.route(/\/api\/v1\/assets\/portfolio\/dividend-projection(?:\?.*)?$/, async (route) => {
     dividendProjectionRequests += 1;
+    dividendProjectionUrls.push(route.request().url());
     await route.fulfill({
       json: {
         available: false,
         currency: 'EUR',
         monthlyTotalBase: 0,
         yearlyTotalBase: 0,
+        // Required by the strict `projectedDividendIncomeResponseSchema`
+        // (packages/contracts/src/marketIntel.ts); without it the SPA's parse
+        // throws, the query error lands in the Forecast's prefill reads, and
+        // `AsyncReadState` renders the "Could not load the portfolio data used
+        // by forecasts" alert — which the spec asserts is absent.
+        basis: null,
         holdings: [],
       },
     });
@@ -96,6 +106,13 @@ async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }
         dividendProjectionRequests,
         'Forecast should use the pinned dividend fixture',
       ).toBeGreaterThan(0);
+      // #1693 scoping, at the browser layer: every projection read names the
+      // shown portfolio, never the query-less user-wide URL the regex admits.
+      for (const url of dividendProjectionUrls) {
+        expect(url, 'Forecast should read the projection scoped to the portfolio').toContain(
+          'portfolioId=',
+        );
+      }
     },
   };
 }
@@ -161,5 +178,10 @@ test('forecast: a scheduled cash-add lifts the enabled one-year projection', asy
   await ordersFactor.check();
   await expect(ordersFactor).toBeChecked();
   await expect(baseLegend).toContainText(ONE_YEAR_SALARY_TOTAL, { timeout: 15_000 });
+  // The fixture parsed: a contract-invalid projection (e.g. `basis` dropped
+  // again) surfaces as this alert rather than failing any request count.
+  await expect(page.getByText('Could not load the portfolio data used by forecasts')).toHaveCount(
+    0,
+  );
   fixtures.assertUsed();
 });
