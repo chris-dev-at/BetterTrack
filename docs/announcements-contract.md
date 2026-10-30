@@ -16,10 +16,11 @@ Conventions are the API's (§8): base `/api/v1`, JSON, camelCase, errors `{ "err
 | `account.notice` inbox rows                      | kept (one payload key added)   | Type, deep-link and payload keys unchanged; the payload gains `announcementKind`; `body` becomes the plain-text projection of the announcement (§6).                                                                                                                     |
 | Realtime gateway                                 | extended                       | NEW server event `announcement.changed` and NEW connection error `ACKNOWLEDGEMENT_REQUIRED` (§5.6).                                                                                                                                                                      |
 | `GET /admin/announcements`                       | extended (admin console only)  | Items gain the admin fields of §7.1; `deliveryState` gains `archived`; `titleDe`/`bodyDe` become nullable.                                                                                                                                                               |
-| `POST /admin/announcements`                      | changed (admin console only)   | Always creates a draft; the `active` request field is removed (dated 2026-10-29); NEW `kind` and `audience`; DE optional.                                                                                                                                                |
+| `POST /admin/announcements`                      | changed (admin console only)   | Always creates a draft; the `active` request field is removed (dated 2026-10-29); NEW `kind`, `audience` and `notifyByEmail`; DE optional.                                                                                                                               |
 | `PATCH /admin/announcements/{id}`                | changed (admin console only)   | `active` removed (dated 2026-10-29), replaced by the transitions of §7.2; edits after publishing are restricted per kind (§7.3).                                                                                                                                         |
 | `DELETE /admin/announcements/{id}`               | changed (admin console only)   | Drafts only; anything published answers `409 ANNOUNCEMENT_NOT_DRAFT` (use archive).                                                                                                                                                                                      |
 | `POST /admin/announcements/{id}/redeliver`       | kept                           | Unchanged; the pass it queues now walks the announcement's audience (§6).                                                                                                                                                                                                |
+| `DELETE /account`                                | kept                           | Wire unchanged, and exempt from the gate (§5.3). Server-side, the account's acknowledgements are now kept pseudonymised instead of deleted (§7.5).                                                                                                                       |
 
 **Deprecations — paste-ready for the mobile board.** None on the mobile wire. No user-facing operation, field or route key is deprecated or removed: `GET /notifications/announcements` and `POST /notifications/announcements/{id}/dismiss` keep their paths, envelopes and existing fields, and the `account.notice` inbox rows the app already renders keep their type, payload keys and deep-link. Every addition is optional to decode. Two behaviours narrow: dismiss now refuses an `ack_required` item (`409`) and an id the caller cannot see (`404`), and a window's end is now exclusive. The one removal is admin-console-only and dated 2026-10-29: the `active` request field of `POST /admin/announcements` and `PATCH /admin/announcements/{id}`, replaced by `POST /admin/announcements/{id}/publish`, `…/unpublish` and `…/archive`; the app never called those routes.
 
@@ -27,7 +28,7 @@ Conventions are the API's (§8): base `/api/v1`, JSON, camelCase, errors `{ "err
 
 - **Kind** (`kind`): `notice` — passive information shown while its window is open, dismissible per user. `once` — a card shown to each audience member until they close it once; closing it is the dismissal and it never returns. `ack_required` — a blocking acknowledgement: until the user acknowledges it, the gate (§5) refuses everything else. A client that meets an unknown `kind` renders the item like `notice` and never offers to acknowledge it.
 - **Severity** (`severity`, KEPT): `info` · `warning` · `critical`, styling only and orthogonal to the kind. Unknown value → render as `info`.
-- **Audience** (server-side only, never on the user wire): `everyone` — every user-kind account, including accounts created later; `existing_at_publish` — only accounts created strictly before the announcement's frozen cutoff (the instant it first became visible). A caller outside the audience simply never sees the item; every per-id route answers `404` for it.
+- **Audience** (server-side only, never on the user wire): `everyone` — every user-kind account, including accounts created later; `existing_at_publish` — only accounts created strictly before the announcement's frozen cutoff: the instant it first became visible, i.e. the later of the publish instant and `startsAt` (confirmed by Chief ruling 2026-10-29). A caller outside the audience simply never sees the item; every per-id route answers `404` for it.
 - **Window** (`startsAt`, `endsAt`): half-open `[startsAt, endsAt)`; `null` start = from publication, `null` end = no end. For `ack_required`, `endsAt: null` means **binding until acknowledged**, and a non-null `endsAt` is the instant the obligation **lapses**: from then on it gates nobody, can no longer be acknowledged, and the server records the users who had not acknowledged as lapsed.
 - **Status** (`status`): `active` (published, window open), `ended` (`endsAt` passed; for `ack_required` this is the lapse), `archived` (withdrawn by an operator; for `ack_required`, a manual lapse). Drafts and not-yet-open announcements are invisible to users. Unknown value → treat as `ended`.
 - **Pending acknowledgement**: an `ack_required` item that is `active`, in the caller's audience, and that the caller has not acknowledged. Only these feed `pendingAcknowledgements` and the gate. `notice` and `once` never block anything.
@@ -130,7 +131,7 @@ Arrays of it are ordered oldest obligation first — the order in which a client
 
 ## 4. User endpoints
 
-All require an authenticated **user-kind** principal (an admin-kind session answers `403 ADMIN_ACCOUNT_KIND`, an admin-kind bearer `404`, as everywhere). Bearer scopes: reads need `notifications:read`; `seen`, `dismiss` and `acknowledge` need `notifications:write` (write implies read). `acknowledge` is additionally **first-party only**: a cookie session or a first-party OAuth token; a personal API key or a third-party OAuth token that holds the scope gets `403 API_KEY_FORBIDDEN` (audited as `api_key.scope_denied`, reason `first-party-only`). Every route of this section except `dismiss` is exempt from the gate (§5.3). The general rate limit applies.
+All require an authenticated **user-kind** principal (an admin-kind session answers `403 ADMIN_ACCOUNT_KIND`, an admin-kind bearer `404`, as everywhere). Bearer scopes: reads need `notifications:read`; `seen`, `dismiss` and `acknowledge` need `notifications:write` (write implies read). `acknowledge` is additionally **first-party only**: a cookie session or a first-party OAuth token; a personal API key or a third-party OAuth token that holds the scope gets `403 API_KEY_FORBIDDEN` (audited as `api_key.scope_denied`, reason `first-party-only`) — a person acknowledges, in the web app or the first-party app, never automation (Chief ruling 2026-10-29). Every route of this section except `dismiss` is exempt from the gate (§5.3). The general rate limit applies.
 
 ### 4.1 `GET /notifications/announcements` — EXTENDED
 
@@ -207,7 +208,7 @@ Optional in the schema only: an older server omits it, and a client reads absenc
 
 ### 5.1 The rule
 
-While at least one acknowledgement is pending for the caller, every `/api/v1` request from a **gated principal** answers `403 ACKNOWLEDGEMENT_REQUIRED`, except the operations listed in §5.3. Gated principals: every user-kind cookie session, always; bearer principals per the flag of §5.4. Admin-kind principals are never gated. Pending is evaluated on every request against the server clock, so an announcement starts gating at `startsAt` and stops at `endsAt` exactly, with nobody having to touch it; an acknowledgement, an archive or a shortened window takes effect on the next request.
+While at least one acknowledgement is pending for the caller, every `/api/v1` request from a **gated principal** answers `403 ACKNOWLEDGEMENT_REQUIRED`, except the operations listed in §5.3. Gated principals: every user-kind cookie session, always; first-party OAuth tokens (the mobile app) when the flag of §5.4 is `first_party`. **Personal API keys and third-party (partner) OAuth tokens are never gated**, whatever the flag (Chief ruling 2026-10-29): automation is never blocked by an announcement, and the person behind it acknowledges in the web app or the first-party app. Admin-kind principals are never gated. Pending is evaluated on every request against the server clock, so an announcement starts gating at `startsAt` and stops at `endsAt` exactly, with nobody having to touch it; an acknowledgement, an archive or a shortened window takes effect on the next request.
 
 ### 5.2 The refusal
 
@@ -228,16 +229,17 @@ Cache-Control: no-store
 
 ### 5.3 Exempt operations (exact list)
 
-Paths are relative to `/api/v1`. Matching is exact on method and path, case-sensitive, with no trailing slash and no prefix matching; `{id}` matches one canonical UUID segment and `{token}` one non-empty segment; `HEAD` is matched as `GET`. Anything not listed here is gated — including every route added in future.
+Thirty operations. Paths are relative to `/api/v1`. Matching is exact on method and path, case-sensitive, with no trailing slash and no prefix matching; `{id}` matches one canonical UUID segment and `{token}` one non-empty segment; `HEAD` is matched as `GET`. Anything not listed here is gated — including every route added in future.
 
 | Method   | Path                                            | Why it stays reachable                                                         |
 | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------ |
 | `GET`    | `/auth/me`                                      | Identity, carrying `pendingAcknowledgements`.                                  |
 | `POST`   | `/auth/logout`                                  | The "Sign out" alternative; a bearer self-revokes its grant.                   |
-| `DELETE` | `/account`                                      | Account deletion (owner directive).                                            |
-| `POST`   | `/account/export`                               | Data egress: someone who will not accept can take their data and leave.        |
-| `GET`    | `/account/export`                               | Data egress (export status).                                                   |
-| `POST`   | `/account/export/download`                      | Data egress (the download).                                                    |
+| `DELETE` | `/account`                                      | Delete account (owner directive), linked from the gate dialog.                 |
+| `GET`    | `/auth/2fa/status`                              | Delete account: the form reads it to offer the authenticator-code field.       |
+| `POST`   | `/account/export`                               | Export my data, linked from the gate dialog: take your data and leave.         |
+| `GET`    | `/account/export`                               | Export my data (export status).                                                |
+| `POST`   | `/account/export/download`                      | Export my data (the download).                                                 |
 | `GET`    | `/notifications/announcements`                  | The gate's own content.                                                        |
 | `GET`    | `/notifications/announcements/{id}`             | The gate's own content, per item and per locale.                               |
 | `POST`   | `/notifications/announcements/{id}/seen`        | Receipt of the shown item.                                                     |
@@ -262,19 +264,20 @@ Paths are relative to `/api/v1`. Matching is exact on method and path, case-sens
 | `POST`   | `/auth/password-reset/request`                  | Credential entry (reset).                                                      |
 | `POST`   | `/auth/password-reset/complete`                 | Credential entry (reset).                                                      |
 
+**A legal acknowledgement must not hold the user's data hostage** (Chief ruling 2026-10-29): someone who will not accept can always take their data and leave, which is why the deletion and data-egress rows exist and why the dialog links them (§5.7). `GET /auth/2fa/status` is exempt only so the Delete account form can tell a 2FA-enrolled account that an authenticator code is accepted; it returns the caller's own enrolment flags and nothing else.
+
 Deliberately **not** exempt: `POST /notifications/announcements/{id}/dismiss` (nothing else is usable until acknowledged), the OAuth consent routes `/oauth/authorize` and `/oauth/authorization-details` (a sign-in from the app through the browser meets the web gate first and acknowledges there), `POST /auth/first-run/complete` and the paranoid fresh-start acknowledgement (both come after the gate), `POST /auth/change-password`, and every settings route. Outside the chain and therefore unaffected: `/oauth/token` (token refresh keeps working), `/version`, the health probes, `/docs`, `/openapi.json`. Translations are compiled into the clients, so no route is needed for them. The realtime handshake is **refused**, not exempt (§5.6).
 
 ### 5.4 Bearer enforcement flag
 
 `BT_ANNOUNCEMENT_ACK_GATE_BEARER` — deployment configuration, read at boot:
 
-| Value           | Bearer principals gated                                                                                  |
-| --------------- | -------------------------------------------------------------------------------------------------------- |
-| `off` (default) | None. Bearer requests are never refused for a pending acknowledgement.                                   |
-| `first_party`   | First-party OAuth tokens (the mobile app). Personal API keys and third-party OAuth tokens are not gated. |
-| `all`           | Every bearer principal.                                                                                  |
+| Value           | Bearer principals gated                                                |
+| --------------- | ---------------------------------------------------------------------- |
+| `off` (default) | None. Bearer requests are never refused for a pending acknowledgement. |
+| `first_party`   | First-party OAuth tokens (the mobile app) only.                        |
 
-Whatever the value: cookie sessions are always gated; `pendingAcknowledgements` is on every `MeResponse`; §4 works for bearers under its scopes; acknowledging stays first-party only. Production keeps `off` until the mobile app ships the dialog (§9).
+No value gates a personal API key or a third-party (partner) OAuth token (Chief ruling 2026-10-29): automation is never blocked by an announcement, and people acknowledge in the web app or the first-party app. Any other value fails the boot. Whatever the value: cookie sessions are always gated; `pendingAcknowledgements` is on every `MeResponse`; §4 works for bearers under its scopes; acknowledging stays first-party only. Production keeps `off` until the mobile app ships the dialog (§9).
 
 ### 5.5 Precedence
 
@@ -290,12 +293,14 @@ A request meets the checks in this order, and the first refusal wins: authentica
 
 1. On launch, on resume, after sign-in and on `announcement.changed`: read `pendingAcknowledgements`; when it is non-empty, show the blocking dialog instead of the app.
 2. Treat `403 ACKNOWLEDGEMENT_REQUIRED` from any request the same way, taking the list from `details`; do not retry the refused request until the dialog has been completed.
-3. The dialog shows one item at a time in the given order, with the full body (`GET /notifications/announcements/{id}`), an unticked checkbox, a Confirm action enabled only once the box is ticked, and Sign out (`POST /auth/logout`). It cannot be dismissed any other way. When both locales exist, offer a language switch (re-fetch with `locale`) and acknowledge with the locale and hash of the text on screen.
+3. The dialog shows one item at a time in the given order, with the full body (`GET /notifications/announcements/{id}`), an unticked checkbox, a Confirm action enabled only once the box is ticked, and a prominent Sign out (`POST /auth/logout`). Below them a secondary row offers **Export my data** and **Delete account**, both exempt (§5.3), because a legal acknowledgement must not hold the user's data hostage (Chief ruling 2026-10-29); an app without a native flow for one of them opens the web app, whose dialog offers both. It cannot be dismissed any other way. When both locales exist, offer a language switch (re-fetch with `locale`) and acknowledge with the locale and hash of the text on screen.
 4. On `409 ANNOUNCEMENT_NOT_PENDING`, refetch `/auth/me` and continue; on `409 ANNOUNCEMENT_CONTENT_CHANGED`, refetch the item and ask again.
 
 ## 6. Inbox rows (`account.notice`)
 
 The `announcements.publishDue` fan-out keeps its shape: one inbox row of type `account.notice` per recipient, once per announcement, never pushed, deep-linking where it does today (`docs/mobile-push.md` §4). Three things change. Recipients are the announcement's audience (user-kind accounts only; for `existing_at_publish`, those created before the cutoff). The payload gains `announcementKind` beside the existing `notice: "announcement"` and `announcementId`. The row's `body` is the plain-text projection (§3.4) — the whole body for `notice` (at most 2000 characters, as today), the first 500 characters plus an ellipsis for `once` and `ack_required`, whose full text is read through §4.2. The `title` is unchanged. An inbox row is a record, not the gate: acknowledging happens only through §4.5.
+
+**E-mail — admin opt-in, `ack_required` only, default off** (Chief ruling 2026-10-29). When the operator ticked "Also notify by e-mail" (`notifyByEmail`, §7.3), the same pass also sends each recipient who has not acknowledged by then exactly one e-mail through the existing e-mail channel, in their stored locale (English fallback): the title, the plain-text projection and a link to the web app's `/announcements/{id}`. It is meant for the accounts that never show up. The e-mail carries no acknowledge link and no token; acknowledging still happens only through §4.5, signed in. Nothing about it is on the mobile wire.
 
 ## 7. Admin endpoints (admin console only — not on the mobile wire)
 
@@ -303,7 +308,7 @@ Admin-kind session with confirmed 2FA, as every `/admin/*` route; bearer and use
 
 ### 7.1 `Announcement` (admin shape) — EXTENDED
 
-KEPT fields: `id`, `severity`, `titleEn`, `bodyEn`, `startsAt`, `endsAt`, `publishedAt`, `deliveredCount`, `failedCount`, `createdAt`, `updatedAt`. CHANGED: `titleDe` and `bodyDe` become string or null; `active` is now derived (`true` exactly while `lifecycle` is `published`) and read-only; `deliveryState` gains `archived` (values `draft`, `scheduled`, `publishing`, `published`, `expired`, `archived`). NEW: `kind`; `audience` (`everyone` or `existing_at_publish`); `lifecycle` (`draft`, `published` or `archived`); `bodyFormat`; `releasedAt` (when an operator published it; null for drafts); `audienceCutoffAt` (the frozen cutoff; null for drafts); `archivedAt`; `lapseRecordedAt` (when the lapse pass completed; `ack_required` only).
+KEPT fields: `id`, `severity`, `titleEn`, `bodyEn`, `startsAt`, `endsAt`, `publishedAt`, `deliveredCount`, `failedCount`, `createdAt`, `updatedAt`. CHANGED: `titleDe` and `bodyDe` become string or null; `active` is now derived (`true` exactly while `lifecycle` is `published`) and read-only; `deliveryState` gains `archived` (values `draft`, `scheduled`, `publishing`, `published`, `expired`, `archived`). NEW: `kind`; `audience` (`everyone` or `existing_at_publish`); `lifecycle` (`draft`, `published` or `archived`); `bodyFormat`; `releasedAt` (when an operator published it; null for drafts); `audienceCutoffAt` (the frozen cutoff; null for drafts); `archivedAt`; `lapseRecordedAt` (when the lapse pass completed; `ack_required` only); `notifyByEmail` (boolean, default `false`; `true` only on `ack_required`, §6).
 
 ### 7.2 Lifecycle transitions — NEW
 
@@ -313,12 +318,12 @@ KEPT fields: `id`, `severity`, `titleEn`, `bodyEn`, `startsAt`, `endsAt`, `publi
 | `POST /admin/announcements/{id}/unpublish` | `published`, window not yet open | `draft`     | `409 ANNOUNCEMENT_ALREADY_LIVE` once the window has opened — archive instead                                                                                                                                                 |
 | `POST /admin/announcements/{id}/archive`   | `published`                      | `archived`  | `409 ANNOUNCEMENT_NOT_PUBLISHED` for a draft (delete it); idempotent on an archived one                                                                                                                                      |
 
-No body; each answers `200` with the `Announcement`. Publishing stamps `releasedAt` and freezes `audienceCutoffAt` as the later of the publish instant and `startsAt`.
+No body; each answers `200` with the `Announcement`. Publishing stamps `releasedAt` and freezes `audienceCutoffAt` as the later of the publish instant and `startsAt` (confirmed by Chief ruling 2026-10-29); the cutoff never moves afterwards.
 
 ### 7.3 Create, edit, delete — CHANGED
 
-- `POST /admin/announcements` — body: `kind` (default `notice`), `audience` (default `everyone`), `severity`, `titleEn`, `bodyEn`, `titleDe` (string or null, optional), `bodyDe` (string or null, optional), `startsAt`, `endsAt` (optional). `201` with a draft. The text rules of §3.4 apply on every save.
-- `PATCH /admin/announcements/{id}` — the same fields, partial. A draft takes any change. After publishing, `kind`, `audience` and `startsAt` are locked for every kind; `notice` and `once` still take content and `endsAt` changes; `ack_required` takes only `endsAt` (a new value must lie in the future, or be null). Once `endsAt` has passed, nothing but archive is accepted. A locked field answers `409 ANNOUNCEMENT_FIELD_LOCKED` with `details.fields`; an ended announcement `409 ANNOUNCEMENT_ENDED`.
+- `POST /admin/announcements` — body: `kind` (default `notice`), `audience` (default `everyone`), `severity`, `titleEn`, `bodyEn`, `titleDe` (string or null, optional), `bodyDe` (string or null, optional), `startsAt`, `endsAt` (optional), `notifyByEmail` (default `false`; `true` is accepted only together with `kind: "ack_required"`, otherwise `400 VALIDATION_ERROR` naming the field). `201` with a draft. The text rules of §3.4 apply on every save.
+- `PATCH /admin/announcements/{id}` — the same fields, partial. A draft takes any change. After publishing, `kind`, `audience`, `startsAt` and `notifyByEmail` are locked for every kind; `notice` and `once` still take content and `endsAt` changes; `ack_required` takes only `endsAt` (a new value must lie in the future, or be null). Once `endsAt` has passed, nothing but archive is accepted. A locked field answers `409 ANNOUNCEMENT_FIELD_LOCKED` with `details.fields`; an ended announcement `409 ANNOUNCEMENT_ENDED`.
 - `DELETE /admin/announcements/{id}` — drafts only, `204`; otherwise `409 ANNOUNCEMENT_NOT_DRAFT`.
 
 ### 7.4 The acknowledgement log — NEW
@@ -332,7 +337,10 @@ No body; each answers `200` with the `Announcement`. Publishing stamps `released
   "audience": integer,         accounts in the audience now (a draft: as if published now)
   "seen": integer,
   "dismissed": integer,
-  "acknowledged": integer,
+  "acknowledged": integer,     by accounts that still exist
+  "acknowledgedByDeletedAccounts": integer,
+                               pseudonymised rows of accounts deleted since (§7.5);
+                               counted in neither audience nor pending
   "lapsed": integer,
   "pending": integer | null,   ack_required only: audience - acknowledged - lapsed
   "lapseRecorded": boolean,
@@ -340,14 +348,15 @@ No body; each answers `200` with the `Announcement`. Publishing stamps `released
 }
 ```
 
-`GET /admin/announcements/{id}/receipts?state=&cursor=&limit=` → `200 { "items": Receipt[], "nextCursor": string | null }`. `state` is one of `pending`, `acknowledged`, `lapsed`, `seen`, `dismissed`, `unseen`, `all` (default `all`); `limit` 1–200, default 50; keyset-paginated by account id, `cursor` opaque. `pending` means not acknowledged and not lapsed (`ack_required`), or not dismissed (`notice`, `once`). Receipt:
+`GET /admin/announcements/{id}/receipts?state=&cursor=&limit=` → `200 { "items": Receipt[], "nextCursor": string | null }`. `state` is one of `pending`, `acknowledged`, `lapsed`, `seen`, `dismissed`, `unseen`, `all` (default `all`); `limit` 1–200, default 50; keyset-paginated (live accounts by account id, then the rows of deleted accounts by `subjectToken`), `cursor` opaque. `pending` means not acknowledged and not lapsed (`ack_required`), or not dismissed (`notice`, `once`). Receipt:
 
 ```text
 {
-  "userId": "<uuid>",
-  "username": string,
-  "accountCreatedAt": "<instant>",
-  "accountStatus": "active" | "disabled",
+  "userId": "<uuid>" | null,              null once the account is deleted (§7.5)
+  "subjectToken": "<64 hex>" | null,      set exactly when userId is null
+  "username": string | null,
+  "accountCreatedAt": "<instant>" | null,
+  "accountStatus": "active" | "disabled" | "deleted",
   "state": "pending" | "acknowledged" | "lapsed" | "seen" | "dismissed" | "unseen",
   "seenAt": instant | null,
   "dismissedAt": instant | null,
@@ -361,6 +370,10 @@ No body; each answers `200` with the `Announcement`. Publishing stamps `released
 ```
 
 `GET /admin/announcements/{id}/receipts.csv?state=` → `200 text/csv; charset=utf-8` with `Content-Disposition: attachment`: the same columns in that order under a snake_case header row, streamed in keyset pages; every download writes an `announcement.receipts_export` audit row. Neither form carries e-mail addresses or IP addresses.
+
+### 7.5 Deleted accounts — acknowledgement evidence survives, pseudonymised — NEW
+
+Chief ruling 2026-10-29. Deleting an account (self-service `DELETE /account` or the admin console) deletes its receipts **except** those with an acknowledgement, which are pseudonymised in the same transaction and kept as evidence. Such a row keeps exactly the announcement, `acknowledgedAt` and `contentSha256`, and gains `subjectToken`: HMAC-SHA256 of the former user id under a server-held key, lowercase hex — irreversible, and identical across all of one former account's rows. Everything else that could point at the person is dropped: `userId`, `username`, `accountCreatedAt`, `acknowledgedVia`, `acknowledgedLocale`, the OAuth grant and every seen, dismissed and lapsed field are null. In the receipts list and CSV it reads `accountStatus: "deleted"` and `state: "acknowledged"`, appears under `acknowledged` and `all` only, after the live accounts, and counts in `acknowledgedByDeletedAccounts`, never in `audience`, `acknowledged` or `pending`.
 
 ## 8. Error codes
 
@@ -389,4 +402,4 @@ No body; each answers `200` with the `Announcement`. Publishing stamps `released
 1. **The server ships with the flag `off`.** No app change is required. `pendingAcknowledgements` appears on `MeResponse`; §4 is callable with the app's existing `notifications:*` scopes; the gate refuses nothing the app sends. A sign-in from the app through the browser meets the web gate first, because the consent page runs on a web session.
 2. **The app builds the dialog** per §5.7, plus the `announcement.changed` listener and the handshake error. Rendering `notice` and `once` is optional; reading `kind` is not.
 3. **The app version with the dialog ships** and the board names it. Only then does the owner set `BT_ANNOUNCEMENT_ACK_GATE_BEARER=first_party` in production. From that moment an older app without the dialog receives `403 ACKNOWLEDGEMENT_REQUIRED` on gated routes while something is pending, so the flag flips only once those versions have aged out.
-4. **`all`** — gating personal API keys and partner apps too — is a separate owner decision.
+4. **There is no later step.** Personal API keys and partner apps are never gated (Chief ruling 2026-10-29); the flag has no value that would gate them.
