@@ -262,6 +262,17 @@ export const twoFactorEmailConfirmRequestSchema = z.object({ code: totpCodeSchem
 export type TwoFactorEmailConfirmRequest = z.infer<typeof twoFactorEmailConfirmRequestSchema>;
 
 /**
+ * 400 code for a USER-side factor mutation (TOTP enroll/confirm, e-mail
+ * enroll/confirm/disable, recovery-code regeneration) that offers no step-up
+ * credential: `stepUp` is absent, `null`, or names none of its members. A
+ * credential that is present but malformed stays a `VALIDATION_ERROR`; a wrong
+ * one is a 401 from the step-up check.
+ */
+export const STEP_UP_REQUIRED = 'STEP_UP_REQUIRED';
+const STEP_UP_REQUIRED_MESSAGE =
+  'Re-authentication is required: send your password or a two-factor code.';
+
+/**
  * The step-up credential every USER-side factor mutation carries in its body
  * (R-05): minting or removing a second factor — TOTP enroll/confirm, e-mail
  * enroll/confirm/disable, recovery-code regeneration — needs proof the caller
@@ -282,17 +293,43 @@ export const twoFactorStepUpCredentialSchema = z
   })
   .strict()
   .refine((b) => b.password !== undefined || b.code !== undefined || b.recoveryCode !== undefined, {
-    message: 'Re-authentication is required: send your password or a two-factor code.',
+    message: STEP_UP_REQUIRED_MESSAGE,
+    params: { apiErrorCode: STEP_UP_REQUIRED },
   });
 export type TwoFactorStepUpCredential = z.infer<typeof twoFactorStepUpCredentialSchema>;
+
+/**
+ * Wraps a factor-mutation body so a request that carries no `stepUp` at all (no
+ * body, the member left out, or `null`) reports {@link STEP_UP_REQUIRED} through
+ * the generic validator instead of an anonymous "Required". The wrapped object
+ * still parses the body unchanged, so every other problem keeps its own issue.
+ */
+function requiringStepUp<T extends z.ZodTypeAny>(body: T) {
+  return z.preprocess((input, refinement) => {
+    const value = input ?? {};
+    if (
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (value as { stepUp?: unknown }).stepUp == null
+    ) {
+      refinement.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['stepUp'],
+        message: STEP_UP_REQUIRED_MESSAGE,
+        params: { apiErrorCode: STEP_UP_REQUIRED },
+      });
+    }
+    return value;
+  }, body);
+}
 
 /**
  * `POST /auth/2fa/enroll`, `/2fa/email/enroll`, `/2fa/email/disable` and
  * `/2fa/recovery-codes` — the step-up and nothing else.
  */
-export const twoFactorStepUpRequestSchema = z
-  .object({ stepUp: twoFactorStepUpCredentialSchema })
-  .strict();
+export const twoFactorStepUpRequestSchema = requiringStepUp(
+  z.object({ stepUp: twoFactorStepUpCredentialSchema }).strict(),
+);
 export type TwoFactorStepUpRequest = z.infer<typeof twoFactorStepUpRequestSchema>;
 
 /**
@@ -301,9 +338,9 @@ export type TwoFactorStepUpRequest = z.infer<typeof twoFactorStepUpRequestSchema
  * the proof of the NEW factor plus the step-up. Knowing the new secret is not
  * enough — the confirm is what mints the factor.
  */
-export const twoFactorStepUpConfirmRequestSchema = z
-  .object({ code: totpCodeSchema, stepUp: twoFactorStepUpCredentialSchema })
-  .strict();
+export const twoFactorStepUpConfirmRequestSchema = requiringStepUp(
+  z.object({ code: totpCodeSchema, stepUp: twoFactorStepUpCredentialSchema }).strict(),
+);
 export type TwoFactorStepUpConfirmRequest = z.infer<typeof twoFactorStepUpConfirmRequestSchema>;
 
 /**

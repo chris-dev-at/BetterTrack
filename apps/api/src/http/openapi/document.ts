@@ -817,6 +817,15 @@ const noStoreResponseHeaders = z.object({
  */
 const SELF_ISSUED_FACTOR_401 = `A TOTP or recovery code offered by a credential (session, personal key, OAuth grant) that issued second-factor material in the last ${contracts.SELF_ISSUED_FACTOR_HOLD_HOURS} h is refused; that credential must send the password (${contracts.STEP_UP_PASSWORD_REQUIRED}).`;
 const STEP_UP_401 = `The step-up credential was wrong (INVALID_CREDENTIALS / TWO_FACTOR_INVALID_CODE / TWO_FACTOR_NOT_ENABLED). ${SELF_ISSUED_FACTOR_401}`;
+/**
+ * The user-side factor mutations: a body that offers no step-up credential at
+ * all is told so with its own code; any other malformed body stays generic.
+ */
+const STEP_UP_REQUIRED_400 = `Invalid request (VALIDATION_ERROR), or no step-up credential was sent — \`stepUp\` absent, null, or empty (${contracts.STEP_UP_REQUIRED}).`;
+const FACTOR_MUTATION_ERRORS = {
+  errorResponses: { 400: STEP_UP_REQUIRED_400, 401: STEP_UP_401 },
+  errorCodes: [contracts.STEP_UP_REQUIRED, contracts.STEP_UP_PASSWORD_REQUIRED],
+} as const;
 
 // ── Endpoint table ──────────────────────────────────────────────────────────
 type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
@@ -1242,8 +1251,7 @@ const endpoints: EndpointDef[] = [
     body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.TwoFactorEnrollResponse,
-    errorResponses: { 401: STEP_UP_401 },
-    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'delete',
@@ -1263,8 +1271,7 @@ const endpoints: EndpointDef[] = [
     body: R.TwoFactorStepUpConfirmRequest,
     status: 200,
     response: R.TwoFactorMethodEnabledResponse,
-    errorResponses: { 401: STEP_UP_401 },
-    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'post',
@@ -1284,8 +1291,7 @@ const endpoints: EndpointDef[] = [
     body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.OkResponse,
-    errorResponses: { 401: STEP_UP_401 },
-    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'post',
@@ -1296,8 +1302,7 @@ const endpoints: EndpointDef[] = [
     body: R.TwoFactorStepUpConfirmRequest,
     status: 200,
     response: R.TwoFactorMethodEnabledResponse,
-    errorResponses: { 401: STEP_UP_401 },
-    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'post',
@@ -1308,8 +1313,7 @@ const endpoints: EndpointDef[] = [
     body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.OkResponse,
-    errorResponses: { 401: STEP_UP_401 },
-    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'get',
@@ -1327,8 +1331,7 @@ const endpoints: EndpointDef[] = [
     body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.TwoFactorRecoveryCodesResponse,
-    errorResponses: { 401: STEP_UP_401 },
-    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
+    ...FACTOR_MUTATION_ERRORS,
   },
   // Passkeys / WebAuthn (§13.4 V4-P4)
   {

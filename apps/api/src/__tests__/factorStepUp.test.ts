@@ -422,6 +422,50 @@ describe('R-05 rule 1 — minting or removing a factor needs a step-up credentia
   });
 });
 
+/**
+ * The six factor mutations answer a request that offers no step-up credential at
+ * all with a distinct `400 STEP_UP_REQUIRED`, so a client can prompt for the
+ * password instead of showing a generic validation error. A credential that is
+ * present but malformed stays a `VALIDATION_ERROR`.
+ */
+const STEP_UP_REQUIRED = 'STEP_UP_REQUIRED';
+const FACTOR_MUTATIONS = [
+  { path: '/auth/2fa/enroll', fields: {} },
+  { path: '/auth/2fa/confirm', fields: { code: '123456' } },
+  { path: '/auth/2fa/email/enroll', fields: {} },
+  { path: '/auth/2fa/email/confirm', fields: { code: '123456' } },
+  { path: '/auth/2fa/email/disable', fields: {} },
+  { path: '/auth/2fa/recovery-codes', fields: {} },
+] as const;
+
+describe('R-05 rule 1 — a missing step-up credential is a distinct 400 STEP_UP_REQUIRED', () => {
+  for (const { path, fields } of FACTOR_MUTATIONS) {
+    it(`POST ${path}`, async () => {
+      const user = await seedFreshUser();
+      const agent = await loginAgent(user);
+      const post = () => agent.post(`/api/v1${path}`).set(...XRW);
+
+      const missing: Array<{ label: string; body?: Record<string, unknown> }> = [
+        { label: 'no body' },
+        { label: 'no stepUp', body: { ...fields } },
+        { label: 'stepUp null', body: { ...fields, stepUp: null } },
+        { label: 'stepUp without a credential', body: { ...fields, stepUp: {} } },
+      ];
+      for (const { label, body } of missing) {
+        const res = body === undefined ? await post() : await post().send(body);
+        expect(res.status, `${label}: ${JSON.stringify(res.body)}`).toBe(400);
+        expect(res.body.error.code, `${label}: ${JSON.stringify(res.body)}`).toBe(STEP_UP_REQUIRED);
+      }
+
+      // Negative space: a credential that is present but malformed is still a
+      // plain validation failure, never reported as missing.
+      const malformed = await post().send({ ...fields, stepUp: { code: '1' } });
+      expect(malformed.status, JSON.stringify(malformed.body)).toBe(400);
+      expect(malformed.body.error.code).toBe('VALIDATION_ERROR');
+    });
+  }
+});
+
 describe('R-05 rule 2 — a factor the caller itself just issued cannot pass a step-up', () => {
   it('a key that regenerated the codes cannot spend them on export, deletion, passkeys or vaults', async () => {
     const user = await seedFreshUser();
