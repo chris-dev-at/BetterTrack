@@ -611,10 +611,11 @@ vanished holding` (`degraded`, `firstDegraded`):
 - `snapshot persist skipped: FX unavailable, engine run degraded` — the FX probe for a
   held currency failed transiently (outage past the stale window).
 - `snapshot persist refused: a held asset vanished from the recomputed rows` — fields
-  `guard: 'vanished_holding'`, `anchorDay`, `vanished: [{ assetId, day }]`. The last
-  row the run would keep carries an asset the transactions still hold, and the new
-  rows dropped it, whatever the FX classification said (a spurious 404 replayed from
-  the negative cache is the known cause).
+  `guard: 'vanished_holding'`, `anchorDay`, `floorRowDay`, `vanished: [{ assetId, day }]`.
+  The new rows dropped an asset that the transactions still hold, whatever the FX
+  classification said. The asset is carried by the last row the run would keep, or by
+  the stored row at the write floor that a nightly heal is about to overwrite. A
+  spurious 404 replayed from the negative cache is the known cause.
 
 Either way nothing is written, any `dirty_from` marker stays, reads keep serving the
 live engine, and the next run after FX recovers rewrites the range. Nothing to do
