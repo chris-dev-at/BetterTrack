@@ -173,6 +173,12 @@ export const AuditAction = {
   OAuthGrantRevoked: 'oauth.grant_revoked',
   OAuthTokenIssued: 'oauth.token_issued',
   OAuthTokenRefreshed: 'oauth.token_refreshed',
+  /**
+   * A just-rotated refresh token was re-presented inside the grace window and
+   * the IDENTICAL successor pair was re-served instead of revoking the grant.
+   * `meta.via` is `replay` (re-presented later) or `concurrent` (lost a race).
+   */
+  OAuthTokenRefreshReplayedInGrace: 'oauth.token_refresh_replayed_in_grace',
   // Admin Problems page (§13.5 V5-P2, the Sentry replacement).
   ProblemResolved: 'problem.resolved',
   ProblemReopened: 'problem.reopened',

@@ -7,10 +7,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   OAUTH_ACCESS_TOKEN_PREFIX,
+  OAUTH_ACCESS_TOKEN_TTL_SECONDS,
   OAUTH_CLIENT_ID_PREFIX,
   OAUTH_CLIENT_SECRET_PREFIX,
+  OAUTH_REFRESH_TOKEN_GRACE_SECONDS,
   OAUTH_REFRESH_TOKEN_PREFIX,
   apiErrorSchema,
+  auditQuerySchema,
   createOAuthClientResponseSchema,
   createFeedbackResponseSchema,
   oauthAuthorizationDetailsResponseSchema,
@@ -28,7 +31,8 @@ import {
   type OAuthRepository,
 } from '../data/repositories/oauthRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
-import { createAuditService } from '../services/audit/auditService';
+import { AuditAction, createAuditService } from '../services/audit/auditService';
+import { createSecretBoxKeyring, encryptSecret } from '../services/crypto/secretBox';
 import { hashToken } from '../services/crypto/tokens';
 import {
   OAUTH_LOGO_MAX_BYTES,
@@ -41,7 +45,10 @@ import {
   FIRST_PARTY_CLIENTS,
   seedFirstPartyClients,
 } from '../services/oauth/firstPartyClients';
-import { createOAuthService } from '../services/oauth/oauthService';
+import {
+  POST_ROTATION_ENVELOPE_SWEEP_BATCH,
+  createOAuthService,
+} from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import { flushMacrotasks } from '../test/waitFor';
 
@@ -922,6 +929,7 @@ describe('grant revocation', () => {
       repo,
       audit: createAuditService(createAuditRepository(harness.db)),
       redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
     });
     const admin = await harness.seedAdmin();
 
@@ -1052,134 +1060,479 @@ describe('first-party grant scope healing (#1393)', () => {
   });
 });
 
+/**
+ * Refresh rotation and its grace window (OAUTH_REFRESH_TOKEN_GRACE_SECONDS).
+ *
+ * One grant serves every device a user has signed the app in on, so a refresh
+ * that revoked the grant on ANY reuse signed the user out everywhere whenever
+ * one HTTP answer was lost, or two refreshes raced. Pinned here:
+ *  - a replay of the token that was JUST rotated, inside the window, gets the
+ *    IDENTICAL successor tokens (expires_in and scope recomputed) and revokes
+ *    nothing;
+ *  - past the window, for an older token in the chain, or for a token rotated
+ *    before the window existed, reuse is still theft;
+ *  - the concurrent loser gets the winner's pair and never revokes;
+ *  - the sealed pair is never served past the window, and is dropped at rest
+ *    on the successor's rotation, on a read past the window and after the next
+ *    rotation anywhere (real-Postgres races: oauthRefreshGraceRace.test.ts);
+ *  - nothing is served to the wrong client, and an unreadable envelope refuses
+ *    the caller without signing anybody else out.
+ * Every timing is an injected, frozen clock — no sleeps.
+ */
 describe('refresh-token rotation', () => {
-  it('rotates the refresh token and rejects reuse of the old one', async () => {
-    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
-    const { code } = await approveAndGetCode(agent, {
-      client_id: clientId,
-      redirect_uri: HTTPS_REDIRECT,
-      scope: 'portfolio:read',
-    });
-    const first = oauthTokenResponseSchema.parse(
-      (
-        await tokenRequest({
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: HTTPS_REDIRECT,
-          client_id: clientId,
-          client_secret: clientSecret,
-        })
-      ).body,
-    );
-    const rotated = await tokenRequest({
-      grant_type: 'refresh_token',
-      refresh_token: first.refresh_token,
-      client_id: clientId,
-      client_secret: clientSecret,
-    });
-    expect(rotated.status).toBe(200);
-    const next = oauthTokenResponseSchema.parse(rotated.body);
-    expect(next.refresh_token).not.toBe(first.refresh_token);
+  let clockMs = 0;
+  const advance = (seconds: number) => {
+    clockMs += seconds * 1000;
+  };
+  const oauthNow = () => new Date(clockMs);
 
-    // Replay of the consumed refresh token is rejected (and revokes the grant).
-    const replay = await tokenRequest({
-      grant_type: 'refresh_token',
-      refresh_token: first.refresh_token,
-      client_id: clientId,
-      client_secret: clientSecret,
-    });
-    expect(replay.status).toBe(400);
-    expect(await auditActions()).toContain('oauth.token_refreshed');
+  beforeEach(async () => {
+    clockMs = Date.now();
+    // Swap the file-level harness for one whose OAuth service reads the frozen
+    // clock; every helper above reads `harness`, so they follow the swap.
+    await harness.dispose();
+    harness = await createTestApp({ oauthNow });
   });
 
-  it('revokes the winner token pair when the same refresh token is exchanged concurrently', async () => {
-    const { agent, clientId, clientSecret } = await registerClient({
-      scopes: ['portfolio:read'],
-    });
+  async function issueFirstPair(scopes: string[] = ['portfolio:read']): Promise<{
+    clientId: string;
+    clientSecret: string;
+    first: ReturnType<typeof oauthTokenResponseSchema.parse>;
+  }> {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes });
     const { code } = await approveAndGetCode(agent, {
       client_id: clientId,
       redirect_uri: HTTPS_REDIRECT,
-      scope: 'portfolio:read',
+      scope: scopes.join(' '),
     });
-    const first = oauthTokenResponseSchema.parse(
-      (
-        await tokenRequest({
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: HTTPS_REDIRECT,
-          client_id: clientId,
-          client_secret: clientSecret,
-        })
-      ).body,
-    );
+    const res = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(res.status).toBe(200);
+    return {
+      clientId,
+      clientSecret: clientSecret!,
+      first: oauthTokenResponseSchema.parse(res.body),
+    };
+  }
 
-    // Make both service calls read the same unconsumed row before either enters
-    // the real repository transaction. They still race against the same DB;
-    // this barrier makes the atomic-consume loser deterministic under PGlite.
+  function refreshWith(clientId: string, clientSecret: string, refreshToken: string) {
+    return tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+  }
+
+  async function rotate(clientId: string, clientSecret: string, refreshToken: string) {
+    const res = await refreshWith(clientId, clientSecret, refreshToken);
+    expect(res.status).toBe(200);
+    return oauthTokenResponseSchema.parse(res.body);
+  }
+
+  async function refreshRow(refreshToken: string) {
+    const [row] = await harness.db
+      .select()
+      .from(schema.oauthRefreshTokens)
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(refreshToken)));
+    return row!;
+  }
+
+  async function grantFor(refreshToken: string) {
+    const [grant] = await harness.db
+      .select()
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.id, (await refreshRow(refreshToken)).grantId));
+    return grant!;
+  }
+
+  async function graceAudits() {
+    return harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, 'oauth.token_refresh_replayed_in_grace'));
+  }
+
+  async function accessRowCount(grantId: string): Promise<number> {
+    const rows = await harness.db
+      .select({ id: schema.oauthAccessTokens.id })
+      .from(schema.oauthAccessTokens)
+      .where(eq(schema.oauthAccessTokens.grantId, grantId));
+    return rows.length;
+  }
+
+  /** An envelope that is well-formed but sealed under a key this server no longer holds. */
+  function envelopeUnderRetiredKey(): string {
+    return encryptSecret(
+      JSON.stringify({ v: 1 }),
+      createSecretBoxKeyring({ active: { id: 'retired-key', key: randomBytes(32) } }),
+    );
+  }
+
+  it('re-serves the IDENTICAL successor pair for a replay 59 s after rotation, with expires_in shrunk', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    expect(next.refresh_token).not.toBe(first.refresh_token);
+    expect(next.expires_in).toBe(OAUTH_ACCESS_TOKEN_TTL_SECONDS);
+
+    advance(59);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(200);
+    const again = oauthTokenResponseSchema.parse(replay.body);
+    expect(again).toEqual({ ...next, expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS - 59 });
+
+    // Nothing was minted, nothing was revoked, the re-served pair is live.
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeNull();
+    expect(await accessRowCount(grant.id)).toBe(2);
+    expect(await harness.ctx.oauth.authenticateToken(again.access_token)).not.toBeNull();
+    expect(
+      (await auditActions()).filter((action) => action === 'oauth.token_refreshed'),
+    ).toHaveLength(1);
+    const audits = await graceAudits();
+    expect(audits.map((row) => row.meta)).toEqual([{ clientId, via: 'replay' }]);
+    // The audit vocabulary's own filter admits the new action verbatim.
+    expect(
+      auditQuerySchema.parse({ action: AuditAction.OAuthTokenRefreshReplayedInGrace }).action,
+    ).toBe('oauth.token_refresh_replayed_in_grace');
+
+    // …and the re-served refresh token rotates normally afterwards.
+    const later = await rotate(clientId, clientSecret, again.refresh_token);
+    expect(later.refresh_token).not.toBe(again.refresh_token);
+  });
+
+  it('still serves at exactly 60 s — the window is inclusive', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    advance(OAUTH_REFRESH_TOKEN_GRACE_SECONDS);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(200);
+    expect(oauthTokenResponseSchema.parse(replay.body).refresh_token).toBe(next.refresh_token);
+  });
+
+  it('treats a replay 61 s after rotation as theft: INVALID_GRANT, grant revoked, successor pair dead', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+
+    advance(61);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(400);
+    expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
+    expect(replay.body.access_token).toBeUndefined();
+
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
+    expect((await refreshWith(clientId, clientSecret, next.refresh_token)).status).toBe(400);
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('treats a GRANDPARENT replay as theft even inside the window', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const second = await rotate(clientId, clientSecret, first.refresh_token);
+    advance(10);
+    const third = await rotate(clientId, clientSecret, second.refresh_token);
+
+    // `first` was consumed 20 s ago — inside the window — but its successor has
+    // itself been rotated, so a holder of `first` is not the current device.
+    advance(10);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(400);
+    expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(third.access_token)).toBeNull();
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('serves nothing to another client, or to the right client with a wrong secret, and revokes nothing', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    const other = await registerClient({ scopes: ['portfolio:read'] });
+
+    advance(5);
+    const foreign = await refreshWith(other.clientId, other.clientSecret!, first.refresh_token);
+    expect(foreign.status).toBe(400);
+    expect(apiErrorSchema.parse(foreign.body).error.code).toBe('INVALID_GRANT');
+    expect(foreign.body.refresh_token).toBeUndefined();
+
+    const badSecret = await refreshWith(clientId, `${clientSecret}x`, first.refresh_token);
+    expect(badSecret.status).toBe(400);
+    expect(apiErrorSchema.parse(badSecret.body).error.code).toBe('INVALID_CLIENT');
+    expect(badSecret.body.refresh_token).toBeUndefined();
+
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).not.toBeNull();
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('seals the successor pair (never plaintext) and drops it once the successor rotates', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const second = await rotate(clientId, clientSecret, first.refresh_token);
+
+    const sealed = await refreshRow(first.refresh_token);
+    expect(sealed.successorId).toBe((await refreshRow(second.refresh_token)).id);
+    expect(sealed.successorEnvelope).toMatch(/^v2\./);
+    expect(sealed.successorEnvelope).not.toContain(second.refresh_token);
+    expect(sealed.successorEnvelope).not.toContain(second.access_token);
+    // A token that was never rotated carries neither.
+    expect(await refreshRow(second.refresh_token)).toMatchObject({
+      successorId: null,
+      successorEnvelope: null,
+    });
+
+    advance(5);
+    await rotate(clientId, clientSecret, second.refresh_token);
+    const dropped = await refreshRow(first.refresh_token);
+    expect(dropped.successorEnvelope).toBeNull();
+    // The lineage link is not a secret and stays.
+    expect(dropped.successorId).toBe(sealed.successorId);
+  });
+
+  it('drops the sealed pair on any read past the window, and keeps it on a read inside it', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    await rotate(clientId, clientSecret, first.refresh_token);
+    const repo = createOAuthRepository(harness.db);
+    const hash = hashToken(first.refresh_token);
+
+    const inside = await repo.findRefreshTokenByHash(
+      hash,
+      new Date(clockMs + OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000),
+    );
+    expect(inside?.token.successorEnvelope).toMatch(/^v2\./);
+    expect((await refreshRow(first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+
+    const past = await repo.findRefreshTokenByHash(
+      hash,
+      new Date(clockMs + (OAUTH_REFRESH_TOKEN_GRACE_SECONDS + 1) * 1000),
+    );
+    expect(past?.token.successorEnvelope).toBeNull();
+    expect((await refreshRow(first.refresh_token)).successorEnvelope).toBeNull();
+    // Reading past the window is not itself a revocation.
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+  });
+
+  it('refuses an envelope it cannot open (key rotated away) with INVALID_GRANT and revokes nothing', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ successorEnvelope: envelopeUnderRetiredKey() })
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(first.refresh_token)));
+
+    advance(5);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(400);
+    expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
+    expect(replay.body.access_token).toBeUndefined();
+
+    // The device that DID receive `next` is not signed out.
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).not.toBeNull();
+    await rotate(clientId, clientSecret, next.refresh_token);
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('treats a token rotated BEFORE the window existed (no successor recorded) as theft, even inside it', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    // Exactly the shape of a row consumed by the pre-0118 code: consumed, with
+    // neither a successor link nor an envelope.
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ successorId: null, successorEnvelope: null })
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(first.refresh_token)));
+
+    advance(5);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(400);
+    expect(apiErrorSchema.parse(replay.body).error.code).toBe('INVALID_GRANT');
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(next.access_token)).toBeNull();
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
+  it('advertises the CURRENT scope on a replay after the app was partly narrowed inside the window', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair([
+      'portfolio:read',
+      'feedback:write',
+    ]);
+    const next = await rotate(clientId, clientSecret, first.refresh_token);
+    expect(next.scope.split(' ')).toContain('feedback:write');
+
+    // The admin narrows the app between the lost answer and its replay.
+    await harness.db
+      .update(schema.oauthClients)
+      .set({ scopes: ['portfolio:read'] })
+      .where(eq(schema.oauthClients.clientId, clientId));
+
+    advance(5);
+    const replay = await refreshWith(clientId, clientSecret, first.refresh_token);
+    expect(replay.status).toBe(200);
+    const again = oauthTokenResponseSchema.parse(replay.body);
+    // The tokens are re-served verbatim; what they are advertised to carry is not.
+    expect(again.access_token).toBe(next.access_token);
+    expect(again.refresh_token).toBe(next.refresh_token);
+    expect(again.expires_in).toBe(OAUTH_ACCESS_TOKEN_TTL_SECONDS - 5);
+    expect(again.scope).toBe('portfolio:read');
+
+    // …which is exactly what a fresh refresh at the same instant advertises.
+    const fresh = await rotate(clientId, clientSecret, again.refresh_token);
+    expect(fresh.scope).toBe(again.scope);
+  });
+
+  it('clears expired envelopes anywhere on the instance after a successful rotation', async () => {
+    // Pair A rotates once and its device goes quiet: nobody ever reads A0 again
+    // and A1 never rotates, so neither the read path nor the successor's
+    // rotation would ever drop A0's envelope.
+    const a = await issueFirstPair();
+    await rotate(a.clientId, a.clientSecret, a.first.refresh_token);
+    expect((await refreshRow(a.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+
+    advance(OAUTH_REFRESH_TOKEN_GRACE_SECONDS + 1);
+    // Any other rotation on the instance now takes A0's envelope with it, and
+    // leaves its own (still inside the window) alone.
+    const b = await issueFirstPair();
+    await rotate(b.clientId, b.clientSecret, b.first.refresh_token);
+    expect((await refreshRow(a.first.refresh_token)).successorEnvelope).toBeNull();
+    expect((await refreshRow(b.first.refresh_token)).successorEnvelope).toMatch(/^v2\./);
+  });
+
+  it('never fails a refresh because the post-rotation sweep failed', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const clearExpiredSuccessorEnvelopes = vi.fn(async () => {
+      throw new Error('sweep unavailable');
+    });
+    const warn = vi.fn();
+    const service = createOAuthService({
+      repo: { ...createOAuthRepository(harness.db), clearExpiredSuccessorEnvelopes },
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+      logger: { warn },
+      now: oauthNow,
+    });
+
+    const next = await service.exchangeToken({
+      body: {
+        grant_type: 'refresh_token',
+        refresh_token: first.refresh_token,
+        client_id: clientId,
+        client_secret: clientSecret,
+      },
+    });
+    expect(next.refresh_token).not.toBe(first.refresh_token);
+    expect(clearExpiredSuccessorEnvelopes).toHaveBeenCalledWith(
+      new Date(clockMs - OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000),
+      POST_ROTATION_ENVELOPE_SWEEP_BATCH,
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'oauth post-rotation grace-envelope sweep failed',
+    );
+    expect(await service.authenticateToken(next.access_token)).not.toBeNull();
+  });
+
+  /**
+   * Make both service calls read the same unconsumed row before either enters
+   * the real repository transaction. They still race against the same DB; this
+   * barrier makes the atomic-consume loser deterministic under PGlite.
+   */
+  function racingService(override: Partial<OAuthRepository> = {}) {
     const bothLookupsDone = deferred();
     let lookupCount = 0;
     const baseRepo = createOAuthRepository(harness.db);
     const repo: OAuthRepository = {
       ...baseRepo,
-      async findRefreshTokenByHash(tokenHash: string) {
-        const found = await baseRepo.findRefreshTokenByHash(tokenHash);
+      async findRefreshTokenByHash(tokenHash: string, now: Date) {
+        const found = await baseRepo.findRefreshTokenByHash(tokenHash, now);
         lookupCount += 1;
         if (lookupCount === 2) bothLookupsDone.resolve();
         await bothLookupsDone.promise;
         return found;
       },
+      ...override,
     };
-    const exchangeService = createOAuthService({
+    return createOAuthService({
       repo,
       audit: createAuditService(createAuditRepository(harness.db)),
       redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+      now: oauthNow,
     });
+  }
+
+  it('gives BOTH concurrent callers the identical pair and leaves the grant active', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const service = racingService();
     const refresh = () =>
-      exchangeService.exchangeToken({
+      service.exchangeToken({
         body: {
           grant_type: 'refresh_token',
           refresh_token: first.refresh_token,
           client_id: clientId,
-          client_secret: clientSecret!,
+          client_secret: clientSecret,
+        },
+      });
+
+    const [a, b] = await Promise.all([refresh(), refresh()]);
+    expect(a).toEqual(b);
+    expect(a.refresh_token).not.toBe(first.refresh_token);
+
+    const grant = await grantFor(first.refresh_token);
+    expect(grant.revokedAt).toBeNull();
+    // One rotation happened; the loser's own freshly minted pair was never written.
+    expect(await accessRowCount(grant.id)).toBe(2);
+    expect(await service.authenticateToken(a.access_token)).not.toBeNull();
+    expect(
+      (await auditActions()).filter((action) => action === 'oauth.token_refreshed'),
+    ).toHaveLength(1);
+    expect((await graceAudits()).map((row) => row.meta)).toEqual([{ clientId, via: 'concurrent' }]);
+
+    // The shared pair keeps rotating normally.
+    const next = await service.exchangeToken({
+      body: {
+        grant_type: 'refresh_token',
+        refresh_token: a.refresh_token,
+        client_id: clientId,
+        client_secret: clientSecret,
+      },
+    });
+    expect(next.refresh_token).not.toBe(a.refresh_token);
+  });
+
+  it('answers the concurrent loser INVALID_GRANT — without revoking — when the winner pair cannot be opened', async () => {
+    const { clientId, clientSecret, first } = await issueFirstPair();
+    const baseRepo = createOAuthRepository(harness.db);
+    const service = racingService({
+      // The winner's envelope is sealed under a key this server does not hold.
+      rotateRefreshToken: (input) =>
+        baseRepo.rotateRefreshToken({ ...input, sealSuccessor: envelopeUnderRetiredKey }),
+    });
+    const refresh = () =>
+      service.exchangeToken({
+        body: {
+          grant_type: 'refresh_token',
+          refresh_token: first.refresh_token,
+          client_id: clientId,
+          client_secret: clientSecret,
         },
       });
 
     const outcomes = await Promise.allSettled([refresh(), refresh()]);
     const winner = outcomes.find((outcome) => outcome.status === 'fulfilled');
     const loser = outcomes.find((outcome) => outcome.status === 'rejected');
-    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
-    expect(loser).toBeDefined();
     if (!winner || winner.status !== 'fulfilled' || !loser || loser.status !== 'rejected') {
       throw new Error('Expected exactly one refresh exchange to win the atomic rotation');
     }
     expect(loser.reason).toMatchObject({ statusCode: 400, code: 'INVALID_GRANT' });
 
-    const [originalToken] = await harness.db
-      .select()
-      .from(schema.oauthRefreshTokens)
-      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(first.refresh_token)));
-    const [grant] = await harness.db
-      .select()
-      .from(schema.oauthGrants)
-      .where(eq(schema.oauthGrants.id, originalToken!.grantId));
-    expect(grant?.revokedAt).toBeInstanceOf(Date);
-
-    // The successful response may already have reached its caller, but replay
-    // compromise revokes the family: neither credential in that pair works.
-    expect(await exchangeService.authenticateToken(winner.value.access_token)).toBeNull();
-    await expect(
-      exchangeService.exchangeToken({
-        body: {
-          grant_type: 'refresh_token',
-          refresh_token: winner.value.refresh_token,
-          client_id: clientId,
-          client_secret: clientSecret!,
-        },
-      }),
-    ).rejects.toMatchObject({ statusCode: 400, code: 'INVALID_GRANT' });
-    expect(
-      (await auditActions()).filter((action) => action === 'oauth.token_refreshed'),
-    ).toHaveLength(1);
+    expect((await grantFor(first.refresh_token)).revokedAt).toBeNull();
+    expect(await service.authenticateToken(winner.value.access_token)).not.toBeNull();
+    expect(await graceAudits()).toHaveLength(0);
   });
 });
 

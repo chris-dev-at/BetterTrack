@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
+import { z } from 'zod';
 
 import {
   API_KEY_SCOPES,
@@ -9,6 +10,7 @@ import {
   OAUTH_AUTH_CODE_TTL_SECONDS,
   OAUTH_CLIENT_ID_PREFIX,
   OAUTH_CLIENT_SECRET_PREFIX,
+  OAUTH_REFRESH_TOKEN_GRACE_SECONDS,
   OAUTH_REFRESH_TOKEN_PREFIX,
   OAUTH_REFRESH_TOKEN_TTL_SECONDS,
   OAUTH_SCOPE_LABELS,
@@ -33,6 +35,8 @@ import type {
   OAuthAuthorizationCodeExchange,
   OAuthClientListRow,
   OAuthClientLookupRow,
+  OAuthRefreshRotationIds,
+  OAuthRefreshTokenLookup,
   OAuthRepository,
 } from '../../data/repositories/oauthRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
@@ -46,6 +50,7 @@ import {
   type AuditService,
   type BearerScopeDenialReason,
 } from '../audit/auditService';
+import { decryptSecret, encryptSecret, type SecretBoxKeyring } from '../crypto/secretBox';
 import { hashToken, sha256Base64Url } from '../crypto/tokens';
 import {
   createOAuthLogoFetcher,
@@ -77,6 +82,13 @@ export interface OAuthServiceDeps {
   logger?: Pick<Logger, 'warn'>;
   /** Save-time remote-logo fetcher; defaults to the guard-pinned HTTPS implementation. */
   logoFetcher?: OAuthLogoFetcher;
+  /**
+   * The record-encryption keyring (`BT_DATA_ENCRYPTION_*`) that seals a rotated
+   * refresh token's successor pair for the grace window. Required: without it
+   * the grace path could not exist, and every lost refresh answer would sign
+   * the user out again.
+   */
+  recordEncryption: SecretBoxKeyring;
   /** Clock seam so token/code TTLs are testable without wall-clock waits. */
   now?: () => Date;
 }
@@ -193,6 +205,45 @@ interface PreparedTokenPair {
   };
   response: OAuthTokenResponse;
 }
+
+const REFRESH_GRACE_MS = OAUTH_REFRESH_TOKEN_GRACE_SECONDS * 1000;
+
+/** Envelopes one successful rotation clears, best-effort, on its way out. */
+export const POST_ROTATION_ENVELOPE_SWEEP_BATCH = 100;
+
+/**
+ * The plaintext sealed into `oauth_refresh_tokens.successor_envelope`: the exact
+ * successor response, plus the row ids it belongs to so an envelope can only
+ * ever be honoured on the row it was written for (it is re-checked against the
+ * successor's stored hash and the access row before anything is served).
+ */
+const refreshGraceEnvelopeSchema = z
+  .object({
+    v: z.literal(1),
+    tokenId: z.string().min(1),
+    successorId: z.string().min(1),
+    accessTokenId: z.string().min(1),
+    accessToken: z.string().startsWith(OAUTH_ACCESS_TOKEN_PREFIX),
+    refreshToken: z.string().startsWith(OAUTH_REFRESH_TOKEN_PREFIX),
+    scope: z.string(),
+  })
+  .strict();
+type RefreshGraceEnvelope = z.infer<typeof refreshGraceEnvelopeSchema>;
+
+/**
+ * What the grace rule decided for a consumed refresh token.
+ *  - `served`      — the identical successor tokens, `expires_in` + `scope` recomputed.
+ *  - `reuse`       — evidence of reuse: the window has passed, the successor has
+ *                    itself been rotated (an older token in the chain), or no
+ *                    successor was ever recorded (rotated before this rule).
+ *  - `unavailable` — no evidence of reuse, but the server cannot re-serve the
+ *                    pair (envelope gone or unreadable, access row gone, grant or
+ *                    user no longer active). Refused WITHOUT revoking.
+ */
+type RefreshGraceOutcome =
+  | { kind: 'served'; response: OAuthTokenResponse }
+  | { kind: 'reuse' }
+  | { kind: 'unavailable' };
 
 function mint(prefix: string): { token: string; tokenHash: string } {
   const token = `${prefix}${randomBytes(32).toString('base64url')}`;
@@ -327,11 +378,22 @@ function emptyEffectiveScope(): ApiError {
  * and access-token resolution for the bearer middleware. Security invariants:
  * redirect URIs are exact-matched (never redirected to an unvalidated target),
  * public clients MUST use PKCE, codes are single-use + short-lived, refresh
- * tokens rotate and a replayed one revokes the whole grant, and revoking a grant
- * cuts off every token because the token lookup joins through the grant.
+ * tokens rotate on every use, and revoking a grant cuts off every token because
+ * the token lookup joins through the grant.
+ *
+ * Refresh reuse (RFC 6819 §5.2.2.3, RFC 9700 §4.14.2) has a grace window of
+ * {@link OAUTH_REFRESH_TOKEN_GRACE_SECONDS}: re-presenting the token that was
+ * JUST rotated — a lost response, or the losing side of two concurrent
+ * refreshes — returns the identical successor pair (with `expires_in` and
+ * `scope` recomputed), as long as that successor has not itself been rotated and the
+ * same client authenticates. Any other reuse — past the window, or of an older
+ * token in the chain — is treated as theft and revokes the whole grant (one
+ * grant per client+user; per-install token families are a later change). A
+ * concurrent loser never revokes: it either receives the winner's pair or a
+ * plain INVALID_GRANT.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
-  const { repo, audit, redis, userRepo, events, logger } = deps;
+  const { repo, audit, redis, userRepo, events, logger, recordEncryption } = deps;
   const now = deps.now ?? (() => new Date());
   const logoFetcher = deps.logoFetcher ?? createOAuthLogoFetcher({ logger });
 
@@ -509,6 +571,141 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         scope: scopes.join(' '),
       },
     };
+  }
+
+  /** Seal a rotation's successor response for the grace window (secretBox v2). */
+  function sealRefreshGrace(pair: PreparedTokenPair, ids: OAuthRefreshRotationIds): string {
+    const envelope: RefreshGraceEnvelope = {
+      v: 1,
+      tokenId: ids.tokenId,
+      successorId: ids.successorId,
+      accessTokenId: ids.accessTokenId,
+      accessToken: pair.response.access_token,
+      refreshToken: pair.response.refresh_token,
+      scope: pair.response.scope,
+    };
+    return encryptSecret(JSON.stringify(envelope), recordEncryption);
+  }
+
+  /** Open an envelope; null when it is malformed, tampered or sealed under a retired key. */
+  function openRefreshGrace(sealed: string): RefreshGraceEnvelope | null {
+    try {
+      const parsed = refreshGraceEnvelopeSchema.safeParse(
+        JSON.parse(decryptSecret(sealed, recordEncryption)),
+      );
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The refresh grace rule, applied to a CONSUMED refresh token. The caller has
+   * already authenticated `client` and matched it to the grant; this re-checks
+   * the grant and user from `lookup` (fresh for a concurrent loser) and serves
+   * the identical successor pair only if ALL hold:
+   *   - the token was consumed at most OAUTH_REFRESH_TOKEN_GRACE_SECONDS ago;
+   *   - its recorded successor exists and is unconsumed (it is the immediately
+   *     previous token — never a grandparent);
+   *   - the envelope opens under the keyring and names exactly this row, this
+   *     successor and the successor's stored hash;
+   *   - the successor's access row still exists on this grant and is unexpired.
+   * The answer is the identical tokens with `expires_in` and `scope` recomputed
+   * for this instant. Nothing here writes; the caller decides what a
+   * non-`served` outcome costs.
+   */
+  async function replayWithinGrace(
+    lookup: OAuthRefreshTokenLookup,
+    client: OAuthClientLookupRow,
+  ): Promise<RefreshGraceOutcome> {
+    const { token, grant, user, successor } = lookup;
+    const at = now();
+    if (grant.revokedAt || grant.clientId !== client.id || user.status !== 'active') {
+      return { kind: 'unavailable' };
+    }
+    if (!token.consumedAt) return { kind: 'unavailable' };
+    if (at.getTime() - token.consumedAt.getTime() > REFRESH_GRACE_MS) return { kind: 'reuse' };
+    if (!token.successorId || !successor || successor.id !== token.successorId) {
+      return { kind: 'reuse' };
+    }
+    if (successor.consumedAt) return { kind: 'reuse' };
+    if (!token.successorEnvelope) return { kind: 'unavailable' };
+
+    const sealed = openRefreshGrace(token.successorEnvelope);
+    if (!sealed) {
+      // Ids only — never the envelope or anything derived from a token.
+      logger?.warn(
+        { refreshTokenId: token.id, grantId: grant.id },
+        'oauth refresh grace envelope could not be opened',
+      );
+      return { kind: 'unavailable' };
+    }
+    if (
+      sealed.tokenId !== token.id ||
+      sealed.successorId !== successor.id ||
+      !safeEqual(hashToken(sealed.refreshToken), successor.tokenHash) ||
+      successor.expiresAt.getTime() <= at.getTime()
+    ) {
+      return { kind: 'unavailable' };
+    }
+    // Joins through the grant (revoked ⇒ absent) and the user, so this is also
+    // the freshest grant/user check before anything leaves the server.
+    const access = await repo.findAccessTokenByHash(hashToken(sealed.accessToken));
+    if (
+      !access ||
+      access.token.id !== sealed.accessTokenId ||
+      access.grant.id !== grant.id ||
+      access.user.status !== 'active'
+    ) {
+      return { kind: 'unavailable' };
+    }
+    const expiresIn = Math.floor((access.token.expiresAt.getTime() - at.getTime()) / 1000);
+    if (expiresIn <= 0) return { kind: 'unavailable' };
+    // The TOKENS are re-served verbatim, but what they are advertised to carry
+    // is recomputed exactly like `expires_in`: the sealed scope intersected with
+    // what a fresh refresh would mint NOW (the grant clamped to the app's current
+    // ceiling). An admin narrowing inside the window therefore shows up in the
+    // answer, as it would on a fresh refresh; enforcement never depended on it
+    // (the bearer path clamps every request to the current ceiling).
+    const current = new Set<string>(
+      withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes)),
+    );
+    const advertised = sealed.scope.split(' ').filter((scope) => current.has(scope));
+    // Nothing left in common: never answer 200 with a scopeless grant. The
+    // emptied-ceiling case is retired before this runs (#1985); this is the
+    // residue of a grant re-consented to a disjoint set inside the window.
+    if (advertised.length === 0) return { kind: 'unavailable' };
+    return {
+      kind: 'served',
+      response: {
+        access_token: sealed.accessToken,
+        token_type: 'Bearer',
+        expires_in: expiresIn,
+        refresh_token: sealed.refreshToken,
+        scope: advertised.join(' '),
+      },
+    };
+  }
+
+  /**
+   * Audit a grace re-serve. `via` separates a re-presented token (`replay` —
+   * usually a lost answer, but also what a thief inside the window looks like)
+   * from the losing side of a concurrent refresh (`concurrent`).
+   */
+  function recordGraceReplay(
+    lookup: OAuthRefreshTokenLookup,
+    client: OAuthClientLookupRow,
+    ip: string | null,
+    via: 'replay' | 'concurrent',
+  ): Promise<void> {
+    return audit.record({
+      actorId: lookup.grant.userId,
+      action: AuditAction.OAuthTokenRefreshReplayedInGrace,
+      targetType: 'oauth_grant',
+      targetId: lookup.grant.id,
+      ip,
+      meta: { clientId: client.clientId, via },
+    });
   }
 
   function issueTokenPair(
@@ -1076,27 +1273,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       clientId: body.client_id,
       clientSecret: body.client_secret,
     });
-    const found = await repo.findRefreshTokenByHash(hashToken(body.refresh_token));
+    const found = await repo.findRefreshTokenByHash(hashToken(body.refresh_token), now());
     if (!found || found.grant.clientId !== client.id || found.user.status !== 'active') {
       throw badRequest('Invalid refresh token.', 'INVALID_GRANT');
     }
     if (found.grant.revokedAt) {
       throw badRequest('This authorization has been revoked.', 'INVALID_GRANT');
-    }
-    // Replay of an already-rotated refresh token is treated as a compromise:
-    // revoke the whole grant (RFC 6819 §5.2.2.3) and reject.
-    if (found.token.consumedAt) {
-      await repo.revokeGrant(found.grant.userId, found.grant.id);
-      await publishInvalidation({
-        userId: found.grant.userId,
-        kind: 'oauth',
-        credentialId: found.grant.id,
-        exceptCredentialId: null,
-      });
-      throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
-    }
-    if (found.token.expiresAt.getTime() <= now().getTime()) {
-      throw badRequest('Refresh token has expired.', 'INVALID_GRANT');
     }
     // Clamp to the app's current allowed scopes so a refresh never re-broadens a
     // grant past a scope the admin has since removed, and the advertised `scope`
@@ -1108,12 +1290,47 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     const scopes = withImpliedReadScopes(
       clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes),
     );
+    // Re-presenting an already-rotated refresh token.
+    if (found.token.consumedAt) {
+      // An emptied ceiling retires the grant BEFORE anything is re-served (#1985):
+      // a grace replay must never hand out a pair the exchange itself would now
+      // refuse. Applied only inside the window — outside it this is plain reuse,
+      // which keeps its INVALID_GRANT answer below (and revokes the grant too).
+      const inWindow = now().getTime() - found.token.consumedAt.getTime() <= REFRESH_GRACE_MS;
+      if (inWindow && scopes.length === 0) {
+        await retireEmptyScopeGrant({ grant: found.grant, client, ip });
+        throw emptyEffectiveScope();
+      }
+      const grace = await replayWithinGrace(found, client);
+      if (grace.kind === 'served') {
+        await recordGraceReplay(found, client, ip, 'replay');
+        return grace.response;
+      }
+      if (grace.kind === 'reuse') {
+        // Reuse past the window, or of an older token in the chain, is treated
+        // as a compromise: revoke the whole grant (RFC 6819 §5.2.2.3) and reject.
+        await repo.revokeGrant(found.grant.userId, found.grant.id);
+        await publishInvalidation({
+          userId: found.grant.userId,
+          kind: 'oauth',
+          credentialId: found.grant.id,
+          exceptCredentialId: null,
+        });
+      }
+      // `unavailable`: inside the window, with no sign of reuse, but the pair
+      // cannot be re-served (envelope unreadable after a key rotation, …). The
+      // caller is refused; nobody else is signed out.
+      throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
+    }
+    if (found.token.expiresAt.getTime() <= now().getTime()) {
+      throw badRequest('Refresh token has expired.', 'INVALID_GRANT');
+    }
     // The clamp can land on EMPTY: the admin removed every scope from the app,
     // or narrowed it to a set disjoint from this consent (#1985). Minting here
     // would hand the client a 200 and a zero-scope token — a credential that
     // satisfies nothing — where the code exchange refuses outright. Refuse
     // identically, and retire the grant so the next refresh is terminal rather
-    // than a repeat of this same exchange. Ordered AFTER the revoked/replayed/
+    // than a repeat of this same exchange. Ordered AFTER the revoked/reused/
     // expired checks so a bad refresh token keeps its INVALID_GRANT answer, and
     // BEFORE `prepareTokenPair`/`rotateRefreshToken` so no token row is written
     // and the presented refresh token is not consumed.
@@ -1128,14 +1345,21 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       rotatedAt: pair.issuedAt,
       accessToken: pair.accessToken,
       refreshToken: pair.refreshToken,
+      sealSuccessor: (ids) => sealRefreshGrace(pair, ids),
     });
-    if (rotation === 'replayed') {
-      await publishInvalidation({
-        userId: found.grant.userId,
-        kind: 'oauth',
-        credentialId: found.grant.id,
-        exceptCredentialId: null,
-      });
+    if (rotation.outcome === 'replayed') {
+      // Lost the atomic consume to a concurrent refresh of the SAME token. Both
+      // callers presented it while it was current — a race, not reuse — so the
+      // grant is never revoked here: this caller gets the winner's pair under
+      // the grace rule, or a plain INVALID_GRANT when that cannot be served.
+      // `pair` was never written and is simply dropped.
+      const grace = rotation.current
+        ? await replayWithinGrace(rotation.current, client)
+        : ({ kind: 'unavailable' } as const);
+      if (grace.kind === 'served' && rotation.current) {
+        await recordGraceReplay(rotation.current, client, ip, 'concurrent');
+        return grace.response;
+      }
       throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
     }
     await audit.record({
@@ -1146,6 +1370,28 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       ip,
       meta: { clientId: client.clientId },
     });
+    await sweepExpiredGraceEnvelopes(pair.issuedAt);
     return pair.response;
+  }
+
+  /**
+   * Best-effort, AFTER the rotation committed: null up to
+   * {@link POST_ROTATION_ENVELOPE_SWEEP_BATCH} envelopes anywhere on the
+   * instance whose window has passed. A sealed pair on a row nobody re-reads
+   * and whose successor never rotates (a phone that got its answer and went
+   * idle) would otherwise sit at rest until the daily sweep — and the nightly
+   * dump runs before that. Any refresh traffic now bounds that to minutes.
+   * Served by the partial live-envelope index; idempotent; a failure here is
+   * logged and never fails the refresh that already succeeded.
+   */
+  async function sweepExpiredGraceEnvelopes(rotatedAt: Date): Promise<void> {
+    try {
+      await repo.clearExpiredSuccessorEnvelopes(
+        new Date(rotatedAt.getTime() - REFRESH_GRACE_MS),
+        POST_ROTATION_ENVELOPE_SWEEP_BATCH,
+      );
+    } catch (err) {
+      logger?.warn({ err }, 'oauth post-rotation grace-envelope sweep failed');
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { OAUTH_REFRESH_TOKEN_GRACE_SECONDS } from '@bettertrack/contracts';
 import { eq } from 'drizzle-orm';
 import { pino } from 'pino';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +8,7 @@ import * as schema from '../../data/schema';
 import { createAuditRepository } from '../../data/repositories/auditRepository';
 import { createEmailLogRepository } from '../../data/repositories/emailLogRepository';
 import { createNotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
+import { createOAuthRepository } from '../../data/repositories/oauthRepository';
 import { createProblemRepository } from '../../data/repositories/problemRepository';
 import { createUsageAnalyticsRepository } from '../../data/repositories/usageAnalyticsRepository';
 import { createUserRepository, type UserRepository } from '../../data/repositories/userRepository';
@@ -44,6 +46,7 @@ const noVaultCandidates = { cleanupExpiredServerCandidates: async () => 0 };
 const noProblems = { deleteOlderThan: async () => 0 };
 const noUsageEvents = { deleteEventsOlderThan: async () => 0 };
 const noDigestQueue = { deleteDeliveredOlderThan: async () => 0 };
+const noOAuthGraceEnvelopes = { clearExpiredSuccessorEnvelopes: async () => 0 };
 
 function ctx(jobLogger: Logger = logger): JobContext {
   return {
@@ -63,6 +66,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -118,6 +122,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -157,6 +162,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -182,6 +188,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: { cleanupExpiredEnableStaging },
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -206,6 +213,7 @@ describe('data.retentionCleanup', () => {
         problemsPruned: 0,
         usageEventsPruned: 0,
         digestQueuePruned: 0,
+        oauthGraceEnvelopesCleared: 0,
         deferredToNextRun: false,
       },
       'expired audit, email-log, problem, usage-event and delivered digest-queue rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
@@ -230,6 +238,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: { cleanupExpiredServerCandidates },
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -281,6 +290,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       problems: repo,
       usageEvents: noUsageEvents,
       users: noUsers,
@@ -319,6 +329,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       problems: noProblems,
       usageEvents: createUsageAnalyticsRepository(harness.db, harness.db),
       users: noUsers,
@@ -348,6 +359,7 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -394,6 +406,7 @@ describe('data.retentionCleanup — legacy remembered-device bindings', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -544,6 +557,7 @@ describe('data.retentionCleanup — delivered digest-queue rows (#1696)', () => 
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -622,6 +636,7 @@ describe('data.retentionCleanup — delivered digest-queue rows (#1696)', () => 
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       digestQueue: table,
+      oauthGraceEnvelopes: noOAuthGraceEnvelopes,
       users: noUsers,
       problems: noProblems,
       usageEvents: noUsageEvents,
@@ -648,5 +663,88 @@ describe('data.retentionCleanup — delivered digest-queue rows (#1696)', () => 
     const last = await job.handler({} as never, ctx());
     expect(remaining).toBe(0);
     expect(last).toMatchObject({ deferredToNextRun: 0 });
+  });
+});
+
+/**
+ * The refresh grace window's third lifetime bound: a sealed successor pair on a
+ * row that is never read again and whose successor never rotates must not stay
+ * in the table. Only the envelope goes — the token rows, and the reuse detection
+ * a consumed row still carries, are kept.
+ */
+describe('data.retentionCleanup — OAuth refresh grace envelopes', () => {
+  it('nulls only envelopes past the grace window, keeps every token row, and is idempotent', async () => {
+    const user = await harness.seedUser({ email: 'grace@bt.test', username: 'gracesweep' });
+    const [client] = await harness.db
+      .insert(schema.oauthClients)
+      .values({
+        userId: user.id,
+        clientId: 'btc_grace_sweep',
+        name: 'Grace sweep',
+        redirectUris: ['https://app.example/callback'],
+      })
+      .returning();
+    const [grant] = await harness.db
+      .insert(schema.oauthGrants)
+      .values({ clientId: client!.id, userId: user.id, scopes: ['portfolio:read'] })
+      .returning();
+    const row = (name: string, consumedSecondsAgo: number | null, envelope: string | null) => ({
+      grantId: grant!.id,
+      tokenHash: `hash-${name}`,
+      expiresAt: new Date(NOW.getTime() + DAY_MS),
+      consumedAt:
+        consumedSecondsAgo === null ? null : new Date(NOW.getTime() - consumedSecondsAgo * 1000),
+      successorEnvelope: envelope,
+    });
+    await harness.db
+      .insert(schema.oauthRefreshTokens)
+      .values([
+        row('stale', OAUTH_REFRESH_TOKEN_GRACE_SECONDS + 1, 'sealed-stale'),
+        row('ancient', 30 * 24 * 3600, 'sealed-ancient'),
+        row('boundary', OAUTH_REFRESH_TOKEN_GRACE_SECONDS, 'sealed-boundary'),
+        row('live', OAUTH_REFRESH_TOKEN_GRACE_SECONDS - 1, 'sealed-live'),
+        row('current', null, null),
+      ]);
+
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: async () => 0 },
+      emailLog: { deleteOlderThan: async () => 0 },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      digestQueue: noDigestQueue,
+      oauthGraceEnvelopes: createOAuthRepository(harness.db),
+      users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      // One row per batch, so the drain has to loop to converge.
+      batchSize: 1,
+      now: () => NOW,
+    });
+
+    expect(await job.handler({} as never, ctx())).toMatchObject({
+      oauthGraceEnvelopesCleared: 2,
+      deferredToNextRun: 0,
+    });
+    const rows = await harness.db
+      .select({
+        tokenHash: schema.oauthRefreshTokens.tokenHash,
+        successorEnvelope: schema.oauthRefreshTokens.successorEnvelope,
+      })
+      .from(schema.oauthRefreshTokens)
+      .where(eq(schema.oauthRefreshTokens.grantId, grant!.id));
+    expect(Object.fromEntries(rows.map((r) => [r.tokenHash, r.successorEnvelope]))).toEqual({
+      'hash-stale': null,
+      'hash-ancient': null,
+      // Exactly at the window's edge is still inside it (≤ 60 s), like the read path.
+      'hash-boundary': 'sealed-boundary',
+      'hash-live': 'sealed-live',
+      'hash-current': null,
+    });
+
+    expect(await job.handler({} as never, ctx())).toMatchObject({ oauthGraceEnvelopesCleared: 0 });
   });
 });

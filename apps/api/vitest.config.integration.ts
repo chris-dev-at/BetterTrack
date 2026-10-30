@@ -102,6 +102,12 @@ export default defineConfig({
       // (day, feature) primary key; PGlite has one connection, so it cannot
       // hold the two open transactions the race needs.
       'src/__tests__/usageAnalytics.test.ts',
+      // #2065: the refresh grace window's concurrent loser must WAIT on the
+      // winner's row lock, re-check after its commit and see the successor in
+      // a fresh snapshot (or rotate itself when the winner rolls back). PGlite
+      // runs the two transactions one after the other, so only here is the
+      // lock wait real — observed in pg_stat_activity, not inferred.
+      'src/__tests__/oauthRefreshGraceRace.test.ts',
     ],
     // Every test file gets the harness reapers: the #1936 `afterAll` that
     // releases any `createTestApp()` harness the file did not dispose itself,
