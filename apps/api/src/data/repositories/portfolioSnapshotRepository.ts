@@ -1,4 +1,19 @@
-import { and, asc, desc, eq, exists, inArray, isNull, lt, min, notExists, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  min,
+  notExists,
+  sql,
+} from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -81,6 +96,13 @@ export interface AssetReference {
   portfolioId: string;
   /** ISO day of the portfolio's earliest transaction on the asset. */
   firstTxnDay: string;
+}
+
+/** A portfolio the FX hole repair reads (`fxHoleRepair.ts`, issue #1729). */
+export interface FxHoleScanTarget {
+  portfolioId: string;
+  /** The owning account — counted, never acted on, by the repair. */
+  userId: string;
 }
 
 /** A portfolio to rebuild + the first day its series exists on. */
@@ -221,6 +243,26 @@ export function createPortfolioSnapshotRepository(db: Database) {
               ),
         )
         .orderBy(desc(portfolioDailySnapshots.date))
+        .limit(1);
+      const row = rows[0];
+      return row ? toRowRecord(row) : null;
+    },
+
+    /**
+     * The stored row of exactly `day`, or null — the persist guard's second
+     * reference (`portfolioSnapshots.ts`, #1729 review): the row a nightly heal
+     * is about to overwrite at its floor. A primary-key read: one row.
+     */
+    async rowOn(portfolioId: string, day: string): Promise<SnapshotRowRecord | null> {
+      const rows = await db
+        .select()
+        .from(portfolioDailySnapshots)
+        .where(
+          and(
+            eq(portfolioDailySnapshots.portfolioId, portfolioId),
+            eq(portfolioDailySnapshots.date, day),
+          ),
+        )
         .limit(1);
       const row = rows[0];
       return row ? toRowRecord(row) : null;
@@ -405,6 +447,50 @@ export function createPortfolioSnapshotRepository(db: Database) {
       ]);
       const ids = [...new Set([...fromTxns, ...fromCash].map((r) => r.id))].sort();
       return ids.map((portfolioId) => ({ portfolioId }));
+    },
+
+    /**
+     * One keyset page of the portfolios the one-off FX hole repair scans
+     * (`services/portfolio/fxHoleRepair.ts`, issue #1729): every NON-vaulted
+     * portfolio with at least one stored snapshot row, ascending by id, strictly
+     * after `afterPortfolioId`. A portfolio without rows has nothing frozen to
+     * repair. Whole-system like {@link listSnapshotTargets}, and with the same
+     * explicit vault predicate: a locked stub is never read, even if a stale
+     * row survived its move-in.
+     */
+    async listFxHoleScanTargets(input: {
+      afterPortfolioId: string | null;
+      limit: number;
+    }): Promise<FxHoleScanTarget[]> {
+      return db
+        .select({ portfolioId: portfolios.id, userId: portfolios.userId })
+        .from(portfolios)
+        .where(
+          and(
+            isNull(portfolios.vaultId),
+            input.afterPortfolioId === null ? undefined : gt(portfolios.id, input.afterPortfolioId),
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(portfolioDailySnapshots)
+                .where(eq(portfolioDailySnapshots.portfolioId, portfolios.id)),
+            ),
+          ),
+        )
+        .orderBy(asc(portfolios.id))
+        .limit(input.limit);
+    },
+
+    /**
+     * How many portfolios are vaulted — the ones the server cannot read and the
+     * FX hole repair therefore reports as skipped rather than as clean.
+     */
+    async countVaultedPortfolios(): Promise<number> {
+      const rows = await db
+        .select({ n: count() })
+        .from(portfolios)
+        .where(isNotNull(portfolios.vaultId));
+      return Number(rows[0]?.n ?? 0);
     },
 
     /**

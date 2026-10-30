@@ -151,3 +151,61 @@ describe('portfolio snapshot repository — saveComputation compare-and-set (#17
     expect(after?.dirtyFrom).toBe('2026-01-01');
   });
 });
+
+describe('portfolio snapshot repository — rowOn (#1729 guard reference)', () => {
+  // The persist guard's second reference is the row stored AT the write floor.
+  // A nearest-row read would hand it a neighbour's keys, and a read that
+  // ignored the portfolio another portfolio's keys: either way the guard would
+  // refuse (or spare) on evidence that is not this row's.
+  let h: TestHarness;
+  let repo: PortfolioSnapshotRepository;
+
+  async function portfolioWithRows(name: string, rows: NewSnapshotRow[]): Promise<string> {
+    const user = await h.seedUser({ email: `${name}@bettertrack.test`, username: name });
+    const [portfolio] = await h.db
+      .insert(schema.portfolios)
+      .values({ userId: user.id, name, sortOrder: 0 })
+      .returning({ id: schema.portfolios.id });
+    const portfolioId = portfolio!.id;
+    const result = await repo.saveComputation({
+      portfolioId,
+      rows,
+      computedThrough: rows.at(-1)!.date,
+      seenVersion: null,
+      seenDirtyFrom: null,
+    });
+    expect(result.applied).toBe(true);
+    return portfolioId;
+  }
+
+  beforeEach(async () => {
+    h = await createTestApp();
+    repo = createPortfolioSnapshotRepository(h.db);
+  });
+
+  it('returns exactly the row of that day, null for a day without one, and never another portfolio’s', async () => {
+    const mine = await portfolioWithRows('Mine', [
+      { ...ROW, date: '2026-01-02', valueEur: 100, assetValues: { a: 100 } },
+      { ...ROW, date: '2026-01-04', valueEur: 300, assetValues: { a: 100, b: 200 } },
+    ]);
+    const other = await portfolioWithRows('Other', [
+      { ...ROW, date: '2026-01-03', valueEur: 999, assetValues: { z: 999 } },
+    ]);
+
+    const on4 = await repo.rowOn(mine, '2026-01-04');
+    expect(on4?.date).toBe('2026-01-04');
+    expect(on4?.valueEur).toBe(300);
+    expect(on4?.assetValues).toEqual({ a: 100, b: 200 });
+    expect((await repo.rowOn(mine, '2026-01-02'))?.assetValues).toEqual({ a: 100 });
+
+    // A gap between two stored rows, before the first and after the last: null,
+    // never the nearest neighbour.
+    expect(await repo.rowOn(mine, '2026-01-03')).toBeNull();
+    expect(await repo.rowOn(mine, '2026-01-01')).toBeNull();
+    expect(await repo.rowOn(mine, '2026-01-05')).toBeNull();
+    // Scoped to the portfolio: the other portfolio's row on 01-03 is not mine,
+    // and mine are not its.
+    expect((await repo.rowOn(other, '2026-01-03'))?.assetValues).toEqual({ z: 999 });
+    expect(await repo.rowOn(other, '2026-01-04')).toBeNull();
+  });
+});

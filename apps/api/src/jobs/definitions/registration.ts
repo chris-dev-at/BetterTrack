@@ -115,6 +115,12 @@ export const JOB_REGISTRATION_DESCRIPTORS = [
     'createSnapshotsBackfillJob',
   ),
   descriptor(
+    'createSnapshotsFxHoleRepairJob',
+    QUEUE_NAMES.snapshotsRepairFxHoles,
+    'snapshotJobs.ts',
+    'createSnapshotsFxHoleRepairJob',
+  ),
+  descriptor(
     'createPortfolioVaultFinalizeJob',
     QUEUE_NAMES.portfolioVaultFinalize,
     'portfolioVaultJobs.ts',
