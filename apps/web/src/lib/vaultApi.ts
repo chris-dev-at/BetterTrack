@@ -39,7 +39,7 @@ import {
   type CreateVaultRequest,
 } from '@bettertrack/contracts';
 
-import { ApiError, apiRequest } from './apiClient';
+import { ApiError, apiRequest, STEP_UP_GATED_REQUEST } from './apiClient';
 import { apiBaseUrl } from './runtimeConfig';
 
 export const VAULTS_QUERY_KEY = ['vaults', 'configs'] as const;
@@ -67,10 +67,12 @@ export async function renameVault(vaultId: string, body: PatchVaultRequest): Pro
   return patchVaultResponseSchema.parse(data).vault;
 }
 
+/** §15 gated: the in-body step-up is the whole gate — see {@link STEP_UP_GATED_REQUEST}. */
 export async function deleteVault(vaultId: string, body: DeleteVaultRequest): Promise<void> {
   const data = await apiRequest<unknown>(`/vaults/${segment(vaultId)}`, {
     method: 'DELETE',
     body,
+    ...STEP_UP_GATED_REQUEST,
   });
   deleteVaultResponseSchema.parse(data);
 }
@@ -184,6 +186,7 @@ export async function listPortfolioVaultImportBatches(
   return portfolioVaultImportCaptureResponseSchema.parse(data);
 }
 
+/** §15 gated: destroys the cleartext rows — see {@link STEP_UP_GATED_REQUEST}. */
 export async function movePortfolioIntoVault(
   portfolioId: string,
   body: PortfolioVaultMoveInRequest,
@@ -191,10 +194,16 @@ export async function movePortfolioIntoVault(
   const data = await apiRequest<unknown>(`/portfolios/${segment(portfolioId)}/vault/move-in`, {
     method: 'POST',
     body,
+    ...STEP_UP_GATED_REQUEST,
   });
   return portfolioVaultMoveInResponseSchema.parse(data);
 }
 
+/**
+ * Deliberately NOT step-up-gated: the challenge carries no credential (it mints
+ * the nonce the commit's Ed25519 proof signs), so a 401 here is an expired
+ * session and nothing else — it must still clear it.
+ */
 export async function requestPortfolioMoveOutChallenge(
   portfolioId: string,
   body: PortfolioVaultMoveOutChallengeRequest,
@@ -206,6 +215,7 @@ export async function requestPortfolioMoveOutChallenge(
   return portfolioVaultMoveOutChallengeResponseSchema.parse(data);
 }
 
+/** §15 gated: writes a caller-authored document — see {@link STEP_UP_GATED_REQUEST}. */
 export async function movePortfolioOutOfVault(
   portfolioId: string,
   body: PortfolioVaultMoveOutRequest,
@@ -213,6 +223,7 @@ export async function movePortfolioOutOfVault(
   const data = await apiRequest<unknown>(`/portfolios/${segment(portfolioId)}/vault/move-out`, {
     method: 'POST',
     body,
+    ...STEP_UP_GATED_REQUEST,
   });
   return portfolioVaultMoveOutResponseSchema.parse(data);
 }

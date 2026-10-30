@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { VaultConfig } from '@bettertrack/contracts';
@@ -8,7 +10,15 @@ import { EndpointVaultKeystore } from '../../vault/keystore/core';
 import type { OpenedVault } from '../../vault/keystore/types';
 import { VAULT_TRANSFER_GOLDEN_PAYLOAD, VAULT_TRANSFER_VECTOR_MNEMONIC } from '../../vault/qr';
 import { createVaultTransferRuntime } from '../../vault/qr/runtime';
+import { vaultEndpointStateQueryKey } from '../../vault/ui/useVaultEndpointState';
 import { VaultTransferActions } from './VaultTransferActions';
+
+const ACCOUNT_ID = '018f6a3e-0000-7000-8000-00000000aaaa';
+
+function renderPanel(element: ReactElement): void {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={queryClient}>{element}</QueryClientProvider>);
+}
 
 const VAULT: VaultConfig = {
   id: '018f6a3e-1111-7000-8000-000000000001',
@@ -184,7 +194,7 @@ describe('VaultTransferActions production entry points', () => {
       bindLockSignal: false,
     });
 
-    render(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
+    renderPanel(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
     await user.click(screen.getByText('Transfer between devices'));
 
     expect(await screen.findByText(VAULT.name)).toBeInTheDocument();
@@ -224,7 +234,7 @@ describe('VaultTransferActions production entry points', () => {
       bindLockSignal: false,
     });
 
-    render(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
+    renderPanel(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
     await user.click(screen.getByText('Transfer between devices'));
 
     const password = await screen.findByLabelText('Device password');
@@ -243,7 +253,7 @@ describe('VaultTransferActions production entry points', () => {
       bindLockSignal: false,
     });
 
-    render(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
+    renderPanel(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
     await user.click(screen.getByText('Transfer between devices'));
     await screen.findByLabelText('Device password');
 
@@ -257,5 +267,70 @@ describe('VaultTransferActions production entry points', () => {
     // to a second dead end.
     expect(await screen.findByText(/phrase is not stored on this device/i)).toBeInTheDocument();
     expect(screen.queryByLabelText('Device password')).not.toBeInTheDocument();
+  });
+
+  /**
+   * #2013, the same-panel half.
+   *
+   * The [E10-A7] trace caught the receiver printing "The transferred vault was
+   * verified and saved on this device." while the manager row a few hundred
+   * pixels up, in the SAME panel, still read "Words needed on this device" —
+   * two contradictory statements on one screen, and the row only corrected
+   * itself after a navigation. Binding the keystore fixes the post-reload half
+   * and nothing else: `readVaultEndpointState` short-circuits on the memoized
+   * per-tab session resume, so no state surface re-reads the keystore until a
+   * lock, a sign-out or a full page load.
+   *
+   * So the receive has to say so, exactly as both sibling custody writers do
+   * (`VaultProvidePhraseDialog`, `VaultUnlockDialog`). The probe below hangs off
+   * the SHIPPED query key those surfaces share — a stale row is a stale entry
+   * under `vaultEndpointStateQueryKey`, whatever renders it.
+   */
+  it('tells the endpoint-state surfaces the moment the receive succeeds — no reload', async () => {
+    const user = userEvent.setup();
+    // Typed as the endpoint keystore the app declares, so the probe below asks
+    // it exactly what `readVaultEndpointState` asks the real singleton.
+    const keystore: EndpointVaultKeystore = new LiveTransferKeystore();
+    const runtime = createVaultTransferRuntime({
+      keystore,
+      requestJson: vi.fn(async () => ({ vaults: [VAULT] })),
+      bindLockSignal: false,
+    });
+
+    function EndpointStateProbe() {
+      const { data } = useQuery({
+        queryKey: vaultEndpointStateQueryKey(VAULT.id),
+        queryFn: () => keystore.stateFor(VAULT.id),
+        staleTime: 5_000,
+      });
+      return <p>{`row: ${data?.status ?? 'pending'}`}</p>;
+    }
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EndpointStateProbe />
+        <VaultTransferActions accountId={ACCOUNT_ID} onNotice={vi.fn()} runtime={runtime} />
+      </QueryClientProvider>,
+    );
+
+    // The panel is the app's §12 account edge for this runtime: the keystore it
+    // drives has to KNOW whose session the receiver is about to establish, or
+    // `rememberSession()` is a no-op and the device stays locked (#2013).
+    expect(keystore.boundAccountId()).toBe(ACCOUNT_ID);
+
+    expect(await screen.findByText('row: not-on-this-endpoint')).toBeInTheDocument();
+
+    await user.click(screen.getByText('Transfer between devices'));
+    await user.click(await screen.findByRole('button', { name: 'Receive transferred vault' }));
+    await user.type(screen.getByLabelText('Transfer code'), VAULT_TRANSFER_GOLDEN_PAYLOAD);
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), 'new endpoint password');
+    await user.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+
+    // Nothing remounted, nothing navigated, no second password: the row this
+    // panel contradicted has to agree with it before the user's next click.
+    expect(await screen.findByText('row: stored+wrapped')).toBeInTheDocument();
+    expect(screen.queryByText('row: not-on-this-endpoint')).not.toBeInTheDocument();
   });
 });

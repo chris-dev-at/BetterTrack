@@ -439,6 +439,7 @@ describe('usage capture never records a paranoid account', () => {
     const flush = h.ctx.usageAnalytics.flush();
     const raced = await Promise.race([
       flush.then(() => 'flushed' as const),
+      // eslint-disable-next-line tests/no-sleep -- no completion exists for "still blocked": the flush is parked on the privacy row lock THIS test holds, and nothing observable fires while it waits. The window can only ever fail toward `blocked` (the safe verdict), and the release below proves the flush then wrote nothing.
       new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 150)),
     ]);
     expect(raced, 'the flush wrote without taking the privacy lock').toBe('blocked');

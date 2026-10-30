@@ -6,12 +6,14 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
   type RealtimeChatMessage,
 } from '@bettertrack/contracts';
 
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import { waitForSocketAck, waitForSocketEvent } from '../../test/waitFor';
 
 /**
  * Realtime delivery of friend chat over the §4.5 gateway (V3-P8). Proves a sent
@@ -78,24 +80,39 @@ function connect(cookie: string): Promise<ClientSocket> {
   });
 }
 
-function waitForEvent<T>(socket: ClientSocket, event: string, ms = 3000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event}`)), ms);
-    socket.once(event, (payload: T) => {
-      clearTimeout(timer);
-      resolve(payload);
-    });
-  });
-}
+/** A room subject no test joins — the payload of the barrier round-trip below. */
+const BARRIER_UUID = '018f6f00-0000-7000-8000-0000000000ba';
 
-function expectSilence(socket: ClientSocket, event: string, ms = 300): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    socket.once(event, () => {
-      clearTimeout(timer);
-      reject(new Error(`unexpected ${event} received`));
-    });
-  });
+/**
+ * Arm a "this event must NOT arrive on `socket`" check; `await confirm()`
+ * settles it.
+ *
+ * `confirm()` emits a `room.leave` the gateway always acks and only inspects
+ * what landed once that ack is back. Socket.IO writes one connection's packets
+ * in order, so a leaked push is provably already delivered by then — an
+ * ordering proof where the old fixed 300 ms window was a guess that a loaded
+ * machine could falsify (#1622).
+ */
+function expectSilence(socket: ClientSocket, event: string): () => Promise<void> {
+  let leaked: unknown;
+  let sawEvent = false;
+  const record = (payload: unknown): void => {
+    sawEvent = true;
+    leaked = payload;
+  };
+  socket.on(event, record);
+  return async () => {
+    try {
+      await waitForSocketAck(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: BARRIER_UUID },
+      });
+    } finally {
+      socket.off(event, record);
+    }
+    if (sawEvent) {
+      throw new Error(`unexpected ${event} received: ${JSON.stringify(leaked)}`);
+    }
+  };
 }
 
 /** Seed two users and make them friends over HTTP; return their agents + ids. */
@@ -133,7 +150,7 @@ describe('realtime chat delivery', () => {
     const bobSocket = await connect(bob.cookie);
     const aliceSocket = await connect(alice.cookie);
 
-    const received = waitForEvent<RealtimeChatMessage>(
+    const received = waitForSocketEvent<RealtimeChatMessage>(
       bobSocket,
       REALTIME_SERVER_EVENTS.chatMessage,
     );
@@ -153,7 +170,7 @@ describe('realtime chat delivery', () => {
     // The push carries NO body/chip — it's an invalidation signal only.
     expect((payload as Record<string, unknown>).body).toBeUndefined();
 
-    await senderSilent;
+    await senderSilent();
   });
 
   it('with the gateway absent, chat stays fully functional over HTTP polling', async () => {

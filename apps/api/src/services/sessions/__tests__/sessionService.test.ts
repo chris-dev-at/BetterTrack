@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { sha256Base64Url } from '../../crypto/tokens';
 import { createSessionService, isPersistent } from '../sessionService';
@@ -77,12 +77,21 @@ describe('sessionService', () => {
   });
 
   it('lets a session expire after the window with no login/renew', async () => {
-    const sessions = createSessionService(redis, 1);
-    const id = await sessions.create('user-1', 0);
+    // `ioredis-mock` expires keys against `Date.now()`, so the fake clock owns
+    // the TTL: the window passes deterministically and for free, where the old
+    // real 1.2 s sleep was both the slowest wait in the API suite and a bet on
+    // the machine being idle enough to honour it (#1622).
+    vi.useFakeTimers();
+    try {
+      const sessions = createSessionService(redis, 1);
+      const id = await sessions.create('user-1', 0);
 
-    expect(await sessions.get(id)).not.toBeNull();
-    await new Promise((r) => setTimeout(r, 1200));
-    expect(await sessions.get(id)).toBeNull();
+      expect(await sessions.get(id)).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(await sessions.get(id)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('destroyAllForUser kills every live session for the user', async () => {

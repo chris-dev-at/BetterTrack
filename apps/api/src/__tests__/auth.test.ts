@@ -698,6 +698,7 @@ describe('self-service password-reset concurrency', () => {
     const first = await Promise.race([
       knownRequest.then(() => 'response' as const),
       new Promise<'timeout'>((resolve) => {
+        // eslint-disable-next-line tests/no-sleep -- deadline, not a delay: this arm must LOSE the race, and `expect(first).toBe('response')` below fails if the timer wins. There is no completion to await — the assertion is that the response beats a bound.
         timeout = setTimeout(() => resolve('timeout'), PASSWORD_RESET_RESPONSE_FLOOR_MS + 250);
       }),
     ]);
