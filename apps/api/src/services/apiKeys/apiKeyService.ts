@@ -70,6 +70,19 @@ export interface ApiKeyServiceDeps {
   defaultRateLimit: { limit: number; windowSec: number };
 }
 
+/**
+ * The credential event behind a bulk key revocation, stamped on every
+ * `api_key.revoked` row it writes. The same `reason`/`source` vocabulary as the
+ * OAuth grant rows of a credential event, so one audit filter finds both.
+ */
+export interface ApiKeyRevocationEvent {
+  reason: 'password_reset';
+  source: 'admin';
+  /** The administrator who performed the reset. */
+  actorId: string;
+  ip?: string | null;
+}
+
 export interface ApiKeyService {
   create(input: {
     userId: string;
@@ -79,8 +92,13 @@ export interface ApiKeyService {
   }): Promise<CreateApiKeyResponse>;
   list(userId: string): Promise<ApiKeySummary[]>;
   revoke(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
-  /** Administrative suspension: revoke all of one user's personal keys. */
-  revokeAllForUser(userId: string): Promise<void>;
+  /**
+   * Revoke all of one user's personal keys: administrative suspension (no
+   * `event`; the suspension's own `user.disabled` row records it) and the
+   * administrator password reset (`event` given: one `api_key.revoked` row per
+   * key revoked by this call).
+   */
+  revokeAllForUser(userId: string, event?: ApiKeyRevocationEvent): Promise<void>;
   /** Bearer-auth lookup: resolve an active key by its plaintext token, else null. */
   authenticate(token: string): Promise<ApiKeyPrincipal | null>;
   /**
@@ -366,14 +384,27 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
-    async revokeAllForUser(userId) {
-      await repo.revokeAllForUser(userId);
+    async revokeAllForUser(userId, event) {
+      const revokedIds = await repo.revokeAllForUser(userId);
       await publishInvalidation({
         userId,
         kind: 'personal',
         credentialId: null,
         exceptCredentialId: null,
       });
+      if (!event) return;
+      // Idempotent by construction: the repository returns only keys revoked
+      // by THIS call, so a retried reset writes no second row for a key.
+      for (const keyId of revokedIds) {
+        await audit.record({
+          actorId: event.actorId,
+          action: AuditAction.ApiKeyRevoked,
+          targetType: 'api_key',
+          targetId: keyId,
+          ip: event.ip ?? null,
+          meta: { reason: event.reason, source: event.source },
+        });
+      }
     },
 
     async authenticate(token) {

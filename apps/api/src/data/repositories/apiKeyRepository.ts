@@ -165,12 +165,19 @@ export function createApiKeyRepository(db: Database) {
       return row;
     },
 
-    /** Revoke every still-active personal key for an administratively suspended user. */
-    async revokeAllForUser(userId: string): Promise<void> {
-      await db
+    /**
+     * Revoke every still-active personal key of one user (administrative
+     * suspension, administrator password reset). Returns the ids it revoked in
+     * THIS call — an already-revoked key is never returned again, so a retry
+     * audits nothing twice.
+     */
+    async revokeAllForUser(userId: string): Promise<string[]> {
+      const rows = await db
         .update(apiKeys)
         .set({ revokedAt: new Date() })
-        .where(and(eq(apiKeys.userId, userId), isNull(apiKeys.revokedAt)));
+        .where(and(eq(apiKeys.userId, userId), isNull(apiKeys.revokedAt)))
+        .returning({ id: apiKeys.id });
+      return rows.map((row) => row.id);
     },
 
     /** Stamp `lastUsedAt` (throttled by the service, not written per request). */

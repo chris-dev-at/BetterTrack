@@ -1006,6 +1006,18 @@ export function createAdminService(deps: AdminServiceDeps) {
       const target = await loadUser(id);
       const tempPassword = generateTempPassword();
       const passwordHash = await passwordHasher.hash(tempPassword);
+      // A reset also ends every personal API key of the account (§6.1): no key
+      // keeps acting for the account across the credential change, exactly as
+      // a suspension ends them. It runs BEFORE the password write so any later
+      // failure only over-revokes, and the admin's retry (a reset is
+      // idempotent) finishes the rest. One `api_key.revoked` row per key, the
+      // admin as actor; failures propagate rather than answer 200.
+      await apiKeys.revokeAllForUser(target.id, {
+        reason: 'password_reset',
+        source: 'admin',
+        actorId: actor.id,
+        ip: actor.ip,
+      });
       const securityGeneration = await userRepo.updatePassword(target.id, passwordHash, true);
       if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
       await destroySessionsBestEffort(target.id);
