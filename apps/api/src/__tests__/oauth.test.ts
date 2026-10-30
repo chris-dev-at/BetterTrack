@@ -1939,6 +1939,22 @@ describe('refresh-token rotation', () => {
     });
   }
 
+  // Review round 2, N3: a pair sealed by the pre-0121 code whose envelope that
+  // code already dropped (60 s retention) is not provably unused either.
+  it('first-party: a pair whose envelope the pre-0121 code already dropped is reuse past the strict window', async () => {
+    const { clientId, first } = await issueFirstPartyPair();
+    await rotatePublic(clientId, first.refresh_token);
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ successorEnvelope: null })
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(first.refresh_token)));
+
+    advance(10 * 60);
+    expectInvalidGrant(await refreshPublic(clientId, first.refresh_token));
+    await expectFamilyTheft(first.refresh_token, clientId, 'legacy_envelope');
+    expect(await graceAudits()).toHaveLength(0);
+  });
+
   it('first-party refresh tokens slide to a fresh 90 days on every rotation; third-party ones to 30 days', async () => {
     const day = 24 * 3600;
     const fp = await issueFirstPartyPair();

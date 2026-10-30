@@ -61,6 +61,12 @@ declare global {
          */
         familyId?: string | null;
         /**
+         * `kind: 'oauth'` only: the presenting access-token row — how
+         * sign-out-everywhere tells the calling install's chain apart from the
+         * grant's other installs (§16 2026-10-29). Absent for keys.
+         */
+        accessTokenId?: string;
+        /**
          * Exact durable account-security generation read while authenticating
          * this bearer. Security mutations use it as their compare-and-swap
          * fence; it is internal request state and never enters a response.

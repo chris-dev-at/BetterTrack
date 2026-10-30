@@ -174,17 +174,20 @@ export interface OAuthService {
    * the audit actor) and `source: 'admin'` (recorded in the meta).
    *
    * `siblingFamilies` — sign-out-everywhere from an official app's bearer: the
-   * kept grant is shared by every install of that app, so every OTHER token
-   * family on it is revoked as well (reason `sign_out_everywhere`, each
-   * invalidated and audited `oauth.token_family_revoked`), keeping only
-   * `keepFamilyId` — the calling install. Not counted in the resolved number.
+   * kept grant is shared by every install of that app, so every OTHER install
+   * on it ends as well — including one sharing the caller's 0119-backfilled
+   * family and any no-family chain; the caller's own chain is moved into a
+   * fresh family first when needed (reason `sign_out_everywhere`, each revoked
+   * family invalidated and audited `oauth.token_family_revoked`). Only the
+   * install presenting `callerAccessTokenId` stays signed in. Not counted in
+   * the resolved number.
    */
   revokeGrantsForCredentialEvent(input: {
     userId: string;
     reason: OAuthCredentialRevocationReason;
     firstPartyOnly: boolean;
     exceptGrantId: string | null;
-    siblingFamilies?: { keepFamilyId: string | null };
+    siblingFamilies?: { callerAccessTokenId: string };
     ip?: string | null;
     actorId?: string;
     source?: 'admin';
@@ -252,7 +255,8 @@ export type OAuthCredentialRevocationReason =
  *                              (60 s third-party; 24 h first-party);
  *  - `legacy_envelope`       — first-party, past the strict window, but the pair
  *                              was sealed before first-use tracking existed
- *                              (envelope v1), so "never used" cannot be proven;
+ *                              (envelope v1, or already dropped by that code
+ *                              after its 60 s), so "never used" cannot be proven;
  *  - `successor_rotated`     — its successor has itself been rotated: the token
  *                              is a grandparent (or older) in the chain;
  *  - `no_successor`          — consumed with no successor recorded (rotated
@@ -533,8 +537,9 @@ function emptyEffectiveScope(): ApiError {
  * Credential events (§16 2026-10-29). A password change or reset ends EVERY
  * grant of the user (and so every family on them). "Sign out everywhere" ends
  * every first-party grant except the caller's own; called from an official
- * app's bearer it also revokes every OTHER family on that caller grant (reason
- * `sign_out_everywhere`), so exactly the calling install stays signed in.
+ * app's bearer it also ends every OTHER install on that caller grant (reason
+ * `sign_out_everywhere`) — moving the caller's chain into a fresh family first
+ * when it shares one — so exactly the calling install stays signed in.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   const { repo, audit, redis, userRepo, events, logger, recordEncryption } = deps;
@@ -923,7 +928,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return { kind: 'reuse', evidence: 'no_successor' };
     }
     if (successor.consumedAt) return { kind: 'reuse', evidence: 'successor_rotated' };
-    if (!token.successorEnvelope) return { kind: 'unavailable' };
+    // Past the strict window only a pair the pre-0121 code sealed (and dropped
+    // after 60 s) can lack its envelope here: "never used" is unprovable — reuse.
+    if (!token.successorEnvelope) {
+      return elapsedMs > REFRESH_GRACE_MS
+        ? { kind: 'reuse', evidence: 'legacy_envelope' }
+        : { kind: 'unavailable' };
+    }
 
     const sealed = openRefreshGrace(token.successorEnvelope);
     if (!sealed) {
@@ -1367,23 +1378,49 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       // invalidated and audited exactly once however often the event replays.
       // Failures propagate: the caller's credential change must not answer 200
       // while a grant or install it promised to end is still live.
-      const { grants: revoked, families } = await repo.revokeGrantsForCredentialEvent({
+      const {
+        grants: revoked,
+        families,
+        keptClientId,
+        keptFamilyId,
+        orphansSwept,
+      } = await repo.revokeGrantsForCredentialEvent({
         userId,
         firstPartyOnly,
         exceptGrantId,
         siblingFamilies,
         revokedAt: now(),
       });
+      if (siblingFamilies && keptClientId && keptFamilyId === null) {
+        // Fail-safe branch of the repository: the caller's chain could not be
+        // told apart from its siblings, so it was signed out with them.
+        logger?.warn(
+          { userId, grantId: exceptGrantId },
+          'oauth sign-out-everywhere could not isolate the calling install; it was signed out too',
+        );
+      }
       // The caller grant's other installs: per family, its sockets drop and an
       // `oauth.token_family_revoked` row is written (log-and-continue, like the
       // grant rows below — the revoke is already committed).
+      if (exceptGrantId && orphansSwept) {
+        // Sockets of no-family chains carry no family, so a family-narrowed
+        // event never matches them: drop every socket of the kept grant now
+        // (the caller's simply reconnects with its live token) instead of
+        // waiting for the 30 s revalidation sweep.
+        await publishInvalidation({
+          userId,
+          kind: 'oauth',
+          credentialId: exceptGrantId,
+          exceptCredentialId: null,
+        });
+      }
       if (exceptGrantId && families.length > 0) {
         await announceFamilyRevocations({
           userId,
           grantId: exceptGrantId,
           familyIds: families.map((family) => family.id),
           reason: 'sign_out_everywhere',
-          clientId: null,
+          clientId: keptClientId,
           ip: ip ?? null,
         });
       }

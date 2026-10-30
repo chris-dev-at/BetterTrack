@@ -4,6 +4,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -295,13 +296,244 @@ export interface OAuthCredentialEventRevocation {
 
 /**
  * Everything one credential event revoked, in one transaction: whole grants,
- * plus — sign-out-everywhere from an official app's bearer only — the OTHER
- * token families on the caller's own (kept) grant.
+ * plus — sign-out-everywhere from an official app's bearer only — every OTHER
+ * install on the caller's own (kept) grant.
  */
 export interface OAuthCredentialEventResult {
   grants: OAuthCredentialEventRevocation[];
-  /** Sibling families revoked on `exceptGrantId` (reason `sign_out_everywhere`). */
+  /** Families revoked on `exceptGrantId` (reason `sign_out_everywhere`). */
   families: OAuthTokenFamilyRow[];
+  /** The kept grant's public `btc_…` client id (audit meta); null when nothing was kept. */
+  keptClientId: string | null;
+  /**
+   * The family the calling install holds afterwards — its own, or the fresh
+   * one its chain was moved into. Null when the caller's chain could not be
+   * isolated, in which case the caller was signed out with the rest.
+   */
+  keptFamilyId: string | null;
+  /**
+   * No-family chains were swept and revoked. Their sockets carry no family,
+   * so only a grant-wide realtime invalidation reaches them.
+   */
+  orphansSwept: boolean;
+}
+
+/** Upper bound on one chain walk (successor links never cycle; this is belt and braces). */
+const CHAIN_WALK_MAX_DEPTH = 100_000;
+
+/** `db.execute` hands back `{ rows }` on node-postgres/PGlite; narrow it once here. */
+function rowsOf<T>(result: unknown): T[] {
+  return (result as { rows?: T[] }).rows ?? (result as T[]);
+}
+
+/**
+ * Sign-out-everywhere from an official app's bearer, applied to the caller's
+ * OWN grant (§16 2026-10-29): every install on that grant except the calling
+ * one ends, and the calling one stays signed in.
+ *
+ * An install is a refresh chain, and a family is not always one install:
+ *  - 0119 backfilled ONE legacy family per pre-existing grant, so every
+ *    pre-PR-B install of the app shares it (possibly with the caller);
+ *  - the pre-family code minted `family_id IS NULL` rows during PR-B's
+ *    rollout, and rotation inherits that, so those chains have no family row.
+ * So when the caller's family holds another live chain, or the caller itself
+ * is a NULL-family chain, the caller's chain is MOVED into a fresh family
+ * first: its refresh rows (walked both ways along `successor_id`, so its 60 s
+ * grace replay and its later reuse detection travel with it) and the access
+ * rows minted with them (same grant, family and `created_at` — one
+ * transaction inserts each pair; compared in SQL so no precision is lost).
+ * Every remaining NULL-family row of the grant is put into a sweep family.
+ * Then every family of the grant except the caller's is revoked, reason
+ * `sign_out_everywhere`, envelopes dropped ({@link revokeFamilies}).
+ *
+ * Fail-safe: when the presenting access row does not pair with exactly one
+ * refresh row, the caller cannot be told apart from its siblings, so nothing
+ * is kept and the caller is signed out with them (`keptFamilyId: null`).
+ *
+ * Ownership is enforced here: the grant must belong to `userId`, be live, and
+ * (`clientFilter`) be a first-party client's. LOCK ORDER is the rotation's:
+ * the grant row (`FOR UPDATE`), then every live family of it in id order,
+ * then token rows — so a concurrent rotation, logout or code exchange on this
+ * grant waits instead of deadlocking.
+ *
+ * IDEMPOTENCY KEY: the family id under `revoked_at IS NULL`; a replay finds
+ * the caller alone in its family and revokes nothing.
+ */
+async function endSiblingInstalls(
+  executor: Database,
+  input: {
+    userId: string;
+    grantId: string;
+    callerAccessTokenId: string;
+    clientFilter: SQL | undefined;
+    at: Date;
+  },
+): Promise<Omit<OAuthCredentialEventResult, 'grants'>> {
+  const [kept] = await executor
+    .select({ id: oauthGrants.id, clientId: oauthClients.clientId })
+    .from(oauthGrants)
+    .innerJoin(oauthClients, eq(oauthClients.id, oauthGrants.clientId))
+    .where(
+      and(
+        eq(oauthGrants.id, input.grantId),
+        eq(oauthGrants.userId, input.userId),
+        isNull(oauthGrants.revokedAt),
+        input.clientFilter,
+      ),
+    )
+    .limit(1)
+    .for('update', { of: oauthGrants });
+  if (!kept) return { families: [], keptClientId: null, keptFamilyId: null, orphansSwept: false };
+
+  await executor
+    .select({ id: oauthTokenFamilies.id })
+    .from(oauthTokenFamilies)
+    .where(and(eq(oauthTokenFamilies.grantId, kept.id), isNull(oauthTokenFamilies.revokedAt)))
+    .orderBy(asc(oauthTokenFamilies.id))
+    .for('update');
+
+  const [caller] = await executor
+    .select({ id: oauthAccessTokens.id, familyId: oauthAccessTokens.familyId })
+    .from(oauthAccessTokens)
+    .where(
+      and(
+        eq(oauthAccessTokens.id, input.callerAccessTokenId),
+        eq(oauthAccessTokens.grantId, kept.id),
+      ),
+    )
+    .limit(1);
+
+  // The caller's refresh chain, seeded by the refresh row minted with its access row.
+  let chain: string[] = [];
+  if (caller) {
+    const seed = rowsOf<{ id: string }>(
+      await executor.execute(sql`
+        SELECT r."id" FROM "oauth_refresh_tokens" r, "oauth_access_tokens" a
+        WHERE a."id" = ${caller.id}
+          AND r."grant_id" = a."grant_id"
+          AND r."family_id" IS NOT DISTINCT FROM a."family_id"
+          AND r."created_at" = a."created_at"
+        LIMIT 2`),
+    );
+    if (seed.length === 1) {
+      const seedId = seed[0]!.id;
+      const family = caller.familyId;
+      chain = rowsOf<{ id: string }>(
+        await executor.execute(sql`
+          WITH RECURSIVE
+            fwd ("id", "successor_id", "depth") AS (
+              SELECT r."id", r."successor_id", 0
+              FROM "oauth_refresh_tokens" r WHERE r."id" = ${seedId}
+              UNION ALL
+              SELECT r."id", r."successor_id", f."depth" + 1
+              FROM "oauth_refresh_tokens" r JOIN fwd f ON r."id" = f."successor_id"
+              WHERE r."grant_id" = ${kept.id}
+                AND r."family_id" IS NOT DISTINCT FROM ${family}::uuid
+                AND f."depth" < ${CHAIN_WALK_MAX_DEPTH}
+            ),
+            bwd ("id", "depth") AS (
+              SELECT ${seedId}::uuid, 0
+              UNION ALL
+              SELECT r."id", b."depth" + 1
+              FROM "oauth_refresh_tokens" r JOIN bwd b ON r."successor_id" = b."id"
+              WHERE r."grant_id" = ${kept.id}
+                AND r."family_id" IS NOT DISTINCT FROM ${family}::uuid
+                AND b."depth" < ${CHAIN_WALK_MAX_DEPTH}
+            )
+          SELECT "id" FROM fwd UNION SELECT "id" FROM bwd`),
+      ).map((row) => row.id);
+    }
+  }
+
+  // Keep the caller's own family only while nobody else's live chain is in it.
+  // A NULL-family caller always moves: the grant's NULL rows are swept below.
+  let keep: string | null = null;
+  if (caller?.familyId && chain.length > 0) {
+    const [other] = await executor
+      .select({ id: oauthRefreshTokens.id })
+      .from(oauthRefreshTokens)
+      .where(
+        and(
+          eq(oauthRefreshTokens.familyId, caller.familyId),
+          isNull(oauthRefreshTokens.consumedAt),
+          gt(oauthRefreshTokens.expiresAt, input.at),
+          sql`${oauthRefreshTokens.id} NOT IN ${chain}`,
+        ),
+      )
+      .limit(1);
+    if (!other) keep = caller.familyId;
+  }
+  if (keep === null && caller && chain.length > 0) {
+    // Move ONLY the caller's chain into a fresh family of its own.
+    const [fresh] = await executor
+      .insert(oauthTokenFamilies)
+      .values({ grantId: kept.id, instanceId: null, lastUsedAt: input.at })
+      .returning();
+    if (!fresh) throw new Error('Failed to insert OAuth token family');
+    await executor
+      .update(oauthAccessTokens)
+      .set({ familyId: fresh.id })
+      .where(
+        and(
+          eq(oauthAccessTokens.grantId, kept.id),
+          caller.familyId
+            ? eq(oauthAccessTokens.familyId, caller.familyId)
+            : isNull(oauthAccessTokens.familyId),
+          inArray(
+            oauthAccessTokens.createdAt,
+            executor
+              .select({ createdAt: oauthRefreshTokens.createdAt })
+              .from(oauthRefreshTokens)
+              .where(inArray(oauthRefreshTokens.id, chain)),
+          ),
+        ),
+      );
+    await executor
+      .update(oauthRefreshTokens)
+      .set({ familyId: fresh.id })
+      .where(inArray(oauthRefreshTokens.id, chain));
+    keep = fresh.id;
+  }
+
+  // Every chain still without a family (minted by the pre-family code) goes
+  // into one sweep family, so it is revoked — and audited — like the rest.
+  const [orphanRefresh] = await executor
+    .select({ id: oauthRefreshTokens.id })
+    .from(oauthRefreshTokens)
+    .where(and(eq(oauthRefreshTokens.grantId, kept.id), isNull(oauthRefreshTokens.familyId)))
+    .limit(1);
+  const [orphanAccess] = await executor
+    .select({ id: oauthAccessTokens.id })
+    .from(oauthAccessTokens)
+    .where(and(eq(oauthAccessTokens.grantId, kept.id), isNull(oauthAccessTokens.familyId)))
+    .limit(1);
+  const orphansSwept = Boolean(orphanRefresh || orphanAccess);
+  if (orphansSwept) {
+    const [sweep] = await executor
+      .insert(oauthTokenFamilies)
+      .values({ grantId: kept.id, instanceId: null })
+      .returning();
+    if (!sweep) throw new Error('Failed to insert OAuth token family');
+    await executor
+      .update(oauthRefreshTokens)
+      .set({ familyId: sweep.id })
+      .where(and(eq(oauthRefreshTokens.grantId, kept.id), isNull(oauthRefreshTokens.familyId)));
+    await executor
+      .update(oauthAccessTokens)
+      .set({ familyId: sweep.id })
+      .where(and(eq(oauthAccessTokens.grantId, kept.id), isNull(oauthAccessTokens.familyId)));
+  }
+
+  const families = await revokeFamilies(
+    executor,
+    and(
+      eq(oauthTokenFamilies.grantId, kept.id),
+      keep ? ne(oauthTokenFamilies.id, keep) : undefined,
+    )!,
+    'sign_out_everywhere',
+    input.at,
+  );
+  return { families, keptClientId: kept.clientId, keptFamilyId: keep, orphansSwept };
 }
 
 /** The successor side of the refresh-token self-join. */
@@ -942,16 +1174,14 @@ export function createOAuthRepository(db: Database) {
      *
      * `siblingFamilies` (sign-out-everywhere from an official app's bearer):
      * the kept grant serves EVERY install of that app, so keeping it whole
-     * would keep every other phone signed in. With it, every live token family
-     * on `exceptGrantId` EXCEPT `keepFamilyId` (the caller's own) is revoked
-     * too, reason `sign_out_everywhere`, envelopes dropped with it
-     * ({@link revokeFamilies}). A legacy pre-family caller (`keepFamilyId:
-     * null`) keeps its chain — which is the grant itself — and every family on
-     * the grant goes. Ownership is enforced HERE: the kept grant must belong to
-     * `userId`, be live, and (`firstPartyOnly`) be a first-party client's.
-     * Families are claimed after the code consumption, so a code exchange that
-     * was in flight has committed its new family by then and it is revoked too;
-     * lock order stays codes → grants → families → token rows.
+     * would keep every other phone signed in. With it, every install on
+     * `exceptGrantId` except the one presenting `callerAccessTokenId` ends too
+     * ({@link endSiblingInstalls}: shared legacy families and NULL-family
+     * chains included). Ownership is enforced there: the kept grant must
+     * belong to `userId`, be live, and (`firstPartyOnly`) be a first-party
+     * client's. It runs after the code consumption, so a code exchange that
+     * was in flight has committed its new family by then and it is revoked
+     * too; lock order stays codes → grants → families → token rows.
      *
      * Ordering is the race guard, and it is deliberately lock-free. Codes are
      * consumed FIRST: an exchange in flight holds its code row `FOR UPDATE`, so
@@ -970,7 +1200,7 @@ export function createOAuthRepository(db: Database) {
       userId: string;
       firstPartyOnly: boolean;
       exceptGrantId: string | null;
-      siblingFamilies?: { keepFamilyId: string | null };
+      siblingFamilies?: { callerAccessTokenId: string };
       revokedAt: Date;
     }): Promise<OAuthCredentialEventResult> {
       return db.transaction(async (tx) => {
@@ -1007,34 +1237,22 @@ export function createOAuthRepository(db: Database) {
           .returning({ id: oauthGrants.id, clientRowId: oauthGrants.clientId });
 
         // The caller grant's OTHER installs (sign-out-everywhere from an app).
-        // IDEMPOTENCY KEY: the family id under `revoked_at IS NULL` — a replay
-        // claims nothing, so each family is announced and audited once.
-        let families: OAuthTokenFamilyRow[] = [];
+        let siblings: Omit<OAuthCredentialEventResult, 'grants'> = {
+          families: [],
+          keptClientId: null,
+          keptFamilyId: null,
+          orphansSwept: false,
+        };
         if (input.siblingFamilies && input.exceptGrantId) {
-          const keptGrant = executor
-            .select({ id: oauthGrants.id })
-            .from(oauthGrants)
-            .where(
-              and(
-                eq(oauthGrants.id, input.exceptGrantId),
-                eq(oauthGrants.userId, input.userId),
-                isNull(oauthGrants.revokedAt),
-                clientFilter ? inArray(oauthGrants.clientId, clientFilter) : undefined,
-              ),
-            );
-          const keep = input.siblingFamilies.keepFamilyId;
-          families = await revokeFamilies(
-            executor,
-            and(
-              eq(oauthTokenFamilies.grantId, input.exceptGrantId),
-              inArray(oauthTokenFamilies.grantId, keptGrant),
-              keep ? ne(oauthTokenFamilies.id, keep) : undefined,
-            )!,
-            'sign_out_everywhere',
-            input.revokedAt,
-          );
+          siblings = await endSiblingInstalls(executor, {
+            userId: input.userId,
+            grantId: input.exceptGrantId,
+            callerAccessTokenId: input.siblingFamilies.callerAccessTokenId,
+            clientFilter: clientFilter ? inArray(oauthGrants.clientId, clientFilter) : undefined,
+            at: input.revokedAt,
+          });
         }
-        if (revoked.length === 0) return { grants: [], families };
+        if (revoked.length === 0) return { grants: [], ...siblings };
         // Their sealed pairs go in the same transaction (review S3).
         await clearGrantEnvelopes(
           executor,
@@ -1057,7 +1275,7 @@ export function createOAuthRepository(db: Database) {
             clientId: publicId.get(grant.clientRowId) ?? grant.clientRowId,
           }))
           .sort((a, b) => a.grantId.localeCompare(b.grantId));
-        return { grants, families };
+        return { grants, ...siblings };
       });
     },
 

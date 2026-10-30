@@ -111,7 +111,7 @@ async function issuePublicClientToken(input: {
   clientId: string;
   redirectUri: string;
   scopes: readonly ApiKeyScope[];
-}): Promise<{ token: string; grantId: string; firstParty: boolean }> {
+}): Promise<{ token: string; refreshToken: string; grantId: string; firstParty: boolean }> {
   const { verifier, challenge } = pkce();
   const authorize = {
     client_id: input.clientId,
@@ -136,13 +136,15 @@ async function issuePublicClientToken(input: {
     code_verifier: verifier,
   });
   expect(exchanged.status, JSON.stringify(exchanged.body)).toBe(200);
-  const token = oauthTokenResponseSchema.parse(exchanged.body).access_token;
+  const pair = oauthTokenResponseSchema.parse(exchanged.body);
+  const token = pair.access_token;
 
   const grants = await createOAuthRepository(harness.db).listGrantsForUser(input.userId);
   const row = grants.find(({ client }) => client.clientId === input.clientId);
   expect(row).toBeDefined();
   return {
     token,
+    refreshToken: pair.refresh_token,
     grantId: row!.grant.id,
     firstParty: row!.client.isFirstParty,
   };
@@ -153,6 +155,7 @@ async function mintFirstPartyToken(
   existing?: { user: TestUser; agent: Agent },
 ): Promise<{
   token: string;
+  refreshToken: string;
   grantId: string;
   user: TestUser;
   agent: Agent;
@@ -167,7 +170,13 @@ async function mintFirstPartyToken(
     scopes,
   });
   expect(issued.firstParty).toBe(true);
-  return { token: issued.token, grantId: issued.grantId, user, agent };
+  return {
+    token: issued.token,
+    refreshToken: issued.refreshToken,
+    grantId: issued.grantId,
+    user,
+    agent,
+  };
 }
 
 async function mintThirdPartyToken(
@@ -829,6 +838,64 @@ async function familyIdOf(token: string): Promise<string | null> {
   return row!.familyId;
 }
 
+/** The access-token row id of a bearer token. */
+async function accessIdOf(token: string): Promise<string> {
+  const [row] = await harness.db
+    .select({ id: schema.oauthAccessTokens.id })
+    .from(schema.oauthAccessTokens)
+    .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(token)));
+  return row!.id;
+}
+
+/** A refresh of the official mobile app (public client: `client_id` alone). */
+function refreshMobile(refreshToken: string) {
+  return request(harness.app).post('/api/v1/oauth/token').send({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: MOBILE.clientId,
+  });
+}
+
+/**
+ * Put `other`'s rows into `into`'s family and drop `other`'s family row: the
+ * exact state 0119's backfill left behind for two pre-PR-B installs of one
+ * grant (one legacy family per grant, every token attached to it).
+ */
+async function shareFamily(into: string, other: string): Promise<string> {
+  const shared = (await familyIdOf(into))!;
+  const own = (await familyIdOf(other))!;
+  await harness.db
+    .update(schema.oauthAccessTokens)
+    .set({ familyId: shared })
+    .where(eq(schema.oauthAccessTokens.familyId, own));
+  await harness.db
+    .update(schema.oauthRefreshTokens)
+    .set({ familyId: shared })
+    .where(eq(schema.oauthRefreshTokens.familyId, own));
+  await harness.db.delete(schema.oauthTokenFamilies).where(eq(schema.oauthTokenFamilies.id, own));
+  expect(await familyIdOf(other)).toBe(shared);
+  return shared;
+}
+
+/** Strip a token's chain back to `family_id IS NULL` (what the pre-family code minted). */
+async function stripFamily(token: string): Promise<void> {
+  const own = (await familyIdOf(token))!;
+  await harness.db
+    .update(schema.oauthAccessTokens)
+    .set({ familyId: null })
+    .where(eq(schema.oauthAccessTokens.familyId, own));
+  await harness.db
+    .update(schema.oauthRefreshTokens)
+    .set({ familyId: null })
+    .where(eq(schema.oauthRefreshTokens.familyId, own));
+  await harness.db.delete(schema.oauthTokenFamilies).where(eq(schema.oauthTokenFamilies.id, own));
+  expect(await familyIdOf(token)).toBeNull();
+}
+
+async function meStatus(token: string): Promise<number> {
+  return (await request(harness.app).get('/api/v1/auth/me').set(bearer(token))).status;
+}
+
 /** Every token family on a grant, keyed by id. */
 async function familiesOf(grantId: string) {
   const rows = await harness.db
@@ -1084,6 +1151,8 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
       ).toBe(401);
     }
     expect(await grantRevokedAt(phone.grantId)).toBeNull();
+    // A family of its own is kept as it is — nothing is moved.
+    expect(await familyIdOf(phone.token)).toBe(phoneFamily);
     const families = await familiesOf(phone.grantId);
     expect(families.get(phoneFamily)!.revokedAt).toBeNull();
     for (const id of siblings) {
@@ -1100,7 +1169,11 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
     // Each sibling: its sockets dropped and ONE audit row; the grant has none.
     expect(invalidatedFamilies(publish)).toEqual(siblings);
     expect(await familyRevocations(phone.user.id)).toEqual(
-      siblings.map((familyId) => ({ familyId, reason: 'sign_out_everywhere' })),
+      siblings.map((familyId) => ({
+        clientId: MOBILE.clientId,
+        familyId,
+        reason: 'sign_out_everywhere',
+      })),
     );
     expect(await grantRevocations(phone.user.id)).toEqual([]);
 
@@ -1113,7 +1186,7 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
     await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
   });
 
-  it('sign out everywhere FROM a legacy pre-family token keeps its chain (the grant) and ends every family on it', async () => {
+  it('sign out everywhere FROM a legacy pre-family token keeps its chain (moved into a family of its own) and ends every family on the grant', async () => {
     const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
     const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
     const phoneFamily = (await familyIdOf(phone.token))!;
@@ -1141,6 +1214,138 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
     expect((await familiesOf(phone.grantId)).get(tabletFamily)!.revokedReason).toBe(
       'sign_out_everywhere',
     );
+    // The legacy chain left the NULL family for a live family of its own.
+    const moved = await familyIdOf(phone.token);
+    expect(moved).toEqual(expect.any(String));
+    expect((await familiesOf(phone.grantId)).get(moved!)!.revokedAt).toBeNull();
+    expect((await refreshMobile(phone.refreshToken)).status).toBe(200);
+  });
+
+  // Review round 2, B1: a FAMILY is not always one install. 0119 backfilled one
+  // legacy family per pre-existing grant, so every pre-PR-B install of the app
+  // shares it — and with the 90-day sliding refresh they rarely sign in again.
+  it('sign out everywhere FROM an app signs out an install SHARING the caller’s 0119-backfilled family', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const shared = await shareFamily(phone.token, tablet.token);
+    expect(await meStatus(tablet.token)).toBe(200);
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    // The sibling: its next call and its next refresh are refused.
+    expect(await meStatus(tablet.token)).toBe(401);
+    const tabletRefresh = await refreshMobile(tablet.refreshToken);
+    expect(tabletRefresh.status).toBe(400);
+    expect(tabletRefresh.body.error.code).toBe('INVALID_GRANT');
+    // The caller: moved into a fresh family, still calling and refreshing.
+    const moved = (await familyIdOf(phone.token))!;
+    expect(moved).not.toBe(shared);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    const next = await refreshMobile(phone.refreshToken);
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(await familyIdOf(oauthTokenResponseSchema.parse(next.body).access_token)).toBe(moved);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+    const families = await familiesOf(phone.grantId);
+    expect(families.get(shared)!.revokedReason).toBe('sign_out_everywhere');
+    expect(families.get(moved)!.revokedAt).toBeNull();
+    expect(await familyRevocations(phone.user.id)).toEqual([
+      { clientId: MOBILE.clientId, familyId: shared, reason: 'sign_out_everywhere' },
+    ]);
+  });
+
+  // …and a chain the pre-family code minted during PR-B's rollout has no
+  // family row at all (rotation inherits `family_id IS NULL`).
+  it('sign out everywhere FROM an app signs out a NO-FAMILY chain on the same grant', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const phoneFamily = (await familyIdOf(phone.token))!;
+    await stripFamily(tablet.token);
+    expect(await meStatus(tablet.token)).toBe(200);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    expect(await meStatus(tablet.token)).toBe(401);
+    expect((await refreshMobile(tablet.refreshToken)).status).toBe(400);
+    // The caller's own family is untouched (it held no one else).
+    expect(await familyIdOf(phone.token)).toBe(phoneFamily);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    expect((await refreshMobile(phone.refreshToken)).status).toBe(200);
+    // The orphan chain was swept into one family, revoked and audited like the rest.
+    const swept = (await familyIdOf(tablet.token))!;
+    expect(swept).not.toBe(phoneFamily);
+    expect((await familiesOf(phone.grantId)).get(swept)!.revokedReason).toBe('sign_out_everywhere');
+    expect(await familyRevocations(phone.user.id)).toEqual([
+      { clientId: MOBILE.clientId, familyId: swept, reason: 'sign_out_everywhere' },
+    ]);
+    expect(invalidatedFamilies(publish)).toEqual([swept]);
+    // Its sockets carry no family: a grant-wide invalidation drops them at once.
+    const grantWide = publish.mock.calls
+      .map(([event]) => event as { type: string; credentialId?: string; familyId?: string })
+      .filter(
+        (event) =>
+          event.type === 'realtime.principal.invalidated' &&
+          event.credentialId === phone.grantId &&
+          !event.familyId,
+      );
+    expect(grantWide).toHaveLength(1);
+  });
+
+  it('the caller’s MOVED chain keeps its 60 s grace replay and its reuse detection', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const shared = await shareFamily(phone.token, tablet.token);
+    // The phone rotates once, then signs everyone else out with the NEW pair.
+    const rotated = await refreshMobile(phone.refreshToken);
+    expect(rotated.status).toBe(200);
+    const second = oauthTokenResponseSchema.parse(rotated.body);
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(second.access_token))
+      .expect(200);
+    const moved = (await familyIdOf(second.access_token))!;
+    expect(moved).not.toBe(shared);
+    expect(await meStatus(tablet.token)).toBe(401);
+
+    // A lost answer re-sent inside 60 s is still re-served the identical pair.
+    const replay = await refreshMobile(phone.refreshToken);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(oauthTokenResponseSchema.parse(replay.body).refresh_token).toBe(second.refresh_token);
+
+    // The moved chain rotates on; a GRANDPARENT replay is still theft — of the
+    // moved family, which ends with refresh_reuse.
+    const third = oauthTokenResponseSchema.parse((await refreshMobile(second.refresh_token)).body);
+    expect(await familyIdOf(third.access_token)).toBe(moved);
+    expect((await refreshMobile(phone.refreshToken)).status).toBe(400);
+    expect((await familiesOf(phone.grantId)).get(moved)!.revokedReason).toBe('refresh_reuse');
+    expect(await meStatus(third.access_token)).toBe(401);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+  });
+
+  it('fails safe: a caller whose chain cannot be isolated is signed out WITH its siblings', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    await shareFamily(phone.token, tablet.token);
+    // Break the pairing between the phone's access row and its refresh row.
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ createdAt: new Date(Date.now() - 3_600_000) })
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(phone.refreshToken)));
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    expect(await meStatus(tablet.token)).toBe(401);
+    expect(await meStatus(phone.token)).toBe(401);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
   });
 
   it('keeps sibling-family revocation repository-scoped to the caller’s own live first-party grant', async () => {
@@ -1156,10 +1361,16 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
         userId: attacker.id,
         firstPartyOnly: true,
         exceptGrantId: victim.grantId,
-        siblingFamilies: { keepFamilyId: null },
+        siblingFamilies: { callerAccessTokenId: await accessIdOf(victim.token) },
         revokedAt: new Date(),
       }),
-    ).toEqual({ grants: [], families: [] });
+    ).toEqual({
+      grants: [],
+      families: [],
+      keptClientId: null,
+      keptFamilyId: null,
+      orphansSwept: false,
+    });
     const victimFamilies = [...(await familiesOf(victim.grantId)).values()];
     expect(victimFamilies).toHaveLength(2);
     expect(victimFamilies.every((f) => !f.revokedAt)).toBe(true);
@@ -1169,10 +1380,11 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
       userId: victim.user.id,
       firstPartyOnly: true,
       exceptGrantId: partner.grantId,
-      siblingFamilies: { keepFamilyId: null },
+      siblingFamilies: { callerAccessTokenId: await accessIdOf(partner.token) },
       revokedAt: new Date(),
     });
     expect(result.families).toEqual([]);
+    expect(result.keptFamilyId).toBeNull();
     expect([...(await familiesOf(partner.grantId)).values()].every((f) => !f.revokedAt)).toBe(true);
     // (The victim's first-party grant itself was a legitimate target of that call.)
     expect(result.grants.map((grant) => grant.grantId)).toEqual([victim.grantId]);

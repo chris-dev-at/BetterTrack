@@ -109,16 +109,16 @@ export interface AuthServiceDeps {
  *  - `session`           — a browser: every first-party grant is revoked;
  *  - `first_party_oauth` — an official app's bearer: every first-party grant
  *                          EXCEPT its own (`grantId`) is revoked, and on that
- *                          own grant every token family EXCEPT its own
- *                          (`familyId`; null for a legacy pre-family token,
- *                          whose chain is the grant itself) — so only the
- *                          calling install stays signed in;
+ *                          own grant every install EXCEPT the one presenting
+ *                          `accessTokenId` — shared legacy families and
+ *                          no-family chains included — so only the calling
+ *                          install stays signed in;
  *  - `delegated_bearer`  — a personal API key or a third-party app holding
  *                          `account:security`: sessions only, never a grant.
  */
 export type SignOutEverywhereCredential =
   | { kind: 'session' }
-  | { kind: 'first_party_oauth'; grantId: string; familyId: string | null }
+  | { kind: 'first_party_oauth'; grantId: string; accessTokenId: string }
   | { kind: 'delegated_bearer' };
 
 export interface LoginInput {
@@ -2050,7 +2050,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           reason: 'sign_out_everywhere',
           firstPartyOnly: true,
           exceptGrantId: credential.grantId,
-          siblingFamilies: { keepFamilyId: credential.familyId },
+          siblingFamilies: { callerAccessTokenId: credential.accessTokenId },
           ip: caller.ip ?? null,
         });
       }
