@@ -148,10 +148,14 @@ the `drive-connections` family; `GET
 /portfolios/:id/vault/{revision,lifecycle}`; `POST
 /portfolios/:id/vault/move-in` and `move-out[/challenge]`. `DELETE
 /vaults/:vaultId` refuses while
-a portfolio references the vault (`VAULT_REFERENCED_BY_PORTFOLIO`) or a
-retirement is pending (`VAULT_RETIREMENT_PENDING`); doc GET/PUT are
-ETag/`If-Match` CAS and answer 428 `VAULT_PRECONDITION_REQUIRED` with no
-precondition.
+a portfolio references the vault (`VAULT_REFERENCED_BY_PORTFOLIO`), while a
+retirement is pending (`VAULT_RETIREMENT_PENDING`), or while a portfolio's
+move-in has staged its document in the vault and the capture window is still
+open (`VAULT_MOVE_IN_PENDING`, `details.portfolioIds`; #1610). `DELETE
+/portfolios/:id` refuses a portfolio under such a live capture with the same
+409. An expired capture is inert and is dropped in the same commit by either
+delete (§9 step 2). Doc GET/PUT are ETag/`If-Match` CAS and answer 428
+`VAULT_PRECONDITION_REQUIRED` with no precondition.
 
 **Deliberately NOT a server fact:** seed phrases, the endpoint keystore, the
 device password, unlock state, and which endpoints hold which phrases. There is
@@ -591,7 +595,13 @@ Move-in = capture → encrypt → verify → destructive commit
    `VAULT_MOVE_CAPTURE_UNSTABLE`. The same response carries
    `importBatchCount`; a portfolio with any historical import batch is refused
    at capture today (`VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED`; lifting it is
-   #1529).
+   #1529). **Deleting either end of a live capture is refused** (#1610): while
+   the capture window is open, deleting the vault it stages into or the
+   portfolio being captured answers 409 `VAULT_MOVE_IN_PENDING`, nothing
+   mutated; an expired capture is cleared by either delete. On renewal, a
+   capture bound to a vault that no longer exists is re-opened; one bound to
+   another account's vault answers the terminal 409
+   `PORTFOLIO_VAULT_CAPTURE_BINDING_INVALID` with no mutation.
 3. **Encrypt + verify:** the portfolio doc is written to every vault medium,
    the common doc folds in that portfolio's custom-asset snapshots and fork
    provenance, the header roster gains the portfolio — each write CAS'd and
