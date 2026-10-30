@@ -32,8 +32,8 @@ import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import {
   calendarDayInTimezone,
   dueOccurrence,
+  newestElapsedOccurrence,
   nextRunDate,
-  prevDay,
   skippedPeriods,
   type ScheduleSpec,
 } from './schedule';
@@ -58,6 +58,13 @@ import {
  * **Catch-up.** {@link dueOccurrence} returns only the newest occurrence ≤ today
  * (§16 planner note), so after downtime only that one books; the skipped periods
  * are logged, never booked.
+ *
+ * **No back-fill on resume or restore (#1116).** Catch-up is for downtime, not
+ * for suspensions. Resuming a paused order and restoring an archived portfolio
+ * both close the newest occurrence strictly before that day with a no-money
+ * claim ({@link newestElapsedOccurrence} + `claimSkippedPeriod`) BEFORE the
+ * order becomes visible to the scan again, so the scan's most-recent-only rule
+ * can never reach back into the suspension.
  *
  * **No negative balances.** A `cash-deduct` that would overdraw is deferred (and
  * retried) rather than forced negative — the app's cash invariant holds. Buys
@@ -178,6 +185,14 @@ export interface StandingOrderService {
   create(userId: string, input: CreateStandingOrderRequest): Promise<StandingOrder>;
   update(userId: string, id: string, patch: UpdateStandingOrderRequest): Promise<StandingOrder>;
   pause(userId: string, id: string): Promise<StandingOrder>;
+  /**
+   * Resume a paused order with no back-fill: a period whose anchor day fell
+   * before the resume day (Europe/Vienna) is never booked; the next booking is
+   * the first anchor on or after the resume day — an anchor on the resume day
+   * still books at the next 07:00 scan; a daily order resumed after that day's
+   * scan first books the following day. Resuming an order that is already
+   * active changes nothing.
+   */
   resume(userId: string, id: string): Promise<StandingOrder>;
   remove(userId: string, id: string): Promise<void>;
   /**
@@ -306,6 +321,37 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     return record;
   }
 
+  /**
+   * The no-back-fill boundary shared by archive restore and resume (#1116):
+   * close the newest occurrence strictly before `today` with a no-money claim
+   * and advance the watermark through it, so the scan's most-recent-only rule
+   * cannot book a period that elapsed while the order was suspended. A period
+   * due ON `today` is left bookable (the anchor-day ruling). Callers run this
+   * while the order is still invisible to the scan — portfolio archived, or
+   * order paused — so no scan can slip in between.
+   *
+   * Idempotency key: `(standing_order_id, period_key)` — the run ledger's
+   * UNIQUE index (`claimSkippedPeriod` inserts ON CONFLICT DO NOTHING) plus a
+   * watermark that only moves forward. A repeat (a double-clicked Resume, a
+   * concurrent restore) claims nothing new and returns null.
+   */
+  async function skipElapsedPeriod(
+    order: StandingOrderWithAsset,
+    today: string,
+    skippedAt: Date,
+  ): Promise<StandingOrderRestoreSkip | null> {
+    const skipThrough = newestElapsedOccurrence(specOf(order), today);
+    if (skipThrough === null) return null;
+    if (order.lastPeriodKey !== null && order.lastPeriodKey >= skipThrough) return null;
+    if (!(await repo.claimSkippedPeriod(order.id, skipThrough, skippedAt))) return null;
+    return {
+      orderId: order.id,
+      periodKey: skipThrough,
+      previousLastPeriodKey: order.lastPeriodKey,
+      previousLastRunAt: order.lastRunAt,
+    };
+  }
+
   return {
     async list(userId, opts) {
       await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
@@ -406,10 +452,28 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
 
     async resume(userId, id) {
       await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
-      await requireOwnedOrder(userId, id);
+      const existing = await requireOwnedOrder(userId, id);
+      const resumeNow = now();
+      const today = calendarDayInTimezone(resumeNow, timezone);
+      // Already active: nothing was paused, so nothing elapsed "while paused".
+      // An owed period here is a deferral still retrying — skipping it would
+      // silently burn money the order still owes. Answer without writing.
+      if (existing.status === 'active') return toDto(existing, today);
+
+      // Closed while the order is still paused (the scan lists active orders
+      // only), so there is no instant at which it is active with the elapsed
+      // period still open. If the flip below fails, the claim stays: it covers
+      // a day before today that no resume may ever book anyway.
+      const skipped = await skipElapsedPeriod(existing, today, new Date(resumeNow));
       const record = await repo.setStatus(userId, id, 'active');
       if (!record) throw ORDER_NOT_FOUND();
-      return toDto(record, calendarDayInTimezone(now(), timezone));
+      if (skipped) {
+        logger?.info(
+          { orderId: id, userId, through: skipped.periodKey },
+          'standing order: resume closed the periods that elapsed while paused',
+        );
+      }
+      return toDto(record, today);
     },
 
     async remove(userId, id) {
@@ -426,29 +490,14 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       const claims: StandingOrderRestoreSkip[] = [];
 
       for (const order of orders) {
-        const due = dueOccurrence(specOf(order), today);
-        if (due === null) continue;
         // Only STRICTLY-PAST periods are tombstoned: a period due on the
         // restore day itself books normally once the portfolio is scannable
         // again (the anchor-day ruling — restoring a monthly on its anchor must
         // not silently burn that month). Tombstoning the newest elapsed
         // occurrence still closes the archive window: the advanced watermark
         // keeps a stale pre-archive worker from back-filling anything older.
-        const skipThrough = due < today ? due : dueOccurrence(specOf(order), prevDay(today));
-        if (
-          skipThrough === null ||
-          (order.lastPeriodKey !== null && order.lastPeriodKey >= skipThrough)
-        ) {
-          continue;
-        }
-        if (await repo.claimSkippedPeriod(order.id, skipThrough, skippedAt)) {
-          claims.push({
-            orderId: order.id,
-            periodKey: skipThrough,
-            previousLastPeriodKey: order.lastPeriodKey,
-            previousLastRunAt: order.lastRunAt,
-          });
-        }
+        const claim = await skipElapsedPeriod(order, today, skippedAt);
+        if (claim) claims.push(claim);
       }
 
       if (claims.length > 0) {

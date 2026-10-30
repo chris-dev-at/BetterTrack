@@ -5,7 +5,9 @@ import {
   clampDay,
   daysInMonth,
   dueOccurrence,
+  newestElapsedOccurrence,
   nextRunDate,
+  prevDay,
   skippedPeriodCount,
   skippedPeriods,
   type ScheduleSpec,
@@ -97,7 +99,93 @@ describe('standing-order schedule: nextRunDate', () => {
     expect(nextRunDate(spec, '2026-03-31', '2026-03-31', true)).toBeNull(); // exhausted
     expect(nextRunDate(spec, '2026-02-28', '2026-02-28', true)).toBe('2026-03-31'); // next anchor
   });
+
+  it('never names a day that has already passed (#1116)', () => {
+    // The audit's vector: an owed Aug 1 anchor read on Aug 5 came back as Aug 1.
+    expect(nextRunDate(monthly(1, '2026-01-01'), '2026-08-05', '2026-07-01', true)).toBe(
+      '2026-08-05',
+    );
+    // A deferred final occurrence still retries after the end date passes.
+    expect(
+      nextRunDate(monthly(15, '2026-01-01', '2026-03-20'), '2026-04-02', '2026-02-15', true),
+    ).toBe('2026-04-02');
+  });
+
+  it('is null or on/after today for every schedule, day and watermark (#1116)', () => {
+    const specs = [
+      daily('2026-01-15'),
+      daily('2026-01-15', '2026-03-10'),
+      monthly(1, '2026-01-01'),
+      monthly(31, '2026-01-31'),
+      monthly(15, '2026-02-10', '2026-05-20'),
+    ];
+    const violations: string[] = [];
+    let owed = 0;
+    for (const spec of specs) {
+      for (let today = '2025-12-25'; today <= '2026-07-10'; today = nextDay(today)) {
+        const due = dueOccurrence(spec, today);
+        for (const watermark of [null, '2025-12-01', '2026-02-28', prevDay(today), due]) {
+          if (due !== null && (watermark === null || watermark < due)) owed += 1;
+          const next = nextRunDate(spec, today, watermark, true);
+          if (next !== null && next < today) {
+            violations.push(`${spec.cadence}/${spec.anchorDay} ${today} wm=${watermark} → ${next}`);
+          }
+        }
+      }
+    }
+    // The sweep must actually visit owed-but-unbooked states, or it proves nothing.
+    expect(owed).toBeGreaterThan(100);
+    expect(violations).toEqual([]);
+  });
 });
+
+describe('standing-order schedule: newestElapsedOccurrence (the no-back-fill boundary)', () => {
+  it('is the newest occurrence strictly before today', () => {
+    // Monthly: resumed Jun 20 → June 1 elapsed; resumed ON Jun 1 → May 1.
+    expect(newestElapsedOccurrence(monthly(1, '2026-01-01'), '2026-06-20')).toBe('2026-06-01');
+    expect(newestElapsedOccurrence(monthly(1, '2026-01-01'), '2026-06-01')).toBe('2026-05-01');
+    // Daily: always yesterday once started; nothing before the start.
+    expect(newestElapsedOccurrence(daily('2026-04-01'), '2026-04-04')).toBe('2026-04-03');
+    expect(newestElapsedOccurrence(daily('2026-04-01'), '2026-04-01')).toBeNull();
+    // Capped by the end date like every other schedule read.
+    expect(newestElapsedOccurrence(monthly(1, '2026-01-01', '2026-03-15'), '2026-06-20')).toBe(
+      '2026-03-01',
+    );
+  });
+
+  it('matches the archive-restore boundary it replaced, day for day', () => {
+    const specs = [
+      daily('2026-01-15'),
+      daily('2026-01-15', '2026-03-10'),
+      monthly(1, '2026-01-01'),
+      monthly(31, '2026-01-31'),
+      monthly(15, '2026-02-10', '2026-05-20'),
+    ];
+    const mismatches: string[] = [];
+    for (const spec of specs) {
+      for (let today = '2025-12-25'; today <= '2026-07-10'; today = nextDay(today)) {
+        // The expression `skipDuePeriodsForPortfolioRestore` used before #1116.
+        const due = dueOccurrence(spec, today);
+        const restoreBoundary =
+          due === null ? null : due < today ? due : dueOccurrence(spec, prevDay(today));
+        const boundary = newestElapsedOccurrence(spec, today);
+        if (boundary !== restoreBoundary) {
+          mismatches.push(
+            `${spec.cadence}/${spec.anchorDay} ${today}: ${boundary} ≠ ${restoreBoundary}`,
+          );
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
+/** The calendar day after an ISO `YYYY-MM-DD` day (test-side; UTC math is exact here). */
+function nextDay(iso: string): string {
+  const date = new Date(`${iso}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
 
 describe('standing-order schedule: skippedPeriodCount', () => {
   it('returns the concrete dropped occurrence keys without including the due day', () => {
