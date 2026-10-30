@@ -802,6 +802,15 @@ function resolveAuthPolicy(
   // native client reads the bit from `GET /auth/me` and must be able to clear
   // it, so only this exact POST is widened; every other method on the path, and
   // any sibling under `/auth/fresh-start-notice/`, stays session-only.
+  //
+  // Trade-off: the scope gate admits EVERY bearer holding `account:security` —
+  // the first-party phone, a personal API key, AND a third-party OAuth grant
+  // (any registered app may request that scope). Only the phone ever shows
+  // this notice, so a third-party integration that acknowledges it silently
+  // spends the one-time "your old paranoid data was retired" notice for the
+  // owner. Accepted: it is not an escalation (that scope already admits vault
+  // and passkey deletion), and `firstPartyOnly` would also drop personal keys
+  // and break parity with first-run completion above.
   if (path === '/auth/fresh-start-notice/acknowledge' && requestMethod.toUpperCase() === 'POST') {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }

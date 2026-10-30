@@ -2345,7 +2345,7 @@ const AUTH_BEARER_ROUTE_CENSUS = [
   {
     method: 'POST',
     path: '/auth/fresh-start-notice/acknowledge',
-    policy: { kind: 'session-only' },
+    policy: SCOPE_ACCOUNT_SECURITY,
   },
   { method: 'GET', path: '/auth/google/callback', policy: { kind: 'session-only' } },
   { method: 'GET', path: '/auth/google/link-status', policy: SCOPE_ACCOUNT_SECURITY },
