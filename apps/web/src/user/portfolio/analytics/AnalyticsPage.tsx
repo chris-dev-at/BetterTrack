@@ -20,7 +20,13 @@ import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
 import { getAnalyticsSeries, type AnalyticsSeriesParams } from '../../../lib/analyticsApi';
 import { cx } from '../../../lib/cx';
-import { EM_DASH, formatDate, formatPercent, formatSignedPercent } from '../../../lib/format';
+import {
+  displayZoneDay,
+  EM_DASH,
+  formatDate,
+  formatPercent,
+  formatSignedPercent,
+} from '../../../lib/format';
 import { EmptyState, Skeleton } from '../../../ui';
 import { Button, PageHead, Stat, StatStrip } from '../../../ui/origin';
 import { PriceChart, useChartDisplayMode } from '../../../ui/charts';
@@ -44,12 +50,15 @@ type RangePreset = (typeof RANGE_PRESETS)[number] | 'custom';
 /** §6.9 caches the per-asset history 1 h; mirror that as the overlay staleTime. */
 const HISTORY_STALE_MS = 3_600_000;
 
-/** Local date → ISO `YYYY-MM-DD` (Vienna-approximate; a window bound, not a timestamp). */
-function isoDay(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+/**
+ * A `YYYY-MM-DD` day shifted back by whole calendar months, overflowing the way
+ * `Date#setMonth` does (31 Mar − 1 month → 3 Mar). Pure calendar arithmetic on
+ * the day key — no clock and no zone involved.
+ */
+function monthsBefore(day: string, months: number): string {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCMonth(date.getUTCMonth() - months);
+  return date.toISOString().slice(0, 10);
 }
 
 /** Resolve a preset (or custom from/to) into the endpoint's `from`/`to` window. */
@@ -62,13 +71,12 @@ function resolveWindow(
     return { from: customFrom || undefined, to: customTo || undefined };
   }
   if (preset === 'max') return {};
-  const now = new Date();
-  const to = isoDay(now);
-  if (preset === 'ytd') return { from: `${now.getFullYear()}-01-01`, to };
+  // Today is the display-zone day (#1792), not the browser's local day: the
+  // window must end on the day the ledger renders as today (#2082 B2).
+  const to = displayZoneDay();
+  if (preset === 'ytd') return { from: `${to.slice(0, 4)}-01-01`, to };
   const months = preset === 'm1' ? 1 : preset === 'm3' ? 3 : preset === 'm6' ? 6 : 12;
-  const from = new Date(now);
-  from.setMonth(from.getMonth() - months);
-  return { from: isoDay(from), to };
+  return { from: monthsBefore(to, months), to };
 }
 
 /** Nearest month-granular history range for the per-asset overlay fetch. */
@@ -133,7 +141,7 @@ function clientAnalyticsResponse(
       !(params.hideGroups ?? []).includes(groupKeyOf(holding.asset)),
   );
   const totalValue = visible.reduce((sum, holding) => sum + (holding.marketValueEur ?? 0), 0);
-  const today = isoDay(new Date());
+  const today = displayZoneDay();
   const from = inWindow[0]?.date ?? params.from ?? today;
   const to = inWindow.at(-1)?.date ?? params.to ?? from;
 

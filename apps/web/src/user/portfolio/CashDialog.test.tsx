@@ -338,8 +338,8 @@ describe('CashDialog — the default date is the display-zone day (#2082 B2, #17
 
     expect(screen.getByLabelText('Date')).toHaveValue('2026-07-16');
 
-    // The wire is unchanged: a same-day movement still leaves `executedAt` to
-    // the server's clock.
+    // The Vienna day counts as "today", so the default movement still leaves
+    // `executedAt` to the server's clock.
     await user.type(screen.getByLabelText('Amount'), '25');
     await user.click(screen.getByRole('button', { name: 'Deposit cash' }));
     await waitFor(() => expect(portfolioApi.depositCash).toHaveBeenCalled());
@@ -351,5 +351,30 @@ describe('CashDialog — the default date is the display-zone day (#2082 B2, #17
     vi.setSystemTime(new Date('2026-07-15T10:00:00.000Z'));
     renderDialog('deposit', { today: undefined });
     expect(screen.getByLabelText('Date')).toHaveValue('2026-07-15');
+  });
+
+  // The one place the wire DOES move in the 00:00–02:00 window: "today" (no
+  // `executedAt`, the server's clock) is now the Vienna day, so the UTC day is a
+  // backdate. Before the fix it was the other way round — the UTC day was
+  // omitted and the Vienna day went out as a noon stamp ~11.5 h in the future.
+  test.each([
+    ['the Vienna day (today) leaves executedAt to the server', '2026-07-16', 'absent'],
+    ['the UTC day (Vienna yesterday) is a noon backdate', '2026-07-15', '2026-07-15T12:00:00.000Z'],
+  ])('at 00:30 Vienna, %s', async (_name, picked, executedAt) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-15T22:30:00.000Z'));
+    vi.mocked(portfolioApi.depositCash).mockResolvedValue({
+      movement: { id: 'm-window' },
+    } as Awaited<ReturnType<typeof portfolioApi.depositCash>>);
+    const user = userEvent.setup();
+    renderDialog('deposit', { today: undefined });
+
+    await user.type(screen.getByLabelText('Amount'), '25');
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: picked } });
+    await user.click(screen.getByRole('button', { name: 'Deposit cash' }));
+
+    await waitFor(() => expect(portfolioApi.depositCash).toHaveBeenCalled());
+    const body = vi.mocked(portfolioApi.depositCash).mock.calls[0]![1];
+    expect('executedAt' in body ? body.executedAt : 'absent').toBe(executedAt);
   });
 });
