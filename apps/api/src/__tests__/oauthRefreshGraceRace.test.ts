@@ -4,7 +4,7 @@ import { OAUTH_REFRESH_TOKEN_PREFIX, type OAuthTokenResponse } from '@bettertrac
 import { eq } from 'drizzle-orm';
 import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '../data/db';
 import { createAuditRepository } from '../data/repositories/auditRepository';
@@ -84,30 +84,34 @@ async function waitForDatabaseLock(
   observer: ReturnType<typeof postgres>,
   input: { blockedByPid: number; waitingPid: number; description: string; queryPattern: RegExp },
 ): Promise<DatabaseLockWait> {
-  const deadline = Date.now() + 5_000;
-  let observed: DatabaseLockWait[] = [];
-  while (Date.now() < deadline) {
-    observed = await observer<DatabaseLockWait[]>`
-      SELECT
-        pid,
-        query,
-        wait_event_type AS "waitEventType",
-        pg_blocking_pids(pid) AS "blockingPids"
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-        AND wait_event_type = 'Lock'
-    `;
-    const match = observed.find(
-      (row) =>
-        row.pid === input.waitingPid &&
-        row.blockingPids.map(Number).includes(input.blockedByPid) &&
-        input.queryPattern.test(row.query),
-    );
-    if (match) return match;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(
-    `Timed out waiting for ${input.description}; observed ${JSON.stringify(observed)}`,
+  // The lock wait is an EXTERNAL condition with no completion to await, so it
+  // is polled — through `vi.waitFor`, which retries on a bounded schedule and
+  // rethrows the LAST failure at the 5 s deadline, keeping the diagnostic (the
+  // same conversion #2022 made in `paranoidPrivacyLocks.test.ts`).
+  return vi.waitFor(
+    async () => {
+      const observed = await observer<DatabaseLockWait[]>`
+        SELECT
+          pid,
+          query,
+          wait_event_type AS "waitEventType",
+          pg_blocking_pids(pid) AS "blockingPids"
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+      `;
+      const match = observed.find(
+        (row) =>
+          row.pid === input.waitingPid &&
+          row.blockingPids.map(Number).includes(input.blockedByPid) &&
+          input.queryPattern.test(row.query),
+      );
+      if (match) return match;
+      throw new Error(
+        `Timed out waiting for ${input.description}; observed ${JSON.stringify(observed)}`,
+      );
+    },
+    { timeout: 5_000, interval: 10 },
   );
 }
 
