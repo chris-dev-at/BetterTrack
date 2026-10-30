@@ -15,7 +15,11 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { generateRecoveryCodes, normalizeRecoveryCode } from '../auth/totp';
-import type { TwoFactorMutationResult, TwoFactorService } from '../auth/twoFactorService';
+import type {
+  AdminSessionAuthorization,
+  TwoFactorMutationResult,
+  TwoFactorService,
+} from '../auth/twoFactorService';
 import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
 
 /**
@@ -118,6 +122,8 @@ interface EmailSetupState {
   securityGeneration: number;
 }
 
+const ADMIN_SESSION: AdminSessionAuthorization = { kind: 'admin-session' };
+
 export function createAdminTwoFactorService(
   deps: AdminTwoFactorServiceDeps,
 ): AdminTwoFactorService {
@@ -201,12 +207,15 @@ export function createAdminTwoFactorService(
       };
     },
 
+    // §6.12: the admin session is 2FA-checked on every request and carries no
+    // step-up prompts by owner ruling, so the shared factor mutations run with
+    // the explicit admin-session authorization (the user surface needs R-05's).
     enrollTotp(adminId, ip, session) {
-      return twoFactor.enrollTotp(adminId, ip, session);
+      return twoFactor.enrollTotp(adminId, ADMIN_SESSION, ip, session);
     },
 
     confirmTotp(adminId, code, ip, session) {
-      return twoFactor.confirmTotp(adminId, code, ip, session);
+      return twoFactor.confirmTotp(adminId, code, ADMIN_SESSION, ip, session);
     },
 
     disableTotp(adminId, code, ip, session) {
@@ -214,7 +223,7 @@ export function createAdminTwoFactorService(
     },
 
     regenerateRecoveryCodes(adminId, ip, session) {
-      return twoFactor.regenerateRecoveryCodes(adminId, ip, session);
+      return twoFactor.regenerateRecoveryCodes(adminId, ADMIN_SESSION, ip, session);
     },
 
     async startEmailEnrollment(adminId, address, proof, session, ip) {

@@ -85,6 +85,7 @@ import { conditionalGet } from '../middleware/conditional';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { boundStrictRestoreDocument } from '../middleware/restoreDocumentBounds';
 import { requireUser } from '../middleware/session';
+import { nestedStepUp, refuseSelfIssuedStepUpFactor } from '../middleware/stepUpProvenance';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import type { AppContext } from '../context';
@@ -268,6 +269,7 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
     limiters.vault,
     validateParams(portfolioIdParamSchema),
     validateBody(portfolioVaultMoveInRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'portfolio.vault.move_in', nestedStepUp),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as PortfolioVaultMoveInRequest;
@@ -348,6 +350,7 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
     // element BEFORE the full zod parse (GHSA-mrhx-c7xc-m3w5).
     boundStrictRestoreDocument(moveOutRestoreLimit),
     validateBody(portfolioVaultMoveOutRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'portfolio.vault.move_out', nestedStepUp),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as PortfolioVaultMoveOutRequest;

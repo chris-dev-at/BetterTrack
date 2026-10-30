@@ -268,6 +268,9 @@ const componentSchemas = {
   TwoFactorConfirmRequest: contracts.twoFactorConfirmRequestSchema,
   TwoFactorEmailConfirmRequest: contracts.twoFactorEmailConfirmRequestSchema,
   TwoFactorDisableRequest: contracts.twoFactorDisableRequestSchema,
+  TwoFactorStepUpCredential: contracts.twoFactorStepUpCredentialSchema,
+  TwoFactorStepUpRequest: contracts.twoFactorStepUpRequestSchema,
+  TwoFactorStepUpConfirmRequest: contracts.twoFactorStepUpConfirmRequestSchema,
   TwoFactorStatusResponse: contracts.twoFactorStatusResponseSchema,
   TwoFactorRecoveryCodesResponse: contracts.twoFactorRecoveryCodesResponseSchema,
   TwoFactorMethodEnabledResponse: contracts.twoFactorMethodEnabledResponseSchema,
@@ -809,6 +812,22 @@ const noStoreResponseHeaders = z.object({
   }),
 });
 
+/**
+ * R-05: every in-body step-up that accepts a TOTP or recovery code refuses one
+ * offered by a credential that itself issued second-factor material recently.
+ */
+const SELF_ISSUED_FACTOR_401 = `A TOTP or recovery code offered by a credential (session, personal key, OAuth grant) that issued second-factor material in the last ${contracts.SELF_ISSUED_FACTOR_HOLD_HOURS} h is refused; that credential must send the password (${contracts.STEP_UP_PASSWORD_REQUIRED}).`;
+const STEP_UP_401 = `The step-up credential was wrong (INVALID_CREDENTIALS / TWO_FACTOR_INVALID_CODE / TWO_FACTOR_NOT_ENABLED). ${SELF_ISSUED_FACTOR_401}`;
+/**
+ * The user-side factor mutations: a body that offers no step-up credential at
+ * all is told so with its own code; any other malformed body stays generic.
+ */
+const STEP_UP_REQUIRED_400 = `Invalid request (VALIDATION_ERROR), or no step-up credential was sent — \`stepUp\` absent, null, or empty (${contracts.STEP_UP_REQUIRED}).`;
+const FACTOR_MUTATION_ERRORS = {
+  errorResponses: { 400: STEP_UP_REQUIRED_400, 401: STEP_UP_401 },
+  errorCodes: [contracts.STEP_UP_REQUIRED, contracts.STEP_UP_PASSWORD_REQUIRED],
+} as const;
+
 // ── Endpoint table ──────────────────────────────────────────────────────────
 type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
@@ -1050,6 +1069,8 @@ const endpoints: EndpointDef[] = [
     body: R.DeleteAccountRequest,
     status: 200,
     response: R.OkResponse,
+    errorResponses: { 401: STEP_UP_401 },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'post',
@@ -1061,6 +1082,8 @@ const endpoints: EndpointDef[] = [
     body: R.ExportRequest,
     status: 200,
     response: R.ExportRequestResponse,
+    errorResponses: { 401: STEP_UP_401 },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'post',
@@ -1081,6 +1104,8 @@ const endpoints: EndpointDef[] = [
     body: R.ParanoidDisableRequest,
     status: 200,
     response: R.ParanoidDisableResponse,
+    errorResponses: { 401: STEP_UP_401 },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'get',
@@ -1235,9 +1260,12 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/auth/2fa/enroll',
     tag: 'Auth',
-    summary: 'Begin TOTP enrollment; returns a provisional secret + otpauth URI.',
+    summary:
+      'Begin TOTP enrollment behind the in-body step-up (password, or an existing TOTP / recovery code); returns a provisional secret + otpauth URI.',
+    body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.TwoFactorEnrollResponse,
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'delete',
@@ -1253,10 +1281,11 @@ const endpoints: EndpointDef[] = [
     path: '/auth/2fa/confirm',
     tag: 'Auth',
     summary:
-      'Confirm TOTP with a code; enables the authenticator method. Returns recovery codes if it is the first method enabled, else null.',
-    body: R.TwoFactorConfirmRequest,
+      'Confirm TOTP with the new authenticator code plus the in-body step-up; enables the method. Returns recovery codes if it is the first method enabled, else null.',
+    body: R.TwoFactorStepUpConfirmRequest,
     status: 200,
     response: R.TwoFactorMethodEnabledResponse,
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'post',
@@ -1272,27 +1301,33 @@ const endpoints: EndpointDef[] = [
     path: '/auth/2fa/email/enroll',
     tag: 'Auth',
     summary:
-      'Begin email-code 2FA enrollment; sends a mailbox-proof code. Rejected when SMTP is unconfigured.',
+      'Begin email-code 2FA enrollment behind the in-body step-up; sends a mailbox-proof code. Rejected when SMTP is unconfigured.',
+    body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.OkResponse,
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'post',
     path: '/auth/2fa/email/confirm',
     tag: 'Auth',
     summary:
-      'Confirm email-code 2FA with the emailed code; enables the method. Returns recovery codes if it is the first method enabled, else null.',
-    body: R.TwoFactorEmailConfirmRequest,
+      'Confirm email-code 2FA with the emailed code plus the in-body step-up; enables the method. Returns recovery codes if it is the first method enabled, else null.',
+    body: R.TwoFactorStepUpConfirmRequest,
     status: 200,
     response: R.TwoFactorMethodEnabledResponse,
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'post',
     path: '/auth/2fa/email/disable',
     tag: 'Auth',
-    summary: 'Disable the email-code 2FA method from the authenticated session.',
+    summary:
+      'Disable the email-code 2FA method behind the in-body step-up (password, or an existing TOTP / recovery code).',
+    body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.OkResponse,
+    ...FACTOR_MUTATION_ERRORS,
   },
   {
     method: 'get',
@@ -1306,9 +1341,11 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/auth/2fa/recovery-codes',
     tag: 'Auth',
-    summary: 'Regenerate the recovery codes (voids the old set).',
+    summary: 'Regenerate the recovery codes behind the in-body step-up (voids the old set).',
+    body: R.TwoFactorStepUpRequest,
     status: 200,
     response: R.TwoFactorRecoveryCodesResponse,
+    ...FACTOR_MUTATION_ERRORS,
   },
   // Passkeys / WebAuthn (§13.4 V4-P4)
   {
@@ -1335,6 +1372,8 @@ const endpoints: EndpointDef[] = [
     body: R.PasskeyRegisterVerifyRequest,
     status: 201,
     response: R.Passkey,
+    errorResponses: { 401: STEP_UP_401 },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'patch',
@@ -1353,6 +1392,8 @@ const endpoints: EndpointDef[] = [
     body: R.PasskeyDeleteRequest,
     status: 200,
     response: R.OkResponse,
+    errorResponses: { 401: STEP_UP_401 },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'post',
@@ -5035,13 +5076,17 @@ const endpoints: EndpointDef[] = [
     status: 204,
     errorResponses: {
       400: 'The acknowledged form arrived without the §15 credential, the bodyless form carried a body, or an unknown query parameter was sent (VALIDATION_ERROR).',
-      401: 'The §15 step-up credential on the acknowledged form was wrong (INVALID_CREDENTIALS / TWO_FACTOR_INVALID_CODE). Generic by design: the factor is never named.',
+      401:
+        'The §15 step-up credential on the acknowledged form was wrong (INVALID_CREDENTIALS / TWO_FACTOR_INVALID_CODE). Generic by design: the factor is never named.' +
+        ' ' +
+        SELF_ISSUED_FACTOR_401,
       403: 'Drive identities are cookie-session-only; a bearer credential is refused outright (API_KEY_FORBIDDEN).',
       404: 'No such caller-owned Drive connection (DRIVE_CONNECTION_NOT_FOUND).',
       409: 'A vault is still bound and loss of reach was not acknowledged (DRIVE_CONNECTION_BOUND), or a bound vault holds no VERIFIED server copy so this Drive is its last medium (DRIVE_CONNECTION_LAST_MEDIUM) — the latter is decided before any credential is read.',
       429: 'Too many wrong §15 credentials on this account, or the module rate limit (RATE_LIMITED).',
     },
     errorCodes: [
+      contracts.STEP_UP_PASSWORD_REQUIRED,
       'API_KEY_FORBIDDEN',
       'DRIVE_CONNECTION_NOT_FOUND',
       'DRIVE_CONNECTION_BOUND',
@@ -5102,10 +5147,11 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.DeleteVaultResponse,
     errorResponses: {
+      401: STEP_UP_401,
       404: 'No such caller-owned vault (VAULT_NOT_FOUND).',
       409: 'A member portfolio, a pending retirement, or an in-progress move-in blocks the delete (VAULT_REFERENCED_BY_PORTFOLIO / VAULT_RETIREMENT_PENDING / VAULT_MOVE_IN_PENDING).',
     },
-    errorCodes: contracts.PER_VAULT_DELETE_ERROR_CODES,
+    errorCodes: [...contracts.PER_VAULT_DELETE_ERROR_CODES, contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'get',
@@ -5338,11 +5384,13 @@ const endpoints: EndpointDef[] = [
     response: R.PortfolioVaultMoveInResponse,
     noStore: true,
     errorResponses: {
+      401: STEP_UP_401,
       404: 'The portfolio or target vault is absent or not owned.',
       409: 'The portfolio is already vaulted, a transition/precondition conflicts, media are not verified, or the encrypted document set is stale.',
       412: 'The capture revision or encrypted portfolio document version is stale; nothing was purged.',
       429: 'Step-up verification or the dedicated move-in transition throttle was exceeded.',
     },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
   {
     method: 'post',
@@ -5376,6 +5424,7 @@ const endpoints: EndpointDef[] = [
     response: R.PortfolioVaultMoveOutResponse,
     noStore: true,
     errorResponses: {
+      401: STEP_UP_401,
       400: 'The request or strict restore graph is invalid, insolvent, or fails retained fork-provenance validation.',
       404: 'The vaulted portfolio or vault is absent or not owned.',
       409: 'The portfolio is not vaulted, media are not verified, or another transition/history write conflicts.',
@@ -5383,6 +5432,7 @@ const endpoints: EndpointDef[] = [
       413: 'The decrypted restore document exceeds the bounded portfolio restore payload ceiling.',
       429: 'Step-up verification or the dedicated move-out transition throttle was exceeded.',
     },
+    errorCodes: [contracts.STEP_UP_PASSWORD_REQUIRED],
   },
 
   // Legacy account-singleton paranoid vault — kept unchanged through E9.

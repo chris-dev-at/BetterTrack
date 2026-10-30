@@ -129,14 +129,19 @@ async function login(app: Application, user: SeededUser): Promise<Agent> {
   return agent;
 }
 
-async function enrollTotp(agent: Agent) {
+async function enrollTotp(agent: Agent, password: string) {
   const { secret } = twoFactorEnrollResponseSchema.parse(
-    (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+    (
+      await agent
+        .post('/api/v1/auth/2fa/enroll')
+        .set(...XRW)
+        .send({ stepUp: { password: password } })
+    ).body,
   );
   const confirmed = await agent
     .post('/api/v1/auth/2fa/confirm')
     .set(...XRW)
-    .send({ code: generateTotpCode(secret) });
+    .send({ code: generateTotpCode(secret), stepUp: { password: password } });
   const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirmed.body);
   return { secret, recoveryCodes: recoveryCodes! };
 }
@@ -3829,7 +3834,7 @@ describe('E1 ownership, deletion gates, and limiter', () => {
     const totpUser = await h.seedUser({ email: 'e1-totp@bt.test', username: 'e1_totp' });
     const enrollmentAgent = await login(h.app, totpUser);
     const totpVault = await createVault({ user: totpUser, agent: enrollmentAgent });
-    const totp = await enrollTotp(enrollmentAgent);
+    const totp = await enrollTotp(enrollmentAgent, totpUser.password);
     const totpAgent = await loginWithTotp(totpUser, totp.secret);
     const totpDelete = await totpAgent
       .delete(`/api/v1/vaults/${totpVault.id}`)
@@ -3860,7 +3865,7 @@ describe('E1 ownership, deletion gates, and limiter', () => {
       headerDocId: newId(),
       commonDocId: newId(),
     });
-    const recovery = await enrollTotp(recoveryEnrollmentAgent);
+    const recovery = await enrollTotp(recoveryEnrollmentAgent, recoveryUser.password);
     const recoveryAgent = await loginWithTotp(recoveryUser, recovery.secret);
     const recoveryDelete = await recoveryAgent
       .delete(`/api/v1/vaults/${recoveryVault.id}`)

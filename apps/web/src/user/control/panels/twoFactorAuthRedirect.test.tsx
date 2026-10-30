@@ -63,6 +63,14 @@ function refusedCode(): Response {
   );
 }
 
+/** The refusal a wrong step-up password draws on every 2FA mutation (R-05). */
+function wrongPassword(): Response {
+  return json(
+    { error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' } },
+    401,
+  );
+}
+
 /** The throttle the same endpoint trips after repeated wrong codes. */
 function throttled(): Response {
   return json(
@@ -213,21 +221,42 @@ describe('a wrong §6.1 two-factor credential never logs the user out', () => {
     }
   });
 
-  it('regenerate recovery codes: a credential-free call still bounces on a real 401', async () => {
+  it('regenerate recovery codes: a wrong step-up password stays in the form (R-05)', async () => {
     const { policy, dispose } = installAuthPolicy();
     try {
       stubApi({
         ...panelReads(true, 3),
-        'POST /api/v1/auth/2fa/recovery-codes': sessionExpired,
+        'POST /api/v1/auth/2fa/recovery-codes': wrongPassword,
       });
       const user = userEvent.setup();
       renderPanel();
 
       await user.click(await screen.findByRole('button', { name: 'Regenerate recovery codes' }));
+      await user.type(await screen.findByLabelText('Account confirmation'), 'not-it');
+      await user.click(screen.getByRole('button', { name: 'Regenerate recovery codes' }));
+
+      expect(await screen.findByText('Current password is incorrect.')).toBeInTheDocument();
+      expect(screen.getByLabelText('Account confirmation')).toBeInTheDocument();
+      expect(seenPath).toBe('/control/sign-in');
+      expectSessionIntact(policy);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('the credential-free status read still bounces on a real 401', async () => {
+    const { policy, dispose } = installAuthPolicy();
+    try {
+      stubApi({
+        'GET /api/v1/auth/me': () => json(ME),
+        'GET /api/v1/auth/passkeys': () => json({ passkeys: [] }),
+        'GET /api/v1/auth/2fa/status': sessionExpired,
+      });
+      renderPanel();
 
       // Precision: nothing was typed, so a 401 here can only mean the session is
       // gone. Suppressing this one would strand the user in a dead session.
-      await waitFor(() => expect(policy.onUnauthorized).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(policy.onUnauthorized).toHaveBeenCalled());
     } finally {
       dispose();
     }

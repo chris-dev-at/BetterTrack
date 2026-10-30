@@ -1499,13 +1499,17 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
     const pinOff = await mobile.agent.delete('/api/v1/auth/pin').set(...XRW);
     expect(pinOff.status, JSON.stringify(pinOff.body)).toBe(200);
 
-    const enroll = await mobile.agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const stepUp = { password: mobile.user.password };
+    const enroll = await mobile.agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp });
     expect(enroll.status, JSON.stringify(enroll.body)).toBe(200);
     const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
     const confirm = await mobile.agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp });
     expect(confirm.status, JSON.stringify(confirm.body)).toBe(200);
 
     expect(await grantRevokedAt(mobile.grantId)).toBeNull();

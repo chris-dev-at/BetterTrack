@@ -1,8 +1,11 @@
 import type { Redis } from 'ioredis';
 
+import { STEP_UP_PASSWORD_REQUIRED } from '@bettertrack/contracts';
+
 import { tooManyRequests, unauthorized } from '../../errors';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import { issuedFactorRecently } from './factorProvenance';
 import { REAUTH_ACCOUNT_NAMESPACE } from './loginThrottle';
 
 import type { AppConfig } from '../../config/env';
@@ -47,8 +50,26 @@ export interface ReauthInput {
   ip?: string | null;
 }
 
+export interface SelfIssuedFactorInput {
+  userId: string;
+  /** {@link stepUpCredentialKey} of the presenting credential; null fails closed. */
+  credentialKey: string | null;
+  /** Which step-up route asked — audit provenance only. */
+  purpose: string;
+  ip?: string | null;
+}
+
 export interface ReauthService {
   verify(input: ReauthInput): Promise<void>;
+  /**
+   * R-05: refuse a TOTP / recovery-code step-up offered by a credential that
+   * itself issued second-factor material inside the hold window (see
+   * `factorProvenance.ts`). Answers `401 STEP_UP_PASSWORD_REQUIRED` — the
+   * password still works — and verifies, consumes and throttles nothing, so
+   * it is no oracle: the only fact it reveals is one the caller created.
+   * Callers invoke it only for a factor-only credential (no password).
+   */
+  refuseSelfIssuedFactor(input: SelfIssuedFactorInput): Promise<void>;
 }
 
 export function createReauthService(deps: ReauthServiceDeps): ReauthService {
@@ -104,6 +125,23 @@ export function createReauthService(deps: ReauthServiceDeps): ReauthService {
         ip: ip ?? null,
         meta: { purpose: purpose ?? null },
       });
+    },
+
+    async refuseSelfIssuedFactor({ userId, credentialKey, purpose, ip }) {
+      if (!credentialKey) throw unauthorized();
+      if (!(await issuedFactorRecently(deps.redis, userId, credentialKey))) return;
+      await deps.audit.record({
+        actorId: userId,
+        action: AuditAction.AuthReauthFail,
+        targetType: 'user',
+        targetId: userId,
+        ip: ip ?? null,
+        meta: { purpose, kind: 'self_issued_factor' },
+      });
+      throw unauthorized(
+        'Confirm with your password: this sign-in issued a new second factor in the last 24 hours.',
+        STEP_UP_PASSWORD_REQUIRED,
+      );
     },
   };
 }

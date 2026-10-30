@@ -319,12 +319,15 @@ describe('passkeys — re-auth gating on add + delete', () => {
     expect(created.status).toBe(201);
 
     // Enroll TOTP so the account has a second factor to re-auth with.
-    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enroll = await agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
     const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
     const confirm = await agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
     expect(confirm.status).toBe(200);
     const factorAgent = await loginWithTotp(harness.app, user.email, user.password, secret);
 

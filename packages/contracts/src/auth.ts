@@ -264,6 +264,99 @@ export const twoFactorEmailConfirmRequestSchema = z.object({ code: totpCodeSchem
 export type TwoFactorEmailConfirmRequest = z.infer<typeof twoFactorEmailConfirmRequestSchema>;
 
 /**
+ * 400 code for a USER-side factor mutation (TOTP enroll/confirm, e-mail
+ * enroll/confirm/disable, recovery-code regeneration) that offers no step-up
+ * credential: `stepUp` is absent, `null`, or names none of its members. A
+ * credential that is present but malformed stays a `VALIDATION_ERROR`; a wrong
+ * one is a 401 from the step-up check.
+ */
+export const STEP_UP_REQUIRED = 'STEP_UP_REQUIRED';
+const STEP_UP_REQUIRED_MESSAGE =
+  'Re-authentication is required: send your password or a two-factor code.';
+
+/**
+ * The step-up credential every USER-side factor mutation carries in its body
+ * (R-05): minting or removing a second factor — TOTP enroll/confirm, e-mail
+ * enroll/confirm/disable, recovery-code regeneration — needs proof the caller
+ * held a credential BEFORE the request, on the cookie and bearer paths alike.
+ * Send the current `password`, or an EXISTING factor: a current authenticator
+ * `code` (TOTP on) or an unused `recoveryCode` (consumed on success AND on a
+ * failed match). At least one is required; the password wins when several are
+ * sent. An e-mailed login code is not a step-up factor.
+ *
+ * The admin console's own 2FA routes keep `{ code }` alone (§6.12: the admin
+ * session is 2FA-checked on every request and carries no step-up prompts).
+ */
+export const twoFactorStepUpCredentialSchema = z
+  .object({
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    code: z.string().trim().min(4).max(16).optional(),
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .refine((b) => b.password !== undefined || b.code !== undefined || b.recoveryCode !== undefined, {
+    message: STEP_UP_REQUIRED_MESSAGE,
+    params: { apiErrorCode: STEP_UP_REQUIRED },
+  });
+export type TwoFactorStepUpCredential = z.infer<typeof twoFactorStepUpCredentialSchema>;
+
+/**
+ * Wraps a factor-mutation body so a request that carries no `stepUp` at all (no
+ * body, the member left out, or `null`) reports {@link STEP_UP_REQUIRED} through
+ * the generic validator instead of an anonymous "Required". The wrapped object
+ * still parses the body unchanged, so every other problem keeps its own issue.
+ */
+function requiringStepUp<T extends z.ZodTypeAny>(body: T) {
+  return z.preprocess((input, refinement) => {
+    const value = input ?? {};
+    if (
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (value as { stepUp?: unknown }).stepUp == null
+    ) {
+      refinement.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['stepUp'],
+        message: STEP_UP_REQUIRED_MESSAGE,
+        params: { apiErrorCode: STEP_UP_REQUIRED },
+      });
+    }
+    return value;
+  }, body);
+}
+
+/**
+ * `POST /auth/2fa/enroll`, `/2fa/email/enroll`, `/2fa/email/disable` and
+ * `/2fa/recovery-codes` — the step-up and nothing else.
+ */
+export const twoFactorStepUpRequestSchema = requiringStepUp(
+  z.object({ stepUp: twoFactorStepUpCredentialSchema }).strict(),
+);
+export type TwoFactorStepUpRequest = z.infer<typeof twoFactorStepUpRequestSchema>;
+
+/**
+ * `POST /auth/2fa/confirm` (the new authenticator's current code) and
+ * `POST /auth/2fa/email/confirm` (the e-mailed setup code) on the user surface:
+ * the proof of the NEW factor plus the step-up. Knowing the new secret is not
+ * enough — the confirm is what mints the factor.
+ */
+export const twoFactorStepUpConfirmRequestSchema = requiringStepUp(
+  z.object({ code: totpCodeSchema, stepUp: twoFactorStepUpCredentialSchema }).strict(),
+);
+export type TwoFactorStepUpConfirmRequest = z.infer<typeof twoFactorStepUpConfirmRequestSchema>;
+
+/**
+ * 401 code for a step-up that offered a TOTP or recovery code from a credential
+ * (cookie session, personal API key, OAuth grant) which itself issued
+ * second-factor material within {@link SELF_ISSUED_FACTOR_HOLD_HOURS}: that
+ * credential must confirm with the password instead. Other credentials are
+ * unaffected, and nothing is consumed by the refusal.
+ */
+export const STEP_UP_PASSWORD_REQUIRED = 'STEP_UP_PASSWORD_REQUIRED';
+/** How long a credential that issued factor material must step up with the password. */
+export const SELF_ISSUED_FACTOR_HOLD_HOURS = 24;
+
+/**
  * `POST /auth/2fa/disable` — disable the TOTP method. A valid factor authorizes
  * it: either the 6-digit TOTP code or one unused recovery code. Loosely bounded so
  * both forms (and their formatting) pass the contract; the service decides which

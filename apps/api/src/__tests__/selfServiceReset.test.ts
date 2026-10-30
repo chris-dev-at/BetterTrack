@@ -98,12 +98,17 @@ async function enrollTotp(harness: TestHarness, user: SeededUser): Promise<{ sec
     .set(...XRW)
     .send({ identifier: user.email, password: user.password });
   const { secret } = twoFactorEnrollResponseSchema.parse(
-    (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+    (
+      await agent
+        .post('/api/v1/auth/2fa/enroll')
+        .set(...XRW)
+        .send({ stepUp: { password: user.password } })
+    ).body,
   );
   await agent
     .post('/api/v1/auth/2fa/confirm')
     .set(...XRW)
-    .send({ code: generateTotpCode(secret) });
+    .send({ code: generateTotpCode(secret), stepUp: { password: user.password } });
   await agent.post('/api/v1/auth/logout').set(...XRW);
   return { secret };
 }

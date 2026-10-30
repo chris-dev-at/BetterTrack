@@ -241,6 +241,42 @@ test('a mismatched PIN confirmation never reaches the server', async () => {
   expect(api.setPin).not.toHaveBeenCalled();
 });
 
+test('the authenticator setup asks for the password first and sends it as the step-up (R-05)', async () => {
+  vi.mocked(twoFactorApi.enrollTwoFactor).mockResolvedValue({
+    otpauthUri: 'otpauth://totp/BetterTrack:ada?secret=ABCDEFGHIJKLMNOP',
+    secret: 'ABCDEFGHIJKLMNOP',
+  });
+  vi.mocked(twoFactorApi.confirmTwoFactor).mockResolvedValue({ recoveryCodes: null });
+  const u = userEvent.setup();
+  renderWelcome();
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
+  await clickContinue(u);
+  await screen.findByRole('heading', { name: 'Verify your email' });
+  await clickContinue(u);
+  await screen.findByRole('heading', { name: 'Add a second lock?' });
+  await u.click(screen.getAllByRole('button', { name: 'Set up' })[1] as HTMLElement);
+
+  // Nothing is enrolled until the password is given.
+  expect(twoFactorApi.enrollTwoFactor).not.toHaveBeenCalled();
+  await u.type(screen.getByLabelText('Your account password'), 'correct horse');
+  await u.click(screen.getByRole('button', { name: 'Show setup code' }));
+  await waitFor(() =>
+    expect(twoFactorApi.enrollTwoFactor).toHaveBeenCalledWith({ password: 'correct horse' }),
+  );
+
+  for (const [index, digit] of [...'123456'].entries()) {
+    const label = index === 0 ? 'Code from your app' : `Code from your app digit ${index + 1}`;
+    await u.type(await screen.findByLabelText(label), digit);
+  }
+  await u.click(screen.getByRole('button', { name: 'Turn on' }));
+  await waitFor(() =>
+    expect(twoFactorApi.confirmTwoFactor).toHaveBeenCalledWith({
+      code: '123456',
+      stepUp: { password: 'correct horse' },
+    }),
+  );
+});
+
 // ── The side step rail ───────────────────────────────────────────────────────
 
 /** The rail row for a step, by its visible label. */

@@ -27,6 +27,7 @@ import {
 import { clearSessionCookie } from '../cookies';
 import { boundStrictRestoreDocument } from '../middleware/restoreDocumentBounds';
 import { requireUser } from '../middleware/session';
+import { refuseSelfIssuedStepUpFactor, topLevelStepUp } from '../middleware/stepUpProvenance';
 import { validateBody } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import type { AppContext } from '../context';
@@ -138,6 +139,7 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     requireUser,
     limiters.login,
     validateBody(deleteAccountRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'account.delete', topLevelStepUp),
     async (req, res) => {
       const body = req.valid?.body as DeleteAccountRequest;
       await ctx.accountDeletion.deleteAccount({ userId: req.authUser!.id, body, ip: req.ip });
@@ -243,6 +245,7 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     // issue per element of a multi-MiB body.
     boundStrictRestoreDocument(restoreJsonLimit),
     validateBody(paranoidDisableRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'paranoid.discard', topLevelStepUp),
     async (req, res) => {
       const body = req.valid?.body as ParanoidDisableRequest;
       res.json(
@@ -260,6 +263,7 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     requireUser,
     limiters.login,
     validateBody(exportRequestSchema),
+    refuseSelfIssuedStepUpFactor(ctx, 'account.export', topLevelStepUp),
     async (req, res) => {
       const body = req.valid?.body as ExportRequest;
       const result = await ctx.dataExport.requestExport({

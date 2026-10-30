@@ -67,6 +67,7 @@ import { generateTotpCode } from '../services/auth/totp';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { passwordStepUp } from '../testing/factorStepUp';
 
 /**
  * Issue #361 — unified web+mobile bearer surface. Exercises the four narrow gaps
@@ -1303,8 +1304,8 @@ describe('E9 bearer fresh-start notice acknowledgement policy', () => {
 
 describe('#888 bearer 2FA generation interleavings', () => {
   it('rejects a first-factor confirmation admitted before promotion', async () => {
-    const { token, userId } = await mintKey(['account:security']);
-    const { secret } = await harness.ctx.twoFactor.enrollTotp(userId);
+    const { token, userId, password } = await mintKey(['account:security']);
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(userId, passwordStepUp(password));
     const admitted = deferred();
     const release = deferred();
     const authenticate = harness.ctx.apiKeys.authenticate.bind(harness.ctx.apiKeys);
@@ -1322,7 +1323,7 @@ describe('#888 bearer 2FA generation interleavings', () => {
     const confirmation = request(harness.app)
       .post('/api/v1/auth/2fa/confirm')
       .set(bearer(token))
-      .send({ code: generateTotpCode(secret) })
+      .send({ code: generateTotpCode(secret), stepUp: { password } })
       .then((response) => response);
     await admitted.promise;
 
@@ -1353,10 +1354,14 @@ describe('#888 bearer 2FA generation interleavings', () => {
   });
 
   it('allows only one of two bearer factor mutations admitted at the same generation', async () => {
-    const { token, userId } = await mintKey(['account:security']);
-    const { secret } = await harness.ctx.twoFactor.enrollTotp(userId);
+    const { token, userId, password } = await mintKey(['account:security']);
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(userId, passwordStepUp(password));
     const { recoveryCodes } = (
-      await harness.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret))
+      await harness.ctx.twoFactor.confirmTotp(
+        userId,
+        generateTotpCode(secret),
+        passwordStepUp(password),
+      )
     ).response;
     expect(recoveryCodes).not.toBeNull();
 
@@ -1393,6 +1398,7 @@ describe('#888 bearer 2FA generation interleavings', () => {
     const disableEmail = request(harness.app)
       .post('/api/v1/auth/2fa/email/disable')
       .set(bearer(token))
+      .send({ stepUp: { password } })
       .then((response) => response);
     await admitted[1]!.promise;
 

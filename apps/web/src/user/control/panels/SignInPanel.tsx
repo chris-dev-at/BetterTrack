@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -14,6 +14,7 @@ import {
   type Passkey,
   type SetPinRequest,
   type TwoFactorStatusResponse,
+  type TwoFactorStepUpCredential,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
@@ -49,6 +50,10 @@ import { Skeleton } from '../../../ui';
 import { Button, Field, Input, Select } from '../../../ui/origin';
 import { PinInput } from '../../components/PinInput';
 import { Alert } from '../../components/ui';
+import {
+  StepUpCredentialFields,
+  type StepUpCredentialKind,
+} from '../../vault/ui/StepUpCredentialFields';
 import {
   PanelFold,
   PanelForm,
@@ -235,7 +240,96 @@ function RecoveryCodesReveal({ codes, onDone }: { codes: readonly string[]; onDo
   );
 }
 
-/** TOTP enroll wizard: scan the QR (or enter the key), then confirm a live code. */
+/** The collected credential as the contract's one-member step-up (a password is never trimmed). */
+function factorStepUpOf(kind: StepUpCredentialKind, value: string): TwoFactorStepUpCredential {
+  return kind === 'password' ? { password: value } : { [kind]: value.trim() };
+}
+
+/**
+ * R-05: every change to a second factor first proves the owner holds a
+ * credential from BEFORE this request — the account password, or a factor that
+ * is already on (an authenticator code or an unused recovery code). The server
+ * verifies it; this form only collects it. The shared {@link StepUpCredentialFields}
+ * control keeps the prompt identical to the vault and Drive gates.
+ */
+function StepUpForm({
+  id,
+  submitLabel,
+  pending,
+  onSubmit,
+  onCancel,
+}: {
+  id: string;
+  submitLabel: string;
+  pending: boolean;
+  onSubmit: (stepUp: TwoFactorStepUpCredential, kind: StepUpCredentialKind) => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const [kind, setKind] = useState<StepUpCredentialKind>('password');
+  const [value, setValue] = useState('');
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    onSubmit(factorStepUpOf(kind, value), kind);
+  }
+
+  return (
+    <PanelForm onSubmit={submit}>
+      <PanelNote>{t('settings.security.twoFactor.stepUp.intro')}</PanelNote>
+      <StepUpCredentialFields
+        credential={value}
+        credentialKind={kind}
+        id={id}
+        onCredentialChange={setValue}
+        onKindChange={(next) => {
+          setKind(next);
+          setValue('');
+        }}
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button disabled={pending || value.trim().length === 0} size="sm" type="submit">
+          {submitLabel}
+        </Button>
+        <Button onClick={onCancel} size="sm" type="button" variant="quiet">
+          {t('common.cancel')}
+        </Button>
+      </div>
+    </PanelForm>
+  );
+}
+
+/**
+ * The credential a two-call flow (enroll → confirm) sends again at confirm. A
+ * password is reused as typed; a code is single-use, so the confirm step asks
+ * for a fresh one instead of replaying the spent one.
+ */
+function useConfirmStepUp(
+  first: { stepUp: TwoFactorStepUpCredential; kind: StepUpCredentialKind } | null,
+) {
+  const [kind, setKind] = useState<StepUpCredentialKind>('code');
+  const [value, setValue] = useState('');
+  const reuse = first?.kind === 'password';
+  return {
+    needsFresh: first !== null && !reuse,
+    ready: reuse || value.trim().length > 0,
+    stepUp: reuse && first ? first.stepUp : factorStepUpOf(kind, value),
+    fields: (id: string) => (
+      <StepUpCredentialFields
+        credential={value}
+        credentialKind={kind}
+        id={id}
+        onCredentialChange={setValue}
+        onKindChange={(next) => {
+          setKind(next);
+          setValue('');
+        }}
+      />
+    ),
+  };
+}
+
+/** TOTP enroll wizard: step up, scan the QR (or enter the key), then confirm a live code. */
 function EnrollWizard({
   onEnrolled,
   onCancel,
@@ -246,26 +340,40 @@ function EnrollWizard({
   const t = useT();
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [first, setFirst] = useState<{
+    stepUp: TwoFactorStepUpCredential;
+    kind: StepUpCredentialKind;
+  } | null>(null);
+  const confirmStepUp = useConfirmStepUp(first);
 
   const enroll = useMutation({
-    mutationFn: enrollTwoFactor,
-    onError: () => setError(t('settings.security.twoFactor.totp.enrollError')),
+    mutationFn: (stepUp: TwoFactorStepUpCredential) => enrollTwoFactor(stepUp),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
-  const enrollStart = enroll.mutate;
-
-  // Kick off enrollment once, when the wizard first mounts.
-  useEffect(() => {
-    enrollStart();
-  }, [enrollStart]);
 
   const confirm = useMutation({
-    mutationFn: () => confirmTwoFactor({ code }),
+    mutationFn: () => confirmTwoFactor({ code, stepUp: confirmStepUp.stepUp }),
     onSuccess: (data) => onEnrolled(data.recoveryCodes),
     onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   if (!enroll.data) {
-    return enroll.isError ? <Alert tone="error">{error}</Alert> : <Skeleton height="h-16" />;
+    return (
+      <div className="flex flex-col gap-3">
+        {error ? <Alert tone="error">{error}</Alert> : null}
+        <StepUpForm
+          id="totp-enroll-step-up"
+          onCancel={onCancel}
+          onSubmit={(stepUp, kind) => {
+            setError(null);
+            setFirst({ stepUp, kind });
+            enroll.mutate(stepUp);
+          }}
+          pending={enroll.isPending}
+          submitLabel={t('common.continue')}
+        />
+      </div>
+    );
   }
 
   function onSubmit(e: FormEvent) {
@@ -305,9 +413,15 @@ function EnrollWizard({
         onChange={setCode}
         value={code}
       />
+      {confirmStepUp.needsFresh ? (
+        <>
+          <PanelNote>{t('settings.security.twoFactor.stepUp.freshCode')}</PanelNote>
+          {confirmStepUp.fields('totp-confirm-step-up')}
+        </>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         <Button
-          disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH}
+          disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH || !confirmStepUp.ready}
           size="sm"
           type="submit"
         >
@@ -454,7 +568,7 @@ function AuthenticatorRow({
   );
 }
 
-type EmailMethodView = 'status' | 'confirming';
+type EmailMethodView = 'status' | 'enrolling' | 'confirming' | 'disabling';
 
 /** Email-code method (§6.1, #298): prove mailbox access, then a code at each sign-in. */
 function EmailMethodRow({
@@ -471,9 +585,14 @@ function EmailMethodRow({
   const [code, setCode] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [first, setFirst] = useState<{
+    stepUp: TwoFactorStepUpCredential;
+    kind: StepUpCredentialKind;
+  } | null>(null);
+  const confirmStepUp = useConfirmStepUp(first);
 
   const enroll = useMutation({
-    mutationFn: enrollEmailTwoFactor,
+    mutationFn: (stepUp: TwoFactorStepUpCredential) => enrollEmailTwoFactor(stepUp),
     onSuccess: () => {
       setError(null);
       setView('confirming');
@@ -483,10 +602,11 @@ function EmailMethodRow({
   });
 
   const confirm = useMutation({
-    mutationFn: () => confirmEmailTwoFactor({ code }),
+    mutationFn: () => confirmEmailTwoFactor({ code, stepUp: confirmStepUp.stepUp }),
     onSuccess: (data) => {
       setView('status');
       setCode('');
+      setFirst(null);
       if (data.recoveryCodes) onFirstRecoveryCodes(data.recoveryCodes);
       else setNotice(t('settings.security.twoFactor.email.enabledNotice'));
       refresh();
@@ -495,8 +615,9 @@ function EmailMethodRow({
   });
 
   const disable = useMutation({
-    mutationFn: disableEmailTwoFactor,
+    mutationFn: (stepUp: TwoFactorStepUpCredential) => disableEmailTwoFactor(stepUp),
     onSuccess: () => {
+      setView('status');
       setNotice(t('settings.security.twoFactor.email.disabledNotice'));
       setError(null);
       refresh();
@@ -510,34 +631,70 @@ function EmailMethodRow({
     confirm.mutate();
   }
 
+  function backToStatus() {
+    setView('status');
+    setCode('');
+    setFirst(null);
+    setError(null);
+  }
+
   return (
     <Row
       hint={t('settings.security.twoFactor.email.cardDescription')}
       label={t('settings.security.twoFactor.email.cardTitle')}
-      stack={view === 'confirming'}
+      stack={view !== 'status'}
     >
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {error ? <Alert tone="error">{error}</Alert> : null}
-      {enabled ? (
+      {view === 'disabling' ? (
+        <StepUpForm
+          id="email-disable-step-up"
+          onCancel={backToStatus}
+          onSubmit={(stepUp) => {
+            setError(null);
+            disable.mutate(stepUp);
+          }}
+          pending={disable.isPending}
+          submitLabel={
+            disable.isPending
+              ? t('settings.security.twoFactor.turningOff')
+              : t('settings.security.twoFactor.email.turnOffFull')
+          }
+        />
+      ) : enabled ? (
         <>
           <span className="bt-pos" style={{ fontSize: 12.5 }}>
             {t('settings.security.twoFactor.enabledLabel')}
           </span>
           <Button
-            disabled={disable.isPending}
             onClick={() => {
               setNotice(null);
-              disable.mutate();
+              setError(null);
+              setView('disabling');
             }}
             size="sm"
             type="button"
             variant="danger"
           >
-            {disable.isPending
-              ? t('settings.security.twoFactor.turningOff')
-              : t('settings.security.twoFactor.turnOff')}
+            {t('settings.security.twoFactor.turnOff')}
           </Button>
         </>
+      ) : view === 'enrolling' ? (
+        <StepUpForm
+          id="email-enroll-step-up"
+          onCancel={backToStatus}
+          onSubmit={(stepUp, kind) => {
+            setError(null);
+            setFirst({ stepUp, kind });
+            enroll.mutate(stepUp);
+          }}
+          pending={enroll.isPending}
+          submitLabel={
+            enroll.isPending
+              ? t('settings.security.twoFactor.email.sendingCode')
+              : t('common.continue')
+          }
+        />
       ) : view === 'confirming' ? (
         <form className="flex flex-col gap-3" onSubmit={onConfirm}>
           <PanelNote>{t('settings.security.twoFactor.email.confirmInstructions')}</PanelNote>
@@ -549,9 +706,17 @@ function EmailMethodRow({
             onChange={setCode}
             value={code}
           />
+          {confirmStepUp.needsFresh ? (
+            <>
+              <PanelNote>{t('settings.security.twoFactor.stepUp.freshCode')}</PanelNote>
+              {confirmStepUp.fields('email-confirm-step-up')}
+            </>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Button
-              disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH}
+              disabled={
+                confirm.isPending || code.length !== TOTP_CODE_LENGTH || !confirmStepUp.ready
+              }
               size="sm"
               type="submit"
             >
@@ -559,40 +724,29 @@ function EmailMethodRow({
                 ? t('settings.security.twoFactor.confirming')
                 : t('settings.security.twoFactor.confirmAndEnable')}
             </Button>
-            <Button
-              onClick={() => {
-                setView('status');
-                setCode('');
-                setError(null);
-              }}
-              size="sm"
-              type="button"
-              variant="quiet"
-            >
+            <Button onClick={backToStatus} size="sm" type="button" variant="quiet">
               {t('common.cancel')}
             </Button>
           </div>
         </form>
       ) : (
         <Button
-          disabled={enroll.isPending}
           onClick={() => {
             setNotice(null);
-            enroll.mutate();
+            setError(null);
+            setView('enrolling');
           }}
           size="sm"
           type="button"
         >
-          {enroll.isPending
-            ? t('settings.security.twoFactor.email.sendingCode')
-            : t('settings.security.twoFactor.email.setup')}
+          {t('settings.security.twoFactor.email.setup')}
         </Button>
       )}
     </Row>
   );
 }
 
-/** Shared recovery-code row, shown while any method is on. */
+/** Shared recovery-code row, shown while any method is on. Regenerating needs the step-up. */
 function RecoveryCodesRow({
   remaining,
   onRegenerated,
@@ -602,13 +756,15 @@ function RecoveryCodesRow({
 }) {
   const t = useT();
   const [error, setError] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
   const regenerate = useMutation({
-    mutationFn: regenerateRecoveryCodes,
+    mutationFn: (stepUp: TwoFactorStepUpCredential) => regenerateRecoveryCodes(stepUp),
     onSuccess: (data) => {
       setError(null);
+      setAsking(false);
       onRegenerated(data.recoveryCodes);
     },
-    onError: () => setError(t('settings.security.twoFactor.recoveryCodes.regenerateError')),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   return (
@@ -620,18 +776,32 @@ function RecoveryCodesRow({
         { count: remaining },
       )}
       label={t('settings.security.twoFactor.recoveryCodes.cardTitle')}
+      stack={asking}
     >
-      {error ? <span className="bt-field__error">{error}</span> : null}
-      <Button
-        disabled={regenerate.isPending}
-        onClick={() => regenerate.mutate()}
-        size="sm"
-        type="button"
-      >
-        {regenerate.isPending
-          ? t('settings.security.twoFactor.recoveryCodes.regenerating')
-          : t('settings.security.twoFactor.recoveryCodes.regenerate')}
-      </Button>
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      {asking ? (
+        <StepUpForm
+          id="recovery-regenerate-step-up"
+          onCancel={() => {
+            setAsking(false);
+            setError(null);
+          }}
+          onSubmit={(stepUp) => {
+            setError(null);
+            regenerate.mutate(stepUp);
+          }}
+          pending={regenerate.isPending}
+          submitLabel={
+            regenerate.isPending
+              ? t('settings.security.twoFactor.recoveryCodes.regenerating')
+              : t('settings.security.twoFactor.recoveryCodes.regenerate')
+          }
+        />
+      ) : (
+        <Button onClick={() => setAsking(true)} size="sm" type="button">
+          {t('settings.security.twoFactor.recoveryCodes.regenerate')}
+        </Button>
+      )}
     </Row>
   );
 }

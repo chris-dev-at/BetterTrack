@@ -1159,6 +1159,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     email,
     sessions,
+    passwordHasher,
   });
 
   // Passkeys / WebAuthn (§13.4 V4-P4): register/manage from Settings → Security and

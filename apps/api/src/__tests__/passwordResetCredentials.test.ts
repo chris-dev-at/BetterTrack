@@ -534,13 +534,19 @@ describe('forced password change after a temporary-password sign-in through 2FA'
   it('a user who signed in with the temporary password and TOTP changes it without the current password', async () => {
     const user = await seedFreshUser();
     const agent = await loginAgent(user.email, user.password);
+    const stepUp = { password: user.password };
     const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+      (
+        await agent
+          .post('/api/v1/auth/2fa/enroll')
+          .set(...XRW)
+          .send({ stepUp })
+      ).body,
     );
     const confirmed = await agent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret), stepUp });
     expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
 
     const { temp } = await adminResetPassword(user.id);

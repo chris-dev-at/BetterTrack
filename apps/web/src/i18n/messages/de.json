@@ -936,7 +936,8 @@
           "codeLabel": "E-Mail-Code",
           "codeHint": "Gib den 6-stelligen Code ein, den wir dir gerade gesendet haben.",
           "sendingCode": "Code wird gesendet…",
-          "setup": "E-Mail-Codes einrichten"
+          "setup": "E-Mail-Codes einrichten",
+          "turnOffFull": "E-Mail-Codes deaktivieren"
         },
         "recoveryCodes": {
           "saveNotice": "Bewahre diese Wiederherstellungscodes sicher auf. Jeder kann einmal verwendet werden, um dich anzumelden, falls du den Zugriff auf deinen Authenticator oder deine E-Mail verlierst — sie werden nicht erneut angezeigt.",
@@ -950,6 +951,10 @@
           "remainingOther": "Noch {{count}} Wiederherstellungscodes übrig.",
           "regenerating": "Wird neu erzeugt…",
           "regenerate": "Wiederherstellungscodes neu erzeugen"
+        },
+        "stepUp": {
+          "intro": "Bestätige zuerst, dass du es bist: mit deinem Kontopasswort oder einem Code eines zweiten Faktors, den du schon nutzt.",
+          "freshCode": "Codes gelten nur einmal. Gib einen neuen Authenticator-Code oder einen anderen Wiederherstellungscode ein, um abzuschließen."
         }
       },
       "google": {
@@ -7226,7 +7231,11 @@
         "invalidCode": "Dieser Code ist falsch oder abgelaufen.",
         "rateLimited": "Zu viele Codes. Bitte gleich noch einmal probieren.",
         "enrollError": "Die Einrichtung konnte nicht gestartet werden.",
-        "enabled": "Die Zwei-Faktor-Authentifizierung ist aktiv."
+        "enabled": "Die Zwei-Faktor-Authentifizierung ist aktiv.",
+        "passwordLabel": "Dein Kontopasswort",
+        "passwordHint": "Zum Aktivieren der Zwei-Faktor-Anmeldung brauchen wir zuerst dein Passwort.",
+        "wrongPassword": "Dieses Passwort ist falsch.",
+        "passwordContinue": "Einrichtungscode anzeigen"
       },
       "recoveryCodes": {
         "description": "Bewahre sie sicher auf. Jeder Code meldet dich einmal an, falls du deine App verlierst.",
