@@ -33,6 +33,8 @@ import {
 } from '../components/ui';
 import { GoogleButton } from './GoogleButton';
 import {
+  authorizeReturnTarget,
+  continuationFromSearch,
   registerPathForAuthorize,
   safeAuthorizeContinuation,
   wantsRegisterScreen,
@@ -47,13 +49,25 @@ import {
   type RememberedAccount,
 } from './rememberedAccount';
 
-/** Where to land after a successful sign-in: the intended route, else home. */
-function intendedPath(state: unknown): string {
+/**
+ * Where to land after a successful sign-in: the intended route, else home.
+ *
+ * Two carriers, deliberately unequal:
+ *  - router `state.from` (set by `RequireUser` / the consent screen's "Use
+ *    another account") — history state no other site can write, so any
+ *    same-origin path is honoured, as always;
+ *  - a `?returnTo=` query — the only carrier that survives a FULL-PAGE round
+ *    trip, i.e. the Google callback bouncing a failed or cancelled sign-in back
+ *    here (owner directive 2026-10-29). A query is attacker-controlled, so it is
+ *    honoured ONLY as a pending OAuth authorize request given exactly once
+ *    ({@link continuationFromSearch}); anything else is ignored.
+ */
+function intendedPath(state: unknown, search: string): string {
   if (state && typeof state === 'object' && 'from' in state) {
     const from = (state as { from?: unknown }).from;
     if (typeof from === 'string' && from.startsWith('/') && !from.startsWith('//')) return from;
   }
-  return '/';
+  return continuationFromSearch(search) ?? '/';
 }
 
 const GOOGLE_ERROR_KEYS: Record<string, string> = {
@@ -101,12 +115,14 @@ export function LoginPage() {
     useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = intendedPath(location.state);
+  const from = intendedPath(location.state, location.search);
   // An OAuth authorize flow bounces an anonymous visitor here with the full
   // `/oauth/authorize?…` URL stashed in `from` (see ConsentPage). Such a login
   // is special (V4-P2b, §399 §A): no "stay signed in" checkbox up front, and a
   // PIN-less account is never persisted — the checkbox appears only afterwards,
-  // once the account is known to have a PIN.
+  // once the account is known to have a PIN. It offers EVERY sign-in method the
+  // web login offers (owner directive 2026-10-29) — each one continues into
+  // the pending authorize request instead of the webapp.
   const oauthContext = from.startsWith('/oauth/authorize');
   // App-native registration (owner directive 2026-08-07): the SAME pending
   // authorize request, validated as a safe continuation, is handed to the
@@ -119,6 +135,13 @@ export function LoginPage() {
   // the OAuth flow has a continuation to carry. (An `oauthContext` without a
   // safe continuation gets the old behavior: password form only.)
   const offerRegistration = !oauthContext || authorizeContinuation !== null;
+  // Google leaves the SPA (two full-page redirects), so inside the OAuth flow it
+  // must carry the pending authorize request through the API's `state` — the
+  // callback then lands back on it (owner directive 2026-10-29). Without a safe
+  // continuation to carry it would strand the user in the webapp, so — like
+  // registration — it is offered only when there is one.
+  const googleReturnTo = oauthContext ? authorizeReturnTarget(authorizeContinuation) : null;
+  const offerGoogle = !oauthContext || googleReturnTo !== null;
   // State-ladder step 2 (§399 §B): a device that remembers a PIN user shows the
   // "Log in as [name]? / Another account" chooser instead of a blank login. Read
   // once; "Another account" clears it (→ blank login). Step 1 (a live PIN-gated
@@ -138,8 +161,9 @@ export function LoginPage() {
   // OAuth flow — the choice is deferred to the PIN-gated step below.
   const [staySignedIn, setStaySignedIn] = useState(true);
   // Passkey sign-in (§13.4 V4-P4): offered only when the browser supports WebAuthn.
-  // Detected once so the button appears/hides deterministically. Hidden in the
-  // OAuth-authorize flow, exactly like the Google button.
+  // Detected once so the button appears/hides deterministically. Offered in the
+  // OAuth-authorize flow too: the ceremony never leaves the page, so it simply
+  // continues into the authorize request like a password login does.
   const [supportsPasskey] = useState(() => browserSupportsWebAuthn());
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   // Non-null once the password step returns a 2FA challenge: swaps the password
@@ -281,11 +305,19 @@ export function LoginPage() {
   // server has already set the session cookie (a user-verified passkey is strong
   // auth — no 2FA step), so we just adopt the user and land. A user-cancelled
   // prompt is silent; any real failure shows a graceful inline error.
+  //
+  // Inside the OAuth flow it follows the password login's §399 §A rule: the
+  // session is asked for EPHEMERAL, and `landAuthenticated` offers a PIN account
+  // the "stay signed in" step before continuing into the authorize request.
   async function onPasskeySignIn() {
     setError(null);
     setPasskeyBusy(true);
     try {
-      const me = await signInWithPasskey(staySignedIn);
+      const me = await signInWithPasskey(oauthContext ? false : staySignedIn);
+      if (oauthContext) {
+        landAuthenticated(me);
+        return;
+      }
       adoptUser(me);
       navigate(from, { replace: true });
     } catch (err) {
@@ -385,20 +417,23 @@ export function LoginPage() {
           sits on top; the password form follows; the prominent sign-up box
           returns to the very bottom with an OR divider restored between the
           form and it (partially reverts the #525 addendum ordering). The
-          OAuth-authorize flow keeps only the password form (its post-sign-in
-          redirect would drop the sign-up / Google context). */}
+          OAuth-authorize flow renders the SAME methods in the same single
+          full-width column (owner directive 2026-10-29) — nothing is dropped at
+          phone width in a Custom Tab — and each continues into the pending
+          authorize request. */}
       {/* (1) Google sign-in (§13.4 V4-P4b). Shown whenever the deployment has
           Google configured (so existing Google-linked users can sign in even in
-          `closed` mode), but never inside the OAuth-authorize flow. */}
-      {googleEnabled && !oauthContext ? (
+          `closed` mode). Inside the OAuth flow the authorize request rides the
+          round trip as `returnTo` (bound server-side to the Google `state`). */}
+      {googleEnabled && offerGoogle ? (
         <div className="mb-2.5">
-          <GoogleButton />
+          <GoogleButton returnTo={googleReturnTo} />
         </div>
       ) : null}
       {/* (1b) Passkey sign-in (§13.4 V4-P4). Feature-detected — shown only when
-          the browser supports WebAuthn — and, like Google, hidden in the
-          OAuth-authorize flow. A passwordless alternative to the form below. */}
-      {supportsPasskey && !oauthContext ? (
+          the browser supports WebAuthn. A passwordless alternative to the form
+          below, in the OAuth flow as everywhere else. */}
+      {supportsPasskey ? (
         <div className="mb-5">
           <Button
             type="button"
@@ -406,13 +441,14 @@ export function LoginPage() {
             onClick={onPasskeySignIn}
             disabled={passkeyBusy}
             className="w-full"
+            data-sign-in-method="passkey"
           >
             {passkeyBusy ? t('auth.login.passkeySigningIn') : t('auth.login.passkeyButton')}
           </Button>
         </div>
       ) : null}
       {/* (2) Password login form. */}
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" data-sign-in-method="password">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
           label={t('auth.login.identifierLabel')}

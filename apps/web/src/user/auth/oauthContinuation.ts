@@ -14,17 +14,31 @@
  * whether a continuation is safe to navigate to — is unit-testable on its own
  * (see `oauthContinuation.test.ts`).
  *
+ * The same continuation now also rides the Google round trip (owner directive
+ * 2026-10-29): the login and register screens hand it to the API's
+ * `/auth/google/start?returnTo=…`, the API binds it to the single-use Google
+ * `state` it issues, and the callback lands the browser back on it (or on
+ * `/login?returnTo=…` / `/register?google=connected&returnTo=…`). A passkey
+ * sign-in never leaves the page, so it simply navigates on to it.
+ *
  * **Security (§10, open-redirect class).** A continuation arrives as a plain
- * query parameter (`/register?returnTo=…`), i.e. fully attacker-controlled. It
- * is therefore not sanitized or normalized but *validated*, fail-closed, against
- * one deliberately narrow rule — see {@link safeAuthorizeContinuation}.
+ * query parameter (`/register?returnTo=…`, `/login?returnTo=…`), i.e. fully
+ * attacker-controlled. It is therefore not sanitized or normalized but
+ * *validated*, fail-closed, against one deliberately narrow rule — see
+ * {@link safeAuthorizeContinuation}; the API re-validates with the very same
+ * function before it stores or redirects to anything.
  */
 
-/** The one path a continuation may point at. Matches the SPA route. */
-export const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
+import { OAUTH_RETURN_TO_PARAM, safeAuthorizeContinuation } from '@bettertrack/contracts';
 
-/** Query parameter that carries the continuation into `/register`. */
-export const OAUTH_RETURN_TO_PARAM = 'returnTo';
+// The guard itself lives in `@bettertrack/contracts` so the SPA and the API's
+// `/auth/google/start` validate a continuation with ONE implementation — the
+// two sides of the boundary cannot drift (owner directive 2026-10-29).
+export {
+  OAUTH_AUTHORIZE_PATH,
+  OAUTH_RETURN_TO_PARAM,
+  safeAuthorizeContinuation,
+} from '@bettertrack/contracts';
 
 /**
  * Optional hint on the authorize URL itself. The mobile app's "Create account"
@@ -34,54 +48,6 @@ export const OAUTH_RETURN_TO_PARAM = 'returnTo';
  */
 export const OAUTH_SCREEN_PARAM = 'screen';
 export const OAUTH_SCREEN_REGISTER = 'register';
-
-/** Rejected outright: anything at or below SPACE, plus DEL. */
-function hasControlOrSpace(value: string): boolean {
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0;
-    if (code <= 0x20 || code === 0x7f) return true;
-  }
-  return false;
-}
-
-/**
- * Validate a continuation target.
- *
- * Accepted — and nothing else:
- *
- *  1. a `string` that starts with a single `/` (a same-origin ABSOLUTE PATH,
- *     never a URL: `https://evil.test`, `javascript:…` and bare relative paths
- *     all fail here);
- *  2. not starting with `//` (a protocol-relative URL is a different origin);
- *  3. containing no backslash (`/\evil.test` is normalized to `//evil.test` by
- *     several browsers), no `#`, and no control character or raw whitespace
- *     (defeats newline smuggling and parser tricks);
- *  4. whose path component — everything before the first `?` — is EXACTLY
- *     {@link OAUTH_AUTHORIZE_PATH}, optionally with one trailing slash. The
- *     comparison is case-sensitive and literal: no traversal, no percent-encoded
- *     variants, no other internal route, not even `/oauth/authorizeX`.
- *
- * The query string is deliberately NOT inspected: it carries the OAuth request
- * (`client_id`, `state`, PKCE `code_challenge`, `redirect_uri`) which must
- * survive verbatim. That is safe because nothing in this flow ever navigates to
- * a `redirect_uri` taken from the query — only to the API-validated `redirectTo`
- * returned by an explicit approve/deny (see `ConsentPage`).
- *
- * @returns the value unchanged when it is safe, else `null`.
- */
-export function safeAuthorizeContinuation(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string' || raw.length === 0) return null;
-  if (!raw.startsWith('/')) return null;
-  if (raw.startsWith('//')) return null;
-  if (raw.includes('\\')) return null;
-  if (raw.includes('#')) return null;
-  if (hasControlOrSpace(raw)) return null;
-
-  const queryAt = raw.indexOf('?');
-  const path = queryAt === -1 ? raw : raw.slice(0, queryAt);
-  if (path !== OAUTH_AUTHORIZE_PATH && path !== `${OAUTH_AUTHORIZE_PATH}/`) return null;
-  return raw;
-}
 
 /**
  * Drop the `screen` hint from an authorize URL, leaving everything else byte
@@ -130,4 +96,30 @@ export function registerPathForAuthorize(raw: string | null | undefined): string
   if (continuation === null) return '/register';
   const target = withoutScreenHint(continuation);
   return `/register?${OAUTH_RETURN_TO_PARAM}=${encodeURIComponent(target)}`;
+}
+
+/**
+ * The authorize request to hand to a round trip that LEAVES the SPA — Google
+ * sign-in goes through two full-page redirects, so router state cannot carry
+ * it. `null` when `raw` is not a safe continuation (the caller then starts a
+ * plain web sign-in, exactly as before). The `screen` hint is stripped for the
+ * same reason as in {@link registerPathForAuthorize}: coming back with it would
+ * bounce a failed sign-in straight onto the register form.
+ */
+export function authorizeReturnTarget(raw: string | null | undefined): string | null {
+  const continuation = safeAuthorizeContinuation(raw);
+  return continuation === null ? null : withoutScreenHint(continuation);
+}
+
+/**
+ * The continuation a page URL carries in `?returnTo=` (`/login`, `/register`),
+ * or `null`. Exactly ONE occurrence is honoured: a repeated parameter is
+ * ambiguous (parsers disagree on which value wins, and the API's
+ * `/auth/google/start` parses it to an array and refuses it), so the SPA
+ * refuses it too, fail-closed, instead of silently picking the first.
+ */
+export function continuationFromSearch(search: URLSearchParams | string): string | null {
+  const params = typeof search === 'string' ? new URLSearchParams(search) : search;
+  const values = params.getAll(OAUTH_RETURN_TO_PARAM);
+  return values.length === 1 ? safeAuthorizeContinuation(values[0]) : null;
 }
