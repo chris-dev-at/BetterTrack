@@ -515,7 +515,12 @@ describe('mirrorchain M5 — attribution is derived from the VIEWER (design §10
     const aliceTx = [...overlay.transactions.values()];
     expect(aliceTx.length).toBeGreaterThan(0);
     for (const info of aliceTx) {
-      expect(info.addedBy).toEqual({ userId: alice.id, username: 'aliceM5', profileIcon: 'fox' });
+      expect(info.addedBy).toEqual({
+        state: 'shown',
+        userId: alice.id,
+        username: 'aliceM5',
+        profileIcon: 'fox',
+      });
     }
     expect(
       [...overlay.cashSources.values()].some(
@@ -538,7 +543,12 @@ describe('mirrorchain M5 — attribution is derived from the VIEWER (design §10
     const forkTx = [...fork.transactions.values()];
     expect(forkTx.length).toBeGreaterThan(0);
     for (const info of forkTx) {
-      expect(info.addedBy).toEqual({ userId: alice.id, username: 'aliceM5', profileIcon: null });
+      expect(info.addedBy).toEqual({
+        state: 'shown',
+        userId: alice.id,
+        username: 'aliceM5',
+        profileIcon: null,
+      });
     }
     // A non-member reading the fork (a shared fork) is still a third party.
     expectStripped(await harness.ctx.mirror.overlayForPortfolio(bPid, { viewerId: carol.id }), [
