@@ -440,8 +440,9 @@ describe('snapshots.repairFxHoles', () => {
     const db = await makeDb();
     const { assets, holed, clean } = await seedHoledEstate(db);
     const cleanBefore = await rowsOf(db, clean);
-    expect(usdOf((await rowsOf(db, holed)).find((r) => r.date === dayOffset(-40))!, assets.usdId))
-      .toBeUndefined();
+    expect(
+      usdOf((await rowsOf(db, holed)).find((r) => r.date === dayOffset(-40))!, assets.usdId),
+    ).toBeUndefined();
 
     // Observe the durable state at the moment the recompute starts: the marker
     // must already be down at the earliest hole, and the rows from it gone.
@@ -565,9 +566,10 @@ describe('snapshots.repairFxHoles', () => {
       const { assets, holed } = await seedHoledEstate(db);
       const { log } = capturingLogger();
 
-      await createSnapshotsFxHoleRepairJob(
-        repairDeps(db, snapshotService(db, fx, log)),
-      ).handler(makeJob(), makeCtx(log));
+      await createSnapshotsFxHoleRepairJob(repairDeps(db, snapshotService(db, fx, log))).handler(
+        makeJob(),
+        makeCtx(log),
+      );
 
       const completed = (await repairAudit(db)).find(
         (r) => r.action === 'snapshots.fx_hole_repair_completed',
@@ -711,10 +713,7 @@ describe('snapshots.repairFxHoles', () => {
     };
 
     await expect(
-      createSnapshotsFxHoleRepairJob(repairDeps(db, snapshots)).handler(
-        makeJob(),
-        makeCtx(log),
-      ),
+      createSnapshotsFxHoleRepairJob(repairDeps(db, snapshots)).handler(makeJob(), makeCtx(log)),
     ).rejects.toThrow(/0 unreadable and 1 unmarked/);
     // Nothing was written, so the retry finds the same hole.
     expect(await rowsOf(db, holed)).toEqual(rowsBefore);

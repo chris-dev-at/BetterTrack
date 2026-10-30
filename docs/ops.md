@@ -671,11 +671,11 @@ rewrite the whole range without the currency, and a two-day hole would become we
 **Security & API → Audit log**, and type `snapshots.` into **Action**. The direct link
 is `/admin/audit?action=snapshots.`. Click a row to see its counts under **Details**.
 
-| Row | `meta` |
-| --- | --- |
+| Row                                   | `meta`                                                                                                                                                                 |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `snapshots.fx_hole_repair_enumerated` | **Before** the repair: `portfoliosScanned`, `portfoliosWithHoles`, `usersAffected`, `earliestHoleDay`, `skippedVaulted`, `skippedParanoid`, `scanFailed`, `durationMs` |
-| `snapshots.fx_hole_repair_completed` | The same counts plus `repaired`, `refused`, `failed`, `unmarked`, and the total `durationMs`. The row's time is when the repair finished. |
-| `snapshots.fx_hole_repair_skipped` | `reason: fix_absent` and `detail` (`guard_version` or `guard_self_check`) |
+| `snapshots.fx_hole_repair_completed`  | The same counts plus `repaired`, `refused`, `failed`, `unmarked`, and the total `durationMs`. The row's time is when the repair finished.                              |
+| `snapshots.fx_hole_repair_skipped`    | `reason: fix_absent` and `detail` (`guard_version` or `guard_self_check`)                                                                                              |
 
 Both rows carry `runId` and `attempt`. They hold counts and one ISO day, never a
 portfolio, user or asset id. The worker log has the same numbers as `repair.enumerated`

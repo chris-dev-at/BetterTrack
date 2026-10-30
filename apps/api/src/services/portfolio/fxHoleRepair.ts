@@ -184,7 +184,11 @@ export function checkFxHoleRepairGate(
       quantity: 1,
       executedAt: new Date('2000-01-01T00:00:00.000Z'),
     };
-    const sell = { ...buy, side: 'sell' as const, executedAt: new Date('2000-01-03T00:00:00.000Z') };
+    const sell = {
+      ...buy,
+      side: 'sell' as const,
+      executedAt: new Date('2000-01-03T00:00:00.000Z'),
+    };
     const held = guard(anchor, rows, [buy]);
     const sold = guard(anchor, rows, [buy, sell]);
     const flagsHeld =
@@ -380,14 +384,15 @@ export async function runFxHoleRepair(deps: FxHoleRepairDeps): Promise<FxHoleRep
   };
   // The PRE-repair truth, durable before the first write: if the run dies in
   // pass 2, the owner still learns how many portfolios carried the hole.
+  const enumeratedMs = now() - startedAt;
   logger.info(
-    { event: 'repair.enumerated', runId, attempt, ...enumeration, durationMs: now() - startedAt },
+    { event: 'repair.enumerated', runId, attempt, ...enumeration, durationMs: enumeratedMs },
     'repair.enumerated',
   );
   await audit.record({
     action: AuditAction.SnapshotFxHoleRepairEnumerated,
     targetType: AUDIT_TARGET_TYPE,
-    meta: { runId, attempt, ...enumeration, durationMs: now() - startedAt },
+    meta: { runId, attempt, ...enumeration, durationMs: enumeratedMs },
   });
 
   // ── Pass 2: invalidate from the earliest hole, recompute through the guards ──

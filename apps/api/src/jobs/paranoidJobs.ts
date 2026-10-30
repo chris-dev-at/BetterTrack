@@ -37,7 +37,8 @@ const PARANOID_USER_FILTER_JOB = Symbol('paranoid-user-filter-job');
 export const VAULTED_PORTFOLIO_JOB_IDEMPOTENCY_KEYS: Readonly<Record<string, string>> = {
   'snapshots.recompute': '(portfolio_id, date)',
   'snapshots.backfill': '(portfolio_id, date)',
-  'snapshots.repairFxHoles': 'run fx-hole-repair-v1 / (portfolio_id, dirty_from) + (portfolio_id, date)',
+  'snapshots.repairFxHoles':
+    'run fx-hole-repair-v1 / (portfolio_id, dirty_from) + (portfolio_id, date)',
   'notifications.earningsRemind': '(user_id, asset_id, report_date)',
   'marketIntel.dividendScan': '(recipient_user_id, asset_id, ex_date)',
   'standingOrders.process': '(standing_order_id, period_key)',
