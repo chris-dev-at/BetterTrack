@@ -397,6 +397,22 @@ describe('a rotation never mints into a grant or family revoked after its lookup
     expect(await tokenCounts(grantId)).toEqual(before);
   });
 
+  // Item f (PR-B ∘ PR-C): the family check runs AHEAD of the consume, so an
+  // ALREADY-ROTATED token on a revoked family is refused `revoked` — never
+  // `replayed` with a `current` lookup the grace path could re-serve from.
+  it('answers revoked — not replayed — for an already-consumed token on a revoked family', async () => {
+    const { app, a, grantId, familyA } = await twoInstalls();
+    await refreshOk(app, a.refresh_token);
+    const consumed = await refreshRowOf(a.refresh_token);
+    expect(consumed.consumedAt).toBeInstanceOf(Date);
+    await harness.ctx.oauth.revokeOwnFamily({ userId: app.userId, grantId, familyId: familyA });
+    const before = await tokenCounts(grantId);
+
+    const repo = createOAuthRepository(harness.db);
+    expect(await repo.rotateRefreshToken(rotationOf(consumed))).toEqual({ outcome: 'revoked' });
+    expect(await tokenCounts(grantId)).toEqual(before);
+  });
+
   it('refuses under the grant lock once the grant itself is revoked (legacy chain too)', async () => {
     const { app, a, grantId } = await twoInstalls();
     const row = await refreshRowOf(a.refresh_token);

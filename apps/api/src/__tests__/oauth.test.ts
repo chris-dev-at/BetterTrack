@@ -1901,6 +1901,44 @@ describe('refresh-token rotation', () => {
     await expectFamilyTheft(first.refresh_token, clientId, 'legacy_envelope');
   });
 
+  // Item f (PR-B ∘ PR-C): a revoked FAMILY answers "revoked" before any
+  // re-serve is considered, inside the strict window and under the 24 h
+  // unused-successor rule alike — it is never handed its pair, and the
+  // replay is not re-classified as theft (the family keeps its own reason).
+  for (const [label, seconds] of [
+    ['inside the strict 60 s window', 5],
+    ['under the 24 h unused-successor rule', 10 * 60],
+  ] as const) {
+    it(`first-party: a revoked family is never re-served its unused successor (${label})`, async () => {
+      const { clientId, first } = await issueFirstPartyPair();
+      const next = await rotatePublic(clientId, first.refresh_token);
+      // RFC 7009 revoke of the install's current refresh token: the family dies
+      // without its access token ever authenticating (first_used_at stays NULL),
+      // so only the revoked check stands between the replay and a re-serve.
+      const revoked = await request(harness.app)
+        .post('/api/v1/oauth/revoke')
+        .send({ token: next.refresh_token, client_id: clientId });
+      expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+      expect((await accessRow(next.access_token)).firstUsedAt).toBeNull();
+      const family = await familyFor(first.refresh_token);
+      expect(family.revokedReason).toBe('revoke_endpoint');
+
+      advance(seconds);
+      const replay = await refreshPublic(clientId, first.refresh_token);
+      expectInvalidGrant(replay);
+      expect(apiErrorSchema.parse(replay.body).error.message).toBe(
+        'This authorization has been revoked.',
+      );
+      expect(await graceAudits()).toHaveLength(0);
+      expect((await familyFor(first.refresh_token)).revokedReason).toBe('revoke_endpoint');
+      const grant = await grantFor(first.refresh_token);
+      expect(grant.revokedAt).toBeNull();
+      expect(await familyRevocationAudits(grant.id)).toEqual([
+        { clientId, familyId: family.id, reason: 'revoke_endpoint' },
+      ]);
+    });
+  }
+
   it('first-party refresh tokens slide to a fresh 90 days on every rotation; third-party ones to 30 days', async () => {
     const day = 24 * 3600;
     const fp = await issueFirstPartyPair();
