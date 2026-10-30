@@ -1,5 +1,6 @@
 import type {
   AcknowledgeAnnouncementRequest,
+  AnnouncementContentLocale,
   AcknowledgeAnnouncementResponse,
   AnnouncementAcknowledgement,
   AnnouncementSeverity,
@@ -20,8 +21,8 @@ import type { AuditService } from '../audit/auditService';
 import {
   announcementContentSha256,
   availableLocales,
+  chooseTitleLocale,
   renderAnnouncement,
-  resolveContentLocale,
 } from './announcementContent';
 
 /**
@@ -70,8 +71,15 @@ export interface UserAnnouncementService {
     body: AcknowledgeAnnouncementRequest,
     channel: AcknowledgementChannel,
   ): Promise<AcknowledgeAnnouncementResponse>;
-  /** `MeResponse.pendingAcknowledgements` — and the gate's question (§6.19.7). */
-  pendingAcknowledgements(caller: UserAnnouncementCaller): Promise<PendingAcknowledgement[]>;
+  /**
+   * `MeResponse.pendingAcknowledgements` — and the gate's question (§6.19.7).
+   * `preferredLocales` is the request's `Accept-Language`, parsed; titles are
+   * chosen by {@link chooseTitleLocale}.
+   */
+  pendingAcknowledgements(
+    caller: UserAnnouncementCaller,
+    preferredLocales?: readonly AnnouncementContentLocale[],
+  ): Promise<PendingAcknowledgement[]>;
 }
 
 const iso = (value: Date | null): string | null => (value ? value.toISOString() : null);
@@ -131,9 +139,10 @@ function toAcknowledgement(receipt: AnnouncementReceiptRow): AnnouncementAcknowl
 
 export function toPendingAcknowledgement(
   row: AnnouncementRow,
-  locale: string | null | undefined,
+  storedLocale: string | null | undefined,
+  preferredLocales: readonly AnnouncementContentLocale[] = [],
 ): PendingAcknowledgement {
-  const contentLocale = resolveContentLocale(row, locale);
+  const contentLocale = chooseTitleLocale(row, preferredLocales, storedLocale);
   return {
     id: row.id,
     severity: row.severity as AnnouncementSeverity,
@@ -151,9 +160,12 @@ export function createUserAnnouncementService(
   const notFoundError = () =>
     notFound('Announcement not found.', ANNOUNCEMENT_ERROR_CODES.notFound);
 
-  async function pending(caller: UserAnnouncementCaller): Promise<PendingAcknowledgement[]> {
+  async function pending(
+    caller: UserAnnouncementCaller,
+    preferredLocales: readonly AnnouncementContentLocale[] = [],
+  ): Promise<PendingAcknowledgement[]> {
     const rows = await receipts.listPendingAcknowledgements(viewerOf(caller), now());
-    return rows.map((row) => toPendingAcknowledgement(row, caller.locale));
+    return rows.map((row) => toPendingAcknowledgement(row, caller.locale, preferredLocales));
   }
 
   return {

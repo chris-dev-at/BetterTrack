@@ -761,6 +761,21 @@ export const userAnnouncementQuerySchema = z
   .strict();
 export type UserAnnouncementQuery = z.infer<typeof userAnnouncementQuerySchema>;
 
+/**
+ * The payload of the `account.notice` inbox row an announcement's fan-out
+ * writes (contract §6). `announcementId` names the announcement — the web
+ * deep-links the row to it, and each client picks its own target;
+ * `announcementKind` was added by §6.19. Not strict: rows also carry the
+ * dedupe `eventKey`, and clients ignore unknown keys.
+ */
+export const announcementNoticePayloadSchema = z.object({
+  notice: z.literal('announcement'),
+  announcementId: z.string().uuid(),
+  announcementKind: announcementKindSchema.optional(),
+  eventKey: z.string().optional(),
+});
+export type AnnouncementNoticePayload = z.infer<typeof announcementNoticePayloadSchema>;
+
 /** At most this many items in the user list (§4.1). */
 export const USER_ANNOUNCEMENT_LIST_MAX = 50;
 

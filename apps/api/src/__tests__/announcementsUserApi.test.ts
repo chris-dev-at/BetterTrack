@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   acknowledgeAnnouncementResponseSchema,
   activeAnnouncementListResponseSchema,
+  announcementNoticePayloadSchema,
   createApiKeyResponseSchema,
   createOAuthClientResponseSchema,
   meResponseSchema,
@@ -33,7 +34,9 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const DAY = 24 * 60 * 60 * 1000;
 const THIRD_PARTY_REDIRECT = 'https://third-party.example/callback';
-const MOBILE = FIRST_PARTY_CLIENTS.find((client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
+const MOBILE = FIRST_PARTY_CLIENTS.find(
+  (client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+)!;
 
 type Agent = ReturnType<typeof request.agent>;
 type TestUser = Awaited<ReturnType<TestHarness['seedUser']>>;
@@ -193,8 +196,9 @@ describe('GET /notifications/announcements — visibility (contract §4.1)', () 
     const me = await seedPerson();
     const both = await seedAnnouncement({ titleEn: 'EN only?' });
     const enOnly = await seedAnnouncement({ titleEn: 'English', titleDe: null, bodyDe: null });
-    const items = activeAnnouncementListResponseSchema.parse((await list(me.agent, '?locale=de')).body)
-      .announcements;
+    const items = activeAnnouncementListResponseSchema.parse(
+      (await list(me.agent, '?locale=de')).body,
+    ).announcements;
     expect(items.find((i) => i.id === both.id)).toMatchObject({
       title: 'Titel',
       contentLocale: 'de',
@@ -271,8 +275,9 @@ describe('GET /notifications/announcements — visibility (contract §4.1)', () 
         .expect(200);
     }
     expect((await ack(me.agent, obligation.id, ackBody(obligation))).status).toBe(200);
-    expect(activeAnnouncementListResponseSchema.parse((await list(me.agent)).body).announcements)
-      .toEqual([]);
+    expect(
+      activeAnnouncementListResponseSchema.parse((await list(me.agent)).body).announcements,
+    ).toEqual([]);
   });
 });
 
@@ -426,7 +431,10 @@ describe('POST …/:id/acknowledge (contract §4.5)', () => {
 
   it('ended, archived and lapsed obligations are not pending any more (409)', async () => {
     const me = await seedPerson();
-    const ended = await seedAnnouncement({ kind: 'ack_required', endsAt: new Date(Date.now() - 1000) });
+    const ended = await seedAnnouncement({
+      kind: 'ack_required',
+      endsAt: new Date(Date.now() - 1000),
+    });
     const archived = await seedAnnouncement({ kind: 'ack_required', lifecycle: 'archived' });
     const lapsed = await seedAnnouncement({ kind: 'ack_required' });
     await harness.db.insert(schema.announcementReceipts).values({
@@ -497,7 +505,10 @@ async function issueToken(
 }
 
 describe('acknowledge — bearer callers (first-party only, Chief ruling 2026-10-29)', () => {
-  const SCOPES = ['notifications:read', 'notifications:write'] as const satisfies readonly ApiKeyScope[];
+  const SCOPES = [
+    'notifications:read',
+    'notifications:write',
+  ] as const satisfies readonly ApiKeyScope[];
 
   it('a first-party OAuth token acknowledges, recorded via first_party_oauth with its grant', async () => {
     const me = await seedPerson();
@@ -523,7 +534,12 @@ describe('acknowledge — bearer callers (first-party only, Chief ruling 2026-10
     const registered = await me.agent
       .post('/api/v1/settings/oauth-clients')
       .set(...XRW)
-      .send({ name: 'Partner', redirectUris: [THIRD_PARTY_REDIRECT], scopes: SCOPES, public: true });
+      .send({
+        name: 'Partner',
+        redirectUris: [THIRD_PARTY_REDIRECT],
+        scopes: SCOPES,
+        public: true,
+      });
     expect(registered.status, JSON.stringify(registered.body)).toBe(201);
     const client = createOAuthClientResponseSchema.parse(registered.body).client;
     const token = await issueToken(me.agent, client.clientId, THIRD_PARTY_REDIRECT, SCOPES);
@@ -538,8 +554,12 @@ describe('acknowledge — bearer callers (first-party only, Chief ruling 2026-10
     const denials = await harness.db
       .select()
       .from(schema.auditLog)
-      .where(and(eq(schema.auditLog.action, 'api_key.scope_denied'), eq(schema.auditLog.actorId, me.id)));
-    expect(denials.map((d) => (d.meta as { reason?: string }).reason)).toContain('first-party-only');
+      .where(
+        and(eq(schema.auditLog.action, 'api_key.scope_denied'), eq(schema.auditLog.actorId, me.id)),
+      );
+    expect(denials.map((d) => (d.meta as { reason?: string }).reason)).toContain(
+      'first-party-only',
+    );
     // The same token still reads the list — the scope pair is intact.
     const read = await request(harness.app)
       .get('/api/v1/notifications/announcements')
@@ -580,7 +600,10 @@ describe('MeResponse.pendingAcknowledgements (contract §4.6)', () => {
       cutoffAt: new Date(Date.now() - 3 * DAY),
       endsAt: new Date(Date.now() + 5 * DAY),
     });
-    const newer = await seedAnnouncement({ kind: 'ack_required', cutoffAt: new Date(Date.now() - DAY) });
+    const newer = await seedAnnouncement({
+      kind: 'ack_required',
+      cutoffAt: new Date(Date.now() - DAY),
+    });
     await seedAnnouncement({ kind: 'notice' });
 
     const me1 = meResponseSchema.parse((await me.agent.get('/api/v1/auth/me')).body);
@@ -605,6 +628,42 @@ describe('MeResponse.pendingAcknowledgements (contract §4.6)', () => {
     const adminAgent = await harness.loginAdmin(admin);
     const adminMe = await adminAgent.get('/api/v1/auth/me');
     expect(adminMe.body.pendingAcknowledgements).toEqual([]);
+  });
+});
+
+describe('pendingAcknowledgements titles honour Accept-Language (mobile build 152)', () => {
+  async function titlesFor(
+    person: { agent: Agent },
+    header: string | undefined,
+  ): Promise<string[]> {
+    const req = person.agent.get('/api/v1/auth/me');
+    const res = await (header === undefined ? req : req.set('Accept-Language', header));
+    return meResponseSchema.parse(res.body).pendingAcknowledgements!.map((p) => p.title);
+  }
+
+  it('step 1: the first Accept-Language locale the announcement has wins over the stored locale', async () => {
+    const me = await seedPerson(); // stored locale: en
+    await seedAnnouncement({ kind: 'ack_required', titleEn: 'Terms', titleDe: 'AGB' });
+    expect(await titlesFor(me, 'de-AT')).toEqual(['AGB']);
+    // q-values are honoured, an unsupported first choice is skipped.
+    expect(await titlesFor(me, 'fr-FR, en;q=0.4, de;q=0.8')).toEqual(['AGB']);
+    // q=0 means "not this one".
+    expect(await titlesFor(me, 'de;q=0')).toEqual(['Terms']);
+  });
+
+  it('step 2: no supported header locale → the stored locale, when the announcement has it', async () => {
+    const me = await seedPerson();
+    await harness.db.update(schema.users).set({ locale: 'de' }).where(eq(schema.users.id, me.id));
+    await seedAnnouncement({ kind: 'ack_required', titleEn: 'Terms', titleDe: 'AGB' });
+    expect(await titlesFor(me, 'fr, es')).toEqual(['AGB']);
+    expect(await titlesFor(me, undefined)).toEqual(['AGB']);
+  });
+
+  it('step 3: neither available → the announcement’s first available locale (English)', async () => {
+    const me = await seedPerson();
+    await harness.db.update(schema.users).set({ locale: 'de' }).where(eq(schema.users.id, me.id));
+    await seedAnnouncement({ kind: 'ack_required', titleEn: 'Terms', titleDe: null, bodyDe: null });
+    expect(await titlesFor(me, 'de')).toEqual(['Terms']);
   });
 });
 
@@ -638,7 +697,8 @@ describe('inbox fan-out walks the audience only (§6.19.8, contract §6)', () =>
     );
     expect(mine.map((n) => n.userId)).toEqual([early.id]);
     const [entry] = mine;
-    expect(entry!.payload).toMatchObject({
+    // The payload names the announcement (the deep-link target) — the contract shape.
+    expect(announcementNoticePayloadSchema.parse(entry!.payload)).toMatchObject({
       notice: 'announcement',
       announcementId: row.id,
       announcementKind: 'ack_required',

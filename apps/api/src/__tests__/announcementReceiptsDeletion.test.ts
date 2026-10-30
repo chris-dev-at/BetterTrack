@@ -235,14 +235,12 @@ describe('account deletion keeps acknowledgements pseudonymised (§6.19.5)', () 
   it('an account with receipts but no acknowledgement deletes cleanly and keeps nothing', async () => {
     const user = await harness.seedUser({ email: 'plain@bt.test', username: 'plain' });
     const notice = await seedAnnouncement('notice');
-    await harness.db
-      .insert(schema.announcementReceipts)
-      .values({
-        userId: user.id,
-        announcementId: notice,
-        seenAt: new Date(),
-        dismissedAt: new Date(),
-      });
+    await harness.db.insert(schema.announcementReceipts).values({
+      userId: user.id,
+      announcementId: notice,
+      seenAt: new Date(),
+      dismissedAt: new Date(),
+    });
 
     const result = await wiredUsers().remove(user.id);
 

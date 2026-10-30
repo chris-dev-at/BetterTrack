@@ -44,6 +44,60 @@ export function resolveContentLocale(
   return availableLocales(row).includes(wanted) ? wanted : 'en';
 }
 
+/**
+ * The content locales an `Accept-Language` header asks for, most preferred
+ * first (RFC 9110 §12.5.4): q-values honoured (stable for ties, `q=0`
+ * dropped), each tag reduced to its primary subtag, only `en` / `de` kept,
+ * duplicates removed. Malformed parts are skipped, never thrown on.
+ */
+export function parseAcceptLanguage(
+  header: string | null | undefined,
+): AnnouncementContentLocale[] {
+  if (!header) return [];
+  const ranked = header
+    .slice(0, 1024)
+    .split(',')
+    .slice(0, 32)
+    .map((part, index) => {
+      const [tag = '', ...params] = part.trim().split(';');
+      const q = params
+        .map((param) => param.trim())
+        .find((param) => param.toLowerCase().startsWith('q='));
+      const weight = q === undefined ? 1 : Number.parseFloat(q.slice(2));
+      return {
+        locale: tag.trim().toLowerCase().split('-')[0] ?? '',
+        weight: Number.isFinite(weight) ? weight : 0,
+        index,
+      };
+    })
+    .filter((entry) => entry.weight > 0)
+    .sort((a, b) => b.weight - a.weight || a.index - b.index);
+  const out: AnnouncementContentLocale[] = [];
+  for (const { locale } of ranked) {
+    if ((locale === 'en' || locale === 'de') && !out.includes(locale)) out.push(locale);
+  }
+  return out;
+}
+
+/**
+ * The locale a pending acknowledgement's title is shown in (Coordinator Q,
+ * mobile build 152): the first `Accept-Language` locale the announcement has;
+ * else the account's stored locale if the announcement has it; else the
+ * announcement's first available locale (English).
+ */
+export function chooseTitleLocale(
+  row: ContentRow,
+  preferred: readonly AnnouncementContentLocale[],
+  stored: string | null | undefined,
+): AnnouncementContentLocale {
+  const available = availableLocales(row);
+  const fromHeader = preferred.find((locale) => available.includes(locale));
+  if (fromHeader) return fromHeader;
+  const storedLocale = resolveEmailLocale(stored);
+  if (stored && available.includes(storedLocale)) return storedLocale;
+  return available[0]!;
+}
+
 export interface RenderedAnnouncement {
   title: string;
   body: string;
@@ -53,7 +107,10 @@ export interface RenderedAnnouncement {
   contentSha256: string;
 }
 
-function source(row: ContentRow, locale: AnnouncementContentLocale): { title: string; body: string } {
+function source(
+  row: ContentRow,
+  locale: AnnouncementContentLocale,
+): { title: string; body: string } {
   if (locale === 'de' && row.titleDe !== null && row.bodyDe !== null) {
     return { title: row.titleDe, body: row.bodyDe };
   }
@@ -110,6 +167,8 @@ export function inboxCopy(
   return {
     title,
     body:
-      row.kind === 'notice' ? plain : excerptAnnouncementText(plain, ANNOUNCEMENT_INBOX_EXCERPT_CHARS),
+      row.kind === 'notice'
+        ? plain
+        : excerptAnnouncementText(plain, ANNOUNCEMENT_INBOX_EXCERPT_CHARS),
   };
 }

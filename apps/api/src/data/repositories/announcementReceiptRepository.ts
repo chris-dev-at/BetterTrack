@@ -231,7 +231,11 @@ export function createAnnouncementReceiptRepository(db: Database) {
     },
 
     /** Whether `id` is in the viewer's current list, receipts ignored (§4.3, §4.4). */
-    async isOpenForViewer(id: string, viewer: AnnouncementViewer, at: Date): Promise<AnnouncementRow | undefined> {
+    async isOpenForViewer(
+      id: string,
+      viewer: AnnouncementViewer,
+      at: Date,
+    ): Promise<AnnouncementRow | undefined> {
       const [row] = await db
         .select()
         .from(announcements)

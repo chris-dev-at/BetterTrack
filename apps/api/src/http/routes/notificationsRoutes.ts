@@ -119,15 +119,11 @@ export function createNotificationsRouter(ctx: AppContext): Router {
   // the caller's audience — indistinguishable by design.
 
   // GET /notifications/announcements[?locale=] — the caller's open list.
-  router.get(
-    '/announcements',
-    validateQuery(userAnnouncementQuerySchema),
-    async (req, res) => {
-      const { locale } = req.valid?.query as UserAnnouncementQuery;
-      const announcements = await ctx.userAnnouncements.list(req.authUser!, locale);
-      res.json(activeAnnouncementListResponseSchema.parse({ announcements }));
-    },
-  );
+  router.get('/announcements', validateQuery(userAnnouncementQuerySchema), async (req, res) => {
+    const { locale } = req.valid?.query as UserAnnouncementQuery;
+    const announcements = await ctx.userAnnouncements.list(req.authUser!, locale);
+    res.json(activeAnnouncementListResponseSchema.parse({ announcements }));
+  });
 
   // GET /notifications/announcements/:id[?locale=] — one item, ended and
   // archived ones included (the inbox deep-link, "what did I acknowledge").

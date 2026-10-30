@@ -990,6 +990,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/me',
     tag: 'Auth',
     summary: 'The signed-in user.',
+    description:
+      '`pendingAcknowledgements` (announcements §6.19, contract §4.6) lists the ack_required announcements still owed, oldest first; `[]` when nothing is owed and for admin accounts. Each `title` honours the request’s `Accept-Language`: the first listed language the announcement has (q-values respected), else the account’s stored locale when the announcement has it, else the announcement’s first available locale (English). An older server omits the field: read absence as "unknown", never as "nothing owed".',
     status: 200,
     response: R.MeResponse,
   },
