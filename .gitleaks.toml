@@ -65,3 +65,17 @@ id = "generic-api-key"
     '''^apps/redesign-demo/src/OriginAutomation\.tsx$''',
     '''^docs/ops\.md$''',
   ]
+
+  # The #1729 FX-hole repair job test (PR #2097) seeds a vaulted portfolio to
+  # prove the repair skips it, with a deterministic 24-char `keyFingerprint`
+  # test vector — public by design, never real key material. Narrower than the
+  # path entries above: BOTH the exact file and the exact value must match
+  # (`condition = "AND"`), so any other value in that file, and this value in
+  # any other file, still trips the generic detector. Renaming the literal
+  # would not help: the PR-history scan reads the commit that added it.
+  [[rules.allowlists]]
+  description = "Deterministic vault key-fingerprint test vector in the FX-hole repair job test"
+  condition = "AND"
+  regexTarget = "secret"
+  paths = ['''^apps/api/src/jobs/__tests__/snapshotFxHoleRepair\.test\.ts$''']
+  regexes = ['''^TEST-VECTOR-FX-HOLE-0001$''']
