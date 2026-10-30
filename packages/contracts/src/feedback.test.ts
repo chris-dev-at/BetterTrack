@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FEEDBACK_BULK_MAX_IDS,
+  FEEDBACK_BULK_RESULTS,
   FEEDBACK_CATEGORIES,
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_CONTEXT_MAX_KEYS,
   FEEDBACK_DECLINED_REASON_REQUIRED,
+  FEEDBACK_ERROR_CODES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_NOT_EDITABLE,
   FEEDBACK_OPEN_STATUSES,
   FEEDBACK_SHIPPED_VERSION_REQUIRED,
   FEEDBACK_SORTS,
@@ -14,6 +18,10 @@ import {
   FEEDBACK_SUBJECT_MAX_LENGTH,
   FEEDBACK_TERMINAL_STATUSES,
   FEEDBACK_THREAD_MESSAGE_MAX_LENGTH,
+  adminFeedbackBulkRequestSchema,
+  adminFeedbackBulkResponseSchema,
+  adminFeedbackCountsQuerySchema,
+  adminFeedbackCountsResponseSchema,
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
   createFeedbackRequestSchema,
@@ -21,11 +29,14 @@ import {
   feedbackThreadMessageSchema,
   feedbackThreadResponseSchema,
   myFeedbackResponseSchema,
+  myFeedbackSubmissionSchema,
   sendFeedbackMessageRequestSchema,
   updateFeedbackArchiveRequestSchema,
   updateFeedbackArchiveResponseSchema,
   updateFeedbackRequestSchema,
   updateFeedbackStatusRequestSchema,
+  updateFeedbackStatusResponseSchema,
+  updateMyFeedbackRequestSchema,
   type FeedbackStatus,
 } from './feedback';
 
@@ -172,6 +183,10 @@ describe('feedback contracts', () => {
           shippedVersion: null,
           deletedByUser: false,
           archivedAt: null,
+          // Owner directive 2026-10-29: required-nullable, never optional — an
+          // admin row that forgot to project it must fail here, not read as
+          // "never edited".
+          editedAt: null,
           submitter: {
             id: '00000000-0000-7000-8000-000000000002',
             username: 'mobile-user',
@@ -332,6 +347,7 @@ describe('feedback contracts', () => {
             shippedVersion: '5.4.0',
             unreadReplyCount: 0,
             createdAt: '2026-08-18T08:00:00.000Z',
+            editedAt: null,
           },
         ],
       }).success,
@@ -386,5 +402,296 @@ describe('feedback contracts', () => {
     );
     expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: '' }).success).toBe(false);
     expect(feedbackThreadMessageSchema.safeParse(message).success).toBe(false);
+  });
+});
+
+/**
+ * Owner directive 2026-10-29 — the finished feedback API. Everything here is
+ * ADDITIVE: the mobile client consumes these shapes, so the five categories,
+ * the six statuses and every key it already reads are pinned alongside.
+ */
+describe('feedback contracts — 2026-10-29 additions', () => {
+  const SUBMISSION_ID = '00000000-0000-7000-8000-000000000001';
+  const mineItem = {
+    id: SUBMISSION_ID,
+    category: 'bug' as const,
+    subject: null,
+    message: 'The status read-back closes the loop.',
+    status: 'new' as const,
+    lastStatusChangeAt: '2026-08-18T09:00:00.000Z',
+    declinedReason: null,
+    shippedVersion: null,
+    unreadReplyCount: 0,
+    createdAt: '2026-08-18T08:00:00.000Z',
+    editedAt: null,
+  };
+
+  it('keeps the wire enums the mobile client ships against byte-identical', () => {
+    expect(FEEDBACK_CATEGORIES).toEqual(['feature', 'bug', 'other', 'help', 'improvement']);
+    expect(FEEDBACK_STATUSES).toEqual([
+      'new',
+      'triaged',
+      'working_on_it',
+      'saved_as_future_idea',
+      'declined',
+      'shipped',
+    ]);
+  });
+
+  it('appends editedAt to the /mine item without moving or dropping a pre-existing key', () => {
+    // Key ORDER is pinned too: it is what a byte-level diff of an un-edited
+    // row shows to a client that has read this shape since #1338.
+    expect(Object.keys(myFeedbackSubmissionSchema.innerType().shape)).toEqual([
+      'id',
+      'category',
+      'subject',
+      'message',
+      'status',
+      'lastStatusChangeAt',
+      'declinedReason',
+      'shippedVersion',
+      'unreadReplyCount',
+      'createdAt',
+      'editedAt',
+    ]);
+    expect(myFeedbackSubmissionSchema.safeParse(mineItem).success).toBe(true);
+    expect(
+      myFeedbackSubmissionSchema.safeParse({ ...mineItem, editedAt: '2026-10-29T10:00:00.000Z' })
+        .success,
+    ).toBe(true);
+    // Required-nullable: a row that forgot to project it is a contract break.
+    const { editedAt: _omitted, ...withoutEditedAt } = mineItem;
+    expect(myFeedbackSubmissionSchema.safeParse(withoutEditedAt).success).toBe(false);
+  });
+
+  it('accepts a partial edit with at least one key, at exactly the capture bounds', () => {
+    expect(updateMyFeedbackRequestSchema.parse({ message: 'Fixed typo.' })).toEqual({
+      message: 'Fixed typo.',
+    });
+    expect(updateMyFeedbackRequestSchema.parse({ category: 'help' })).toEqual({ category: 'help' });
+    // `null` clears the subject; text is stored verbatim, exactly as on capture.
+    expect(updateMyFeedbackRequestSchema.parse({ subject: null })).toEqual({ subject: null });
+    expect(updateMyFeedbackRequestSchema.parse({ subject: '  spaced  ' })).toEqual({
+      subject: '  spaced  ',
+    });
+    expect(
+      updateMyFeedbackRequestSchema.safeParse({
+        subject: 's'.repeat(FEEDBACK_SUBJECT_MAX_LENGTH),
+        message: 'x'.repeat(FEEDBACK_MESSAGE_MAX_LENGTH),
+      }).success,
+    ).toBe(true);
+
+    for (const body of [
+      {},
+      { message: '' },
+      { message: 'x'.repeat(FEEDBACK_MESSAGE_MAX_LENGTH + 1) },
+      { subject: 's'.repeat(FEEDBACK_SUBJECT_MAX_LENGTH + 1) },
+      { category: 'unknown' },
+      // `context` is the filing-time diagnostic snapshot — never editable —
+      // and lifecycle fields belong to the admin rail.
+      { message: 'ok', context: { platform: 'web' } },
+      { message: 'ok', status: 'shipped' },
+    ]) {
+      expect(updateMyFeedbackRequestSchema.safeParse(body).success, JSON.stringify(body)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('declares the edit refusal as a contract-owned feedback error code', () => {
+    expect(FEEDBACK_NOT_EDITABLE).toBe('FEEDBACK_NOT_EDITABLE');
+    expect(FEEDBACK_ERROR_CODES).toContain(FEEDBACK_NOT_EDITABLE);
+  });
+
+  it('reads inclusive ISO day bounds on the list and the counts, refusing inverted or unreal days', () => {
+    for (const schema of [adminFeedbackListQuerySchema, adminFeedbackCountsQuerySchema]) {
+      expect(schema.parse({ from: '2026-10-01', to: '2026-10-31' })).toMatchObject({
+        from: '2026-10-01',
+        to: '2026-10-31',
+      });
+      // Equal ends are one day, and either end may be omitted.
+      expect(schema.safeParse({ from: '2026-10-29', to: '2026-10-29' }).success).toBe(true);
+      expect(schema.safeParse({ from: '2026-10-29' }).success).toBe(true);
+      expect(schema.safeParse({ to: '2026-10-29' }).success).toBe(true);
+
+      const inverted = schema.safeParse({ from: '2026-10-31', to: '2026-10-01' });
+      expect(inverted.success).toBe(false);
+      if (!inverted.success) expect(inverted.error.issues[0]?.path).toEqual(['to']);
+
+      // A regex alone would admit 2026-02-30, which Postgres refuses at the
+      // `::date` cast — a 500, not a 400.
+      for (const day of ['2026-02-30', '2026-13-01', '2026-1-01', '2026-10-01T00:00:00Z', '']) {
+        expect(schema.safeParse({ from: day }).success, day).toBe(false);
+      }
+    }
+    // The counts take the filters only — paging and sorting are list concerns.
+    expect(adminFeedbackCountsQuerySchema.safeParse({ page: '2' }).success).toBe(false);
+    expect(adminFeedbackCountsQuerySchema.safeParse({ sort: 'newest' }).success).toBe(false);
+    expect(adminFeedbackCountsQuerySchema.parse({})).toEqual({ archived: false });
+  });
+
+  it('zero-fills the counts with exactly the six statuses and five categories', () => {
+    const zero = (keys: readonly string[]) => Object.fromEntries(keys.map((key) => [key, 0]));
+    const counts = {
+      total: 0,
+      byStatus: zero(FEEDBACK_STATUSES),
+      byCategory: zero(FEEDBACK_CATEGORIES),
+    };
+    expect(adminFeedbackCountsResponseSchema.safeParse(counts).success).toBe(true);
+
+    const { new: _dropped, ...missingStatus } = counts.byStatus;
+    expect(
+      adminFeedbackCountsResponseSchema.safeParse({ ...counts, byStatus: missingStatus }).success,
+    ).toBe(false);
+    expect(
+      adminFeedbackCountsResponseSchema.safeParse({
+        ...counts,
+        byCategory: { ...counts.byCategory, closed: 0 },
+      }).success,
+    ).toBe(false);
+    expect(adminFeedbackCountsResponseSchema.safeParse({ ...counts, total: -1 }).success).toBe(
+      false,
+    );
+  });
+
+  it('carries an optional bounded reply on the status PATCH and a reply-only message echo', () => {
+    expect(
+      updateFeedbackStatusRequestSchema.parse({ status: 'triaged', reply: '  Looking at it.  ' }),
+    ).toEqual({ status: 'triaged', reply: 'Looking at it.' });
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({ status: 'triaged', reply: '   ' }).success,
+    ).toBe(false);
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({
+        status: 'triaged',
+        reply: 'x'.repeat(FEEDBACK_THREAD_MESSAGE_MAX_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+    // The declined/shipped pairing rule still applies with a reply aboard.
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({ status: 'declined', reply: 'Sorry.' }).success,
+    ).toBe(false);
+    // The generic admin PATCH union admits the reply on its status arm only.
+    expect(updateFeedbackRequestSchema.safeParse({ status: 'triaged', reply: 'Hi.' }).success).toBe(
+      true,
+    );
+    expect(updateFeedbackRequestSchema.safeParse({ archived: true, reply: 'Hi.' }).success).toBe(
+      false,
+    );
+
+    const base = {
+      id: SUBMISSION_ID,
+      status: 'triaged' as const,
+      lastStatusChangeAt: '2026-10-29T10:00:00.000Z',
+      declinedReason: null,
+      shippedVersion: null,
+      updatedAt: '2026-10-29T10:00:00.000Z',
+    };
+    // A body without `reply` is answered exactly as before 2026-10-29 …
+    expect(updateFeedbackStatusResponseSchema.safeParse(base).success).toBe(true);
+    // … a retried one (no real change, so no reply written) answers null …
+    expect(updateFeedbackStatusResponseSchema.safeParse({ ...base, message: null }).success).toBe(
+      true,
+    );
+    // … and a real one echoes the admin-rail thread message.
+    expect(
+      updateFeedbackStatusResponseSchema.safeParse({
+        ...base,
+        message: {
+          id: '00000000-0000-7000-8000-000000000002',
+          feedbackId: SUBMISSION_ID,
+          senderId: '00000000-0000-7000-8000-000000000003',
+          authorSide: 'admin',
+          body: 'Looking at it.',
+          createdAt: '2026-10-29T10:00:00.000Z',
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('bounds a bulk action to 100 ids, keeping malformed ids for the per-row result', () => {
+    const ids = Array.from(
+      { length: FEEDBACK_BULK_MAX_IDS },
+      (_, index) => `00000000-0000-7000-8000-${String(index).padStart(12, '0')}`,
+    );
+    expect(FEEDBACK_BULK_MAX_IDS).toBe(100);
+    expect(adminFeedbackBulkRequestSchema.safeParse({ action: 'archive', ids }).success).toBe(true);
+    expect(
+      adminFeedbackBulkRequestSchema.safeParse({
+        action: 'archive',
+        ids: [...ids, '00000000-0000-7000-8000-000000000999'],
+      }).success,
+    ).toBe(false);
+    expect(adminFeedbackBulkRequestSchema.safeParse({ action: 'archive', ids: [] }).success).toBe(
+      false,
+    );
+    // A malformed id is that ROW's `invalid` result, not a refused batch …
+    expect(
+      adminFeedbackBulkRequestSchema.safeParse({ action: 'unarchive', ids: ['not-a-uuid'] })
+        .success,
+    ).toBe(true);
+    // … but an id is still bounded text, never an unbounded input.
+    expect(
+      adminFeedbackBulkRequestSchema.safeParse({ action: 'unarchive', ids: ['x'.repeat(65)] })
+        .success,
+    ).toBe(false);
+
+    expect(
+      adminFeedbackBulkRequestSchema.parse({
+        action: 'status',
+        ids: [SUBMISSION_ID],
+        status: 'declined',
+        declinedReason: 'Out of scope.',
+        reply: ' Thanks for the idea. ',
+      }),
+    ).toEqual({
+      action: 'status',
+      ids: [SUBMISSION_ID],
+      status: 'declined',
+      declinedReason: 'Out of scope.',
+      reply: 'Thanks for the idea.',
+    });
+    // The single PATCH's pairing rule applies to the bulk status action too.
+    expect(
+      adminFeedbackBulkRequestSchema.safeParse({
+        action: 'status',
+        ids: [SUBMISSION_ID],
+        status: 'shipped',
+      }).success,
+    ).toBe(false);
+    // Archive actions take ids only; unknown actions are refused.
+    expect(
+      adminFeedbackBulkRequestSchema.safeParse({
+        action: 'archive',
+        ids: [SUBMISSION_ID],
+        status: 'triaged',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminFeedbackBulkRequestSchema.safeParse({ action: 'remove', ids: [SUBMISSION_ID] }).success,
+    ).toBe(false);
+  });
+
+  it('answers a bulk action with one result per id and a zero-filled summary', () => {
+    expect(FEEDBACK_BULK_RESULTS).toEqual(['ok', 'unchanged', 'not_found', 'invalid']);
+    const response = {
+      action: 'status',
+      results: [
+        { id: SUBMISSION_ID, result: 'ok' },
+        { id: 'not-a-uuid', result: 'invalid' },
+      ],
+      summary: { ok: 1, unchanged: 0, not_found: 0, invalid: 1 },
+    };
+    expect(adminFeedbackBulkResponseSchema.safeParse(response).success).toBe(true);
+    expect(
+      adminFeedbackBulkResponseSchema.safeParse({ ...response, summary: { ok: 1, invalid: 1 } })
+        .success,
+    ).toBe(false);
+    expect(
+      adminFeedbackBulkResponseSchema.safeParse({
+        ...response,
+        results: [{ id: SUBMISSION_ID, result: 'skipped' }],
+      }).success,
+    ).toBe(false);
   });
 });
