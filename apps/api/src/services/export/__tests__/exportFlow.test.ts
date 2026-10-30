@@ -639,6 +639,7 @@ describe('account data export', () => {
         'createdAt',
         'declinedReason',
         'deletedByUserAt',
+        'editedAt',
         'id',
         'lastStatusChangeAt',
         'message',

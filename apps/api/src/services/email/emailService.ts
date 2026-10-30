@@ -245,6 +245,8 @@ export interface EmailService {
   sendFeedbackNotification(params: {
     to: string;
     userId: string;
+    /** The submission the e-mail is about — the deep link opens it (2026-10-29). */
+    feedbackId: string;
     title: string;
     body: string;
     locale?: string;
@@ -361,10 +363,22 @@ export function deferredNotificationUrl(
       return `${base}/people/shared`;
     case 'feedback.status_changed':
     case 'feedback.reply_created':
-      return `${base}/control/feedback`;
+      return feedbackSubmissionUrl(base, data?.feedbackId);
     default:
       return appOrigin;
   }
+}
+
+/**
+ * The ONE builder for a feedback deep link (owner directive 2026-10-29). The
+ * bare `/control/feedback` panel cannot show a submission, so every e-mail
+ * names the one it is about; the web UI opens `?submission=<id>`. Without an
+ * id (a malformed deferred row) it degrades to the panel, never to a broken
+ * link.
+ */
+export function feedbackSubmissionUrl(appOrigin: string, feedbackId: string | undefined): string {
+  const base = `${appOrigin.replace(/\/$/, '')}/control/feedback`;
+  return feedbackId ? `${base}?submission=${encodeURIComponent(feedbackId)}` : base;
 }
 
 /** Coarse, secret-free error tag for logs/audit. Never the raw SMTP response. */
@@ -661,14 +675,14 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         { userId },
       ),
 
-    sendFeedbackNotification: ({ to, userId, title, body, locale }) =>
+    sendFeedbackNotification: ({ to, userId, feedbackId, title, body, locale }) =>
       deliver(
         'feedback_notification',
         to,
         deferredNotificationEmail({
           title,
           body,
-          appUrl: `${config.appOrigin.replace(/\/$/, '')}/control/feedback`,
+          appUrl: feedbackSubmissionUrl(config.appOrigin, feedbackId),
           locale,
         }),
         { userId },

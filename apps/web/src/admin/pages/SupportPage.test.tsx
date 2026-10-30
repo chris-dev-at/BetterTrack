@@ -44,6 +44,7 @@ function submission(overrides: Partial<AdminFeedbackSubmission> = {}): AdminFeed
     shippedVersion: null,
     deletedByUser: false,
     archivedAt: null,
+    editedAt: null,
     submitter: { id: 'user-7', username: 'martin_k', email: 'martin@example.at' },
     unreadCount: 1,
     messageCount: 2,

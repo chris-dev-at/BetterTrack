@@ -44,6 +44,18 @@ export function isUniqueViolation(error: unknown): boolean {
 }
 
 /**
+ * True for any SQLSTATE in class 23 — "integrity constraint violation" (check,
+ * not-null, foreign-key, unique, exclusion). For a caller that isolates one
+ * row's write from a batch and reports THAT row as refused; every other class
+ * (connection loss, serialization, syntax) is still an incident and must keep
+ * propagating.
+ */
+export function isIntegrityConstraintViolation(error: unknown): boolean {
+  const code = (driverError(error) as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.length === 5 && code.startsWith('23');
+}
+
+/**
  * Ceiling on an error message copied into a durable sink — a `problems` row the
  * admin page renders, a log line. Unwrapping the drizzle wrapper is what keeps
  * the SQL and its bound parameters out of those sinks in the first place; this

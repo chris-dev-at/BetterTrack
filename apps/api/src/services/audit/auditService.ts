@@ -88,6 +88,20 @@ export const AuditAction = {
   /** Admin workspace hygiene for the helpdesk queue; no submitter lifecycle change. */
   FeedbackArchived: 'feedback.archived',
   FeedbackUnarchived: 'feedback.unarchived',
+  /**
+   * A REAL admin lifecycle transition on a submission (owner directive
+   * 2026-10-29) — never a retry, which changes nothing. `meta` is
+   * `{ from, to, source }`: two enum values and `single`/`bulk`. Never the
+   * declined reason or any other prose, which lives on the feedback row.
+   */
+  FeedbackStatusChanged: 'feedback.status_changed',
+  /**
+   * An admin reply written into a submission thread, by any route (the thread
+   * POST, a status change with a reply, a bulk status action). `meta` is
+   * `{ messageId, source }` — never the body, exactly as operator notes keep
+   * their prose out of the audit store.
+   */
+  FeedbackReplied: 'feedback.replied',
   AccountDeleteFail: 'account.delete_fail',
   // Self-service data export (§13.4 V4-P6a, #494).
   AccountExportRequested: 'account.export_requested',
@@ -275,6 +289,8 @@ export const AUDIT_PRESET_ACTIONS = {
     AuditAction.ProblemReopened,
     AuditAction.FeedbackArchived,
     AuditAction.FeedbackUnarchived,
+    AuditAction.FeedbackStatusChanged,
+    AuditAction.FeedbackReplied,
     AuditAction.EmailTestSent,
     AuditAction.ApiKeyTierCreated,
     AuditAction.ApiKeyTierUpdated,

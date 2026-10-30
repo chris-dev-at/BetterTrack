@@ -637,15 +637,37 @@ describe('OpenAPI document', () => {
       ]),
     );
 
+    // Owner directive 2026-10-29: the submitter edit publishes its 409, and the
+    // bulk status action the same lifecycle-detail codes as the single PATCH.
+    const editFeedback = (paths['/feedback/{id}'] as JsonObject).patch as JsonObject;
+    const bulkFeedback = (paths['/admin/feedback/bulk'] as JsonObject).post as JsonObject;
+    const editedCodes = editFeedback['x-error-codes'] as string[];
+    const bulkCodes = bulkFeedback['x-error-codes'] as string[];
+    expect(editedCodes).toEqual(
+      expect.arrayContaining([
+        ...Object.values(contracts.AUTH_ERROR_CODES),
+        contracts.FEEDBACK_NOT_EDITABLE,
+      ]),
+    );
+    expect(bulkCodes).toEqual(
+      expect.arrayContaining([
+        contracts.ADMIN_2FA_SETUP_REQUIRED,
+        ...contracts.FEEDBACK_STATUS_ERROR_CODES,
+      ]),
+    );
+
     // The feedback routes above are mounted API operations; keep this coverage
-    // dynamic so a newly exported `*_LIMIT`, `*_REQUIRED`, or `*_INVALID`
-    // feedback error cannot silently remain a bare `ApiError.error.code`.
+    // dynamic so a newly exported `*_LIMIT`, `*_REQUIRED`, `*_INVALID` or
+    // `*_NOT_EDITABLE` feedback error cannot silently remain a bare
+    // `ApiError.error.code`.
     const exportedFeedbackCodes = Object.entries(contracts).flatMap(([name, value]) =>
-      /^FEEDBACK_.*_(?:LIMIT|REQUIRED|INVALID)$/.test(name) && typeof value === 'string'
+      /^FEEDBACK_(?:.*_)?(?:LIMIT|REQUIRED|INVALID|NOT_EDITABLE)$/.test(name) &&
+      typeof value === 'string'
         ? [value]
         : [],
     );
-    expect([...submittedCodes, ...updatedCodes]).toEqual(
+    expect(exportedFeedbackCodes).toContain(contracts.FEEDBACK_NOT_EDITABLE);
+    expect([...submittedCodes, ...updatedCodes, ...editedCodes, ...bulkCodes]).toEqual(
       expect.arrayContaining(exportedFeedbackCodes),
     );
   });

@@ -1,0 +1,20 @@
+-- Owner directive 2026-10-29 — a submitter may edit their own feedback while it
+-- is still `new` (`PATCH /api/v1/feedback/{id}`), and both rails show when.
+--
+--   edited_at — the last submitter edit, stamped only by a write that actually
+--               changed the text/category. NULL means "never edited".
+--
+-- NULLABLE with no default and no backfill, deliberately: every row that exists
+-- today was never edited, and NULL is exactly that statement. No index — the
+-- column is projected, never filtered or sorted on.
+--
+-- Numbering: `idx` 120. 0118 (#2065, OAuth refresh grace) and 0119 (the OAuth
+-- PR-B lane) were claimed first by coordination on 2026-10-29, so this entry is
+-- contiguous only once both are on main; `migrationJournal.test.ts` stays red
+-- on this branch until then, and the entry is re-stamped at rebase if the
+-- landing order changes (0115-0117 history: re-stamp the number, keep the SQL).
+-- The `when` sits above #2065's so drizzle's `max(created_at)` gate applies it.
+--
+-- Additive and reversible: dropping the column leaves every submission, its
+-- lifecycle and its thread byte-identical.
+ALTER TABLE "feedback" ADD COLUMN IF NOT EXISTS "edited_at" timestamp with time zone;

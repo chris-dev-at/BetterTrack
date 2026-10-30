@@ -18,14 +18,18 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 
 import {
+  FEEDBACK_ADMIN_DAY_TIME_ZONE,
   FEEDBACK_OPEN_STATUSES,
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
   FEEDBACK_TERMINAL_STATUSES,
+  type AdminFeedbackCountsQuery,
   type AdminFeedbackListQuery,
   type CreateFeedbackRequest,
+  type FeedbackCategory,
   type FeedbackMessageAuthorSide,
   type FeedbackStatus,
   type UpdateFeedbackStatusRequest,
+  type UpdateMyFeedbackRequest,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
@@ -113,6 +117,42 @@ export interface AdminFeedbackMessageWrite {
 export interface FeedbackStatusWrite {
   row: FeedbackRow;
   changed: boolean;
+  /** The status the locked row held before this write (equal to `row.status` when unchanged). */
+  previousStatus: FeedbackStatus;
+  /**
+   * The staff reply written in the same transaction as the transition, or null
+   * — always null when `changed` is false: a retried transition writes no reply.
+   */
+  message: FeedbackMessageRow | null;
+}
+
+/** The lifecycle half of a status write; the optional reply travels separately. */
+export type FeedbackStatusInput = Pick<
+  UpdateFeedbackStatusRequest,
+  'status' | 'declinedReason' | 'shippedVersion'
+>;
+
+/** A staff reply that rides on a status transition (owner directive 2026-10-29). */
+export interface FeedbackStatusReply {
+  authorUserId: string;
+  body: string;
+}
+
+/**
+ * A submitter edit (owner directive 2026-10-29). `not_found` covers missing,
+ * foreign and tombstoned rows alike — ownership is part of the locked SELECT —
+ * so `not_editable` is only ever reachable for the caller's own live row.
+ */
+export type FeedbackEditResult =
+  | { status: 'ok'; row: MyFeedbackRow; changed: boolean }
+  | { status: 'not_found' }
+  | { status: 'not_editable' };
+
+/** Filtered counts for the admin inbox, one row per (status, category) pair present. */
+export interface FeedbackCountRow {
+  status: FeedbackStatus;
+  category: FeedbackCategory;
+  value: number;
 }
 
 export interface FeedbackThreadPage {
@@ -146,6 +186,16 @@ export interface FeedbackRepository {
   listMine(userId: string): Promise<MyFeedbackRow[]>;
   /** Idempotent caller-owned tombstone; returns null for absent or foreign rows. */
   deleteMine(userId: string, id: string, at: Date): Promise<FeedbackRow | null>;
+  /**
+   * Caller-owned edit while the row is `new`, under the same row lock the
+   * status write takes, so an edit and a triage serialize instead of racing.
+   */
+  editMine(
+    userId: string,
+    id: string,
+    patch: UpdateMyFeedbackRequest,
+    at: Date,
+  ): Promise<FeedbackEditResult>;
   /** Every submitter method scopes the parent row by both id and owner in SQL. */
   getThreadForSubmitter(
     userId: string,
@@ -171,12 +221,22 @@ export interface FeedbackRepository {
   listForAdmin(
     params: AdminFeedbackListQuery,
   ): Promise<{ rows: AdminFeedbackRow[]; total: number }>;
+  /** Grouped counts under exactly the list's filter predicate. */
+  countForAdmin(params: AdminFeedbackCountsQuery): Promise<FeedbackCountRow[]>;
   /**
    * One submission by id for the helpdesk, unconstrained by the inbox filters
    * so a shared thread link resolves for any operator. Null when it is gone.
    */
   getForAdmin(id: string): Promise<AdminFeedbackRow | null>;
-  setStatus(id: string, input: UpdateFeedbackStatusRequest): Promise<FeedbackStatusWrite | null>;
+  /**
+   * Locked lifecycle transition. An optional `reply` is inserted inside the
+   * same transaction, and only when the transition is real.
+   */
+  setStatus(
+    id: string,
+    input: FeedbackStatusInput,
+    reply?: FeedbackStatusReply,
+  ): Promise<FeedbackStatusWrite | null>;
   /** Idempotently set the admin-only workspace archive state for any submission. */
   setArchived(id: string, archived: boolean, at: Date): Promise<FeedbackArchiveMutation | null>;
 }
@@ -363,6 +423,7 @@ export function createFeedbackRepository(
     adminLastReadAt: feedback.adminLastReadAt,
     deletedByUserAt: feedback.deletedByUserAt,
     archivedAt: feedback.archivedAt,
+    editedAt: feedback.editedAt,
     createdAt: feedback.createdAt,
     updatedAt: feedback.updatedAt,
     submitterId: users.id,
@@ -417,6 +478,73 @@ export function createFeedbackRepository(
         email: submitterEmail,
       },
     };
+  }
+
+  /**
+   * The ONE admin filter predicate, shared by the page, its total and the
+   * counts, so none of the three can be scoped differently. `q` and `unread`
+   * reach through the users join, so every caller selects over that join.
+   */
+  function adminFilterWhere(params: AdminFeedbackCountsQuery): SQL | undefined {
+    const conditions: SQL[] = [];
+    if (params.category) conditions.push(eq(feedback.category, params.category));
+    if (params.status) conditions.push(eq(feedback.status, params.status));
+    if (params.version) conditions.push(eq(feedback.shippedVersion, params.version));
+    if (params.q) {
+      const pattern = `%${escapeLikePattern(params.q)}%`;
+      // Submitter identity is searchable because "the ticket from martin.k"
+      // is how an operator remembers a thread. Both columns are already on
+      // this join and already rendered in the row.
+      const match = or(
+        ilike(feedback.subject, pattern),
+        ilike(feedback.message, pattern),
+        ilike(users.username, pattern),
+        ilike(users.email, pattern),
+      );
+      if (match) conditions.push(match);
+    }
+    if (params.unread !== undefined) {
+      conditions.push(params.unread ? anyUnread : sql`not ${anyUnread}`);
+    }
+    // Inclusive Europe/Vienna calendar days on the filing date. Each boundary
+    // is converted to an instant by Postgres's tz database (`timestamp AT TIME
+    // ZONE zone` reads the wall-clock midnight IN that zone), so DST days are
+    // 23/25 hours as the operator's clock says, and the comparison stays a
+    // plain range on `created_at` rather than a per-row conversion. The day and
+    // the zone are both bound parameters; the explicit casts pin their types so
+    // postgres-js and PGlite resolve the same function.
+    if (params.from) {
+      conditions.push(
+        sql`${feedback.createdAt} >= (cast(${params.from} as date)::timestamp at time zone cast(${FEEDBACK_ADMIN_DAY_TIME_ZONE} as text))`,
+      );
+    }
+    if (params.to) {
+      conditions.push(
+        sql`${feedback.createdAt} < ((cast(${params.to} as date) + 1)::timestamp at time zone cast(${FEEDBACK_ADMIN_DAY_TIME_ZONE} as text))`,
+      );
+    }
+    conditions.push(params.archived ? isNotNull(feedback.archivedAt) : isNull(feedback.archivedAt));
+    return and(...conditions);
+  }
+
+  /** Admin-side unread replies for one submitter row — the `/mine` counter for a single item. */
+  async function unreadReplyCount(
+    executor: Pick<Database, 'select'>,
+    row: FeedbackRow,
+  ): Promise<number> {
+    const [result] = await executor
+      .select({ value: count() })
+      .from(feedbackMessages)
+      .where(
+        and(
+          eq(feedbackMessages.feedbackId, row.id),
+          eq(feedbackMessages.authorSide, 'admin'),
+          row.submitterLastReadAt
+            ? gt(feedbackMessages.createdAt, row.submitterLastReadAt)
+            : undefined,
+        ),
+      );
+    return Number(result?.value ?? 0);
   }
 
   return {
@@ -565,30 +693,7 @@ export function createFeedbackRepository(
     },
 
     async listForAdmin(params) {
-      const conditions: SQL[] = [];
-      if (params.category) conditions.push(eq(feedback.category, params.category));
-      if (params.status) conditions.push(eq(feedback.status, params.status));
-      if (params.version) conditions.push(eq(feedback.shippedVersion, params.version));
-      if (params.q) {
-        const pattern = `%${escapeLikePattern(params.q)}%`;
-        // Submitter identity is searchable because "the ticket from martin.k"
-        // is how an operator remembers a thread. Both columns are already on
-        // this join and already rendered in the row.
-        const match = or(
-          ilike(feedback.subject, pattern),
-          ilike(feedback.message, pattern),
-          ilike(users.username, pattern),
-          ilike(users.email, pattern),
-        );
-        if (match) conditions.push(match);
-      }
-      if (params.unread !== undefined) {
-        conditions.push(params.unread ? anyUnread : sql`not ${anyUnread}`);
-      }
-      conditions.push(
-        params.archived ? isNotNull(feedback.archivedAt) : isNull(feedback.archivedAt),
-      );
-      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      const where = adminFilterWhere(params);
       const priorityOrder = sql<number>`case ${feedback.category}
         when 'feature' then 0
         when 'bug' then 1
@@ -673,7 +778,20 @@ export function createFeedbackRepository(
       };
     },
 
-    async setStatus(id, input) {
+    async countForAdmin(params) {
+      // Same join and same predicate as the page's total, grouped instead of
+      // summed — so the breakdowns always add up to what the list pages over.
+      const rows = await db
+        .select({ status: feedback.status, category: feedback.category, value: count() })
+        .from(feedback)
+        .innerJoin(users, eq(feedback.userId, users.id))
+        .where(adminFilterWhere(params))
+        .groupBy(feedback.status, feedback.category);
+      // `count()` is a bigint; normalise for postgres-js (string) vs PGlite.
+      return rows.map((row) => ({ ...row, value: Number(row.value) }));
+    },
+
+    async setStatus(id, input, reply) {
       return db.transaction(async (tx) => {
         const [current] = await tx.select().from(feedback).where(eq(feedback.id, id)).for('update');
         if (!current) return null;
@@ -686,8 +804,10 @@ export function createFeedbackRepository(
           current.shippedVersion === shippedVersion
         ) {
           // HTTP retries are not new transitions: preserve the natural
-          // (submission id + lastStatusChangeAt) notification identity.
-          return { row: current, changed: false };
+          // (submission id + lastStatusChangeAt) notification identity — and
+          // write no reply, so a retried "decline + explain" cannot post the
+          // explanation a second time.
+          return { row: current, changed: false, previousStatus: current.status, message: null };
         }
 
         // This timestamp is both lifecycle state and the durable notification
@@ -710,7 +830,71 @@ export function createFeedbackRepository(
           .where(eq(feedback.id, id))
           .returning();
         if (!row) throw new Error('Feedback vanished during its locked status transition');
-        return { row, changed: true };
+
+        // The reply commits or rolls back WITH the transition: there is no
+        // state in which the submitter sees "declined" without the reason the
+        // admin wrote alongside it, or the reason without the decline.
+        let message: FeedbackMessageRow | null = null;
+        if (reply) {
+          const [inserted] = await tx
+            .insert(feedbackMessages)
+            .values({
+              feedbackId: id,
+              authorSide: 'admin',
+              authorUserId: reply.authorUserId,
+              body: reply.body,
+            })
+            .returning();
+          if (!inserted) throw new Error('Feedback status reply vanished after insert');
+          message = inserted;
+        }
+        return { row, changed: true, previousStatus: current.status, message };
+      });
+    },
+
+    async editMine(userId, id, patch, at) {
+      return db.transaction(async (tx): Promise<FeedbackEditResult> => {
+        // Ownership AND liveness are part of the locked SELECT: a foreign, a
+        // missing and a tombstoned row are indistinguishable (all 404). The
+        // FOR UPDATE is the same row lock `setStatus` takes, so an edit racing
+        // a triage either lands before it (and the admin's transition sees the
+        // edited text) or observes the new status and is refused.
+        const [current] = await tx
+          .select()
+          .from(feedback)
+          .where(and(eq(feedback.id, id), submitterScope(userId)))
+          .for('update');
+        if (!current) return { status: 'not_found' };
+        if (current.status !== 'new') return { status: 'not_editable' };
+
+        const next = {
+          category: patch.category ?? current.category,
+          subject: patch.subject !== undefined ? patch.subject : current.subject,
+          message: patch.message ?? current.message,
+        };
+        const changed =
+          next.category !== current.category ||
+          next.subject !== current.subject ||
+          next.message !== current.message;
+        // An edit that changes nothing is a retry: no write, no `editedAt` bump.
+        const row = changed
+          ? (
+              await tx
+                .update(feedback)
+                // Typed columns only — a `Date` inside a raw fragment is the
+                // #1443 postgres-js Bind failure; through the column mapping it
+                // is encoded correctly on both drivers.
+                .set({ ...next, editedAt: at, updatedAt: at })
+                .where(eq(feedback.id, id))
+                .returning()
+            )[0]
+          : current;
+        if (!row) throw new Error('Feedback vanished during its locked edit');
+        return {
+          status: 'ok',
+          changed,
+          row: { ...row, unreadReplyCount: await unreadReplyCount(tx, row) },
+        };
       });
     },
 
