@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+import type { PGlite } from '@electric-sql/pglite';
 import { and, eq } from 'drizzle-orm';
+import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import type { Request, Response } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,22 +13,31 @@ import {
   createOAuthClientResponseSchema,
   oauthGrantListResponseSchema,
   oauthTokenResponseSchema,
+  twoFactorEnrollResponseSchema,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
+import type { Database } from '../data/db';
+import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import { openApiPathTemplateAcceptsBearer, pathAcceptsBearer } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrFirstPartyOAuthGrant } from '../http/routes/settingsRoutes';
+import { AuditAction, createAuditService } from '../services/audit/auditService';
+import { generateTotpCode } from '../services/auth/totp';
+import { hashToken } from '../services/crypto/tokens';
+import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import {
   BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
   FIRST_PARTY_CLIENTS,
   seedFirstPartyClients,
 } from '../services/oauth/firstPartyClients';
+import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const THIRD_PARTY_REDIRECT = 'https://third-party.example/callback';
+const OFFICIAL_REDIRECT = 'https://official.example/callback';
 const MISSING_ID = '00000000-0000-0000-0000-000000000000';
 const MOBILE = FIRST_PARTY_CLIENTS.find(
   (client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
@@ -100,7 +111,7 @@ async function issuePublicClientToken(input: {
   clientId: string;
   redirectUri: string;
   scopes: readonly ApiKeyScope[];
-}): Promise<{ token: string; grantId: string; firstParty: boolean }> {
+}): Promise<{ token: string; refreshToken: string; grantId: string; firstParty: boolean }> {
   const { verifier, challenge } = pkce();
   const authorize = {
     client_id: input.clientId,
@@ -125,13 +136,15 @@ async function issuePublicClientToken(input: {
     code_verifier: verifier,
   });
   expect(exchanged.status, JSON.stringify(exchanged.body)).toBe(200);
-  const token = oauthTokenResponseSchema.parse(exchanged.body).access_token;
+  const pair = oauthTokenResponseSchema.parse(exchanged.body);
+  const token = pair.access_token;
 
   const grants = await createOAuthRepository(harness.db).listGrantsForUser(input.userId);
   const row = grants.find(({ client }) => client.clientId === input.clientId);
   expect(row).toBeDefined();
   return {
     token,
+    refreshToken: pair.refresh_token,
     grantId: row!.grant.id,
     firstParty: row!.client.isFirstParty,
   };
@@ -142,6 +155,7 @@ async function mintFirstPartyToken(
   existing?: { user: TestUser; agent: Agent },
 ): Promise<{
   token: string;
+  refreshToken: string;
   grantId: string;
   user: TestUser;
   agent: Agent;
@@ -156,7 +170,13 @@ async function mintFirstPartyToken(
     scopes,
   });
   expect(issued.firstParty).toBe(true);
-  return { token: issued.token, grantId: issued.grantId, user, agent };
+  return {
+    token: issued.token,
+    refreshToken: issued.refreshToken,
+    grantId: issued.grantId,
+    user,
+    agent,
+  };
 }
 
 async function mintThirdPartyToken(
@@ -724,5 +744,851 @@ describe('#1325 first-party OAuth grant management', () => {
         scopeCeiling: EXPECTED_SCOPES,
       },
     ]);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §16 2026-10-29 — first-party persistence: `first_used_at` and the
+ * credential events that end OAuth grants.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** A second official app (admin-registered, `is_first_party`) for the same user. */
+async function mintAdminFirstPartyToken(
+  scopes: readonly ApiKeyScope[],
+  existing: { user: TestUser; agent: Agent },
+): Promise<{ token: string; grantId: string; clientId: string }> {
+  const tag = randomBytes(4).toString('hex');
+  const admin = await harness.seedAdmin({
+    email: `fp-admin-${tag}@bettertrack.test`,
+    username: `fpadmin${tag}`,
+  });
+  const adminAgent = await harness.loginAdmin(admin);
+  const created = await adminAgent
+    .post('/api/v1/admin/oauth-clients')
+    .set(...XRW)
+    .send({ name: 'Official Desktop', redirectUris: [OFFICIAL_REDIRECT], scopes, public: true });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const client = createOAuthClientResponseSchema.parse(created.body).client;
+  const issued = await issuePublicClientToken({
+    agent: existing.agent,
+    userId: existing.user.id,
+    clientId: client.clientId,
+    redirectUri: OFFICIAL_REDIRECT,
+    scopes,
+  });
+  expect(issued.firstParty).toBe(true);
+  return { token: issued.token, grantId: issued.grantId, clientId: client.clientId };
+}
+
+async function grantRevokedAt(grantId: string): Promise<Date | null> {
+  const [row] = await harness.db
+    .select({ revokedAt: schema.oauthGrants.revokedAt })
+    .from(schema.oauthGrants)
+    .where(eq(schema.oauthGrants.id, grantId));
+  return row!.revokedAt;
+}
+
+/** Every `oauth.grant_revoked` row of a user, as `{ grantId, meta }`. */
+async function grantRevocations(userId: string) {
+  const rows = await harness.db
+    .select({ targetId: schema.auditLog.targetId, meta: schema.auditLog.meta })
+    .from(schema.auditLog)
+    .where(
+      and(
+        eq(schema.auditLog.actorId, userId),
+        eq(schema.auditLog.action, AuditAction.OAuthGrantRevoked),
+      ),
+    );
+  return rows
+    .map((row) => ({ grantId: row.targetId, meta: row.meta }))
+    .sort((a, b) => String(a.grantId).localeCompare(String(b.grantId)));
+}
+
+/** The OAuth grant ids a `realtime.principal.invalidated` spy was called with. */
+function invalidatedGrants(publish: { mock: { calls: unknown[][] } }): string[] {
+  return publish.mock.calls
+    .map(([event]) => event as { type: string; kind?: string; credentialId?: string | null })
+    .filter((event) => event.type === 'realtime.principal.invalidated' && event.kind === 'oauth')
+    .map((event) => String(event.credentialId))
+    .sort();
+}
+
+/** Every `oauth.token_family_revoked` row of a user, as meta (familyId-sorted). */
+async function familyRevocations(userId: string) {
+  const rows = await harness.db
+    .select({ meta: schema.auditLog.meta })
+    .from(schema.auditLog)
+    .where(
+      and(
+        eq(schema.auditLog.actorId, userId),
+        eq(schema.auditLog.action, AuditAction.OAuthTokenFamilyRevoked),
+      ),
+    );
+  return rows
+    .map((row) => row.meta as { familyId: string })
+    .sort((a, b) => a.familyId.localeCompare(b.familyId));
+}
+
+/** The token family an access token was minted into (§16 2026-10-29). */
+async function familyIdOf(token: string): Promise<string | null> {
+  const [row] = await harness.db
+    .select({ familyId: schema.oauthAccessTokens.familyId })
+    .from(schema.oauthAccessTokens)
+    .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(token)));
+  return row!.familyId;
+}
+
+/** The access-token row id of a bearer token. */
+async function accessIdOf(token: string): Promise<string> {
+  const [row] = await harness.db
+    .select({ id: schema.oauthAccessTokens.id })
+    .from(schema.oauthAccessTokens)
+    .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(token)));
+  return row!.id;
+}
+
+/** A refresh of the official mobile app (public client: `client_id` alone). */
+function refreshMobile(refreshToken: string) {
+  return request(harness.app).post('/api/v1/oauth/token').send({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: MOBILE.clientId,
+  });
+}
+
+/**
+ * Put `other`'s rows into `into`'s family and drop `other`'s family row: the
+ * exact state 0119's backfill left behind for two pre-PR-B installs of one
+ * grant (one legacy family per grant, every token attached to it).
+ */
+async function shareFamily(into: string, other: string): Promise<string> {
+  const shared = (await familyIdOf(into))!;
+  const own = (await familyIdOf(other))!;
+  await harness.db
+    .update(schema.oauthAccessTokens)
+    .set({ familyId: shared })
+    .where(eq(schema.oauthAccessTokens.familyId, own));
+  await harness.db
+    .update(schema.oauthRefreshTokens)
+    .set({ familyId: shared })
+    .where(eq(schema.oauthRefreshTokens.familyId, own));
+  await harness.db.delete(schema.oauthTokenFamilies).where(eq(schema.oauthTokenFamilies.id, own));
+  expect(await familyIdOf(other)).toBe(shared);
+  return shared;
+}
+
+/** Strip a token's chain back to `family_id IS NULL` (what the pre-family code minted). */
+async function stripFamily(token: string): Promise<void> {
+  const own = (await familyIdOf(token))!;
+  await harness.db
+    .update(schema.oauthAccessTokens)
+    .set({ familyId: null })
+    .where(eq(schema.oauthAccessTokens.familyId, own));
+  await harness.db
+    .update(schema.oauthRefreshTokens)
+    .set({ familyId: null })
+    .where(eq(schema.oauthRefreshTokens.familyId, own));
+  await harness.db.delete(schema.oauthTokenFamilies).where(eq(schema.oauthTokenFamilies.id, own));
+  expect(await familyIdOf(token)).toBeNull();
+}
+
+async function meStatus(token: string): Promise<number> {
+  return (await request(harness.app).get('/api/v1/auth/me').set(bearer(token))).status;
+}
+
+/** Every token family on a grant, keyed by id. */
+async function familiesOf(grantId: string) {
+  const rows = await harness.db
+    .select()
+    .from(schema.oauthTokenFamilies)
+    .where(eq(schema.oauthTokenFamilies.grantId, grantId));
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+/** The family ids a `realtime.principal.invalidated` spy was narrowed to. */
+function invalidatedFamilies(publish: { mock: { calls: unknown[][] } }): string[] {
+  return publish.mock.calls
+    .map(([event]) => event as { type: string; kind?: string; familyId?: string | null })
+    .filter((event) => event.type === 'realtime.principal.invalidated' && event.familyId)
+    .map((event) => String(event.familyId))
+    .sort();
+}
+
+async function accessFirstUsedAt(token: string): Promise<Date | null> {
+  const [row] = await harness.db
+    .select({ firstUsedAt: schema.oauthAccessTokens.firstUsedAt })
+    .from(schema.oauthAccessTokens)
+    .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(token)));
+  return row!.firstUsedAt;
+}
+
+describe('§16 2026-10-29 first_used_at — stamped once per access token, in authenticateToken only', () => {
+  it('writes ONE UPDATE for the first authentication and none for later ones (query count)', async () => {
+    const { token } = await mintFirstPartyToken(['portfolio:read']);
+    expect(await accessFirstUsedAt(token)).toBeNull();
+
+    // A second drizzle handle over the SAME database, logging every statement
+    // the OAuth repository sends.
+    const statements: string[] = [];
+    const pglite = (harness.db as unknown as { $client: PGlite }).$client;
+    const logged = drizzlePglite(pglite, {
+      schema,
+      logger: { logQuery: (query: string) => statements.push(query) },
+    }) as unknown as Database;
+    const service = createOAuthService({
+      repo: createOAuthRepository(logged),
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+    });
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      expect(await service.authenticateToken(token)).not.toBeNull();
+    }
+    const lookups = statements.filter((query) =>
+      /^select .* from "oauth_access_tokens"/i.test(query),
+    );
+    const stamps = statements.filter((query) => /^update "oauth_access_tokens"/i.test(query));
+    expect(lookups).toHaveLength(4);
+    expect(stamps).toHaveLength(1);
+    expect(stamps[0]).toMatch(/set "first_used_at" = \$1/i);
+    expect(stamps[0]).toMatch(/"first_used_at" is null/i);
+
+    const stampedAt = await accessFirstUsedAt(token);
+    expect(stampedAt).toBeInstanceOf(Date);
+    // Later requests over HTTP never move it.
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+    expect(await accessFirstUsedAt(token)).toEqual(stampedAt);
+  });
+
+  it('stamps on the first HTTP bearer request, not at issue time', async () => {
+    const { token } = await mintFirstPartyToken(['portfolio:read']);
+    expect(await accessFirstUsedAt(token)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+    expect(await accessFirstUsedAt(token)).toBeInstanceOf(Date);
+  });
+
+  it('fails closed: an authentication whose stamp cannot be written is rejected', async () => {
+    const { token } = await mintFirstPartyToken(['portfolio:read']);
+    const markAccessTokenFirstUsed = vi.fn(async () => {
+      throw new Error('first-use write unavailable');
+    });
+    const service = createOAuthService({
+      repo: { ...createOAuthRepository(harness.db), markAccessTokenFirstUsed },
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+    });
+
+    await expect(service.authenticateToken(token)).rejects.toThrow('first-use write unavailable');
+    expect(await accessFirstUsedAt(token)).toBeNull();
+
+    // Once the real writer has stamped it, the writer is never called again.
+    expect(await harness.ctx.oauth.authenticateToken(token)).not.toBeNull();
+    markAccessTokenFirstUsed.mockClear();
+    expect(await service.authenticateToken(token)).not.toBeNull();
+    expect(markAccessTokenFirstUsed).not.toHaveBeenCalled();
+  });
+});
+
+describe('§16 2026-10-29 credential events end OAuth grants', () => {
+  it('a password change revokes EVERY grant — first- and third-party — audited and invalidated per grant', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const changed = await mobile.agent
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: mobile.user.password, newPassword: 'Str0ng-New-Passw0rd!' });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(
+      (await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token))).status,
+    ).toBe(401);
+    expect(await harness.ctx.oauth.authenticateToken(partner.token)).toBeNull();
+    expect(invalidatedGrants(publish)).toEqual([mobile.grantId, partner.grantId].sort());
+    expect(await grantRevocations(mobile.user.id)).toEqual(
+      [
+        { grantId: mobile.grantId, meta: { clientId: MOBILE.clientId, reason: 'password_change' } },
+        {
+          grantId: partner.grantId,
+          meta: { clientId: expect.stringMatching(/^btc_/), reason: 'password_change' },
+        },
+      ].sort((a, b) => a.grantId.localeCompare(b.grantId)),
+    );
+  });
+
+  it('sign out everywhere from a browser revokes every FIRST-PARTY grant and leaves third-party grants alone', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const desktop = await mintAdminFirstPartyToken(['portfolio:read'], mobile);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const out = await mobile.agent.post('/api/v1/auth/sessions/revoke-others').set(...XRW);
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+
+    // The browser stays signed in; both official apps are signed out.
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(200);
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(desktop.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeNull();
+    expect(await harness.ctx.oauth.authenticateToken(partner.token)).not.toBeNull();
+    expect(invalidatedGrants(publish)).toEqual([mobile.grantId, desktop.grantId].sort());
+    expect(await grantRevocations(mobile.user.id)).toEqual(
+      [
+        {
+          grantId: mobile.grantId,
+          meta: { clientId: MOBILE.clientId, reason: 'sign_out_everywhere' },
+        },
+        {
+          grantId: desktop.grantId,
+          meta: { clientId: desktop.clientId, reason: 'sign_out_everywhere' },
+        },
+      ].sort((a, b) => a.grantId.localeCompare(b.grantId)),
+    );
+
+    // Idempotent: a second sign-out-everywhere revokes and audits nothing more.
+    await mobile.agent
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(...XRW)
+      .expect(200);
+    expect(await grantRevocations(mobile.user.id)).toHaveLength(2);
+  });
+
+  // Review B1: grant revocation stays first-party-OAuth-only (bearerAuth's
+  // grant-management carve-out). A personal key or a third-party app holding
+  // `account:security` may sign the user's SESSIONS out, never a grant.
+  it('sign out everywhere from a PERSONAL KEY revokes sessions only — never a grant', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const minted = await mobile.agent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'Automation', scopes: ['account:security'] });
+    expect(minted.status, JSON.stringify(minted.body)).toBe(201);
+    const key = createApiKeyResponseSchema.parse(minted.body).token;
+
+    // The same key is refused direct grant revocation…
+    const direct = await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${mobile.grantId}`)
+      .set(bearer(key));
+    expect(direct.status).toBe(403);
+
+    // …and cannot reach the grant through sign-out-everywhere either.
+    const out = await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(key));
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+    expect(out.body).toEqual({ revoked: 1 });
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(401);
+    expect(await grantRevokedAt(mobile.grantId)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);
+    expect(await grantRevocations(mobile.user.id)).toEqual([]);
+    // …nor any install of it: no token family is touched either.
+    expect([...(await familiesOf(mobile.grantId)).values()].every((f) => !f.revokedAt)).toBe(true);
+    expect(await familyRevocations(mobile.user.id)).toEqual([]);
+  });
+
+  it('sign out everywhere from a THIRD-PARTY app revokes sessions only — never a first-party grant', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['account:security'], mobile);
+
+    const direct = await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${mobile.grantId}`)
+      .set(bearer(partner.token));
+    expect(direct.status).toBe(403);
+
+    const out = await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(partner.token));
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+    expect(out.body).toEqual({ revoked: 1 });
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(401);
+    expect(await grantRevokedAt(mobile.grantId)).toBeNull();
+    expect(await grantRevokedAt(partner.grantId)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);
+    expect(await grantRevocations(mobile.user.id)).toEqual([]);
+    // No install of either app is signed out: the family leg is first-party-only too.
+    for (const grantId of [mobile.grantId, partner.grantId]) {
+      expect([...(await familiesOf(grantId)).values()].every((f) => !f.revokedAt)).toBe(true);
+    }
+    expect(await familyRevocations(mobile.user.id)).toEqual([]);
+  });
+
+  // §16 2026-10-29 (PR-C on PR-B, review item e): one grant serves EVERY install
+  // of an app, so keeping the caller's grant whole kept every other phone signed
+  // in. Called from an official app's bearer, sign-out-everywhere now also
+  // revokes every OTHER token family on that grant: exactly the calling install
+  // stays signed in.
+  it('sign out everywhere FROM an official app also signs out that app’s OTHER installs, keeping only the caller', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const watch = await mintFirstPartyToken(['portfolio:read'], phone);
+    expect(new Set([phone.grantId, tablet.grantId, watch.grantId]).size).toBe(1);
+    const phoneFamily = (await familyIdOf(phone.token))!;
+    const siblings = [(await familyIdOf(tablet.token))!, (await familyIdOf(watch.token))!].sort();
+    // A sealed pair at rest on a sibling: it must go with its family (review S3).
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ successorEnvelope: 'v2.sealed-sibling-pair' })
+      .where(eq(schema.oauthRefreshTokens.familyId, siblings[0]!));
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const out = await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token));
+    expect(out.status, JSON.stringify(out.body)).toBe(200);
+    expect(out.body).toEqual({ revoked: 1 });
+
+    // The calling install keeps working; every other install is signed out.
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    for (const other of [tablet, watch]) {
+      expect(
+        (await request(harness.app).get('/api/v1/auth/me').set(bearer(other.token))).status,
+      ).toBe(401);
+    }
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+    // A family of its own is kept as it is — nothing is moved.
+    expect(await familyIdOf(phone.token)).toBe(phoneFamily);
+    const families = await familiesOf(phone.grantId);
+    expect(families.get(phoneFamily)!.revokedAt).toBeNull();
+    for (const id of siblings) {
+      expect(families.get(id)!.revokedAt).toBeInstanceOf(Date);
+      expect(families.get(id)!.revokedReason).toBe('sign_out_everywhere');
+    }
+    const envelopes = await harness.db
+      .select({ envelope: schema.oauthRefreshTokens.successorEnvelope })
+      .from(schema.oauthRefreshTokens)
+      .where(eq(schema.oauthRefreshTokens.familyId, siblings[0]!));
+    expect(envelopes.length).toBeGreaterThan(0);
+    expect(envelopes.every((row) => row.envelope === null)).toBe(true);
+
+    // Each sibling: its sockets dropped and ONE audit row; the grant has none.
+    expect(invalidatedFamilies(publish)).toEqual(siblings);
+    expect(await familyRevocations(phone.user.id)).toEqual(
+      siblings.map((familyId) => ({
+        clientId: MOBILE.clientId,
+        familyId,
+        reason: 'sign_out_everywhere',
+      })),
+    );
+    expect(await grantRevocations(phone.user.id)).toEqual([]);
+
+    // Idempotent: a second call revokes and audits nothing more.
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+    expect(await familyRevocations(phone.user.id)).toHaveLength(2);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+  });
+
+  it('sign out everywhere FROM a legacy pre-family token keeps its chain (moved into a family of its own) and ends every family on the grant', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const phoneFamily = (await familyIdOf(phone.token))!;
+    const tabletFamily = (await familyIdOf(tablet.token))!;
+    // The phone's rows back to what the pre-family code inserted: no family.
+    await harness.db
+      .update(schema.oauthAccessTokens)
+      .set({ familyId: null })
+      .where(eq(schema.oauthAccessTokens.familyId, phoneFamily));
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ familyId: null })
+      .where(eq(schema.oauthRefreshTokens.familyId, phoneFamily));
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    expect(
+      (await request(harness.app).get('/api/v1/auth/me').set(bearer(tablet.token))).status,
+    ).toBe(401);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+    expect((await familiesOf(phone.grantId)).get(tabletFamily)!.revokedReason).toBe(
+      'sign_out_everywhere',
+    );
+    // The legacy chain left the NULL family for a live family of its own.
+    const moved = await familyIdOf(phone.token);
+    expect(moved).toEqual(expect.any(String));
+    expect((await familiesOf(phone.grantId)).get(moved!)!.revokedAt).toBeNull();
+    expect((await refreshMobile(phone.refreshToken)).status).toBe(200);
+  });
+
+  // Review round 2, B1: a FAMILY is not always one install. 0119 backfilled one
+  // legacy family per pre-existing grant, so every pre-PR-B install of the app
+  // shares it — and with the 90-day sliding refresh they rarely sign in again.
+  it('sign out everywhere FROM an app signs out an install SHARING the caller’s 0119-backfilled family', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const shared = await shareFamily(phone.token, tablet.token);
+    expect(await meStatus(tablet.token)).toBe(200);
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    // The sibling: its next call and its next refresh are refused.
+    expect(await meStatus(tablet.token)).toBe(401);
+    const tabletRefresh = await refreshMobile(tablet.refreshToken);
+    expect(tabletRefresh.status).toBe(400);
+    expect(tabletRefresh.body.error.code).toBe('INVALID_GRANT');
+    // The caller: moved into a fresh family, still calling and refreshing.
+    const moved = (await familyIdOf(phone.token))!;
+    expect(moved).not.toBe(shared);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    const next = await refreshMobile(phone.refreshToken);
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(await familyIdOf(oauthTokenResponseSchema.parse(next.body).access_token)).toBe(moved);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+    const families = await familiesOf(phone.grantId);
+    expect(families.get(shared)!.revokedReason).toBe('sign_out_everywhere');
+    expect(families.get(moved)!.revokedAt).toBeNull();
+    expect(await familyRevocations(phone.user.id)).toEqual([
+      { clientId: MOBILE.clientId, familyId: shared, reason: 'sign_out_everywhere' },
+    ]);
+  });
+
+  // …and a chain the pre-family code minted during PR-B's rollout has no
+  // family row at all (rotation inherits `family_id IS NULL`).
+  it('sign out everywhere FROM an app signs out a NO-FAMILY chain on the same grant', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const phoneFamily = (await familyIdOf(phone.token))!;
+    await stripFamily(tablet.token);
+    expect(await meStatus(tablet.token)).toBe(200);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    expect(await meStatus(tablet.token)).toBe(401);
+    expect((await refreshMobile(tablet.refreshToken)).status).toBe(400);
+    // The caller's own family is untouched (it held no one else).
+    expect(await familyIdOf(phone.token)).toBe(phoneFamily);
+    await request(harness.app).get('/api/v1/portfolios').set(bearer(phone.token)).expect(200);
+    expect((await refreshMobile(phone.refreshToken)).status).toBe(200);
+    // The orphan chain was swept into one family, revoked and audited like the rest.
+    const swept = (await familyIdOf(tablet.token))!;
+    expect(swept).not.toBe(phoneFamily);
+    expect((await familiesOf(phone.grantId)).get(swept)!.revokedReason).toBe('sign_out_everywhere');
+    expect(await familyRevocations(phone.user.id)).toEqual([
+      { clientId: MOBILE.clientId, familyId: swept, reason: 'sign_out_everywhere' },
+    ]);
+    expect(invalidatedFamilies(publish)).toEqual([swept]);
+    // Its sockets carry no family: a grant-wide invalidation drops them at once.
+    const grantWide = publish.mock.calls
+      .map(([event]) => event as { type: string; credentialId?: string; familyId?: string })
+      .filter(
+        (event) =>
+          event.type === 'realtime.principal.invalidated' &&
+          event.credentialId === phone.grantId &&
+          !event.familyId,
+      );
+    expect(grantWide).toHaveLength(1);
+  });
+
+  it('the caller’s MOVED chain keeps its 60 s grace replay and its reuse detection', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    const shared = await shareFamily(phone.token, tablet.token);
+    // The phone rotates once, then signs everyone else out with the NEW pair.
+    const rotated = await refreshMobile(phone.refreshToken);
+    expect(rotated.status).toBe(200);
+    const second = oauthTokenResponseSchema.parse(rotated.body);
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(second.access_token))
+      .expect(200);
+    const moved = (await familyIdOf(second.access_token))!;
+    expect(moved).not.toBe(shared);
+    expect(await meStatus(tablet.token)).toBe(401);
+
+    // A lost answer re-sent inside 60 s is still re-served the identical pair.
+    const replay = await refreshMobile(phone.refreshToken);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(oauthTokenResponseSchema.parse(replay.body).refresh_token).toBe(second.refresh_token);
+
+    // The moved chain rotates on; a GRANDPARENT replay is still theft — of the
+    // moved family, which ends with refresh_reuse.
+    const third = oauthTokenResponseSchema.parse((await refreshMobile(second.refresh_token)).body);
+    expect(await familyIdOf(third.access_token)).toBe(moved);
+    expect((await refreshMobile(phone.refreshToken)).status).toBe(400);
+    expect((await familiesOf(phone.grantId)).get(moved)!.revokedReason).toBe('refresh_reuse');
+    expect(await meStatus(third.access_token)).toBe(401);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+  });
+
+  it('fails safe: a caller whose chain cannot be isolated is signed out WITH its siblings', async () => {
+    const phone = await mintFirstPartyToken(['account:security', 'portfolio:read']);
+    const tablet = await mintFirstPartyToken(['portfolio:read'], phone);
+    await shareFamily(phone.token, tablet.token);
+    // Break the pairing between the phone's access row and its refresh row.
+    await harness.db
+      .update(schema.oauthRefreshTokens)
+      .set({ createdAt: new Date(Date.now() - 3_600_000) })
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(phone.refreshToken)));
+
+    await request(harness.app)
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(bearer(phone.token))
+      .expect(200);
+
+    expect(await meStatus(tablet.token)).toBe(401);
+    expect(await meStatus(phone.token)).toBe(401);
+    expect(await grantRevokedAt(phone.grantId)).toBeNull();
+  });
+
+  it('keeps sibling-family revocation repository-scoped to the caller’s own live first-party grant', async () => {
+    const victim = await mintFirstPartyToken(['portfolio:read']);
+    await mintFirstPartyToken(['portfolio:read'], victim);
+    const partner = await mintThirdPartyToken(['market:read'], victim);
+    const attacker = await seedFreshUser();
+    const repo = createOAuthRepository(harness.db);
+
+    // Another user naming the victim's grant reaches nothing.
+    expect(
+      await repo.revokeGrantsForCredentialEvent({
+        userId: attacker.id,
+        firstPartyOnly: true,
+        exceptGrantId: victim.grantId,
+        siblingFamilies: { callerAccessTokenId: await accessIdOf(victim.token) },
+        revokedAt: new Date(),
+      }),
+    ).toEqual({
+      grants: [],
+      families: [],
+      keptClientId: null,
+      keptFamilyId: null,
+      orphansSwept: false,
+    });
+    const victimFamilies = [...(await familiesOf(victim.grantId)).values()];
+    expect(victimFamilies).toHaveLength(2);
+    expect(victimFamilies.every((f) => !f.revokedAt)).toBe(true);
+    // The owner naming a THIRD-PARTY grant as "kept" reaches none of its
+    // families (the first-party filter applies to the kept grant too).
+    const result = await repo.revokeGrantsForCredentialEvent({
+      userId: victim.user.id,
+      firstPartyOnly: true,
+      exceptGrantId: partner.grantId,
+      siblingFamilies: { callerAccessTokenId: await accessIdOf(partner.token) },
+      revokedAt: new Date(),
+    });
+    expect(result.families).toEqual([]);
+    expect(result.keptFamilyId).toBeNull();
+    expect([...(await familiesOf(partner.grantId)).values()].every((f) => !f.revokedAt)).toBe(true);
+    // (The victim's first-party grant itself was a legitimate target of that call.)
+    expect(result.grants.map((grant) => grant.grantId)).toEqual([victim.grantId]);
+  });
+
+  // Review S2: the revoke is fail-closed, its audit trail is not. An audit
+  // write that fails after the revoke committed must not turn the credential
+  // change into a 500, nor skip the remaining grants' rows.
+  it('an audit write failing after the revoke committed is logged and the rest continues', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const record = vi.fn(async (input: { action: string; targetId?: string | null }) => {
+      if (input.action === AuditAction.OAuthGrantRevoked && record.mock.calls.length === 1) {
+        throw new Error('audit store unavailable');
+      }
+    });
+    const warn = vi.fn();
+    const service = createOAuthService({
+      repo: createOAuthRepository(harness.db),
+      audit: { record } as unknown as Parameters<typeof createOAuthService>[0]['audit'],
+      redis: harness.ctx.redis,
+      recordEncryption: harness.ctx.config.recordEncryption,
+      logger: { warn },
+    });
+
+    await expect(
+      service.revokeGrantsForCredentialEvent({
+        userId: mobile.user.id,
+        reason: 'password_change',
+        firstPartyOnly: false,
+        exceptGrantId: null,
+      }),
+    ).resolves.toBe(2);
+
+    // Both grants are revoked; the second row was still attempted after the
+    // first failed, and the gap is logged loudly.
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error), userId: mobile.user.id }),
+      'oauth credential-event grant revocation AUDIT GAP: grant revoked but audit write failed',
+    );
+  });
+
+  it('sign out everywhere also consumes pending first-party authorization codes', async () => {
+    const user = await seedFreshUser();
+    const agent = await login(user);
+    const { verifier, challenge } = pkce();
+    const approved = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({
+        client_id: MOBILE.clientId,
+        redirect_uri: MOBILE.redirectUris[0],
+        scope: 'portfolio:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      });
+    expect(approved.status).toBe(200);
+    const code = new URL(approved.body.redirectTo as string).searchParams.get('code');
+
+    await agent
+      .post('/api/v1/auth/sessions/revoke-others')
+      .set(...XRW)
+      .expect(200);
+
+    const exchanged = await request(harness.app).post('/api/v1/oauth/token').send({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: MOBILE.redirectUris[0],
+      client_id: MOBILE.clientId,
+      code_verifier: verifier,
+    });
+    expect(exchanged.status).toBe(400);
+    expect(exchanged.body.error.code).toBe('INVALID_GRANT');
+  });
+
+  it('2FA enrollment and PIN changes stay sessions-only: OAuth grants survive', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+
+    const pin = await mobile.agent
+      .put('/api/v1/auth/pin')
+      .set(...XRW)
+      .send({ pin: '4826' });
+    expect(pin.status, JSON.stringify(pin.body)).toBe(200);
+    const pinOff = await mobile.agent.delete('/api/v1/auth/pin').set(...XRW);
+    expect(pinOff.status, JSON.stringify(pinOff.body)).toBe(200);
+
+    const stepUp = { password: mobile.user.password };
+    const enroll = await mobile.agent
+      .post('/api/v1/auth/2fa/enroll')
+      .set(...XRW)
+      .send({ stepUp });
+    expect(enroll.status, JSON.stringify(enroll.body)).toBe(200);
+    const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
+    const confirm = await mobile.agent
+      .post('/api/v1/auth/2fa/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret), stepUp });
+    expect(confirm.status, JSON.stringify(confirm.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeNull();
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);
+    expect(await grantRevocations(mobile.user.id)).toEqual([]);
+  });
+});
+
+describe('§16 2026-10-29 a completed password reset ends every OAuth grant', () => {
+  const SMTP_ENV = {
+    SMTP_HOST: 'smtp.test.local',
+    SMTP_PORT: '587',
+    SMTP_USER: 'mailer',
+    SMTP_PASS: 'super-secret-smtp-pass',
+    SMTP_FROM: 'BetterTrack <no-reply@test.local>',
+  } satisfies Partial<NodeJS.ProcessEnv>;
+  let sent: OutgoingMail[];
+
+  beforeEach(async () => {
+    await harness.dispose();
+    sent = [];
+    const transport: MailTransport = {
+      async send(mail) {
+        sent.push(mail);
+      },
+    };
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    await seedFirstPartyClients(createOAuthRepository(harness.db));
+  });
+
+  it('revokes first- and third-party grants, audited password_reset', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+
+    const requested = await request(harness.app)
+      .post('/api/v1/auth/password-reset/request')
+      .set(...XRW)
+      .send({ email: mobile.user.email });
+    expect(requested.body).toEqual({ ok: true });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const token = sent[0]!.text.split('/reset/')[1]?.split(/\s/)[0];
+    expect(token).toBeTruthy();
+
+    const completed = await request(harness.app)
+      .post('/api/v1/auth/password-reset/complete')
+      .set(...XRW)
+      .send({ token, newPassword: 'Reset-Str0ng-Passw0rd!' });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(mobile.token)).toBeNull();
+    expect((await grantRevocations(mobile.user.id)).map((row) => row.meta)).toEqual([
+      expect.objectContaining({ reason: 'password_reset' }),
+      expect.objectContaining({ reason: 'password_reset' }),
+    ]);
+  });
+});
+
+describe('§16 2026-10-29 an ADMIN temp-password reset ends every OAuth grant', () => {
+  it('revokes first- and third-party grants, audited password_reset with source admin', async () => {
+    const mobile = await mintFirstPartyToken(['portfolio:read']);
+    const partner = await mintThirdPartyToken(['market:read'], mobile);
+    const tag = randomBytes(4).toString('hex');
+    const admin = await harness.seedAdmin({
+      email: `reset-admin-${tag}@bettertrack.test`,
+      username: `resetadmin${tag}`,
+    });
+    const adminAgent = await harness.loginAdmin(admin);
+    const publish = vi.spyOn(harness.ctx.events, 'publish');
+
+    const reset = await adminAgent
+      .post(`/api/v1/admin/users/${mobile.user.id}/reset-password`)
+      .set(...XRW);
+    expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+
+    expect(await grantRevokedAt(mobile.grantId)).toBeInstanceOf(Date);
+    expect(await grantRevokedAt(partner.grantId)).toBeInstanceOf(Date);
+    expect(await harness.ctx.oauth.authenticateToken(mobile.token)).toBeNull();
+    expect(await harness.ctx.oauth.authenticateToken(partner.token)).toBeNull();
+    expect(invalidatedGrants(publish)).toEqual([mobile.grantId, partner.grantId].sort());
+
+    // One row per grant; the admin is the actor; the meta names event + source.
+    const rows = await harness.db
+      .select({
+        actorId: schema.auditLog.actorId,
+        targetId: schema.auditLog.targetId,
+        meta: schema.auditLog.meta,
+      })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.action, AuditAction.OAuthGrantRevoked));
+    const byGrant = new Map(rows.map((row) => [row.targetId, row]));
+    expect(rows).toHaveLength(2);
+    expect(byGrant.get(mobile.grantId)).toMatchObject({
+      actorId: admin.id,
+      meta: { clientId: MOBILE.clientId, reason: 'password_reset', source: 'admin' },
+    });
+    expect(byGrant.get(partner.grantId)).toMatchObject({
+      actorId: admin.id,
+      meta: {
+        clientId: expect.stringMatching(/^btc_/),
+        reason: 'password_reset',
+        source: 'admin',
+      },
+    });
   });
 });

@@ -141,7 +141,8 @@
       "submit": "Update password",
       "updating": "Updating…",
       "mismatch": "The new passwords do not match.",
-      "failed": "Could not change your password. Please try again."
+      "failed": "Could not change your password. Please try again.",
+      "signInWithTemporary": "This sign-in cannot set a new password on its own. Sign out, then sign in with your temporary password — you can choose a new password right after."
     },
     "pin": {
       "heading": "Enter your PIN",
@@ -5582,7 +5583,7 @@
         "testEmail": "Send test email",
         "notYourself": "You cannot do this to your own account."
       },
-      "resetConfirm": "Generate a new temporary password for {{email}}? Their current password stops working immediately.",
+      "resetConfirm": "Generate a new temporary password for {{email}}? Their current password stops working immediately, and their personal API keys are revoked.",
       "deleteConfirm": "This permanently deletes {{email}} and all of their data, and cannot be undone. Type the username {{username}} to confirm.",
       "confirmUsername": "Confirm username",
       "deleting": "Deleting…",

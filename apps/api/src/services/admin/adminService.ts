@@ -24,7 +24,11 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
-import type { ApiKeyService } from '../apiKeys/apiKeyService';
+import {
+  revokePersonalKeysInTransaction,
+  type ApiKeyRevocationEvent,
+  type ApiKeyService,
+} from '../apiKeys/apiKeyService';
 import type { OAuthService } from '../oauth/oauthService';
 import type {
   AdminModerationActionRow,
@@ -92,8 +96,11 @@ export interface AdminServiceDeps {
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
   /** Suspension cleanup for non-session bearer credentials. */
   apiKeys: Pick<ApiKeyService, 'revokeAllForUser'>;
-  /** Suspension cleanup for delegated OAuth credentials. */
-  oauth: Pick<OAuthService, 'revokeAllForUser'>;
+  /**
+   * Suspension cleanup for delegated OAuth credentials, and the admin
+   * temp-password reset's grant revocation (§16 2026-10-29, ruling (d)).
+   */
+  oauth: Pick<OAuthService, 'revokeAllForUser' | 'revokeGrantsForCredentialEvent'>;
   sessions: SessionService;
   /** Best-effort lifecycle fan-out to terminate any connected principal. */
   events?: Pick<EventBus, 'publish'>;
@@ -1006,10 +1013,46 @@ export function createAdminService(deps: AdminServiceDeps) {
       const target = await loadUser(id);
       const tempPassword = generateTempPassword();
       const passwordHash = await passwordHasher.hash(tempPassword);
-      const securityGeneration = await userRepo.updatePassword(target.id, passwordHash, true);
+      // A reset also ends every personal API key of the account (§6.1), exactly
+      // as a suspension does, one `api_key.revoked` row per key (admin as
+      // actor). Ordering contract: keys are revoked BEFORE the password write
+      // (a failed write then only over-revokes) and AGAIN inside the same
+      // transaction as the password write and generation bump (a key added in
+      // between commits or rolls back with the bump); key creation itself is
+      // fenced on the creating session's generation, so nothing a superseded
+      // session starts can land afterwards. Failures propagate rather than
+      // answer 200; a reset is idempotent, so the admin's retry finishes it.
+      const keyRevocation: ApiKeyRevocationEvent = {
+        reason: 'password_reset',
+        source: 'admin',
+        actorId: actor.id,
+        ip: actor.ip,
+      };
+      await apiKeys.revokeAllForUser(target.id, keyRevocation);
+      const securityGeneration = await userRepo.withSerializedAdminMutation(async (repo, tx) => {
+        const generation = await repo.updatePassword(target.id, passwordHash, true);
+        if (generation === null) return null;
+        await revokePersonalKeysInTransaction(tx, audit, target.id, keyRevocation);
+        return generation;
+      });
       if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
       await destroySessionsBestEffort(target.id);
       await invalidateAllRealtimePrincipals(target.id);
+      // A reset ends every OAuth grant too (§16 2026-10-29, ruling (d)): the
+      // admin reset is the same "the old credential may be in other hands"
+      // moment as the self-service one, so no installed app keeps the old
+      // authority. Audited per grant as `password_reset` with `source: admin`,
+      // the admin as actor. Failures propagate — the reset must not answer 200
+      // while a grant it promised to end is still live.
+      await oauth.revokeGrantsForCredentialEvent({
+        userId: target.id,
+        reason: 'password_reset',
+        firstPartyOnly: false,
+        exceptGrantId: null,
+        ip: actor.ip,
+        actorId: actor.id,
+        source: 'admin',
+      });
       // Clear lockout so the user can sign in with the new temp password now.
       await clearLoginThrottle(redis, target.id);
       await audit.record({

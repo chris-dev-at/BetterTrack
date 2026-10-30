@@ -23,7 +23,7 @@ import {
   type WidgetLayoutNamespaceParam,
 } from '@bettertrack/contracts';
 
-import { forbidden, notFound } from '../../errors';
+import { forbidden, notFound, unauthorized } from '../../errors';
 
 import type { BearerScopeDenialReason } from '../../services/audit/auditService';
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
@@ -470,13 +470,17 @@ export function createSettingsRouter(ctx: AppContext): Router {
   });
 
   // POST /settings/api-keys — mint a key; the plaintext token is returned once.
+  // Session-only (bearerAuth). The session's generation fences the insert: a
+  // session superseded by a credential change cannot add a key (§6.1).
   router.post('/api-keys', validateBody(createApiKeyRequestSchema), async (req, res) => {
     const body = req.valid?.body as CreateApiKeyRequest;
+    if (req.sessionSecurityGeneration === undefined) throw unauthorized();
     const result = await ctx.apiKeys.create({
       userId: req.authUser!.id,
       name: body.name,
       scopes: body.scopes,
       ip: req.ip ?? null,
+      securityGeneration: req.sessionSecurityGeneration,
     });
     res.status(201).json(result);
   });

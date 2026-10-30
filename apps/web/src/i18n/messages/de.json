@@ -141,7 +141,8 @@
       "submit": "Passwort aktualisieren",
       "updating": "Wird aktualisiert…",
       "mismatch": "Die neuen Passwörter stimmen nicht überein.",
-      "failed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
+      "failed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut.",
+      "signInWithTemporary": "Mit dieser Anmeldung kann kein neues Passwort festgelegt werden. Melde dich ab und mit deinem temporären Passwort wieder an – danach kannst du gleich ein neues Passwort wählen."
     },
     "pin": {
       "heading": "Gib deine PIN ein",
@@ -5582,7 +5583,7 @@
         "testEmail": "Test-E-Mail senden",
         "notYourself": "Das kannst du nicht mit deinem eigenen Konto tun."
       },
-      "resetConfirm": "Ein neues temporäres Passwort für {{email}} erzeugen? Das bisherige Passwort funktioniert sofort nicht mehr.",
+      "resetConfirm": "Ein neues temporäres Passwort für {{email}} erzeugen? Das bisherige Passwort funktioniert sofort nicht mehr, und die persönlichen API-Schlüssel werden widerrufen.",
       "deleteConfirm": "Damit werden {{email}} und alle zugehörigen Daten endgültig gelöscht; das lässt sich nicht rückgängig machen. Gib zur Bestätigung den Benutzernamen {{username}} ein.",
       "confirmUsername": "Benutzernamen bestätigen",
       "deleting": "Wird gelöscht …",

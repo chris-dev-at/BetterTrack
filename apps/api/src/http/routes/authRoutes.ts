@@ -56,6 +56,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, forbidden, notFound, unauthorized } from '../../errors';
+import type { SignOutEverywhereCredential } from '../../services/auth/authService';
 import { authorizeReturnTo } from '../../services/auth/authorizeReturnTo';
 import { stepUpCredentialKey } from '../../services/auth/factorProvenance';
 import type { FactorStepUpAuthorization } from '../../services/auth/twoFactorService';
@@ -374,9 +375,29 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // Log out every other device, keeping the caller signed in on this session.
+  // "Sign out everywhere": log out every other device — every other session,
+  // and (§16 2026-10-29) every official first-party app grant — keeping the
+  // caller signed in on this session, or — when the caller is an official app's
+  // OAuth bearer — on its own install: its grant (`req.apiKey.id` IS the grant
+  // id then) survives, but every OTHER install on it is signed out too (the
+  // presenting access token identifies the caller's chain). Grant
+  // revocation stays first-party-OAuth-only, as on `DELETE
+  // /settings/oauth-grants/{id}`: a personal key or a third-party app holding
+  // `account:security` revokes sessions only (review B1).
   router.post('/sessions/revoke-others', requireAuth, async (req, res) => {
-    const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null);
+    const credential: SignOutEverywhereCredential = !req.apiKey
+      ? { kind: 'session' }
+      : req.apiKey.kind === 'oauth' && req.apiKey.firstParty && req.apiKey.accessTokenId
+        ? {
+            kind: 'first_party_oauth',
+            grantId: req.apiKey.id,
+            accessTokenId: req.apiKey.accessTokenId,
+          }
+        : { kind: 'delegated_bearer' };
+    const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null, {
+      credential,
+      ip: req.ip,
+    });
     res.json({ revoked });
   });
 

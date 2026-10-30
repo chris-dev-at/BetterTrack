@@ -1209,6 +1209,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
     appSettings,
     twoFactor,
+    // Password change/reset and sign-out-everywhere end OAuth grants too (§16
+    // 2026-10-29); `oauth` is constructed above.
+    oauthGrants: oauth,
   });
 
   // Google sign-in (§13.4 V4-P4b): OAuth authorization-code flow, verified-email

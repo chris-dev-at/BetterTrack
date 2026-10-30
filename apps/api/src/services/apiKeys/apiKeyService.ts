@@ -16,13 +16,17 @@ import {
   withImpliedReadScopes,
 } from '@bettertrack/contracts';
 
-import type { ApiKeyRepository } from '../../data/repositories/apiKeyRepository';
+import type { Database } from '../../data/db';
+import {
+  createApiKeyRepository,
+  type ApiKeyRepository,
+} from '../../data/repositories/apiKeyRepository';
 import type { ApiKeyRequestLogRepository } from '../../data/repositories/apiKeyRequestLogRepository';
 import type { ApiKeyTierRepository } from '../../data/repositories/apiKeyTierRepository';
 import { stripPortfolioRequestAttribution } from '../../data/repositories/portfolioRequestAttribution';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { ApiKeyRequestLogRow, ApiKeyRow, ApiKeyTierRow, UserRow } from '../../data/schema';
-import { badRequest, notFound } from '../../errors';
+import { badRequest, notFound, unauthorized } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import { API_KEY_LIMITER_NAMESPACE } from '../../http/middleware/rateLimit';
 import type { Logger } from '../../logger';
@@ -70,17 +74,80 @@ export interface ApiKeyServiceDeps {
   defaultRateLimit: { limit: number; windowSec: number };
 }
 
+/**
+ * The credential event behind a bulk key revocation, stamped on every
+ * `api_key.revoked` row it writes. The same `reason`/`source` vocabulary as the
+ * OAuth grant rows of a credential event, so one audit filter finds both.
+ */
+export interface ApiKeyRevocationEvent {
+  reason: 'password_reset';
+  source: 'admin';
+  /** The administrator who performed the reset. */
+  actorId: string;
+  ip?: string | null;
+}
+
+/** One `api_key.revoked` row per key a credential event revoked, inside `tx`. */
+async function recordCredentialEventRevocations(
+  audit: Pick<AuditService, 'recordInTransaction'>,
+  tx: Database,
+  revokedIds: readonly string[],
+  event: ApiKeyRevocationEvent,
+): Promise<void> {
+  for (const keyId of revokedIds) {
+    await audit.recordInTransaction(tx, {
+      actorId: event.actorId,
+      action: AuditAction.ApiKeyRevoked,
+      targetType: 'api_key',
+      targetId: keyId,
+      ip: event.ip ?? null,
+      meta: { reason: event.reason, source: event.source },
+    });
+  }
+}
+
+/**
+ * Revoke every active personal key of `userId` INSIDE the caller's transaction,
+ * with one `api_key.revoked` row per key — so the revocation commits together
+ * with the caller's credential write (the administrator reset's generation
+ * bump) or not at all. Idempotent: only keys revoked by this statement are
+ * returned and audited. The caller publishes the realtime invalidation after
+ * its commit.
+ */
+export async function revokePersonalKeysInTransaction(
+  tx: Database,
+  audit: Pick<AuditService, 'recordInTransaction'>,
+  userId: string,
+  event: ApiKeyRevocationEvent,
+): Promise<string[]> {
+  const revokedIds = await createApiKeyRepository(tx).revokeAllForUser(userId);
+  await recordCredentialEventRevocations(audit, tx, revokedIds, event);
+  return revokedIds;
+}
+
 export interface ApiKeyService {
   create(input: {
     userId: string;
     name: string;
     scopes: ApiKeyScope[];
     ip?: string | null;
+    /**
+     * The creating session's security generation. The HTTP route always
+     * passes it: the key is then inserted only while the account is still at
+     * that generation (401 otherwise), so a session that a credential change
+     * has already superseded cannot add a key after that change's revocation.
+     */
+    securityGeneration?: number;
   }): Promise<CreateApiKeyResponse>;
   list(userId: string): Promise<ApiKeySummary[]>;
   revoke(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
-  /** Administrative suspension: revoke all of one user's personal keys. */
-  revokeAllForUser(userId: string): Promise<void>;
+  /**
+   * Revoke all of one user's personal keys: administrative suspension (no
+   * `event`; the suspension's own `user.disabled` row records it) and the
+   * administrator password reset (`event` given: one `api_key.revoked` row per
+   * key revoked by this call, written in the same commit as the revoke).
+   */
+  revokeAllForUser(userId: string, event?: ApiKeyRevocationEvent): Promise<void>;
   /** Bearer-auth lookup: resolve an active key by its plaintext token, else null. */
   authenticate(token: string): Promise<ApiKeyPrincipal | null>;
   /**
@@ -317,7 +384,7 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
   }
 
   return {
-    async create({ userId, name, scopes, ip }) {
+    async create({ userId, name, scopes, ip, securityGeneration }) {
       const { token, tokenHash } = mintToken();
       // Write⇒read at the WRITE path (#1740, V5-P0b): the STORED set never
       // carries a `:write` without its `:read`. The four browser pickers already
@@ -326,7 +393,12 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       // Purely additive — a request that was accepted before is still accepted,
       // with the implied read added rather than refused.
       const normalized = withImpliedReadScopes(scopes);
-      const row = await repo.create({ userId, name, tokenHash, scopes: normalized });
+      const input = { userId, name, tokenHash, scopes: normalized };
+      const row =
+        securityGeneration === undefined
+          ? await repo.create(input)
+          : await repo.createAtGeneration(input, securityGeneration);
+      if (!row) throw unauthorized();
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyCreated,
@@ -366,8 +438,16 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
-    async revokeAllForUser(userId) {
-      await repo.revokeAllForUser(userId);
+    async revokeAllForUser(userId, event) {
+      // With an event, the revoke and its audit rows share one commit.
+      // Idempotent by construction: the repository returns only keys revoked
+      // by THIS call, so a retried reset writes no second row for a key.
+      await repo.revokeAllForUser(
+        userId,
+        event
+          ? (tx, revokedIds) => recordCredentialEventRevocations(audit, tx, revokedIds, event)
+          : undefined,
+      );
       await publishInvalidation({
         userId,
         kind: 'personal',
