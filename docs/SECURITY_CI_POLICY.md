@@ -35,7 +35,7 @@ build, while HIGH findings remain in the nightly report for triage. The operator
 workflow and the narrow waiver path are documented in
 [`docs/supply-chain.md`](supply-chain.md).
 
-Three dependencies sit partly outside the automated lanes and are therefore
+Four dependencies sit partly outside the automated lanes and are therefore
 **tracked by hand**:
 
 - `drizzle-orm` / `drizzle-kit` — Dependabot is fenced off their 0.x minors
@@ -45,11 +45,21 @@ Three dependencies sit partly outside the automated lanes and are therefore
   minor will not open a PR on its own** — check the drizzle releases when one
   is reported and raise the upgrade issue manually.
 - `shell-quote` is pinned forward in the root `pnpm.overrides` block
-  (GHSA-395f-4hp3-45gv). Nothing here depends on it directly:
+  (GHSA-395f-4hp3-45gv, raised to ^1.11.0 for GHSA-pqg4-j6r4-53mv). Nothing here depends on it directly:
   `drizzle-orm`'s optional `gel` peer drags it onto the **production** audit
   path, so the pin is what keeps `pnpm audit --prod` clean without a waiver.
   Drop the override only after confirming the package has left the production
   tree (`pnpm why shell-quote`).
+- `proxy-addr` is pinned forward in the root `pnpm.overrides` block (`^2.0.8`,
+  GHSA-jqcg-44mw-7w3h, critical). It is a **floor inside express's own range**:
+  express 5.2.1 declares `proxy-addr: ^2.0.7`, so no express release has to
+  happen for the fix, but nothing stops a re-lock from resolving the vulnerable
+  2.0.7 either — the override is what keeps `pnpm audit --prod` and the api
+  container gate clean. Runtime impact is nil: `trust proxy` is the numeric hop
+  count `1` (`apps/api/src/app.ts`), which express handles without proxy-addr's
+  subnet compiler, and 2.0.8 only changes subnet matching, so `req.ip` (rate-limit
+  keys, audit IPs) is unchanged. Drop the override once every express in the tree
+  declares `^2.0.8` or later (`pnpm why proxy-addr`).
 - `js-yaml` is pinned forward in the root `pnpm.overrides` block (`^4.3.2`) for
   the same reason and looks even more pointless than `shell-quote`, because the
   only thing that pulls it in is ESLint: `eslint -> @eslint/eslintrc -> js-yaml`.

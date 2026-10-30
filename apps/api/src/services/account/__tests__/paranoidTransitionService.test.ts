@@ -5,9 +5,12 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  VALIDATION_ERROR_ISSUES_MAX,
   paranoidDisableRequestSchema,
   paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
+  validationErrorDetailsSchema,
+  vaultStrictEntitySchema,
   type ParanoidDisableRequest,
   type ParanoidEnableRequest,
 } from '@bettertrack/contracts';
@@ -1091,6 +1094,60 @@ describe('paranoid public transitions', () => {
       .send(oversize);
     expect(buffered.status, JSON.stringify(buffered.body)).toBe(400);
     expect(buffered.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('bounds the restore document before the full schema runs (GHSA-mrhx-c7xc-m3w5)', async () => {
+    // zod 3 accumulates one issue per failing element, per missing field, and
+    // this route reads up to 8× the vault cap for a paranoid caller. Both floods
+    // must be answered from the bounded layers, never by the full schema.
+    const user = await harness.seedUser();
+    await seedNormalGraph(user);
+    const agent = await login(user);
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id)),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+    const disableJson = (entities: string) =>
+      `{"confirm":true,"rehydrationId":"${REHYDRATION_ID}","document":{"schemaVersion":1,"entities":${entities}}}`;
+    // ≥ 1 MiB carrying 100k garbage entities: refused from its length alone.
+    const flood = disableJson(`[${new Array(100_000).fill('{"g":"xx"}').join(',')}]`);
+    expect(Buffer.byteLength(flood)).toBeGreaterThanOrEqual(1024 * 1024);
+    // ≈1 MiB of entities padded past the byte floor: stopped at the first one.
+    const paddedEntity = JSON.stringify({ kind: 'importRow', data: {}, pad: 'p'.repeat(170) });
+    const padded = disableJson(`[${new Array(5_000).fill(paddedEntity).join(',')}]`);
+
+    const elementParse = vi.spyOn(vaultStrictEntitySchema, '_parse');
+    const requestParse = vi.spyOn(paranoidDisableRequestSchema, 'safeParse');
+    try {
+      const started = performance.now();
+      const flooded = await agent
+        .post('/api/v1/account/paranoid/disable')
+        .set(...XRW)
+        .set('Content-Type', 'application/json')
+        .send(flood);
+      const elapsedMs = performance.now() - started;
+      expect(flooded.status, JSON.stringify(flooded.body).slice(0, 300)).toBe(400);
+      expect(flooded.body.error.code).toBe('VALIDATION_ERROR');
+      expect(validationErrorDetailsSchema.parse(flooded.body.error.details).issueCount).toBe(1);
+      expect(elementParse).not.toHaveBeenCalled();
+      expect(requestParse).not.toHaveBeenCalled();
+      expect(elapsedMs).toBeLessThan(1_000);
+
+      const stopped = await agent
+        .post('/api/v1/account/paranoid/disable')
+        .set(...XRW)
+        .set('Content-Type', 'application/json')
+        .send(padded);
+      expect(stopped.status).toBe(400);
+      const details = validationErrorDetailsSchema.parse(stopped.body.error.details);
+      expect(details.issueCount).toBe(26);
+      expect(details.fieldErrors.document).toHaveLength(VALIDATION_ERROR_ISSUES_MAX);
+      expect(elementParse).toHaveBeenCalledTimes(1);
+      expect(requestParse).not.toHaveBeenCalled();
+    } finally {
+      elementParse.mockRestore();
+      requestParse.mockRestore();
+    }
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
   });
 
   it('disables through the strict public payload and resumes idempotently', async () => {

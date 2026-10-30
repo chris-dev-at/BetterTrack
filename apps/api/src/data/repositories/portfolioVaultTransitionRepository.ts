@@ -528,6 +528,47 @@ export async function readPortfolioVaultLifecycle(
   };
 }
 
+/**
+ * Which JSON body bound a move-out request from this caller may spend (GHSA-
+ * mrhx-c7xc-m3w5): `restore` — the route's wide, 8×-the-encrypted-cap parser —
+ * only for a portfolio that can actually be moved out or idempotently replayed;
+ * `standard` (the 100 KiB global bound) for the owner's plain portfolio, which
+ * the commit refuses as not vaulted anyway; `not_found` for anyone else.
+ */
+export type PortfolioVaultMoveOutBodyAdmission = 'not_found' | 'restore' | 'standard';
+
+/**
+ * Owner-scoped admission read that runs BEFORE the move-out body is parsed.
+ * `restore` when the caller's portfolio sits in a vault, OR when it carries a
+ * completed move-out receipt: an outcome-ambiguous retry of a committed move-out
+ * re-sends the same full-size document to collect its idempotent receipt, and
+ * must not be 413'd by the narrower bound. Plain read, no locks — a stale answer
+ * only picks the parser bound; the commit re-proves every fact under its locks.
+ */
+export async function readPortfolioVaultMoveOutBodyAdmission(
+  db: Database,
+  userId: string,
+  portfolioId: string,
+): Promise<PortfolioVaultMoveOutBodyAdmission> {
+  const [row] = await db
+    .select({
+      vaultId: portfolios.vaultId,
+      moveOutCompletedAt: portfolioVaultTransitionStates.moveOutCompletedAt,
+    })
+    .from(portfolios)
+    .leftJoin(
+      portfolioVaultTransitionStates,
+      and(
+        eq(portfolioVaultTransitionStates.portfolioId, portfolios.id),
+        eq(portfolioVaultTransitionStates.userId, userId),
+      ),
+    )
+    .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+    .limit(1);
+  if (!row) return 'not_found';
+  return row.vaultId !== null || row.moveOutCompletedAt !== null ? 'restore' : 'standard';
+}
+
 export interface LockedPortfolioVaultOwner {
   passwordHash: string;
   twoFactorSecret: string | null;

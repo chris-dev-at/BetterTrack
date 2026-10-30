@@ -7,6 +7,14 @@
 # Build from the repo root so the compose `context: ..` resolves this path:
 #   docker build -f apps/landing/Dockerfile -t bettertrack-landing .
 FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS runner
+# Base-image lag: CVE-2026-111497 (CRITICAL) is FIXED in brotli-libs 1.2.1-r0,
+# which the alpine 3.24 repository already ships, but every nginx:alpine digest
+# up to the newest (1.31.8, 2026-10-28) still carries the vulnerable 1.2.0-r1.
+# The versioned `apk add` enforces the floor: if the mirror cannot provide
+# >= 1.2.1-r0 the build fails loudly instead of passing with the old package.
+# Drop this line once the pinned digest ships brotli-libs >= 1.2.1-r0 (Renovate
+# digest bumps will not remove it on their own).
+RUN apk add --no-cache 'brotli-libs>=1.2.1-r0'
 
 # Static site content → nginx web root. The canonical legal directories under
 # site/ are copied with the landing pages, so nginx resolves /<page>/ and
