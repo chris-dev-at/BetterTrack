@@ -14,6 +14,7 @@ import {
   oauthGrantListResponseSchema,
   oauthTokenResponseSchema,
   twoFactorEnrollResponseSchema,
+  withoutOAuthFirstPartyOnlyScopes,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
@@ -34,6 +35,10 @@ import {
 } from '../services/oauth/firstPartyClients';
 import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import {
+  simulateThirdPartyCeilingRegression,
+  storeAsPreRuleThirdPartyApp,
+} from './thirdPartyCeilingRegression';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const THIRD_PARTY_REDIRECT = 'https://third-party.example/callback';
@@ -179,6 +184,13 @@ async function mintFirstPartyToken(
   };
 }
 
+/**
+ * A grant on an app the user registered — genuinely third-party. A third-party
+ * app can no longer hold `account:security`, so a request for it
+ * builds the only state that still could: an app and grant stored before the
+ * rule, plus a simulated regression of the ceiling for this one grant. That
+ * keeps the grant routes' own first-party-only rail pinned BEHIND the ceiling.
+ */
 async function mintThirdPartyToken(
   scopes: readonly ApiKeyScope[],
   existing?: { user: TestUser; agent: Agent },
@@ -190,13 +202,15 @@ async function mintThirdPartyToken(
 }> {
   const user = existing?.user ?? (await seedFreshUser());
   const agent = existing?.agent ?? (await login(user));
+  const ordinary = withoutOAuthFirstPartyOnlyScopes(scopes);
+  const registrable: readonly ApiKeyScope[] = ordinary.length > 0 ? ordinary : ['market:read'];
   const registered = await agent
     .post('/api/v1/settings/oauth-clients')
     .set(...XRW)
     .send({
       name: 'Throwaway third party',
       redirectUris: [THIRD_PARTY_REDIRECT],
-      scopes,
+      scopes: registrable,
       public: true,
     });
   expect(registered.status, JSON.stringify(registered.body)).toBe(201);
@@ -206,10 +220,18 @@ async function mintThirdPartyToken(
     userId: user.id,
     clientId: client.clientId,
     redirectUri: THIRD_PARTY_REDIRECT,
-    scopes,
+    scopes: registrable,
   });
   // This is the real row created by the public registration flow, not a mocked flag.
   expect(issued.firstParty).toBe(false);
+  if (ordinary.length !== scopes.length) {
+    await storeAsPreRuleThirdPartyApp(harness, {
+      clientId: client.clientId,
+      grantId: issued.grantId,
+      scopes,
+    });
+    simulateThirdPartyCeilingRegression(harness, { grantId: issued.grantId, scopes });
+  }
   return { token: issued.token, grantId: issued.grantId, user, agent };
 }
 
@@ -1092,7 +1114,7 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
     expect(await familyRevocations(mobile.user.id)).toEqual([]);
   });
 
-  it('sign out everywhere from a THIRD-PARTY app revokes sessions only — never a first-party grant', async () => {
+  it('sign out everywhere is refused for a third-party app; no session or first-party grant is touched', async () => {
     const mobile = await mintFirstPartyToken(['portfolio:read']);
     const partner = await mintThirdPartyToken(['account:security'], mobile);
 
@@ -1101,12 +1123,15 @@ describe('§16 2026-10-29 credential events end OAuth grants', () => {
       .set(bearer(partner.token));
     expect(direct.status).toBe(403);
 
+    // `account:security` is first-party-only for OAuth apps (§16 2026-10-30): the
+    // third-party token is refused with 403 API_KEY_FORBIDDEN (first-party-only).
     const out = await request(harness.app)
       .post('/api/v1/auth/sessions/revoke-others')
       .set(bearer(partner.token));
-    expect(out.status, JSON.stringify(out.body)).toBe(200);
-    expect(out.body).toEqual({ revoked: 1 });
-    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(401);
+    expect(out.status, JSON.stringify(out.body)).toBe(403);
+    expect(out.body.error.code).toBe('API_KEY_FORBIDDEN');
+    expect(out.body.error.message).toContain('first-party OAuth clients only');
+    expect((await mobile.agent.get('/api/v1/auth/me')).status).toBe(200);
     expect(await grantRevokedAt(mobile.grantId)).toBeNull();
     expect(await grantRevokedAt(partner.grantId)).toBeNull();
     await request(harness.app).get('/api/v1/auth/me').set(bearer(mobile.token)).expect(200);

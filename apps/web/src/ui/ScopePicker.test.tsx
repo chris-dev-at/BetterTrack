@@ -247,6 +247,19 @@ describe('ScopePicker', () => {
     expect(screen.getByText(/2 selected/i)).toBeInTheDocument();
   });
 
+  test('excludeScopes drops a module whose every scope is excluded, and only that', () => {
+    render(
+      <ScopePicker
+        excludeScopes={['account:security', 'vault:sync']}
+        onChange={() => {}}
+        scopes={new Set()}
+      />,
+    );
+    expect(screen.queryByRole('checkbox', { name: /account security · access/i })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /vault sync · access/i })).toBeNull();
+    expect(screen.getAllByRole('checkbox').length).toBe(19);
+  });
+
   test('collapsible mode with defaultOpen renders the module rows immediately', () => {
     const { container } = render(
       <ScopePicker scopes={new Set()} onChange={() => {}} collapsible defaultOpen />,
@@ -272,6 +285,8 @@ const GERMAN_CAPABILITY_PHRASES: Readonly<Record<string, string>> = {
   'account-security.portfolio-vault-move': 'Portfolios in einen Tresor verschieben',
   'account-security.delete-passkey': 'einen Passkey löschen',
   'account-security.revoke-grant': 'den Zugriff einer anderen App widerrufen',
+  'account-security.export-data': 'alle deine Daten exportieren',
+  'account-security.delete-account': 'dein Konto endgültig löschen',
   'portfolio.tax-regime': 'Steuerregime',
 };
 

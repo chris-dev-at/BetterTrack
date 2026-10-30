@@ -4,7 +4,6 @@ import { eq } from 'drizzle-orm';
 
 import {
   encodeVaultEnvelope,
-  createOAuthClientResponseSchema,
   oauthTokenResponseSchema,
   serializeRetiredServerPurgeTranscript,
   VAULT_CONTENT_CIPHER,
@@ -20,6 +19,7 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import {
   paranoidVaultHistory,
   paranoidVaultRetired,
@@ -28,6 +28,7 @@ import {
   paranoidVaults,
   users,
 } from '../data/schema';
+import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -139,6 +140,11 @@ function purgeSignature(
   ).toString('base64url');
 }
 
+/**
+ * A delegated OAuth token holding account:security. Only the official
+ * first-party app can hold that scope, and it is the stronger
+ * case here: even the trusted app stays out of the vault transitions.
+ */
 async function mintDelegatedSecurityToken(): Promise<string> {
   const tag = randomBytes(5).toString('hex');
   const user = await harness.seedUser({
@@ -147,17 +153,11 @@ async function mintDelegatedSecurityToken(): Promise<string> {
     password: 'user-strong-password-1',
   });
   const agent = await loginAgent(harness.app, user.email, 'user-strong-password-1');
-  const registered = await agent
-    .post('/api/v1/settings/oauth-clients')
-    .set(...XRW)
-    .send({
-      name: 'Vault bearer test',
-      redirectUris: ['https://app.example/vault-callback'],
-      scopes: ['account:security'],
-      public: true,
-    });
-  expect(registered.status).toBe(201);
-  const client = createOAuthClientResponseSchema.parse(registered.body).client;
+  await seedFirstPartyClients(createOAuthRepository(harness.db));
+  const client = FIRST_PARTY_CLIENTS.find(
+    (candidate) => candidate.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+  )!;
+  const redirectUri = client.redirectUris[0]!;
   const verifier = randomBytes(32).toString('base64url');
   const challenge = createHash('sha256').update(verifier).digest('base64url');
   const authorized = await agent
@@ -165,7 +165,7 @@ async function mintDelegatedSecurityToken(): Promise<string> {
     .set(...XRW)
     .send({
       client_id: client.clientId,
-      redirect_uri: 'https://app.example/vault-callback',
+      redirect_uri: redirectUri,
       scope: 'account:security',
       code_challenge: challenge,
       code_challenge_method: 'S256',
@@ -176,7 +176,7 @@ async function mintDelegatedSecurityToken(): Promise<string> {
   const exchanged = await request(harness.app).post('/api/v1/oauth/token').send({
     grant_type: 'authorization_code',
     code,
-    redirect_uri: 'https://app.example/vault-callback',
+    redirect_uri: redirectUri,
     client_id: client.clientId,
     code_verifier: verifier,
   });

@@ -11,6 +11,8 @@ import {
   createApiKeyResponseSchema,
   createOAuthClientResponseSchema,
   oauthTokenResponseSchema,
+  withoutOAuthFirstPartyOnlyScopes,
+  type ApiKeyScope,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -30,6 +32,10 @@ import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
 import { parseBearerScopeDeniedMeta } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import {
+  simulateThirdPartyCeilingRegression,
+  storeAsPreRuleThirdPartyApp,
+} from './thirdPartyCeilingRegression';
 
 /**
  * #1951 — the adversarial half of the bearer-denial audit work.
@@ -99,19 +105,27 @@ async function mintPersonalKey(
   return { token: parsed.token, keyId: parsed.key.id, user };
 }
 
-/** A grant on a client the USER registered themselves — genuinely third-party. */
+/**
+ * A grant on a client the USER registered themselves — genuinely third-party.
+ * Such an app can no longer hold `account:security`, so asking for
+ * it builds the only state that still could: an app and grant stored before the
+ * rule plus a simulated ceiling regression for this one grant — the input the
+ * grant routes' own first-party-only rail has to refuse on its own.
+ */
 async function mintThirdPartyToken(
-  scopes: string[],
+  scopes: ApiKeyScope[],
 ): Promise<{ token: string; grantId: string; user: TestUser }> {
   const user = await seedFreshUser();
   const agent = await login(user);
+  const ordinary = withoutOAuthFirstPartyOnlyScopes(scopes);
+  const registrable: ApiKeyScope[] = ordinary.length > 0 ? ordinary : ['market:read'];
   const registered = await agent
     .post('/api/v1/settings/oauth-clients')
     .set(...XRW)
     .send({
       name: 'Throwaway third party',
       redirectUris: [THIRD_PARTY_REDIRECT],
-      scopes,
+      scopes: registrable,
       public: true,
     });
   expect(registered.status, JSON.stringify(registered.body)).toBe(201);
@@ -125,7 +139,7 @@ async function mintThirdPartyToken(
     .send({
       client_id: client.clientId,
       redirect_uri: THIRD_PARTY_REDIRECT,
-      scope: scopes.join(' '),
+      scope: registrable.join(' '),
       code_challenge: challenge,
       code_challenge_method: 'S256',
     });
@@ -147,7 +161,12 @@ async function mintThirdPartyToken(
     .from(schema.oauthGrants)
     .where(eq(schema.oauthGrants.userId, user.id));
   expect(grants).toHaveLength(1);
-  return { token, grantId: grants[0]!.id, user };
+  const grantId = grants[0]!.id;
+  if (ordinary.length !== scopes.length) {
+    await storeAsPreRuleThirdPartyApp(harness, { clientId: client.clientId, grantId, scopes });
+    simulateThirdPartyCeilingRegression(harness, { grantId, scopes });
+  }
+  return { token, grantId, user };
 }
 
 /** ORDER BY, always — Postgres guarantees none, and `id` is a UUIDv7. */

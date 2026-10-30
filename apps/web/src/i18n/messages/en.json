@@ -345,7 +345,7 @@
         "notifications:write": "Mark your notifications as read and change your notification settings",
         "chat:read": "Read your messages",
         "chat:write": "Send messages on your behalf",
-        "account:security": "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault",
+        "account:security": "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault, permanently deleting a vault, exporting all your data and permanently deleting your account",
         "alerts:read": "View your price alerts",
         "alerts:write": "Create, edit, re-arm and delete your price alerts",
         "cash:read": "View your cash tags, budgets, rules, summaries and trends",
@@ -399,7 +399,7 @@
         },
         "accountSecurity": {
           "label": "Account security",
-          "description": "Manage sign-in sessions, two-factor authentication, password, the app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault."
+          "description": "Manage sign-in sessions, two-factor authentication, password, the app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault, permanently deleting a vault, exporting all your data and permanently deleting your account."
         },
         "feedback": {
           "label": "Feedback",

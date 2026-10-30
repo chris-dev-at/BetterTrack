@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 
 import {
   createApiKeyRequestSchema,
-  createOAuthClientRequestSchema,
+  createThirdPartyOAuthClientRequestSchema,
   discordWebhookRequestSchema,
   idParamSchema,
   scopeSatisfies,
@@ -13,7 +13,7 @@ import {
   updateWidgetLayoutRequestSchema,
   widgetLayoutNamespaceParamSchema,
   type CreateApiKeyRequest,
-  type CreateOAuthClientRequest,
+  type CreateThirdPartyOAuthClientRequest,
   type DiscordWebhookRequest,
   type UpdateAccountSettingsRequest,
   type UpdateHomeLayoutRequest,
@@ -504,20 +504,25 @@ export function createSettingsRouter(ctx: AppContext): Router {
   });
 
   // POST /settings/oauth-clients — register an app; client_secret returned once
-  // (null for public/PKCE clients).
-  router.post('/oauth-clients', validateBody(createOAuthClientRequestSchema), async (req, res) => {
-    const body = req.valid?.body as CreateOAuthClientRequest;
-    const result = await ctx.oauth.registerClient({
-      userId: req.authUser!.id,
-      name: body.name,
-      redirectUris: body.redirectUris,
-      scopes: body.scopes,
-      public: body.public,
-      logoUrl: body.logoUrl ?? null,
-      ip: req.ip ?? null,
-    });
-    res.status(201).json(result);
-  });
+  // (null for public/PKCE clients). A user-registered app is THIRD-party, so the
+  // first-party-only scopes are refused here and again in the service.
+  router.post(
+    '/oauth-clients',
+    validateBody(createThirdPartyOAuthClientRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as CreateThirdPartyOAuthClientRequest;
+      const result = await ctx.oauth.registerClient({
+        userId: req.authUser!.id,
+        name: body.name,
+        redirectUris: body.redirectUris,
+        scopes: body.scopes,
+        public: body.public,
+        logoUrl: body.logoUrl ?? null,
+        ip: req.ip ?? null,
+      });
+      res.status(201).json(result);
+    },
+  );
 
   // DELETE /settings/oauth-clients/:id — delete an app (cascades its grants/tokens).
   router.delete('/oauth-clients/:id', validateParams(idParamSchema), async (req, res) => {

@@ -13,11 +13,13 @@ import {
   OAUTH_REFRESH_TOKEN_GRACE_SECONDS,
   OAUTH_REFRESH_TOKEN_PREFIX,
   OAUTH_SCOPE_LABELS,
+  isOAuthFirstPartyOnlyScope,
   isValidRedirectUri,
   oauthRefreshReplayWindowSeconds,
   oauthRefreshTokenTtlSeconds,
   scopeSatisfies,
   withImpliedReadScopes,
+  withoutOAuthFirstPartyOnlyScopes,
   type ApiKeyScope,
   type CreateOAuthClientResponse,
   type OAuthApproveRequest,
@@ -361,7 +363,8 @@ function toClientSummary(row: OAuthClientRow | OAuthClientListRow): OAuthClientS
     clientId: row.clientId,
     name: row.name,
     redirectUris: row.redirectUris,
-    scopes: row.scopes as ApiKeyScope[],
+    // The ceiling the app can actually exercise, not the stored row.
+    scopes: exercisableCeiling(row) as ApiKeyScope[],
     public: row.isPublic,
     firstParty: row.isFirstParty,
     logoPath: logoPathFor(row),
@@ -377,6 +380,22 @@ function logoPathFor(row: OAuthClientLogoState): string | null {
   const hasLogo = 'hasLogo' in row ? row.hasLogo : Boolean(row.logoBytes && row.logoContentType);
   if (row.isFirstParty || !hasLogo) return null;
   return `/oauth/client-logos/${row.clientId}`;
+}
+
+/** The client fields every ceiling comparison reads (see {@link exercisableCeiling}). */
+type OAuthCeilingSource = Pick<OAuthClientRow, 'scopes' | 'isFirstParty'>;
+
+/**
+ * The scope ceiling an app can actually EXERCISE: its stored
+ * `scopes`, minus the first-party-only scopes (`account:security`,
+ * `vault:sync`) unless it is an official first-party app. Every ceiling test in
+ * this service reads the row through here — authorize, both token exchanges,
+ * the grace replay, the grant list and every bearer request — so a third-party
+ * app registered before the rule keeps its stored row but can no longer be
+ * granted, mint or use either scope, with no data migration.
+ */
+function exercisableCeiling(client: OAuthCeilingSource): readonly string[] {
+  return client.isFirstParty ? client.scopes : withoutOAuthFirstPartyOnlyScopes(client.scopes);
 }
 
 /**
@@ -396,7 +415,7 @@ function logoPathFor(row: OAuthClientLogoState): string | null {
  *    all store exactly the set the consent screen showed the user (it renders
  *    `withImpliedReadScopes` too). This is the grant-time half of the rule.
  */
-function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): ApiKeyScope[] {
+function parseScopes(scope: string, client: OAuthCeilingSource): ApiKeyScope[] {
   const requested = scope.split(/\s+/).filter(Boolean);
   if (requested.length === 0) {
     throw badRequest('At least one scope is required.', 'INVALID_SCOPE');
@@ -407,7 +426,7 @@ function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): Api
     if (!VALID_SCOPES.has(s)) {
       throw badRequest(`Unknown scope "${s}".`, 'INVALID_SCOPE');
     }
-    if (!scopeSatisfies(client.scopes, s)) {
+    if (!scopeSatisfies(exercisableCeiling(client), s)) {
       throw badRequest(`Scope "${s}" is not permitted for this app.`, 'INVALID_SCOPE');
     }
     if (!seen.has(s)) {
@@ -442,8 +461,9 @@ function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): Api
  */
 function clampToAllowed(
   consented: readonly ApiKeyScope[],
-  allowed: readonly string[],
+  client: OAuthCeilingSource,
 ): ApiKeyScope[] {
+  const allowed = exercisableCeiling(client);
   // The ceiling test is `scopeSatisfies`, not raw set membership (#1740): a
   // ceiling that holds `x:write` permits `x:read`, so a consented read is kept
   // rather than silently dropped from the grant list, the consent payload and
@@ -981,7 +1001,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // answer, as it would on a fresh refresh; enforcement never depended on it
     // (the bearer path clamps every request to the current ceiling).
     const current = new Set<string>(
-      withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes)),
+      withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client)),
     );
     const advertised = sealed.scope.split(' ').filter((scope) => current.has(scope));
     // Nothing left in common: never answer 200 with a scopeless grant. The
@@ -1144,7 +1164,17 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   }
 
   return {
-    registerClient({ userId, name, redirectUris, scopes, public: isPublic, logoUrl, ip }) {
+    async registerClient({ userId, name, redirectUris, scopes, public: isPublic, logoUrl, ip }) {
+      // A user-registered app is third-party by construction, so it may never
+      // list a first-party-only scope. The HTTP contract already
+      // refuses them; re-check so a caller that skipped validation cannot store one.
+      const firstPartyOnly = scopes.find(isOAuthFirstPartyOnlyScope);
+      if (firstPartyOnly) {
+        throw badRequest(
+          `Scope "${firstPartyOnly}" is available to first-party apps only.`,
+          'INVALID_SCOPE',
+        );
+      }
       return createClientRow({
         actorId: userId,
         userId,
@@ -1283,7 +1313,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         //      routes. The consent screen already shows the expansion; this
         //      credential-review surface must not understate it.
         // Display-time only: the stored grant is never rewritten.
-        scopes: withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes)),
+        scopes: withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client)),
         createdAt: grant.createdAt.toISOString(),
         lastUsedAt: grant.lastUsedAt ? grant.lastUsedAt.toISOString() : null,
       }));
@@ -1598,7 +1628,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         familyId: found.token.familyId,
         accessTokenId: found.token.id,
         expiresAt: found.token.expiresAt,
-        scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client.scopes),
+        scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client),
         firstParty: found.client.isFirstParty,
       };
     },
@@ -1630,7 +1660,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         familyId: tokenFamily.familyId,
         accessTokenId,
         expiresAt,
-        scopes: clampToAllowed(scopes, active.client.scopes),
+        scopes: clampToAllowed(scopes, active.client),
         firstParty: active.client.isFirstParty,
       };
     },
@@ -1705,7 +1735,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         // nothing in the ordinary case — it exists for a code minted by a
         // pre-#1740 process whose short TTL straddles the deploy.
         const scopes = withImpliedReadScopes(
-          clampToAllowed(exchange.code.scopes as ApiKeyScope[], client.scopes),
+          clampToAllowed(exchange.code.scopes as ApiKeyScope[], client),
         );
         if (scopes.length === 0) {
           // Shared with the refresh exchange (#1985) — both must answer this
@@ -1733,7 +1763,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           // and write⇒read-closed; the grant row is locked FOR UPDATE, so a
           // concurrent first-party reconcile cannot lose its additions here.
           const merged = withImpliedReadScopes(
-            clampToAllowed(unionScopes(existing.scopes as ApiKeyScope[], scopes), client.scopes),
+            clampToAllowed(unionScopes(existing.scopes as ApiKeyScope[], scopes), client),
           );
           if (!sameScopeSet(merged, existing.scopes)) {
             await exchange.updateGrantScopes(existing.id, merged);
@@ -1815,7 +1845,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // advertised `scope` carry the implied reads — the read-side healing that
     // makes a data migration unnecessary.
     const scopes = withImpliedReadScopes(
-      clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes),
+      clampToAllowed(found.grant.scopes as ApiKeyScope[], client),
     );
     // Re-presenting an already-rotated refresh token.
     if (found.token.consumedAt) {
