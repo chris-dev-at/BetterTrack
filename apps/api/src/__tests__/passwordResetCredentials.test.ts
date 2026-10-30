@@ -415,17 +415,21 @@ describe('administrator password reset: ordering of the key revocation', () => {
   });
 
   it('leaves no usable key when the password write fails, and a retry completes the reset', async () => {
-    const user = await seedFreshUser();
+    // A fixed account name: the trigger below must be a literal statement.
+    const user = await harness.seedUser({
+      email: 'reset-cred-failed-write@bettertrack.test',
+      username: 'resetcredfailedwrite',
+    });
     const agent = await loginAgent(user.email, user.password);
     const keys = [
       await mintPersonalKey(agent, ['portfolio:read']),
       await mintPersonalKey(agent, ['account:security']),
     ];
 
-    const trigger = `bt_test_fail_pw_${tag()}`;
     await harness.db.execute(
       sql.raw(`
-        CREATE OR REPLACE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$
+        CREATE OR REPLACE FUNCTION bt_test_fail_password_write() RETURNS trigger
+        LANGUAGE plpgsql AS $$
         BEGIN
           RAISE EXCEPTION 'simulated password write failure';
         END;
@@ -434,8 +438,9 @@ describe('administrator password reset: ordering of the key revocation', () => {
     );
     await harness.db.execute(
       sql.raw(`
-        CREATE TRIGGER ${trigger} BEFORE UPDATE OF password_hash ON users
-        FOR EACH ROW WHEN (OLD.id = '${user.id}') EXECUTE FUNCTION ${trigger}()
+        CREATE TRIGGER bt_test_fail_password_write BEFORE UPDATE OF password_hash ON users
+        FOR EACH ROW WHEN (OLD.username = 'resetcredfailedwrite')
+        EXECUTE FUNCTION bt_test_fail_password_write()
       `),
     );
     const id = tag();
@@ -450,8 +455,10 @@ describe('administrator password reset: ordering of the key revocation', () => {
         .set(...XRW);
       expect(failed.status, JSON.stringify(failed.body)).toBe(500);
     } finally {
-      await harness.db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trigger} ON users`));
-      await harness.db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${trigger}()`));
+      await harness.db.execute(
+        sql.raw('DROP TRIGGER IF EXISTS bt_test_fail_password_write ON users'),
+      );
+      await harness.db.execute(sql.raw('DROP FUNCTION IF EXISTS bt_test_fail_password_write()'));
     }
 
     // The password write did not happen …

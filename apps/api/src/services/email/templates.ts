@@ -121,7 +121,7 @@ export function tempPasswordEmail(params: {
   const heading = reason === 'reset' ? 'Your password was reset' : `Your ${BRAND} account is ready`;
   const intro =
     reason === 'reset'
-      ? 'An administrator reset your password. Sign in with the temporary password below — you will be asked to choose a new one right away.'
+      ? 'An administrator reset your password and revoked your personal API keys. Sign in with the temporary password below — you will be asked to choose a new one right away. Create new API keys afterwards if you use any.'
       : 'An administrator created a BetterTrack account for you. Sign in with the temporary password below — you will be asked to choose a new one right away.';
   return {
     subject:
