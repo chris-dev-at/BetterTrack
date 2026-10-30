@@ -37,6 +37,18 @@
 -- install login, so the validation scan under the ADD's ACCESS EXCLUSIVE lock
 -- is short. RE-RUNNABLE: DROP … IF EXISTS, then ADD. Rollback: re-create the
 -- 0119 list after the `sign_out_everywhere` rows are gone (or rewritten).
-ALTER TABLE "oauth_access_tokens" ADD COLUMN IF NOT EXISTS "first_used_at" timestamp with time zone;--> statement-breakpoint
+--
+-- CONCURRENCY (same reasoning as 0119's header). Both changes take ACCESS
+-- EXCLUSIVE on a hot token table, and the updater migrates while the old API
+-- still serves. `lock_timeout` bounds the WAIT for those locks — e.g. behind a
+-- nightly pg_dump's ACCESS SHARE, while every bearer read and refresh would
+-- queue behind the migration: past 10 s it fails cleanly, the whole batch rolls
+-- back, and the updater retries next tick. `SET LOCAL` lasts for the rest of
+-- the one batch transaction drizzle runs. The statements follow the app's own
+-- lock order — `oauth_token_families` BEFORE `oauth_access_tokens`, as every
+-- rotation and code exchange takes them — so an in-flight old-code token
+-- transaction cannot deadlock with the migration.
+SET LOCAL lock_timeout = '10s';--> statement-breakpoint
 ALTER TABLE "oauth_token_families" DROP CONSTRAINT IF EXISTS "oauth_token_families_revoked_reason_known";--> statement-breakpoint
-ALTER TABLE "oauth_token_families" ADD CONSTRAINT "oauth_token_families_revoked_reason_known" CHECK ("revoked_reason" IS NULL OR "revoked_reason" IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin', 'sign_out_everywhere'));
+ALTER TABLE "oauth_token_families" ADD CONSTRAINT "oauth_token_families_revoked_reason_known" CHECK ("revoked_reason" IS NULL OR "revoked_reason" IN ('refresh_reuse', 'logout', 'revoke_endpoint', 'relogin', 'sign_out_everywhere'));--> statement-breakpoint
+ALTER TABLE "oauth_access_tokens" ADD COLUMN IF NOT EXISTS "first_used_at" timestamp with time zone;
