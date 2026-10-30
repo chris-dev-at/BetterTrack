@@ -629,6 +629,84 @@ queries in `apps/api/src/scripts/sql/enumerate-fx-holes.sql` (Q2 is the per-port
 worklist with `earliest_hole`). Repair them only on a build that carries the guard —
 refilling on an older build can widen the hole.
 
+### The one-off repair job (`snapshots.repairFxHoles`)
+
+The repair ships as code, because nobody runs SQL against production. It runs **by
+itself, once**: every worker boot enqueues `snapshots.repairFxHoles` under the fixed
+job id `fx-hole-repair-v1`. BullMQ keeps the finished job, so every later boot's
+enqueue is a no-op. There is nothing to trigger by hand, and nothing to stop.
+
+**Gate.** The job refuses to run unless the #1729 fix is in the running build:
+
+- it imports `findVanishedHoldings` and `SNAPSHOT_PERSIST_GUARD_VERSION` from
+  `portfolioSnapshots.ts`, so a build without the fix does not compile;
+- `SNAPSHOT_PERSIST_GUARD_VERSION` is at least 1;
+- the linked guard passes a behavioural self-check: it flags a held asset that
+  vanished, and it spares one that was sold.
+
+A refused run writes nothing. It logs `repair.skipped reason=fix_absent` and records
+the audit row `snapshots.fx_hole_repair_skipped`. The gate exists because the repair
+deletes rows and recomputes them. On a writer without the refusals, one FX blip would
+rewrite the whole range without the currency, and a two-day hole would become weeks.
+
+**What it does**, per non-vaulted portfolio with stored rows:
+
+1. **Enumerate (read-only).** Find the earliest stored day on which an asset is
+   missing although an earlier row carries it and the current transactions still
+   hold it. This is the persist guard's own holding walk, so a position sold before
+   that day is not a hole. Vaulted portfolios and paranoid owners' portfolios are
+   never read, only counted.
+2. **Record** `snapshots.fx_hole_repair_enumerated` with the pre-repair counts. This
+   happens before anything is written.
+3. **Repair.** Run the service's own `invalidate(portfolio, earliestHole)`: the marker
+   first (never later than an existing one), then the delete of the rows from that day,
+   under the portfolio's transition lock. Then run the service's own `recompute`,
+   which is the guarded persist path. Concurrency is 2, and progress is logged per
+   page and per portfolio.
+4. **Verify and record** `snapshots.fx_hole_repair_completed`. A portfolio counts as
+   `repaired` only if its state is clean and a re-scan of its stored rows finds no
+   hole.
+
+**Reading the outcome without database access.** Open the admin console, go to
+**Security & API → Audit log**, and type `snapshots.` into **Action**. The direct link
+is `/admin/audit?action=snapshots.`. Click a row to see its counts under **Details**.
+
+| Row | `meta` |
+| --- | --- |
+| `snapshots.fx_hole_repair_enumerated` | **Before** the repair: `portfoliosScanned`, `portfoliosWithHoles`, `usersAffected`, `earliestHoleDay`, `skippedVaulted`, `skippedParanoid`, `scanFailed`, `durationMs` |
+| `snapshots.fx_hole_repair_completed` | The same counts plus `repaired`, `refused`, `failed`, `unmarked`, and the total `durationMs`. The row's time is when the repair finished. |
+| `snapshots.fx_hole_repair_skipped` | `reason: fix_absent` and `detail` (`guard_version` or `guard_self_check`) |
+
+Both rows carry `runId` and `attempt`. They hold counts and one ISO day, never a
+portfolio, user or asset id. The worker log has the same numbers as `repair.enumerated`
+and `repair.completed`, plus one `repair.portfolio` line per repaired portfolio, with
+its id, the day it was repaired from, and its outcome.
+
+**If `refused > 0`:** the guarded recompute persisted nothing for those portfolios.
+FX was unavailable, or the run would have dropped a held asset. Their marker stays
+down, so every read already serves the correct live engine, and the next nightly
+`snapshots.backfill` with healthy FX rewrites them. Look in the worker log for the
+`repair.portfolio` lines with `outcome: refused`, and for the refusal `warn` that came
+just before each of them (see above). If the cause is transient, nothing needs doing.
+If it is a currency that is gone for good, follow the "gone for good" paragraph above.
+
+**If `failed > 0`:** the recompute threw, or a hole survived a clean persist. The
+marker is down, so the nightly retries. Look for `repair.recompute_failed` or
+`repair.hole_survived` in the log.
+
+**If `unmarked > 0` or `scanFailed > 0`:** the job could not read a portfolio, or
+could not mark its hole. Nothing else will heal those, so the job throws after
+recording its rows, and BullMQ retries it up to 3 times. Each retry records a new
+`enumerated` / `completed` pair with a higher `attempt`. **The first `enumerated` row is
+the pre-repair truth**: a retry only re-checks, and it no longer counts a portfolio
+whose rows were already invalidated. A run that still fails after the last retry
+lands on the admin **Problems** page.
+
+**Re-running it** (for example, to record fresh counts) means bumping
+`FX_HOLE_REPAIR_RUN_ID` in `apps/api/src/services/portfolio/fxHoleRepair.ts` and
+deploying. A re-run is safe: a repaired portfolio has no hole left, so the run
+records zeros.
+
 ## Market-data provider failover
 
 BetterTrack uses Yahoo as its primary market-data provider. The optional v5

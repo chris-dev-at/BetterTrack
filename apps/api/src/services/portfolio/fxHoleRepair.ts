@@ -394,8 +394,10 @@ export async function runFxHoleRepair(deps: FxHoleRepairDeps): Promise<FxHoleRep
   async function repairOne(hit: FxHoleScanTarget & { hole: FxHole }): Promise<RepairOutcome> {
     const { portfolioId } = hit;
     const from = hit.hole.day;
-    if (await deps.isParanoidPortfolio?.(portfolioId)) return 'skipped';
     try {
+      // A portfolio moved into a vault (or whose owner went paranoid) since the
+      // scan is left alone; the service would refuse it under the lock anyway.
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return 'skipped';
       // Marker first, then the delete — the service's own invalidation, under
       // the account's transition lock. Never later than an existing marker.
       await snapshots.invalidate(portfolioId, from);

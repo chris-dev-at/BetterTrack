@@ -316,6 +316,7 @@ async function seedHoledEstate(db: Database) {
 }
 
 describe('earliestFxHole', () => {
+  type Row = { date: string; assetValues: Record<string, number> };
   const buy = (assetId: string, day: string, quantity = 1) => ({
     assetId,
     side: 'buy' as const,
@@ -328,7 +329,7 @@ describe('earliestFxHole', () => {
   });
 
   it('finds the earliest day a held, previously keyed asset is missing', () => {
-    const rows = [
+    const rows: Row[] = [
       { date: '2026-08-06', assetValues: { a: 1, b: 2 } },
       { date: '2026-08-07', assetValues: { a: 1, b: 2 } },
       { date: '2026-08-08', assetValues: { a: 1 } },
@@ -342,7 +343,7 @@ describe('earliestFxHole', () => {
   });
 
   it('is not fooled by a position that was sold before the missing day', () => {
-    const rows = [
+    const rows: Row[] = [
       { date: '2026-08-06', assetValues: { a: 1, b: 2 } },
       { date: '2026-08-08', assetValues: { a: 1 } },
     ];
@@ -351,7 +352,7 @@ describe('earliestFxHole', () => {
   });
 
   it('anchors a later-bought asset at the first row that carries it', () => {
-    const rows = [
+    const rows: Row[] = [
       { date: '2026-08-01', assetValues: { a: 1 } },
       { date: '2026-08-02', assetValues: { a: 1, b: 3 } },
       { date: '2026-08-03', assetValues: { a: 1, b: 3 } },
@@ -364,7 +365,7 @@ describe('earliestFxHole', () => {
   });
 
   it('reports nothing for an asset no stored row ever carried (no anchor to compare)', () => {
-    const rows = [
+    const rows: Row[] = [
       { date: '2026-08-01', assetValues: { a: 1 } },
       { date: '2026-08-02', assetValues: { a: 1 } },
     ];
@@ -372,7 +373,7 @@ describe('earliestFxHole', () => {
   });
 
   it('takes the minimum across assets, whatever order the rows arrive in', () => {
-    const rows = [
+    const rows: Row[] = [
       { date: '2026-08-05', assetValues: { a: 1 } },
       { date: '2026-08-01', assetValues: { a: 1, b: 2 } },
       { date: '2026-08-03', assetValues: { b: 2 } },

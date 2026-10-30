@@ -5,7 +5,7 @@ import {
 } from '../../services/portfolio/fxHoleRepair';
 import type { PortfolioSnapshotService } from '../../services/portfolio/portfolioSnapshots';
 import type { QueueRegistry } from '../queues';
-import { QUEUE_NAMES, type JobDefinition } from '../types';
+import { QUEUE_NAMES, type JobDefinition, type JobRunSummary } from '../types';
 
 /**
  * The V5-P1 daily-snapshot job bodies (issue #553, §16 2026-07-17):
@@ -159,7 +159,7 @@ export function createSnapshotsFxHoleRepairJob(
 ): JobDefinition<'snapshots.repairFxHoles'> {
   return {
     name: QUEUE_NAMES.snapshotsRepairFxHoles,
-    async handler(job, ctx) {
+    async handler(job, ctx): Promise<JobRunSummary> {
       const report = await runFxHoleRepair({
         ...deps,
         logger: ctx.logger,
