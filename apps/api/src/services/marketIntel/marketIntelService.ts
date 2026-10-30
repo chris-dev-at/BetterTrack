@@ -197,6 +197,53 @@ function normalizeDividendHistory(history: DividendEvent[]): DividendEvent[] {
   return lastN(deduped, DIVIDEND_HISTORY_MAX_EVENTS);
 }
 
+/**
+ * The earliest of a dividend event's dates that has not yet passed, as a
+ * DISPLAY-zone day (`displayDay.ts`) — `null` when it has none.
+ *
+ * This is the one "upcoming" rule every dividend surface already shares: an
+ * event stays upcoming while ANY of its ex/pay dates is today or later, so one
+ * that has gone ex but is not yet paid is still upcoming until the money lands.
+ * Server twin of the web's `upcomingDividendDate` (`apps/web/src/lib/dividendDates.ts`,
+ * #1758/#1827) and of the calendar's `eventSortKey`
+ * (`portfolioMarketIntelService.ts`); both sides are compared as the day the
+ * date is RENDERED in, so a DST night or a late-UTC stamp cannot move the
+ * boundary.
+ */
+function upcomingDividendDay(event: DividendEvent, todayStart: string): string | null {
+  let best: string | null = null;
+  for (const iso of [event.exDate, event.payDate]) {
+    const day = marketIntelEventDay(iso);
+    if (day === null || day < todayStart) continue;
+    if (best === null || day < best) best = day;
+  }
+  return best;
+}
+
+/**
+ * Split a provider's forward calendar on the display day (mobile board ask
+ * 2026-10-29 A3): the keystone serves a cached dividend payload stale for up to
+ * STALE_TTL_SECONDS behind an open breaker, and a provider may keep listing an
+ * event after it happened, so `upcoming` reached the apps carrying an ex-date
+ * weeks behind us. An event every one of whose known dates is before today has
+ * happened — it is moved to `past`, where the caller folds it into the history.
+ * An UNDATED event (no parseable date at all) is not demonstrably past, so it
+ * stays where the provider put it; the bound below sorts it last.
+ */
+function partitionUpcomingDividends(
+  upcoming: DividendEvent[],
+  todayStart: string,
+): { upcoming: DividendEvent[]; past: DividendEvent[] } {
+  const still: DividendEvent[] = [];
+  const past: DividendEvent[] = [];
+  for (const event of upcoming) {
+    const dated = marketIntelEventDay(event.exDate) ?? marketIntelEventDay(event.payDate);
+    if (dated !== null && upcomingDividendDay(event, todayStart) === null) past.push(event);
+    else still.push(event);
+  }
+  return { upcoming: still, past };
+}
+
 /** Digest groups newest-first by their most recent headline, symbol as tiebreak. */
 function byNewestHeadline(x: NewsDigestGroup, y: NewsDigestGroup): number {
   const cmp = (y.headlines[0]?.publishedAt ?? '').localeCompare(x.headlines[0]?.publishedAt ?? '');
@@ -449,13 +496,21 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).dividends) return UNAVAILABLE_DIVIDENDS;
         try {
           const cached = await marketData.getDividendEvents(ref);
+          const todayStart = marketIntelDisplayDay(now());
+          const { upcoming, past } = partitionUpcomingDividends(cached.value.upcoming, todayStart);
           return {
             available: true,
             ...cached.value,
-            history: normalizeDividendHistory(cached.value.history),
+            // A past "upcoming" event is a payout that happened: it joins the
+            // history, where the (exDate, amount) dedupe absorbs the copy a
+            // provider already lists there.
+            history: normalizeDividendHistory([...cached.value.history, ...past]),
+            // Ordered on the same key the calendar and the web render on — the
+            // earliest date not yet passed — so an ex-but-unpaid event sorts on
+            // its pay date rather than on the ex-date behind us.
             upcoming: soonestN(
-              cached.value.upcoming,
-              (event) => event.exDate ?? event.payDate,
+              upcoming,
+              (event) => upcomingDividendDay(event, todayStart),
               DIVIDEND_UPCOMING_MAX_EVENTS,
             ),
           };

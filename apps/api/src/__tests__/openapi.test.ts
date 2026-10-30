@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import * as contracts from '@bettertrack/contracts';
 
+import { BODY_PARSER_ERROR_CODES, bodyParserApiError } from '../http/bodyLimits';
 import { buildOpenApiDocument, OPENAPI_ENDPOINT_COUNT } from '../http/openapi';
 import { createTestApp } from '../testing/createTestApp';
 
@@ -822,5 +823,148 @@ describe('OpenAPI document', () => {
 
     // The rest of /api/v1 still requires a session.
     await request(app).get('/api/v1/portfolios').expect(401);
+  });
+});
+
+/**
+ * Emitted ⇒ documented (mobile board ask 2026-10-29 A5). Four codes reached the
+ * wire without appearing in the `x-error-codes` of the operations that emit
+ * them, so a generated client had no name for them. Each test below drives the
+ * real emitter where one can be driven, and asserts the code it produced is in
+ * the vocabulary the document publishes for that operation.
+ */
+describe('OpenAPI x-error-codes — emitted codes are documented (A5)', () => {
+  type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
+  const METHODS: readonly Method[] = ['get', 'post', 'put', 'patch', 'delete'];
+  const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+  function operations(): Array<{ method: Method; path: string; op: JsonObject }> {
+    const paths = (buildOpenApiDocument() as unknown as JsonObject).paths as JsonObject;
+    return Object.entries(paths).flatMap(([path, item]) =>
+      METHODS.flatMap((method) => {
+        const op = (item as JsonObject)[method] as JsonObject | undefined;
+        return op ? [{ method, path, op }] : [];
+      }),
+    );
+  }
+  const codesOf = (op: JsonObject) => (op['x-error-codes'] as string[] | undefined) ?? [];
+
+  it('the body-parser vocabulary covers every code the global parser can answer with', () => {
+    // Every body-parser type the normaliser maps, plus the unlisted-but-exposable
+    // 4xx fallbacks it answers by status: whatever code it yields must be in the
+    // published vocabulary (the generic BAD_REQUEST catch-all aside).
+    const failures: Array<{ type: string; status: number }> = [
+      { type: 'entity.parse.failed', status: 400 },
+      { type: 'entity.verify.failed', status: 403 },
+      { type: 'request.aborted', status: 400 },
+      { type: 'request.size.invalid', status: 400 },
+      { type: 'entity.too.large', status: 413 },
+      { type: 'parameters.too.many', status: 413 },
+      { type: 'charset.unsupported', status: 415 },
+      { type: 'encoding.unsupported', status: 415 },
+      { type: 'some.future.type', status: 413 },
+      { type: 'some.future.type', status: 415 },
+    ];
+    for (const failure of failures) {
+      const code = bodyParserApiError({ ...failure, expose: true })?.code;
+      expect(BODY_PARSER_ERROR_CODES, `${failure.type} (${failure.status})`).toContain(code);
+    }
+    expect(BODY_PARSER_ERROR_CODES).toEqual(
+      expect.arrayContaining(['MALFORMED_BODY', 'UNSUPPORTED_MEDIA_TYPE', 'PAYLOAD_TOO_LARGE']),
+    );
+  });
+
+  it('lists the body-parser codes on EVERY operation that takes a request body', () => {
+    const bodied = operations().filter(
+      ({ method, op }) =>
+        method === 'post' || method === 'put' || method === 'patch' || op.requestBody !== undefined,
+    );
+    expect(bodied.length).toBeGreaterThan(100);
+    for (const { method, path, op } of bodied) {
+      expect(codesOf(op), `${method.toUpperCase()} ${path}`).toEqual(
+        expect.arrayContaining([...BODY_PARSER_ERROR_CODES]),
+      );
+    }
+    // …and not on a plain GET, which the vocabulary would otherwise overstate.
+    const plainGet = operations().find(
+      ({ method, path }) => method === 'get' && path === '/auth/me',
+    );
+    expect(codesOf(plainGet!.op)).not.toContain('MALFORMED_BODY');
+  });
+
+  it('a malformed and an unsupported-charset body answer with codes POST /cash/rules lists', async () => {
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = request.agent(h.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const op = operations().find(
+      ({ method, path }) => method === 'post' && path === '/cash/rules',
+    )!;
+
+    const malformed = await agent
+      .post('/api/v1/cash/rules')
+      .set(...XRW)
+      .set('Content-Type', 'application/json')
+      .send('{"pattern": ');
+    expect(malformed.body.error.code).toBe('MALFORMED_BODY');
+    expect(codesOf(op.op)).toContain(malformed.body.error.code);
+
+    const charset = await agent
+      .post('/api/v1/cash/rules')
+      .set(...XRW)
+      .set('Content-Type', 'application/json; charset=klingon')
+      .send('{}');
+    expect(charset.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    expect(codesOf(op.op)).toContain(charset.body.error.code);
+  });
+
+  it('every Telegram/Discord settings operation lists the kill-switch 404 it answers with', async () => {
+    const channelOps = operations().filter(({ path }) =>
+      /^\/settings\/(?:telegram|discord)(?:\/|$)/.test(path),
+    );
+    // GET/DELETE telegram, POST link + confirm; GET/DELETE discord, POST webhook + test.
+    expect(channelOps).toHaveLength(8);
+
+    // The default harness runs with the channel kill-switch OFF — drive the
+    // real guard on every documented operation.
+    const h = await createTestApp();
+    try {
+      const user = await h.seedUser();
+      const agent = request.agent(h.app);
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: user.email, password: user.password });
+      for (const { method, path, op } of channelOps) {
+        const res = await agent[method](`/api/v1${path}`).set(...XRW);
+        const name = `${method.toUpperCase()} ${path}`;
+        expect(res.status, name).toBe(404);
+        expect(res.body.error.code, name).toBe('CHANNEL_DEACTIVATED');
+        expect(codesOf(op), name).toContain('CHANNEL_DEACTIVATED');
+      }
+    } finally {
+      await h.ctx.events.close();
+    }
+
+    // Scoped to the kill-switched family: the neighbouring settings are not.
+    const notifications = operations().find(
+      ({ method, path }) => method === 'get' && path === '/settings/notifications',
+    )!;
+    expect(codesOf(notifications.op)).not.toContain('CHANNEL_DEACTIVATED');
+  });
+
+  it('the two cash-rule writes list the duplicate-tag refusal cashTagService raises', () => {
+    for (const [method, path] of [
+      ['post', '/cash/rules'],
+      ['patch', '/cash/rules/{ruleId}'],
+    ] as const) {
+      const found = operations().find((o) => o.method === method && o.path === path)!;
+      expect(codesOf(found.op), `${method.toUpperCase()} ${path}`).toContain(
+        'CASH_RULE_TAG_DUPLICATE',
+      );
+    }
   });
 });
