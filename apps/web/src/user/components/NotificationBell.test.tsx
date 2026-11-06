@@ -508,13 +508,15 @@ describe('NotificationBell', () => {
     {
       type: 'feedback.status_changed',
       payload: { feedbackId: 'feedback-1', status: 'saved_as_future_idea' },
-      href: '/control/feedback',
+      href: '/control/feedback?submission=feedback-1',
     },
     {
       type: 'feedback.reply_created',
       payload: { feedbackId: 'feedback-1', messageId: 'message-1' },
-      href: '/control/feedback',
+      href: '/control/feedback?submission=feedback-1',
     },
+    // A legacy row without the id still lands on the panel, never a dead click.
+    { type: 'feedback.reply_created', payload: {}, href: '/control/feedback' },
     { type: 'account.temp_password', payload: {}, href: '/settings/security' },
     { type: 'account.invite', payload: {}, href: '/settings/account' },
     {

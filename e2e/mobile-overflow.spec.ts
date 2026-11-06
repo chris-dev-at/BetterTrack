@@ -113,6 +113,13 @@ const LONG_WEBHOOK_DESCRIPTION =
 const LONG_WEBHOOK_URL = `https://example.com/mobile-overflow/${'deeply-nested-segment/'.repeat(
   20,
 )}delivery-endpoint`;
+const LONG_FEEDBACK_SUBJECT =
+  'Mobile overflow feedback submission with a deliberately long subject that must stay contained in the submissions list'.slice(
+    0,
+    120,
+  );
+const LONG_FEEDBACK_MESSAGE =
+  'Please keep this deliberately long feedback message readable inside the narrow submission thread without clipping its reply controls.';
 // The exhaustive inventory generates hundreds of trace snapshots. Recycle the
 // renderer between bounded batches so a single page does not accumulate every
 // route's React/Vite state and crash before the later Control Center surfaces.
@@ -1152,6 +1159,20 @@ async function createRouteFixtures(
     }),
     'creating the long webhook row',
   );
+  // One real submission, so /control/feedback measures a populated "my
+  // submissions" row (status badge, long subject, meta line, Withdraw) rather
+  // than its empty state.
+  await responseJson<{ id: string }>(
+    await api.post(`${API_BASE_URL}/api/v1/feedback`, {
+      headers,
+      data: {
+        category: 'improvement',
+        subject: LONG_FEEDBACK_SUBJECT,
+        message: LONG_FEEDBACK_MESSAGE,
+      },
+    }),
+    'creating the populated feedback submission',
+  );
 
   // A real friend request gives the owner both a long-username social row and
   // an actual notification row. Accept it after observing the incoming request
@@ -1248,6 +1269,13 @@ async function createRouteFixtures(
   // Test-integrity assertions: this fixture is intentionally not a fresh/empty
   // account. These API reads fail before the viewport sweep if any seed seam
   // drifts, instead of silently turning the route assertions into empty states.
+  const feedback = await responseJson<{ submissions: Array<{ subject: string | null }> }>(
+    await api.get(`${API_BASE_URL}/api/v1/feedback/mine`),
+    'checking the populated feedback state',
+  );
+  expect(
+    feedback.submissions.some((submission) => submission.subject === LONG_FEEDBACK_SUBJECT),
+  ).toBe(true);
   const [portfolio, cash, cashSources, tags, webhooks, notifications, homeBoard] =
     await Promise.all([
       responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
@@ -1394,6 +1422,12 @@ const POPULATED_ROUTE_EXPECTATIONS: readonly PopulatedRouteExpectation[] = [
     route: '/control/webhooks',
     sentinel: () => LONG_WEBHOOK_URL,
     justification: 'The webhook panel must render the deliberately long payload URL.',
+  },
+  {
+    route: '/control/feedback',
+    sentinel: () => LONG_FEEDBACK_SUBJECT,
+    justification:
+      'The feedback panel must render the populated my-submissions row with its long subject and Withdraw control.',
   },
 ];
 

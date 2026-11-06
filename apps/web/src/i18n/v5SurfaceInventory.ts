@@ -1226,6 +1226,11 @@ export const NON_V5_SURFACES = [
     note: 'Owner-ordered FEEDBACK-3 Settings entry (#1317), added outside the §13.5 P0–P13c plan.',
   },
   {
+    path: 'user/control/panels/MyFeedbackSubmissions.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Owner-ordered FEEDBACK-8 submitter list, reply thread and withdraw (#1342), inline in the #1317 Feedback panel, outside the §13.5 P0–P13c plan.',
+  },
+  {
     path: 'user/control/panels/SessionsPanel.tsx',
     reason: 'no-v5-deliverable',
     note: 'V2 session list, re-housed by the R2 Control Center.',
@@ -2299,7 +2304,11 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // the palette's existing two reads are not in the debt ledger either. The fourth
 // new section (feature flags) reads nothing at all — the registry is a contract
 // constant — so it adds no site. The debt ceiling below is therefore unchanged.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 84;
+// 84 → 86 with FEEDBACK-8 "my submissions" (#1342): MyFeedbackSubmissions.tsx
+// adds the `GET /feedback/mine` list read and the `useInfiniteQuery` thread
+// read; both render loading + error through AsyncReadState, so the debt
+// ceiling is unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 86;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

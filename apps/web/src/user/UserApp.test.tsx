@@ -22,7 +22,10 @@ vi.mock('../lib/workboardApi', () => ({
 // network call; these tests only assert we reached the authenticated shell.
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/socialApi');
-vi.mock('../lib/feedbackApi', () => ({ submitFeedback: vi.fn() }));
+vi.mock('../lib/feedbackApi', () => ({
+  listMyFeedback: vi.fn(() => Promise.resolve({ submissions: [] })),
+  submitFeedback: vi.fn(),
+}));
 vi.mock('../lib/alertsApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/alertsApi')>()),
   listAlerts: vi.fn(),
